@@ -78,7 +78,7 @@ export function openInDefaultBrowser(url: string): Promise<void> {
   });
 }
 export interface LiveToolsComposition {
-  alarmChanged?(): void;
+  acknowledgeAlarm?(id: string): void;
   recover?(): Promise<void>;
   owner: ToolsOwner;
   connectionIds(): string[];
@@ -673,7 +673,7 @@ export async function startHost(config: HostConfig) {
       now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
-      alarmChanged: () => alarms.recheck('mutation'),
+      acknowledgeAlarm: id => { alarms.acknowledge(id); },
       connectionIds: () => mcp.connectionIds(),
       recover: () => mcp.recover(),
       status: () => mcp.status(),

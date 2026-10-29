@@ -1394,10 +1394,10 @@ export class LiveSessionOwner {
     if (!alarms.length) return;
     // The most recently announced alarm owns this confirmation, not every ringing occurrence.
     const alarm = alarms[alarms.length - 1]!;
-    this.#store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [alarm.setup.alarmId!]));
+    if (this.#tools?.acknowledgeAlarm) this.#tools.acknowledgeAlarm(alarm.setup.alarmId!);
+    else this.#store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [alarm.setup.alarmId!]));
     alarm.timer?.cancel();
     this.#alarmSessions.get(handle.liveSessionId)?.delete(alarm.setup.alarmId!);
-    queueMicrotask(() => this.#tools?.alarmChanged?.());
     try { handle.session.sendText({ text: hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.') }); } catch { /* The acknowledged alarm remains stopped if transport is unavailable. */ }
   }
 
@@ -4880,7 +4880,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         });
       });
       attempt(() => this.#observeState(handle, 'ended', 'settle'));
-      if (this.#tools && handle.request.system.text.startsWith(ALARM_MODE_MARKER)
+      if (this.#tools && handle.request.system.text.includes(ALARM_MODE_MARKER)
         && ['failed', 'deadline', 'not_started', 'outcome_unknown'].includes(outcome.state)) {
         attempt(() => {
           const alarm = this.#store.transaction(tx => tx.get("SELECT a.id,a.fire_at_utc FROM alarms a JOIN alarm_session_attempts s ON s.alarm_id=a.id WHERE s.live_session_id=? AND a.state='ringing'", [handle.liveSessionId]));

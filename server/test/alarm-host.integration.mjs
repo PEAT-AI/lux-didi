@@ -12,7 +12,7 @@ const { startHost } = await import(pathToFileURL(join(serviceRoot, 'dist/host/ru
 const { validateLiveProfile } = await import(pathToFileURL(join(serviceRoot, 'dist/live/index.js')));
 const WebSocket = createRequire(join(serviceRoot, 'package.json'))('ws');
 
-test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and setup-only speech', { timeout: 15000 }, async t => {
+test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and scoped alarm speech', { timeout: 15000 }, async t => {
   const cleanups = [];
   const directory = await mkdtemp(join(tmpdir(), 'synthetic-alarm-host-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -123,8 +123,9 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   const attempts = f.attempts;
-  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 409);
-  assert.equal(f.attempts, attempts, 'W11-R5: live session has no second provider attempt or injection');
+  const announcementStart = f.frames.length;
+  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
+  assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
   await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
   await owner('snooze my alarm for five minutes');
@@ -187,7 +188,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   for (const field of ['alarmId', 'label', 'scheduledMs', 'actualMs', 'reason', 'fireAtUtc', 'time']) {
     assert.equal(started[0][field], undefined, `${field} stays out of the start line`);
   }
-  assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));
+  assert.ok(!log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));
+  assert.match(JSON.stringify(f.frames.slice(announcementStart)), /\[alarm mode\]/, 'due alarm reaches the existing live provider');
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'provider_unavailable'));
   for (const row of log.filter(row => row.event.startsWith('alarm_'))) assert.doesNotMatch(JSON.stringify(row), /wake me|Synthetic Owner|snooze my/);
 });

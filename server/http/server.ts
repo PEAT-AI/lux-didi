@@ -163,6 +163,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             if (live) await live.prepareCalendar();
             const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
             if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
+            if (attempt?.status === 'live' && attempt.liveSessionId && live) { send(res, 200, success(live.snapshot(attempt.liveSessionId))); return; }
             send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
           }
           if (url.pathname === '/api/v1/alarms/ring-started' && typeof body.id === 'string') {

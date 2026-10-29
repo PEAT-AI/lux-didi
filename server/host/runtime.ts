@@ -78,6 +78,7 @@ export function openInDefaultBrowser(url: string): Promise<void> {
   });
 }
 export interface LiveToolsComposition {
+  alarmChanged?(): void;
   recover?(): Promise<void>;
   owner: ToolsOwner;
   connectionIds(): string[];

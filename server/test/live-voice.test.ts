@@ -1113,3 +1113,18 @@ test('#606 Gemini preserves a text-less owner final after transcript fragments',
   assert.deepEqual(captured.events.flatMap(event => event.type === 'inputTranscription' ? [{ text: event.text, finished: event.finished }] : []),
     [{ text: 'Naya', finished: false }, { text: '', finished: true }]);
 });
+
+test('Gemini alarm mode speaks the alarm without the fresh-opening direction', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
+    ...request(), opening: 'model_first', history: [],
+    system: { text: 'Synthetic persona\n[alarm mode] Wake Synthetic Owner at 08:00, call the bank', dataClass: 'ordinary' },
+  }, control());
+  t.after(() => session.close());
+  await f.frame(1);
+  f.send({ setupComplete: {} });
+  await Promise.all([session.ready, f.frame(2)]);
+  assert.match(JSON.stringify(f.frames[0]), /call the bank/);
+  assert.ok(!JSON.stringify(f.frames[1]).includes(FRESH_OPENING), 'alarm startup must not send the neutral fresh-opening direction');
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: '[host note, not the owner] Speak the alarm now, following the session instructions.' }] }], turnComplete: true } });
+});

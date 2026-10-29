@@ -40,13 +40,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (rest) return { status: 'clarify', reason: 'unsupported_time_expression' };
     fireAtUtc = now + amount * (relative[2]!.startsWith('hour') ? 3600000 : 60000);
   } else {
-    const start = /\b(?:at|for)\s+/.exec(text);
+    const start = /\bat\s+/.exec(text) ?? /\bfor\s+/.exec(text);
     const noon = /\b(noon|midnight)\b/.exec(text);
     if (!start && !noon) return { status: 'clarify', reason: 'missing_time' };
     let expression = text.slice(start ? start.index + start[0].length : noon!.index).trim();
-    const tomorrow = /\btomorrow\b/.test(expression);
-    const period = /\bam\b|\bmorning\b/.test(expression) || /\bwake me\b/.test(text) ? 'am'
-      : /\bpm\b|\bevening\b|\btonight\b/.test(expression) ? 'pm' : undefined;
+    const tomorrow = /\btomorrow\b/.test(text);
+    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(text) ? 'am'
+      : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
     let hour: number;
     let minute = 0;

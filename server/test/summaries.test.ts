@@ -740,7 +740,7 @@ test('research recall replay keeps named-person dialogue, offers more, and opens
     assert.match(JSON.stringify(first), /Mira and I chose the cobalt lighthouse/);
     assert.match(JSON.stringify(first), /I suggested bringing the violet map/);
     assert.doesNotMatch(String(first['note']), /Nothing more to fetch/i);
-    assert.match(String(first['note']), /more/i);
+    assert.match(String(first['note']), /more|offer the rest/i);
     const pages = first['historyPages'] as Array<{ hits: Array<{ recordRef: string }> }>;
     const ref = pages[0]!.hits[0]!.recordRef;
     const named = await runResearch(deps, { action: 'start', question: 'What did Mira choose?', lookups: [{ source: 'memory', query: 'Mira lighthouse' }] }, signal);

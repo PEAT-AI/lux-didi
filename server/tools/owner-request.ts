@@ -34,7 +34,8 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
-    const direct = !/^["“”]|\b(?:he|she|they|mail|email|note|summary)\s+(?:said|says|asked)|\b(?:hypothetically|suppose)|\bif\s+(?:i|we|you|he|she|they|it|someone)|\bshould\s+(?:i|we|you)\b/i.test(words);
+    // A reporting frame covers the whole final, including commands after and/then; subjects are not a name allowlist.
+    const direct = !/^["“”]|(?:^|\s)\S+\s+(?:said|says|told|tells|asked|asks|wrote|writes|wants|wanted|suggested|suggests|recommended|recommends|instructed|instructs|ordered|requested|advised|advises|claimed|mentioned|mentions|reported|stated)|\b(?:hypothetically|suppose)|\bif\s+(?:i|we|you|he|she|they|it|someone)|\bshould\s+(?:i|we|you)\b/i.test(words);
     const grants = new Map<ActionKind, Grant>();
     if (direct) {
       const cues: [ActionKind, RegExp][] = [

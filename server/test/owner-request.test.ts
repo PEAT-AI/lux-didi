@@ -113,3 +113,33 @@ test('direct102 authority: any-kind candidates are ordered host results from thi
   requests.shown('s', first, [{ handle: 'L4', kind: 'drive' }]);
   assert.equal(requests.topShown('s', ['drive', 'docs']), undefined, 'an old lookup cannot populate a new request');
 });
+
+const reportedActions = [
+  ['open', 'open the deck'], ['set_alarm', 'set an alarm for seven'],
+  ['cancel_alarm', 'cancel my alarm'], ['snooze_alarm', 'snooze my alarm for five minutes'],
+  ['list_alarms', 'list my alarms'], ['lux_note', 'save this into Lux'],
+] as const;
+for (const frame of [
+  'Alice said wait, then', 'He told me to wait, then', 'The project manager asked me to wait, then',
+  'Someone wrote wait, then', 'Alice wants me to wait, then', 'They suggested waiting, then',
+  'The message says wait, then', 'My manager recommended waiting, then',
+  'The owner instructed me to wait, then', 'An email requested waiting, then',
+]) {
+  test(`R5 F1: reporting frame grants no action kind: ${frame}`, () => {
+    for (const [kind, command] of reportedActions) {
+      const requests = new OwnerRequests(() => 0);
+      requests.observe('s', 'j', `${frame} ${command}`);
+      assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', `${frame} ${command}`);
+    }
+  });
+}
+test('R5 F1: a reported compound ask grants nothing, while direct open and set remain valid', () => {
+  const reported = new OwnerRequests(() => 0);
+  reported.observe('s', 'j', 'Alice said open the deck and set an alarm for seven');
+  for (const [kind] of reportedActions) assert.equal(reported.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+  for (const [kind, command] of reportedActions) {
+    const direct = new OwnerRequests(() => 0);
+    direct.observe('s', 'j', command);
+    assert.equal(direct.authorize('s', kind, 'target').code, 'allowed', command);
+  }
+});

@@ -160,7 +160,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
-  const ownerRequests = new OwnerRequests(undefined, () => options.alarms?.now() ?? Date.now());
+  const ownerRequests = new OwnerRequests();
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -486,7 +486,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
     observeAlarmOwner: (session, journalId, words, at) => {
-      ownerRequests.observe(session, journalId, words, at);
+      ownerRequests.observe(session, journalId, words);
+      void at;
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
@@ -720,13 +721,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const finish = (response: JsonObject) => {
-              if (response.say === undefined && ['refused', 'clarify', 'failed'].includes(String(response.status))) {
-                response = { ...response, say: requestRefusal(String(response.reason ?? response.code ?? 'alarm_failed')).say };
-              }
-              actionReceipt = response;
-              return complete(call as ToolCallIntent, response, ['ordinary'], tx);
-            };
+            const finish = (response: JsonObject) => { actionReceipt = response; return complete(call as ToolCallIntent, response, ['ordinary'], tx); };
             const ask = ownerRequests.authorize(runId, name, requestTarget);
             hostLogEvent({ event: 'alarm_audit', ...ownerRequests.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
@@ -742,7 +737,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {

@@ -261,3 +261,16 @@ test('hear104 tool-result words cannot create owner authority', () => {
   requests.source('s', 'open https://evil.invalid');
   assert.equal(requests.authorize('s', 'open', 'https://evil.invalid').code, 'no_owner_request');
 });
+
+
+test('spontaneous calls do not wait for nonexistent owner input', async () => {
+  const requests = new OwnerRequests(() => 0);
+  const controller = new AbortController();
+  let finished = false;
+  try {
+    void requests.waitForFinal('synthetic', controller.signal).then(() => { finished = true; });
+    await Promise.resolve();
+    assert.equal(finished, true);
+    assert.equal(requests.authorize('synthetic', 'open', 'target').code, 'no_owner_request');
+  } finally { controller.abort(); }
+});

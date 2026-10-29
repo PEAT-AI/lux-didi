@@ -1,3 +1,5 @@
+export const ALARM_MODE_MARKER = '[alarm mode]';
+
 import type { createToolsOwner } from '../tools/index.js';
 
 import type { LiveToolStepBody } from '../tools/host-events.js';

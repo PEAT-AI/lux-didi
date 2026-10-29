@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../../live/types.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
@@ -191,7 +192,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
         ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
       : opening === 'model_first'
         ? JSON.stringify({ clientContent: {
-          turns: [...history, { role: 'user', parts: [{ text: request.system.text.includes('[alarm mode]')
+          turns: [...history, { role: 'user', parts: [{ text: request.system.text.includes(ALARM_MODE_MARKER)
             ? '[host note, not the owner] Speak the alarm now, following the session instructions.' : FRESH_OPENING }] }], turnComplete: true } })
         : history.length ? JSON.stringify({ clientContent: { turns: history, turnComplete: false } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');

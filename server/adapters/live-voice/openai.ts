@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../../live/types.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
@@ -366,7 +367,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private seed(history: readonly { role: 'user' | 'model'; text: string }[], request: LiveVoiceRequest): { items: JsonObject[]; characters: number } {
     const items: JsonObject[] = [];
     let characters = 0;
-    const freshOpening = request.openingText === undefined && request.opening === 'model_first' && !request.system.text.includes('[alarm mode]');
+    const freshOpening = request.openingText === undefined && request.opening === 'model_first' && !request.system.text.includes(ALARM_MODE_MARKER);
     // C-RECOVERY (a): the seed plus every line appended after it stays inside both provider ceilings. The oldest
     // turns go first and the newest turn is condensed, so a 300-fragment call opens instead of being refused.
     const appendedChars = request.openingText !== undefined ? request.openingText.length : freshOpening ? FRESH_OPENING.length : 0;

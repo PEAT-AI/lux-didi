@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../live/types.js';
 import { hostConversationScenarios, assertHostConversationReply, assertFreshProgressPhrases } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
@@ -2301,7 +2302,7 @@ test('direct102 fresh opening demands speech itself, not an acknowledgment of st
 test('alarm sessions seed no fresh-opening direction', async t => {
   const f = await fixture(t);
   const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
-    .open(request({ system: { text: 'Synthetic normal persona\n[alarm mode] call the bank', dataClass: 'ordinary' }, opening: 'model_first' }), control());
+    .open(request({ system: { text: `Synthetic normal persona\n${ALARM_MODE_MARKER} call the bank`, dataClass: 'ordinary' }, opening: 'model_first' }), control());
   t.after(() => session.close());
   await f.frame(1);
   const start = f.frames[0] as unknown as Start;

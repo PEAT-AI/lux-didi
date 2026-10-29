@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../live/types.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import './live-remember.test.js';
 import './live-declarations.test.js';
@@ -1118,7 +1119,7 @@ test('Gemini alarm mode speaks the alarm without the fresh-opening direction', a
   const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
     ...request(), opening: 'model_first', history: [],
-    system: { text: 'Synthetic persona\n[alarm mode] Wake Synthetic Owner at 08:00, call the bank', dataClass: 'ordinary' },
+    system: { text: `Synthetic persona\n${ALARM_MODE_MARKER} Wake Synthetic Owner at 08:00, call the bank`, dataClass: 'ordinary' },
   }, control());
   t.after(() => session.close());
   await f.frame(1);

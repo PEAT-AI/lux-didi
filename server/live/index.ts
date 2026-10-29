@@ -77,7 +77,7 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
-const ALARM_MODE_MARKER = '[alarm mode]';
+import { ALARM_MODE_MARKER } from './types.js';
 export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
   const reminder = input.label?.trim();
   const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);

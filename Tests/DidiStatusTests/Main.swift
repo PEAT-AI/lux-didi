@@ -21,6 +21,21 @@ import Foundation
             inspect: reused.inspect, alive: reused.alive, signal: reused.signal,
             pause: reused.pause, remove: reused.remove, confirmDeath: true) == .foreign)
         precondition(reused.signals.isEmpty && !reused.removed, "PID reuse must never signal another process")
+        let foreignRecovery = NativeHostReaper.recover(read: { ours }, reap: { record in
+            NativeHostReaper.reap(record: record, expectedExecutable: "/bundle/node",
+                inspect: foreign.inspect, alive: foreign.alive, signal: foreign.signal,
+                pause: foreign.pause, remove: foreign.remove, confirmDeath: true)
+        }, remove: foreign.remove)
+        precondition(foreignRecovery == .foreign && foreign.removed && foreign.signals.isEmpty,
+                     "foreign record must be discarded without touching the process")
+        var corruptFileRemoved = false
+        let decodeRecovery = NativeHostReaper.recover(read: { throw FakePIDFileError.decode },
+            reap: { _ in preconditionFailure("invalid record must never reach signal policy") },
+            remove: { corruptFileRemoved = true })
+        precondition(decodeRecovery == .decodeFailed && corruptFileRemoved)
+        let failedRecovery = NativeHostReaper.recover(read: { ours }, reap: { _ in .failed },
+            remove: { preconditionFailure("failed own-host kill must retain its recovery record") })
+        precondition(failedRecovery == .failed)
         let forcedHost = HostProcessFake(record: ours)
         let quit = NativeQuitDeadline()
         let forced = QuitTestResults()
@@ -206,3 +221,5 @@ private final class HostProcessFake: @unchecked Sendable {
     func pause() { lock.lock(); defer { lock.unlock() }; waits += 1 }
     func remove() { lock.lock(); defer { lock.unlock() }; fileRemoved = true }
 }
+
+private enum FakePIDFileError: Error { case decode }

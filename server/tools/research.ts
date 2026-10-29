@@ -648,13 +648,13 @@ function statusProbeOf(lookup: ResearchLookup, question: string): ResearchLookup
 }
 
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
-const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
+const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|coming days|next few days|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
 
 /** #5: the same grammar found anywhere in the owner's sentence, longest form first, never a bare
  *  `week` on its own, since "the week after next" names no window this grammar can read. */
 /** #5: a window or date word that is present but not in the grammar, so it is unparsed, never today. */
 const CALENDAR_WINDOW_WORD = /\b(?:week|weeks|month|months|weekend|year|after next)\b/u;
-const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
+const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|coming days|next few days|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
 
 /**
  * #5: recognize only explicit supported calendar grammar, read out of the owner's own sentence. Two
@@ -4229,6 +4229,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // owner hears the helper's own line (for Drive consent: the exact authorize command) and not a
     // search that found nothing.
     ...[...run.failureLines.values()],
+    ...(['calendar', 'mail'] as const).filter(source => run.sourcesFailed.has(source) || run.cutShort.has(source)).map(source => `I couldn't read your ${source}${run.sourcesDone.has(source) ? ' completely' : ''}.`),
     ...cutShort,
     ...searchedNothing,
     ...(coverage !== undefined ? [coverage] : []),
@@ -4663,11 +4664,14 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
+export function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
   if (!inputSchema) return args;
   const properties = inputSchema(INTERNAL.calendarList)?.['properties'];
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
-  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject;
+  const registered = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'deadlineAt' && Object.hasOwn(properties, key))) as JsonObject;
+  const cap = (properties as Record<string, { maximum?: number }>)['maxResults']?.maximum;
+  if (typeof registered['maxResults'] === 'number' && typeof cap === 'number') registered['maxResults'] = Math.min(registered['maxResults'], cap);
+  return registered;
 }
 
 function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedReadUnfiltered>[1] & { inputSchema?: ResearchDeps['inputSchema'] }): ReturnType<typeof routedReadUnfiltered> {
@@ -4703,8 +4707,9 @@ function routedReadUnfiltered(lookup: ResearchLookup, context: { question: strin
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
   // The calendar list rides along only so the result can say what it did not read.
   if (lookup.source === 'calendar') {
-    if (lookup.calendarEntity !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
-      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: lookup.calendarEntity, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
+    const namedEvent = lookup.calendarEntity ?? (/\b(?:wedding|birthday|graduation|recital|funeral)\b/iu.test(query) && !calendarWindowOf(query) ? query.replace(/^(?:do you find|can you find|find|search for)\s+/iu, '').replace(/[?.!]+$/u, '') : undefined);
+    if (namedEvent !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
+      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: namedEvent, timeMin: new Date(context.now() - 32 * 86400000).toISOString(), timeMax: new Date(context.now() + 184 * 86400000).toISOString(), maxResults: RESEARCH.pageResults.calendar } as JsonObject },
     ] };
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
@@ -5128,7 +5133,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let scopeSlot: number | undefined;
     reads.forEach((read, n) => {
       slots.push(calls.length);
-      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt }, deps.inputSchema) ?? {} });
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) }, deps.inputSchema) ?? {} });
       // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
       // did not read and the batch is the read, its list, then any further window.
       if (n === 0 && listScope) {

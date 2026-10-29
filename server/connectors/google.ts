@@ -75,7 +75,7 @@ export interface DriveGetInput { file_id: string }
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
-  calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
+  calendarId?: string; calendarIds?: readonly string[]; q?: string; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
   /** The caller's remaining source budget as an absolute epoch ms; the fan-out never plans past it. */
   deadlineAt?: number;
 }
@@ -245,8 +245,8 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   function listArgs(input: { maxResults?: number; pageToken?: string }, defaultResults: number = GOOGLE_DEFAULTS.listResults): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
     const args: Record<string, unknown> = {};
     if (input.maxResults !== undefined) {
-      if (!Number.isSafeInteger(input.maxResults) || input.maxResults < 1 || input.maxResults > settings.maxListResults) return { ok: false, reason: 'max-results-out-of-budget' };
-      args['maxResults'] = input.maxResults;
+      if (!Number.isSafeInteger(input.maxResults) || input.maxResults < 1) return { ok: false, reason: 'max-results-out-of-budget' };
+      args['maxResults'] = Math.min(input.maxResults, settings.maxListResults);
     } else {
       args['maxResults'] = Math.min(defaultResults, settings.maxListResults);
     }
@@ -402,6 +402,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
         if (typeof input.q !== 'string' || input.q.length < 1 || input.q.length > 2048) return { state: 'refused', reason: 'invalid-query' };
         bounded.args['q'] = input.q;
       }
+      bounded.args['maxResults'] = Math.min(Number(bounded.args['maxResults']), 25);
       return dispatch('gmail_search_messages', bounded.args, signal);
     },
     async gmailRead(input: GmailReadInput, signal?: AbortSignal): Promise<GoogleResult> {
@@ -426,6 +427,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
       const window = eventWindow(input);
       if (!window.ok) return { state: 'refused', reason: window.reason };
+      if (input.q !== undefined) {
+        if (typeof input.q !== 'string' || input.q.trim().length < 1 || input.q.length > 2048) return { state: 'refused', reason: 'invalid-query' };
+        bounded.args['q'] = input.q;
+      }
       bounded.args['timeMin'] = window.timeMin;
       bounded.args['timeMax'] = window.timeMax;
       // The fan-out plans inside the caller's remaining source budget when it names one (#473).

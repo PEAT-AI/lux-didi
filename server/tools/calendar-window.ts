@@ -22,7 +22,7 @@ export function calendarRange(window: string, nowMs: number, timeZone: string, f
   let days = 1;
   const weekday = new Date(date).getUTCDay();
   if (value === 'tomorrow') date += 86400000;
-  else if (value === 'week') days = 7;
+  else if (value === 'week' || value === 'coming days' || value === 'next few days') days = 7;
   else if (value === 'this week' || value === 'next week') {
     date -= ((weekday + 6) % 7) * 86400000;
     if (value === 'next week') date += 7 * 86400000;

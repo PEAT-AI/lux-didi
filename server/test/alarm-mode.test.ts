@@ -49,5 +49,6 @@ test('alarm tools name their runtime capability group', () => {
 test('alarm wake instruction says the reminder and requests an overview when asked', () => {
   const input = { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'call the bank' };
   assert.match(alarmSessionInstructions(input), /call the bank/);
-  assert.match(alarmSessionInstructions({ ...input, label: 'give me an overview' }), /calendar digest/);
+  const overview = { ...input, label: 'give me an overview' };
+  assert.match(alarmSessionInstructions(overview), /calendar digest/);
 });

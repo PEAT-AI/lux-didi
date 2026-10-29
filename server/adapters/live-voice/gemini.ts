@@ -1,4 +1,4 @@
-import { ALARM_MODE_MARKER } from '../../live/types.js';
+import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';

@@ -43,6 +43,8 @@ cp server/host/log.ts "$out/source/host/"
 cp server/host/events.ts "$out/source/host/"
 # host/log.ts names the stop gate constants, so stage the module it imports.
 cp server/live/stop-phrase.ts "$out/source/live/"
+# The live-voice adapters import the alarm mode marker, so stage its module too.
+cp server/live/alarm-mode.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"
 cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"

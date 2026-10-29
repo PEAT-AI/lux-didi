@@ -1,4 +1,4 @@
-export const ALARM_MODE_MARKER = '[alarm mode]';
+export { ALARM_MODE_MARKER } from './alarm-mode.js';
 
 import type { createToolsOwner } from '../tools/index.js';
 

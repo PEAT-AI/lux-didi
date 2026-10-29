@@ -743,15 +743,15 @@
       " for eleven ten a.m. today",
       " Yeah",
       ", ten minutes past eleven",
-      " a.m. UTC time",
-      " Set an alarm for eleven ten a.m. UTC time for today"
+      " a.m. Singapore time",
+      " Set an alarm for eleven ten a.m. Singapore time for today"
     ],
-    "now": 1793358300000,
+    "now": 1793329500000,
     "call": {
       "tool": "set_alarm"
     },
     "code": "ready",
-    "fire_at_utc": 1793358600000,
+    "fire_at_utc": 1793329800000,
     "clarifyAfter": [
       0
     ]
@@ -1514,40 +1514,40 @@
   {
     "id": "AL-3-part-0",
     "finals": [
-      "for eleven ten a.m. UTC time for today"
+      "for eleven ten a.m. Singapore time for today"
     ],
-    "now": 1793358300000,
+    "now": 1793329500000,
     "call": {
       "tool": "set_alarm"
     },
     "code": "ready",
-    "fire_at_utc": 1793358600000,
+    "fire_at_utc": 1793329800000,
     "clarifyAfter": []
   },
   {
     "id": "AL-3-part-1",
     "finals": [
-      "ten minutes past eleven a.m. UTC time"
+      "ten minutes past eleven a.m. Singapore time"
     ],
-    "now": 1793358300000,
+    "now": 1793329500000,
     "call": {
       "tool": "set_alarm"
     },
     "code": "ready",
-    "fire_at_utc": 1793358600000,
+    "fire_at_utc": 1793329800000,
     "clarifyAfter": []
   },
   {
     "id": "AL-3-part-2",
     "finals": [
-      "for eleven ten a.m. today Yeah, ten minutes past eleven a.m. UTC time"
+      "for eleven ten a.m. today Yeah, ten minutes past eleven a.m. Singapore time"
     ],
-    "now": 1793358300000,
+    "now": 1793329500000,
     "call": {
       "tool": "set_alarm"
     },
     "code": "ready",
-    "fire_at_utc": 1793358600000,
+    "fire_at_utc": 1793329800000,
     "clarifyAfter": []
   },
   {

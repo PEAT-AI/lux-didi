@@ -44,7 +44,7 @@ cp "$root/server/test/google-connector.test.ts" "$root/server/test/calendar-read
 cp "$root/server/test/loud-errors.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/source/test/fixtures/"
-cp "$root/server/test/fixtures/google-tools-list.json" "$out/dist/test/fixtures/"
+cp "$root/server/test/fixtures/google-tools-list.json" "$out/source/test/fixtures/"
 cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/source/test/fixtures/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"

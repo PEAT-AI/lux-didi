@@ -123,10 +123,21 @@ export function decodeMcpContentText(parsed: unknown): { ok: true; text: string 
  * Decodes the helper's JSON envelope from the stored MCP payload. Accepts either the full
  * JSON-RPC message or the bare result object, mirroring the adapter's stored bytes.
  */
+function completedAuthCode(envelope: Record<string, unknown>): string | undefined {
+  const data = envelope['data'];
+  if (!isRecord(data)) return undefined;
+  const error = data['error'];
+  const marker = typeof error === 'string' ? error : isRecord(error) ? error['code'] : undefined;
+  if (typeof marker !== 'string') return undefined;
+  return /^(?:auth[ _-]needed|consent[ _-]required|scope_missing|credential[ _-](?:missing|revoked|expired))$/iu.test(marker.trim()) ? 'credential-missing' : undefined;
+}
+
 export function decodeGoogleEnvelope(payloadText: string): { ok: true; envelope: Record<string, unknown> } | { ok: false; reason: string } {
   let envelope: unknown;
   try { envelope = JSON.parse(payloadText); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
   if (!isRecord(envelope)) return { ok: false, reason: 'unsupported_mcp_envelope' };
+  const auth = completedAuthCode(envelope);
+  if (auth) return { ok: false, reason: auth };
   return { ok: true, envelope };
 }
 
@@ -160,8 +171,16 @@ function codeOf(text: string): string {
  * word and never an empty success.
  */
 export function googleToolStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): GoogleStatus | undefined {
-  if (evidence.state === 'completed') return undefined;
   const content = decodeMcpContentText(evidence.decodedResult);
+  if (evidence.state === 'completed') {
+    if (!content.ok) return undefined;
+    let envelope: unknown;
+    try { envelope = JSON.parse(content.text); } catch { return undefined; }
+    const auth = isRecord(envelope) ? completedAuthCode(envelope) : undefined;
+    if (!auth) return undefined;
+    const entry = GOOGLE_ERROR_TABLE[auth]!;
+    return { state: 'configured', code: auth, reason: googleOwnerLine(entry, evidence.tool.startsWith('gmail_') ? 'gmail' : evidence.tool.startsWith('drive_') ? 'drive' : 'calendar', endpoint) };
+  }
   if (!content.ok) return { state: 'error', code: 'no_content', reason: 'tool call failed; no content' };
   const code = codeOf(content.text);
   const entry = googleErrorEntry(code);

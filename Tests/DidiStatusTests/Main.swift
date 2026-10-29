@@ -3,19 +3,45 @@ import Foundation
 /// Fake sinks only: no application, notification center, status item or window is created.
 @main struct StatusQuietTests {
     @MainActor static func main() async {
+        let ours = NativeHostRecord(pid: 42, identity: NativeHostIdentity(executable: "/bundle/node", startedSeconds: 10, startedMicroseconds: 1))
+        let stale = HostProcessFake(record: ours)
+        let recovered = NativeHostReaper.reap(record: ours, expectedExecutable: "/bundle/node",
+            inspect: stale.inspect, alive: stale.alive, signal: stale.signal,
+            pause: stale.pause, remove: stale.remove, confirmDeath: true)
+        precondition(recovered == .reaped && stale.signals == [SIGTERM, SIGKILL] && stale.removed)
+        let foreign = HostProcessFake(record: NativeHostRecord(pid: 42,
+            identity: NativeHostIdentity(executable: "/foreign/process", startedSeconds: 20, startedMicroseconds: 0)))
+        let foreignResult = NativeHostReaper.reap(record: ours, expectedExecutable: "/bundle/node",
+            inspect: foreign.inspect, alive: foreign.alive, signal: foreign.signal,
+            pause: foreign.pause, remove: foreign.remove, confirmDeath: true)
+        precondition(foreignResult == .foreign && foreign.signals.isEmpty && !foreign.removed)
+        let reused = HostProcessFake(record: NativeHostRecord(pid: 42,
+            identity: NativeHostIdentity(executable: "/bundle/node", startedSeconds: 99, startedMicroseconds: 0)))
+        precondition(NativeHostReaper.reap(record: ours, expectedExecutable: "/bundle/node",
+            inspect: reused.inspect, alive: reused.alive, signal: reused.signal,
+            pause: reused.pause, remove: reused.remove, confirmDeath: true) == .foreign)
+        precondition(reused.signals.isEmpty && !reused.removed, "PID reuse must never signal another process")
+        let forcedHost = HostProcessFake(record: ours)
         let quit = NativeQuitDeadline()
         let forced = QuitTestResults()
         var deadline: (@Sendable () -> Void)?
         var bound: Double = 0
         precondition(quit.request(schedule: { seconds, callback in bound = seconds; deadline = callback },
-                                  forced: { forced.append($0) }))
-        precondition(bound == 3, "shutdown must have a three-second hard deadline")
+                                  forced: { stage in
+                                      _ = NativeHostReaper.reap(record: ours, expectedExecutable: "/bundle/node",
+                                          inspect: forcedHost.inspect, alive: forcedHost.alive, signal: forcedHost.signal,
+                                          pause: forcedHost.pause, remove: {}, confirmDeath: false)
+                                      forced.append(stage)
+                                  }))
+        precondition(bound == 2.5, "leave 300 ms for host cleanup inside the three-second bound")
         let hanging = HangingShutdownModel()
         let hangingTask = Task { await hanging.shutdown(); return quit.complete() }
         await hanging.waitUntilStarted()
         quit.stage(.logout)
         deadline?() // Advance the fake clock, never wait for real time.
         precondition(forced.values == [.logout], "deadline must exit despite suspended shutdown")
+        precondition(forcedHost.signals == [SIGTERM, SIGKILL] && forcedHost.pauses == 1,
+                     "forced exit must signal the owned host first")
         hanging.release()
         let late = await hangingTask.value
         precondition(!late, "late completion must not issue another exit")
@@ -162,4 +188,21 @@ private final class QuitTestResults: @unchecked Sendable {
         await withCheckedContinuation { startedContinuation = $0 }
     }
     func release() { shutdownContinuation?.resume(); shutdownContinuation = nil }
+}
+
+private final class HostProcessFake: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: NativeHostRecord?
+    private var sent: [Int32] = []
+    private var waits = 0
+    private var fileRemoved = false
+    init(record: NativeHostRecord) { process = record }
+    var signals: [Int32] { lock.lock(); defer { lock.unlock() }; return sent }
+    var pauses: Int { lock.lock(); defer { lock.unlock() }; return waits }
+    var removed: Bool { lock.lock(); defer { lock.unlock() }; return fileRemoved }
+    func inspect(_ pid: Int32) -> NativeHostIdentity? { lock.lock(); defer { lock.unlock() }; return process?.identity }
+    func alive(_ pid: Int32) -> Bool { lock.lock(); defer { lock.unlock() }; return process != nil }
+    func signal(_ pid: Int32, _ signal: Int32) { lock.lock(); defer { lock.unlock() }; sent.append(signal); if signal == SIGKILL { process = nil } }
+    func pause() { lock.lock(); defer { lock.unlock() }; waits += 1 }
+    func remove() { lock.lock(); defer { lock.unlock() }; fileRemoved = true }
 }

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
   MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
@@ -746,7 +746,14 @@ for (const [channel, phrase] of [['eng', /Which channel do you mean/u], ['synthe
 // Night-shift regression: a channel index from an earlier call is not evidence for an overview.
 test('overview does not import channel-index dispatches from an unrelated earlier read', async t => {
   const f = await setup(t, 'people');
-  await f.reader.getChannelHistory({ channel: 'Builders', limit: 5 });
+  const call = f.adapter.call.bind(f.adapter);
+  let dispatch = 0;
+  f.adapter.call = async (...args) => {
+    const result = await call(...args);
+    if (result.state === 'completed') result[SOURCE_DISPATCH] = { id: `synthetic-${++dispatch}` };
+    return result;
+  };
+  assert.equal((await f.reader.getChannelHistory({ channel: 'Builders', limit: 5 })).state, 'completed');
   const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: fixtureDaysAgo(7) });
   const read = chatRead(result);
   assert.ok(read.posts.length > 0);

@@ -50,7 +50,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
   const first = temporal.exec(text);
   if (first) {
     const before = text.slice(0, first.index);
-    const context = before.match(/\b(?:tomorrow|morning|evening)\b/g)?.join(' ') ?? '';
+    const context = before.match(/\b(?:tomorrow|morning|evening|wake me)\b/g)?.join(' ') ?? '';
     text = `${context} ${text.slice(first.index)}`.trim();
     // Relative speech often finishes with the request rather than starting with it.
     text = text.replace(/(minutes?|hours?)\s+(?:from now\s*)?(?:can you|could you|please)\b[^0-9]*$/, '$1')
@@ -62,7 +62,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
   let fireAtUtc: number;
   const relative = new RegExp(`\\bin\\s+((?:\\d+|${Object.keys(values).join('|')})(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?)\\s+(minutes?|hours?)\\b`).exec(text);
   if (relative) {
-    const prefix = text.slice(0, relative.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
+    const prefix = text.slice(0, relative.index).replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     const amount = number(relative[1]!);
     if (!Number.isFinite(amount)) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -74,7 +74,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
     // Select the first temporal introducer and consume its entire remainder, never prefer a later "at".
     const start = /\b(?:at|for)\s+|\b(?:noon|midnight)\b/.exec(text);
     if (!start) return { status: 'clarify', reason: 'missing_time' };
-    const prefix = text.slice(0, start.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '')
+    const prefix = text.slice(0, start.index).replace(/^\s*snooze\b/, '')
       .replace(/\b(?:tomorrow|morning|evening|tonight|am|pm|in|the|for|please)\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     let expression = text.slice(start.index + (/^(?:noon|midnight)$/.test(start[0]) ? 0 : start[0].length)).trim();
@@ -146,7 +146,12 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const period = '(?:\\s+[ap]m)?';
   const clock = `(?:\\d{1,2}:\\d{2}|${num}(?:[ -]+${num})?)${period}`;
   const pattern = new RegExp(`\\bin\\s+${num}\\s+(?:minutes?|hours?)\\b|\\b(?:quarter|half|${num})(?:\\s+minutes?)?\\s+(?:past|to)\\s+${num}${period}\\b|\\b\\d{1,2}:\\d{2}${period}\\b|\\b${num}(?:[ -]+${num})?\\s+[ap]m\\b|\\b(?:at|on|for)\\s+${clock}\\b|\\b(?:noon|midnight)\\b`, 'g');
-  const expressions = [...text.matchAll(pattern)].map(match => match[0]);
+  const matches = [...text.matchAll(pattern)];
+  const expressions = matches.map(match => match[0]);
+  const remainder = text.replace(pattern, ' ');
+  if (/\b(?:minutes?|hours?)\b/.test(remainder)) return direct;
+  const leftoverNumbers = remainder.match(new RegExp(`\\b${num}\\b`, 'g')) ?? [];
+  if (leftoverNumbers.some(value => !expressions.some(expression => expression.replace(/^(?:at|on|for)\s+/, '').startsWith(value + ' '))))) return direct;
   if (!expressions.length) return direct;
   const zone = [...text.matchAll(/\b(?:[a-z_+-]+\/[a-z_+-]+|[a-z]+ time|sgt|utc|gmt)\b/g)].at(-1)?.[0] ?? '';
   const day = /\btomorrow\b/.test(text) ? 'tomorrow' : /\btonight\b/.test(text) ? 'tonight' : '';

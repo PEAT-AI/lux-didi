@@ -292,13 +292,8 @@ for (const words of ['he said save this into Lux', 'if I say save this into Lux'
     const { attachment } = await attached(h);
     await ownerBlock(h, words);
     const result = await call(h, 'stage_lux_note', candidate);
-    if (true) { // A finalized owner ask is authority; content checks are a separate policy.
-      assert.equal(result['saved'], true);
-      assert.equal(h.saved.length, 1);
-    } else {
-      assert.equal(result['code'], 'no_owner_request');
-      assert.equal(h.saved.length, 0);
-    }
+    assert.equal(result['saved'], true, 'a finalized owner ask supplies intent without a save cue');
+    assert.equal(h.saved.length, 1);
     attachment.close();
   });
 }

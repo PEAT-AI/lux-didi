@@ -105,12 +105,14 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
     { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
   ];
-  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
+  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask', 'cue-free ask'] as const) {
     await t.test(`${entry.name}: ${mode}`, async () => {
       owner.ownerRequests.answered?.(session.liveSessionId);
       noteModelOutput(session.liveSessionId);
-      noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
-      owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
+      if (mode !== 'no ask') {
+        noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
+        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
+      }
       const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
       const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
         executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
@@ -269,7 +271,7 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
     // The fake provider selects only an advertised tool; the host receives real wire events,
     // parses the owner's words, journals the call and commits the alarm in a synthetic store.
     await f.frame(2); // startup nudge
-    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true }, turnComplete: true } });
+    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true } } });
     f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
     await f.frame(3);
     const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };

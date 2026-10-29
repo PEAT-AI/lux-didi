@@ -380,6 +380,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     func dragBegan() { userDragging = true }
 
     func dragEnded() {
+        setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: nil, screens: menuSafeFrames), display: false)
         userDragging = false
         rememberFrameIfDragged()
         updateClickThrough()
@@ -390,10 +391,16 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         rememberFrame()
     }
 
+    private var menuSafeFrames: [CGRect] {
+        NSScreen.screens.map {
+            MiniOrbMenuSafety.availableFrame(screen: $0.frame, visible: $0.visibleFrame,
+                                            menuBarHeight: NSStatusBar.system.thickness)
+        }
+    }
     private func restoreFrame() {
         let defaults = UserDefaults.standard
         let saved = defaults.string(forKey: frameKey).map(NSRectFromString)
-        setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
+        setFrame(MiniOrbFrameRestore.resolve(saved, screens: menuSafeFrames), display: false)
     }
     /// A display that appears, sleeps or disappears re-places the orb, so it is never stranded on
     /// a screen that is gone. Registered from init, the only place the panel is born.
@@ -404,7 +411,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     /// A screen change re-places the orb and writes nothing: the saved frame belongs to the owner's
     /// drag, so unplugging a display can never overwrite the position it returns to.
     @objc private func screenParametersChanged() {
-        let screens = NSScreen.screens.map(\.visibleFrame)
+        let screens = menuSafeFrames
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
                  display: false)
@@ -481,5 +488,15 @@ final class MiniOrbHitView: NSView {
         let end = event.locationInWindow
         guard hypot(end.x - start.x, end.y - start.y) < 4 else { return }
         onClick?()
+    }
+}
+
+/// Fullscreen and auto-hide can make visibleFrame include the menu strip. Reserve it even
+/// then, so an all-Spaces orb cannot sit above a status-item click target.
+enum MiniOrbMenuSafety {
+    static func availableFrame(screen: CGRect, visible: CGRect, menuBarHeight: CGFloat) -> CGRect {
+        let top = min(visible.maxY, screen.maxY - menuBarHeight)
+        return CGRect(x: visible.minX, y: visible.minY, width: visible.width,
+                      height: max(0, top - visible.minY))
     }
 }

@@ -36,6 +36,21 @@ assert "NSEvent.addGlobalMonitorForEvents(matching: movement)" in orb
 assert "return event" in orb
 assert "NSEvent.removeMonitor(localMouseMonitor)" in orb
 assert "NSEvent.removeMonitor(globalMouseMonitor)" in orb
+menu = app.split("    func menuWillOpen(_ menu: NSMenu) {", 1)[1].split("    ///", 1)[0]
+assert "recheckSingleKeyGrant()" not in menu and "refreshAccessibilityNotice()" not in menu
+assert "menuTracking.opened" in menu
+assert "menuTracking.requested" in app
+assert "return event" in app and "NSEvent.removeMonitor(statusClickMonitor)" in app
+assert "alert.runModal()" not in app and "SingleKeyTrigger.requestGrantNow()" not in app
+assert "prompt: { [weak self] in self?.showSingleKeyGrantExplanation() }" in app
+assert "RunLoop.main.perform(inModes: [.default])" in app
+assert "MiniOrbMenuSafety.availableFrame(screen:" in orb
+assert "NSScreen.screens.map(\\.visibleFrame)" not in orb
+presentation = Path("Sources/LuxDidi/PresentationCoordinator.swift").read_text()
+assert "alert.beginSheetModal(for: parent)" in presentation
+assert "alert.window.makeKeyAndOrderFront(nil)" in presentation
+assert "runModal()" not in presentation
+assert "NSApp.activate" not in menu and "NSApp.activate" not in presentation
 print("STATUS-QUIET WIRING PASS capabilityQueriesPerTick=0 launchAndActivation=true")
 PYTEST
 compile "$work/head-test" Sources/LuxDidi/*.swift

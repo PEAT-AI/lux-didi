@@ -130,7 +130,7 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
   const terms = recallTerms(query);
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
   const current = scope.currentSessionId ?? scope.runId;
-  const hits = expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
+  const hits = !tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'") ? [] : expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
     JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id JOIN live_sessions l ON l.live_session_id=t.live_session_id
     WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<?
     ORDER BY rank,t.role='owner' DESC,l.terminal_at DESC`, [expression, scope.ownerId, current, from ? Date.parse(from) : 0, to ? Date.parse(to) : Number.MAX_SAFE_INTEGER]) : tx.all(`SELECT t.*,0 AS rank FROM history_turns t

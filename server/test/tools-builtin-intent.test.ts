@@ -140,6 +140,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { kind: 'maps', target: 'Odemira', words: ['open the map of Odemira'], url: 'https://www.google.com/maps/search/?api=1&query=Odemira' },
     { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip%20irrigation' },
   ];
+  let openStep = 100;
   for (const entry of cases) {
     for (const words of entry.words) { noteOwnerWords(session.liveSessionId, words); owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now()); }
     const args = { kind: entry.kind, target: entry.target };
@@ -147,7 +148,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const batch = await runToolCalls(owner, [{ id: randomUUID(), name: 'open_web', args }], {
         registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
         authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 },
-        step: 0, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+        step: openStep++, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
       });
       assert.equal(batch.error, undefined);
       return batch.accepted.map(entry => entry.response);

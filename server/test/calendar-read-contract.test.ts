@@ -27,7 +27,7 @@ test('registered calendar args discard both unknown keys and clamp the declared 
 test('named wedding search reaches two weeks ahead instead of the current day', async () => {
   const h = harness();
   const shaped = shapeGcalList({ events: [{ id: 'wedding', summary: "Sam's wedding", start: { dateTime: new Date(now + 14 * 86400000).toISOString() } }] });
-  h.deps.execute = async calls => { h.calls.push(...calls); return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: shaped.text, calendarPage: shaped.calendarPage, originalCharacters: shaped.originalCharacters, omittedCharacters: 0 })); };
+  h.deps.execute = async calls => { h.calls.push(...calls); return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: shaped.text, calendarPage: shaped.calendarPage!, originalCharacters: shaped.originalCharacters, omittedCharacters: 0 })); };
   const reply = await runResearch(h.deps, { action: 'start', question: "do you find Sam's wedding", lookups: [{ source: 'calendar', query: "Sam's wedding" }] }, new AbortController().signal);
   assert.match(JSON.stringify(reply['findings']), /Sam's wedding/);
   const args = h.calls.find(call => call.name === 'calendar_list_events')?.args;

@@ -1149,8 +1149,12 @@ class Session implements LiveVoiceSession {
   private endResponse(message: ObjectValue | undefined, completed = false): void {
     this.clearNoItemTimer();
     const timing = this.continuationTiming;
-    this.logContinuationTiming();
-    this.continuationTiming = undefined;
+    // A short answer may finish upstream before its head-start buffer reaches playback.
+    // Keep its receipt until emitOutput observes the first audible frame.
+    if (this.heldAudibleBytes === 0) {
+      this.logContinuationTiming();
+      this.continuationTiming = undefined;
+    }
     this.delegatedOutstanding = false;
     if (completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
       this.silentRescueUsed = true;

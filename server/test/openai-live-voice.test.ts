@@ -2446,3 +2446,23 @@ test('SILENCE timing: a terminal receipt contains all latency landmarks and a cl
   assert.ok(Number(receipt['createAt']) <= Number(receipt['createdAt']));
   assert.equal(Number(receipt['firstItemAt']) - Number(receipt['createdAt']), 200);
 });
+
+
+test('SILENCE timing: short completed audio keeps its receipt until actual playback', async t => {
+  const logs: unknown[] = [];
+  const detach = attachHostLogSink({ event: event => logs.push(event) });
+  t.after(detach);
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.clock.advance(200);
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before, 'buffered speech is not a silent response');
+  opened.clock.advance(1_000);
+  await quiet();
+  const receipt = logs.find((event): event is Record<string, unknown> => typeof event === 'object' && event !== null && 'event' in event && event.event === 'live_continuation_timing' && 'firstAudioAt' in event && event.firstAudioAt !== null);
+  assert.ok(receipt, 'the audible landmark survives an earlier terminal frame');
+  assert.equal(receipt['class'], 'c');
+  assert.ok(Number(receipt['firstAudioAt']) > Number(receipt['createdAt']));
+});

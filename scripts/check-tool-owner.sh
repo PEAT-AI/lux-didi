@@ -58,7 +58,7 @@ ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts" "$out/source/test/lux-note.test.ts"
+  "$out/source/test/owner-request.test.ts" "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts" "$out/source/test/lux-note.test.ts"
 node_test_files --test-timeout=15000 "$out/dist/test/owner-request.test.js" "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js" "$out/dist/test/lux-note.test.js"
 # The registry-wide gate composes the real live host, not only the staged tools unit.
 # Keep it on this existing CI path so every release exercises all registered tools.

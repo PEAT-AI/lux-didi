@@ -68,6 +68,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name) : result) as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    try {
     const req = new Request(input, init);
     assert.equal(req.url, policyUrl(p.endpoint));
     if (req.method === 'GET') return new Response(null, { status: 405 });
@@ -81,6 +82,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
       rpcErrors.push({ status: response.status, payload });
     }
     return response;
+    } catch (error) { rpcErrors.push({ fetchError: String(error) }); throw error; }
   });
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });

@@ -137,17 +137,4 @@ Old JSONL debug journals can contain private content. Current metadata readers a
 
 Reproduce the defect with a targeted synthetic fixture or concrete authorized observation, then fix the owning layer. [Checks](checks.md) names the existing producers; [local development](local-development.md) explains managed routing and browser/compile prerequisites. Real-account probes, audio hardware checks and installed-app lifecycle work require separate authorization and cannot be inferred from an offline green suite.
 
-### Quiet status polling (headless)
-
-Run `bash Tests/DidiStatusTests/check-status-quiet.sh` to check change-only
-publishing without launching Didi or creating windows. The script compiles with
-`COMPANION_TEST` and proves the regression boundary is absent at the recorded
-base before running the head executable. The two-second live-call poll remains;
-unchanged calls and errors do not publish, menu status images are cached and
-button fields only change on transitions. Notification capability refreshes at
-launch and app activation (and after an explicit permission request), not on the
-poll. The orb's click-through property changes only when the hit-test result
-changes; its visual geometry and animation are unchanged.
-
-WindowServer rate acceptance requires a separately authorized installed-build
-observation, not a window or UI test on a shared desktop.
+Status tick regression: `bash Tests/DidiStatusTests/check-status-quiet.sh` runs headless with a base-red proof; live calls still poll every two seconds, but unchanged status fields and orb click-through do not write, and notification capability refreshes only at launch, activation or explicit permission request. Installed WindowServer rate acceptance belongs to a separately authorized owner observation, not shared-desktop UI tests.

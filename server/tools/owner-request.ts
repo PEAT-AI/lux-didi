@@ -27,7 +27,7 @@ export class OwnerRequests {
         ['cancel_alarm', /\b(?:cancel|delete|remove|stop)\b[^.!?]*\balarm\b/i],
         ['snooze_alarm', /\bsnooze\b/i],
         ['list_alarms', /\b(?:list|show|what)\b[^.!?]*\balarms?\b/i],
-        ['lux_note', /\b(?:save|remember|put)\b[^.!?]*\b(?:lux|this|that|it)\b/i],
+        ['lux_note', /\b(?:save|remember)\b|\bput\b[^.!?]*\blux\b/i],
       ];
       for (const [kind, cue] of cues) if (cue.test(words)) grants.set(kind, {});
     }
@@ -37,7 +37,10 @@ export class OwnerRequests {
       delete previous.pending;
       return;
     }
-    if (!grants.size) { this.requests.delete(session); return; }
+    if (!grants.size) {
+      if (!previous || this.clock() - previous.start > 120000 || !direct || /\b(?:what|when|where|why|how|who|can|could|tell|explain|compare|find|look|read|search|show|set|open|save|remember|put|cancel|snooze)\b/i.test(words)) this.requests.delete(session);
+      return;
+    }
     this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), finals: 1, journalId, grants, sources: {} });
   }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
@@ -62,9 +65,13 @@ export class OwnerRequests {
     const request = this.requests.get(session);
     if (request?.grants.has(kind) && (field === 'missing_time' || field === 'missing_timezone' || field === 'unsupported_time_expression')) request.pending = { kind, field };
   }
-  source(session: string, kind: string): void {
+  currentId(session: string): string | undefined {
     const request = this.requests.get(session);
-    if (request && this.clock() - request.start <= 120000) request.sources[kind] = (request.sources[kind] ?? 0) + 1;
+    return request && this.clock() - request.start <= 120000 ? request.id : undefined;
+  }
+  source(session: string, kind: string, requestId?: string): void {
+    const request = this.requests.get(session);
+    if (request && (requestId === undefined || request.id === requestId) && this.clock() - request.start <= 120000) request.sources[kind] = (request.sources[kind] ?? 0) + 1;
   }
   sources(session: string): Record<string, number> { return { ...this.requests.get(session)?.sources }; }
   audit(session: string, kind: ActionKind): { ownerFinals: number; requestAgeMs: number; grantKind: ActionKind; grantState: string } {

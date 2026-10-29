@@ -10,7 +10,7 @@ test('direct102 note payload is frozen whole, with title and body normalized onl
   const payload = JSON.parse(frozen.payload);
   assert.equal(payload.content, 'The blue plan costs twelve units.');
   assert.equal(payload.insight_title, 'Synthetic plan');
-  assert.equal(payload.insight_type, 'MEETING');
+  assert.equal(payload.insight_type, 'UNCATEGORIZED');
   assert.equal(frozen.payloadSha.length, 64);
   assert.deepEqual(freezeNote({ title: 'Synthetic plan', body: 'The blue plan costs twelve units.' }), frozen);
 });

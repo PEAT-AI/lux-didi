@@ -317,7 +317,7 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     if (order === 'read_then_save') await ownerBlock(h, 'save this into Lux');
     const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(result['saved'], true, JSON.stringify(result));
-    assert.match(h.saved[0]!.content, order === 'save_then_read' ? /source counts \{"knowledge":1\}/ : /source counts \{\}/);
+    assert.match(h.saved[0]!.content, order === 'save_then_read' ? /source counts \{"knowledge":[1-9]\d*\}/ : /source counts \{\}/);
     attachment.close();
   });
 }

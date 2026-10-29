@@ -11,7 +11,7 @@ import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { freezeNote } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -689,7 +689,6 @@ interface ActiveSession {
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
-  noteSettleTimer?: ReturnType<JobTimer> | undefined;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
   /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
@@ -1327,12 +1326,7 @@ export class LiveSessionOwner {
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
-  readonly #noteSessions = new Set<string>();
   /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
-  readonly #noteRequests = new Map<string, NoteRequestGate>();
-  readonly #noteOnset = new Map<string, number>();
-  readonly #noteSpeech = new Map<string, { stageId: string; text: string; matched: boolean; drainedAt?: number }>();
-  readonly #noteReadback = new Map<string, { readonly stageId: string; readonly key: string }>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1975,7 +1969,6 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
-    this.#noteRequests.set(liveSessionId, new NoteRequestGate());
     handle.openedAt = openedAt;
     this.#noteState(handle, 'created');
     void handle.done.promise.catch(() => {});
@@ -2012,7 +2005,7 @@ export class LiveSessionOwner {
 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
 
-  /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
+  /** A direct owner save freezes and authorizes one remote write, without a confirmation stage. */
   #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject | (() => Promise<JsonObject>) {
     void handle;
     const requests = this.#tools?.owner.ownerRequests;
@@ -2021,7 +2014,7 @@ export class LiveSessionOwner {
     if (!request || request.code === 'no_owner_request' || request.code === 'request_expired' || request.code === 'grant_spent') return requestRefusal(request?.code ?? 'no_owner_request');
     if (request.code === 'idempotent') return request.receipt as JsonObject;
     const sources = requests!.sources(liveSessionId);
-    const external = Object.keys(sources).some(kind => ['mail', 'web', 'chat'].includes(kind));
+    const external = Object.keys(sources).length > 0;
     const provenance = `Provenance: request ${request.id}; source counts ${JSON.stringify(sources)}; ${external ? 'contains external content' : 'owner conversation'}.`;
     const body = `${args.body.trim()}\n\n${provenance}`;
     const frozen = freezeNote({ title: args.title, body, externalContextPresent: true });
@@ -2040,133 +2033,6 @@ export class LiveSessionOwner {
     };
   }
 
-  /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
-  #notePlayback(handle: ActiveSession, receipt: NativePlaybackReceipt): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!note) return;
-    // W6-R2 B2: the read-back is one segment; its own drain arms, its own cut kills, and a segment
-    // that began before the stage does neither.
-    const key = `${receipt.sourceInstanceId}:${receipt.segmentSeq}`;
-    const read = noteSegmentSignal(note, this.#noteReadback.get(handle.liveSessionId), { receipt: receipt.receipt as PlaybackSignalKind, key, wallMs: receipt.wallMs });
-    if (read.binding === undefined) this.#noteReadback.delete(handle.liveSessionId);
-    else this.#noteReadback.set(handle.liveSessionId, read.binding);
-    if (read.note.state === 'armed' && note.state === 'staged') {
-      const speech = this.#noteSpeech.get(handle.liveSessionId);
-      if (!speech || speech.stageId !== note.stageId) return;
-      speech.drainedAt = receipt.wallMs;
-      if (!speech.matched) return;
-    }
-    if (read.note === note) return;
-    this.#store.transaction(tx => saveNoteState(tx, read.note));
-    hostLogEvent({ event: 'lux_note_readback', state: read.note.state, code: read.note.code ?? receipt.receipt });
-  }
-
-  #noteNotSaved(handle: ActiveSession, code: string): void {
-    if (this.#settled(handle)) return;
-    try { handle.session.sendText({ text: hostNote(`The note was not saved (${code}). Say plainly that it was not saved.`) }); } catch { /* closed transport */ }
-  }
-
-  #noteOutput(handle: ActiveSession, kind: string, text: string): void {
-    const speech = this.#noteSpeech.get(handle.liveSessionId);
-    if (!speech) return;
-    const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!note || note.stageId !== speech.stageId || note.state !== 'staged') return;
-    if (kind === 'outputTranscription') {
-      speech.text += this.#profile.provider === 'openai' ? text : ` ${text}`;
-      return;
-    }
-    if (!speech.text.trim()) return;
-    speech.matched = readbackMatches(noteReadbackText(note), speech.text);
-    if (!speech.matched) {
-      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'invalidated', code: 'readback_mismatch' }));
-      this.#noteSpeech.delete(handle.liveSessionId);
-      this.#noteNotSaved(handle, 'readback_mismatch');
-    } else if (speech.drainedAt !== undefined) {
-      const armedAt = speech.drainedAt;
-      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'armed', armedAt }));
-    }
-  }
-
-  /** W6 item 6: the next finalized owner turn decides, and the settle window runs on its own timer. */
-  #noteOwnerTurn(handle: ActiveSession, text: string): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open) return;
-    const onsetAt = this.#noteOnset.get(handle.liveSessionId) ?? handle.inputAt ?? this.#now();
-    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, onsetAt);
-    if (open.state === 'armed' && noteKey(text) === 'read it all' && onsetAt >= (open.armedAt ?? Infinity)) {
-      const next = { ...open, state: 'staged' as const, fullReadback: true, confirmationText: '' };
-      this.#store.transaction(tx => saveNoteState(tx, next));
-      this.#noteReadback.delete(handle.liveSessionId);
-      this.#noteSpeech.set(handle.liveSessionId, { stageId: open.stageId, text: '', matched: false });
-      this.#noteOnset.delete(handle.liveSessionId);
-      return;
-    }
-    const next = noteOwnerUtterance(open, { text, now: this.#now(), onsetAt });
-    if (next === open) return;
-    this.#store.transaction(tx => saveNoteState(tx, next));
-    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    if (next.state !== 'settling') { this.#noteOnset.delete(handle.liveSessionId); this.#noteReadback.delete(handle.liveSessionId); this.#noteNotSaved(handle, next.code ?? 'not_affirmative'); return; }
-    handle.noteSettleTimer?.cancel();
-    handle.noteSettleTimer = this.#schedule(() => { void this.#noteSettle(handle); }, Math.max(0, (next.settleAt ?? 0) - this.#now()));
-    handle.noteSettleTimer.unref();
-  }
-
-  /** W6 item 6: any owner fragment inside the settle window cancels, so a VAD split never commits. */
-  #noteFragment(handle: ActiveSession): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open) return;
-    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, handle.inputAt ?? this.#now());
-    if (open.state !== 'settling') return;
-    const next = noteOwnerFragment(open, this.#now());
-    if (next === open) return;
-    handle.noteSettleTimer?.cancel(); handle.noteSettleTimer = undefined;
-    this.#store.transaction(tx => saveNoteState(tx, next));
-    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    this.#noteReadback.delete(handle.liveSessionId);
-  }
-
-  /** W6 item 7: the dispatcher claims the frozen payload and dispatches it once through the vault writer. */
-  async #noteSettle(handle: ActiveSession): Promise<void> {
-    handle.noteSettleTimer = undefined;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open || open.state !== 'settling') return;
-    const settled = noteSettle(open, this.#now());
-    if (settled.state !== 'committed') {
-      if (settled !== open) { this.#noteOnset.delete(handle.liveSessionId); this.#store.transaction(tx => saveNoteState(tx, settled)); this.#noteNotSaved(handle, settled.code ?? 'not_affirmative'); }
-      return;
-    }
-    // The digest frozen at stage time is the only payload that may ever be sent.
-    const frozen = freezeNote({ title: settled.title, body: settled.body, externalContextPresent: settled.externalContextPresent === true });
-    if (frozen.state !== 'frozen' || frozen.payloadSha !== settled.payloadSha) {
-      const invalid = { ...settled, state: 'invalidated' as const, code: 'payload_changed' };
-      this.#store.transaction(tx => saveNoteState(tx, invalid));
-      hostLogEvent({ event: 'lux_note_saved', saved: false, code: 'payload_changed' });
-      return;
-    }
-    this.#store.transaction(tx => saveNoteState(tx, settled));
-    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: handle.liveSessionId, stageId: settled.stageId, content: settled.body, title: settled.title, now: this.#now(), externalContextPresent: settled.externalContextPresent === true, payloadSha: settled.payloadSha }));
-    let receipt: VaultReceipt;
-    try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
-    catch { receipt = { saved: false, code: 'outcome_unknown' }; }
-    this.#store.transaction(tx => markCommitted(tx, settled.stageId, receipt.insightId));
-    this.#noteReadback.delete(handle.liveSessionId);
-    this.#noteOnset.delete(handle.liveSessionId);
-    hostLogEvent({ event: 'lux_note_saved', saved: receipt.saved, code: receipt.code ?? 'inserted' });
-    if (this.#settled(handle)) return;
-    const line = receipt.saved
-      ? `The vault returned insight ${receipt.insightId}. Say: Saved ${JSON.stringify(settled.title)} in Lux.`
-      : `The vault did not confirm the save (${receipt.code ?? 'unknown'}). Say that plainly; do not claim success or retry it.`;
-    try { handle.session.sendText({ text: hostNote(line) }); } catch { /* a closed transport settles on its own */ }
-  }
-
-  /**
-   * W6 item 12: the session-end flush of remember_note facts and preferences. One row per note, the
-   * same vault client, no spoken confirmation, and a log event that carries counts only.
-   */
-
   /**
    * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
    * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
@@ -2177,7 +2043,6 @@ export class LiveSessionOwner {
       const receipt = parsePlaybackReceipt(frame);
       const attribution = this.#playbackAttribution(handle, receipt);
       recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, attribution);
-      this.#notePlayback(handle, receipt);
       // C-LOGS11: the native audibility receipt is the only proof the owner could hear her, so the first one
       // of a turn closes that turn's owner-facing latency. A turn with no recorded final says so, never zero.
       const turnId = attribution.turnId;
@@ -4184,6 +4049,7 @@ export class LiveSessionOwner {
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
+      const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
       const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
@@ -4212,6 +4078,7 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : closed ?? (record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused');
+        if (ok && requestId) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId);
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
@@ -4238,7 +4105,12 @@ export class LiveSessionOwner {
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
-      ...(this.#researchWeb === undefined ? {} : { web: this.#researchWeb }),
+      ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
+        const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        const result = await this.#researchWeb!.search(request);
+        if (result.ok && requestId) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId);
+        return result;
+      } } }),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -4574,7 +4446,6 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      if (dispatchGate.state === 'allowed' && event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalRead();
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(call.id), tool: call.name });
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -4822,13 +4693,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
               ...(settled.refusalCode === undefined ? {} : { refusalCode: settled.refusalCode }) });
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
-          if (event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalResult(event.calls.filter(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name)).map(call => `tool:${call.id}`));
-          for (const call of event.calls) {
-            if (call.name === 'research') {
-              const lookups = (call.args as { lookups?: { source?: string }[] }).lookups ?? [];
-              for (const lookup of lookups) if (lookup.source) this.#tools?.owner.ownerRequests.source(handle.liveSessionId, lookup.source);
-            }
-          }
           exposeToolResults(responses);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
@@ -4872,8 +4736,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
-    let pendingOwnerText: string | undefined;
-    const pendingOwnerFragment = event.type === 'inputTranscription' && event.finished !== true && event.finalOrigin !== 'typed' && (text ?? '').length > 0;
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
       if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);
@@ -4905,20 +4767,10 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
 
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }
       return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
-    if (!transaction && kind === 'inputTranscription') {
-      if (pendingOwnerFragment) this.#noteFragment(handle);
-      if (pendingOwnerText !== undefined) {
-        const block = this.#store.transaction(tx => Number(tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [handle.liveSessionId])?.['id'] ?? 0));
-        this.#noteRequests.get(handle.liveSessionId)?.observeOwner(block, Number(journalSequence), pendingOwnerText);
-        this.#noteOwnerTurn(handle, pendingOwnerText);
-      }
-    }
-    if (!transaction && (kind === 'outputTranscription' || kind === 'turnComplete')) this.#noteOutput(handle, kind, text ?? '');
     if (!transaction) handle.pendingDiagnosticLoss = false;
     handle.journalEvents = events;
     handle.journalBytes = total;
@@ -4928,12 +4780,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
   #settled(handle: ActiveSession): boolean { return handle.terminal || handle.invalidated; }
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
-    this.#noteRequests.get(handle.liveSessionId)?.disconnect();
-    this.#noteRequests.delete(handle.liveSessionId);
-    this.#noteSpeech.delete(handle.liveSessionId);
-    this.#noteOnset.delete(handle.liveSessionId);
-    this.#noteSessions.delete(handle.liveSessionId);
-    this.#noteReadback.delete(handle.liveSessionId);
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;

@@ -13,14 +13,14 @@ export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm
 cd server
 npm run build
 # Alarm cases are imported by the registry-wide intent suite, so release CI executes both.
-node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js dist/test/research-calendar.test.js
 # Public tool guidance is also composed by text, memory and summary surfaces.
 node_test_files --test-reporter=tap --test-timeout=30000 dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js
 node test/prompt-content.integration.mjs
 # C-RESEARCH-CONTRACT F4: the refusal integration suite is the only proof that a refused argument shape and an
 # admission block reach the trace as `refused` and `blocked`, so it runs here against the build it just made.
 # Contract regressions run first so a red boundary fails before the broader live replay.
-node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js dist/test/tools-builtin-intent.test.js
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js dist/test/tools-builtin-intent.test.js dist/test/research-calendar.test.js
 node test/research-refusal.integration.mjs
 # The new owner suite, the live summary suite (#363), the trace store suite, the warm-context pre-assembly
 # suite, the debug journal suites and the accepted Live adapter regression suite run together, with the

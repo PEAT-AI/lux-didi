@@ -71,7 +71,14 @@ function turnExcerpt(tx: Transaction, id: string, hitId: number, terms: readonly
   const hit = rows[index]; if (!hit) return '';
   const label = (row: SQLRow) => row.role === 'owner' ? 'Owner: ' : 'Naya: ';
   const text = String(hit.text), folded = fold(text);
-  const match = terms.map(term => folded.indexOf(term)).filter(at => at >= 0).sort((a, b) => a - b)[0] ?? 0;
+  const foldedMatch = terms.map(term => folded.indexOf(term)).filter(at => at >= 0).sort((a, b) => a - b)[0] ?? 0;
+  // F5: folded offsets are not source offsets when ASR text contains combining marks.
+  let match = 0, foldedLength = 0;
+  for (const character of text) {
+    const length = fold(character).length;
+    if (foldedLength + length > foldedMatch) break;
+    foldedLength += length; match += character.length;
+  }
   const start = Math.max(0, match - 130), end = Math.min(text.length, start + 340);
   let excerpt = `${label(hit)}${start ? '...' : ''}${text.slice(start, end)}${end < text.length ? '...' : ''}`;
   for (const distance of [1, 2, 3, 4]) for (const neighbour of [index + distance, index - distance]) {

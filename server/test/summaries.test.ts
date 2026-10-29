@@ -811,3 +811,24 @@ test('F4: explicit Live identity excludes current speech and summary before all 
     });
   } finally { f.cleanup(); }
 });
+
+
+test('F5: a diacritic-heavy source retains the matched words in its verbatim crop', () => {
+  const f = open();
+  try {
+    seedSession(f.store, 'accented-story');
+    const words = 'e\u0301 '.repeat(450) + 'Hélène chose the cobalt lighthouse for the trip.';
+    seedTurn(f.store, 'accented-story', 'inputTranscription', words);
+    seedTurn(f.store, 'accented-story', 'outputTranscription', 'We will bring the violet map.');
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      backfillHistoryTurns(tx);
+      const page = createHistoryReader(() => NOW).read(tx, { ownerId: f.store.assistantId, runId: 'accent-research', currentSessionId: 'another-live-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] }, { query: 'lighthouse' }).response;
+      const hits = page.hits as Array<Record<string, unknown>>;
+      assert.equal(hits.length, 1);
+      assert.match(String(hits[0]?.snippet), /Hélène chose the cobalt lighthouse for the trip\./);
+      assert.match(String(hits[0]?.snippet), /Naya: We will bring the violet map\./);
+      assert.ok(String(hits[0]?.snippet).includes('e\u0301'), 'the crop preserves source combining marks rather than returning folded speech');
+    });
+  } finally { f.cleanup(); }
+});

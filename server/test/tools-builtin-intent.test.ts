@@ -132,9 +132,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;
   // A5: three owner asks share one unfinished answer, but not an open receipt.
-  owner.ownerRequests.answered(session.liveSessionId);
+  owner.ownerRequests.answered!(session.liveSessionId);
   const urls: unknown[] = [];
-  t.mock.method(nativeActions, 'dispatch', async (_run, _action, target) => { urls.push(target); return 'opened' as const; });
+  t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return 'opened' as const; });
   const cases = [
     { kind: 'site', target: 'plantix dot net', words: ['but can you open', 'plantix dot net in my browser'], url: 'https://plantix.net/' },
     { kind: 'maps', target: 'Odemira', words: ['open the map of Odemira'], url: 'https://www.google.com/maps/search/?api=1&query=Odemira' },
@@ -143,7 +143,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   for (const entry of cases) {
     for (const words of entry.words) owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
     const args = { kind: entry.kind, target: entry.target };
-    const execute = async () => {
+    const execute = async (): Promise<unknown> => {
       const intent = { ...authority, toolCallId: randomUUID(), tool: web.name, effect: 'read' as const,
         argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: web.accountId, resourceId: web.resourceId };
       assert.equal(owner.journal.intent(intent), 'fresh');

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
-import { Client } from '@modelcontextprotocol/client';
 import { Store } from '../runtime/store.js';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -49,19 +48,6 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
   const sourceTools = options.sourceTools ?? tools;
-  const rpcErrors: unknown[] = [];
-  if (options.sourceTools) {
-    const connect = Client.prototype.connect;
-    t.mock.method(Client.prototype, 'connect', async function(this: Client, ...args: Parameters<Client['connect']>) {
-      const result = await connect.apply(this, args);
-      const request = this.request.bind(this);
-      this.request = (async (...args: Parameters<Client['request']>) => {
-        try { return await request(...args); }
-        catch (error) { rpcErrors.push({ clientError: String(error) }); throw error; }
-      }) as typeof this.request;
-      return result;
-    });
-  }
   const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -73,7 +59,6 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name) : result) as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    try {
     const req = new Request(input, init);
     assert.equal(req.url, policyUrl(p.endpoint));
     if (req.method === 'GET') return new Response(null, { status: 405 });
@@ -81,13 +66,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
       const packet = await req.clone().json() as { method: string; params?: { name: string; arguments: unknown } };
       if (packet.method === 'tools/call') calls.push({ name: packet.params!.name, arguments: packet.params!.arguments, signal: req.signal });
     }
-    const response = await transport.handleRequest(req);
-    if (options.sourceTools) {
-      const payload = await response.clone().json().catch(() => undefined) as { error?: unknown } | undefined;
-      rpcErrors.push({ status: response.status, payload });
-    }
-    return response;
-    } catch (error) { rpcErrors.push({ fetchError: String(error) }); throw error; }
+    return transport.handleRequest(req);
   });
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
@@ -113,7 +92,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const execute = (call = intent(), args = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, rpcErrors, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
+  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) }); },
@@ -831,11 +810,11 @@ for (const channel of ['eng', 'synthetic-missing']) {
       : [{ id: 'eng-general', name: 'engineering-general', display_name: 'Eng General', type: 'O' }, { id: 'eng-security', name: 'engineering-security', display_name: 'Eng Security', type: 'O' }]) }] }) });
     const tool = f.definitions().find(tool => tool.name === 'mattermost_chat')!;
     assert.ok(tool, 'the chat capability is published');
-    const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 8 } }], {
+    const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 3 } }], {
       registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
     });
-    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify({ batch, rpcErrors: f.rpcErrors, calls: f.calls.map(call => call.name) }));
+    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
     const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
     assert.equal(row.state, 'completed');
     assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);

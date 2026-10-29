@@ -1015,7 +1015,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const target = strong.length === 1 ? strong[0]! : undefined;
       if (target === undefined || target.id === undefined) {
         // A successful discovery with no match is an empty read the model can speak, not a failed handler.
-        if (rows.length === 0) return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I could not find a channel called ${spoken}. Which channel did you mean?` });
+        if (rows.length === 0) return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I do not know a channel called ${spoken}. Which channel did you mean?` });
         const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
         return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
       }

@@ -2326,3 +2326,20 @@ test('C-STEADY104: commentary cannot reject a delegation awaiting function outpu
   session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { findings: ['synthetic result'] } }] });
   await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
 });
+
+test('C-STEADY104: a fake provider rejecting commentary delegation_id does not end its response', async t => {
+  const { f, session, captured } = await ready(t);
+  f.send({ type: 'session.delegation.created', delegation: { id: 'steady-reject', response_id: 'resp_reject', offset_ms: 0 } });
+  f.send({ type: 'response.event', delegation_id: 'steady-reject', event: { type: 'response.created', response: { id: 'resp_reject' } } });
+  await tick();
+  const start = f.frames.length;
+  assert.equal(session.sendCommentary!({ text: 'Synthetic progress.' }), true);
+  await until(() => f.frames.length > start);
+  const append = f.frames.find(frame => frame['type'] === 'session.commentary.append')!;
+  f.send({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'delegation_id', client_event_id: append['event_id'] } });
+  await tick();
+  const before = captured.events.filter(event => event.type === 'audio').length;
+  sendAudio(f, 2_400);
+  await until(() => captured.events.filter(event => event.type === 'audio').length > before);
+  assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
+});

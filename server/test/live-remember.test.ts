@@ -310,9 +310,9 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
   test(`direct102 real host: source provenance follows this request: ${order}`, async t => {
     const h = await harness(t, { tools: true });
     const { attachment } = await attached(h);
-    await ownerBlock(h, order === 'save_then_read' ? 'save this into Lux' : 'find the synthetic record');
-    await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
-    assert.ok(h.calls.some(call => call.name === 'search_knowledge'));
+    await ownerBlock(h, order === 'save_then_read' ? 'look up the synthetic plan in Lux knowledge and save this into Lux' : 'find the synthetic plan in Lux knowledge');
+    const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
+    assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
     if (order === 'read_then_save') await ownerBlock(h, 'save this into Lux');
     const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(result['saved'], true, JSON.stringify(result));

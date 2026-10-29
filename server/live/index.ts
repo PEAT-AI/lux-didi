@@ -2013,6 +2013,8 @@ export class LiveSessionOwner {
     const request = requests?.authorize(liveSessionId, 'lux_note', target);
     if (!request || request.code === 'no_owner_request' || request.code === 'request_expired' || request.code === 'grant_spent') return requestRefusal(request?.code ?? 'no_owner_request');
     if (request.code === 'idempotent') return request.receipt as JsonObject;
+    const candidate = freezeNote({ title: args.title, body: args.body });
+    if (candidate.state !== 'frozen') return { saved: false, code: candidate.code, say: 'The note was not saved because its payload is invalid.' };
     const sources = requests!.sources(liveSessionId);
     const external = Object.keys(sources).length > 0;
     const provenance = `Provenance: request ${request.id}; source counts ${JSON.stringify(sources)}; ${external ? 'contains external content' : 'owner conversation'}.`;

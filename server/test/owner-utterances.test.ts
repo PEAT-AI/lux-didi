@@ -27,7 +27,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   } else if (code === 'allowed' && kind === 'open') {
     const { tool: name, ...args } = row.call;
     beginHandleSession(row.id);
-    const shown = withOpenHandles({ text: 'Synthetic page', sources: [{ title: 'Synthetic page', url: 'https://example.com', sourceType: 'web' as const }] });
+    const shown = withOpenHandles({ text: 'Synthetic page', sources: [{ title: 'Synthetic page', url: 'https://docs.google.com/document/d/synthetic/edit', sourceType: 'web' as const }] });
     exposeHandles(shown.text);
     const result = name === 'open_web'
       ? await resolveWebOpen(args as unknown as Parameters<typeof resolveWebOpen>[0], authorization.words ?? '', new AbortController().signal)

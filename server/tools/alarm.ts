@@ -27,7 +27,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
     .replace(/\bin\s+(?:an?|one)\s+hour\b/g, 'in one hour');
   text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
   text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
-  const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
+  const named: Record<string, string> = { 'utc time': 'UTC', 'gmt time': 'UTC', 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
   const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
   const zones = [...text.matchAll(zonePattern)];
   const zone = zones.at(-1)?.[0];
@@ -144,7 +144,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const unit = '(?:one|two|three|four|five|six|seven|eight|nine)';
   const num = `(?:\\d{1,2}|(?:twenty|thirty|forty|fifty)(?:[ -]${unit})?|${unit}|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)`;
   const period = '(?:\\s+[ap]m)?';
-  const clock = `${num}(?:[ -]+${num})?${period}`;
+  const clock = `(?:\\d{1,2}:\\d{2}|${num}(?:[ -]+${num})?)${period}`;
   const pattern = new RegExp(`\\bin\\s+${num}\\s+(?:minutes?|hours?)\\b|\\b(?:quarter|half|${num})(?:\\s+minutes?)?\\s+(?:past|to)\\s+${num}${period}\\b|\\b\\d{1,2}:\\d{2}${period}\\b|\\b${num}(?:[ -]+${num})?\\s+[ap]m\\b|\\b(?:at|on|for)\\s+${clock}\\b|\\b(?:noon|midnight)\\b`, 'g');
   const expressions = [...text.matchAll(pattern)].map(match => match[0]);
   if (!expressions.length) return direct;

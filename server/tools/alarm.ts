@@ -21,7 +21,11 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const label = (trailing ? trailing[1] ?? trailing[2] : reminder?.[1])?.trim() ?? '';
   const timeWords = labelMatch ? words.slice(0, labelMatch.index) : words;
   let text = timeWords.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
-  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\b(?:today|tonight)\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
+  text = text.replace(/\b(?:um|uh|like|so)\b|\s-\s/g, ' ').replace(/(\d)\s*:\s*(\d)/g, '$1:$2')
+    .replace(/\b([ap]m)(?:\s+\1)+\b/g, '$1').replace(/\bfor\s+(today|tomorrow|tonight)\b/g, '$1')
+    .replace(/\b(\d{1,2})\s+([ap]m)\s+(\d{1,2})\b/g, '$1:$3 $2')
+    .replace(/\bin\s+(?:an?|one)\s+hour\b/g, 'in one hour');
+  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
   text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
   const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
   const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
@@ -40,6 +44,18 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (parts.length === 2 && !(parts[0] === 'oh' || (values[parts[0]!]! >= 20 && values[parts[1]!]! < 10))) return NaN;
     return parts.reduce((sum, part) => sum + values[part]!, 0);
   };
+  // Find time expressions independently of the owner's action wording.
+  const temporal = new RegExp(`\\b(?:in\\s+)?(?:\\d{1,2}|${Object.keys(values).join('|')}|half|quarter|noon|midnight)\\b`);
+  const first = temporal.exec(text);
+  if (first) {
+    const before = text.slice(0, first.index);
+    const context = before.match(/\b(?:tomorrow|morning|evening)\b/g)?.join(' ') ?? '';
+    text = `${context} ${text.slice(first.index)}`.trim();
+    // Relative speech often finishes with the request rather than starting with it.
+    text = text.replace(/(minutes?|hours?)\s+(?:from now\s*)?(?:can you|could you|please)\b[^0-9]*$/, '$1')
+      .replace(/(minutes?|hours?)\s+from now\s*$/, '$1');
+    if (!/^in\b/.test(text)) text = `at ${text}`;
+  }
   if ([...text.matchAll(/\b(?:am|pm)\b/g)].length > 1) return { status: 'clarify', reason: 'unsupported_time_expression' };
   // Strip only the first action prefix: a later alarm clause must not erase an earlier time.
   let fireAtUtc: number;

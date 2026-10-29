@@ -160,7 +160,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
-  const ownerRequests = new OwnerRequests();
+  const ownerRequests = new OwnerRequests(undefined, () => options.alarms?.now() ?? Date.now());
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -737,7 +737,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {

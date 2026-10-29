@@ -1,7 +1,7 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
-  id: string; words: string; start: number; finals: number; journalId: string;
+  id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; answered?: boolean; pending?: { kind: ActionKind; field: string };
   sources: Record<string, number>; shown: { handle: string; kind: string }[];
 }
@@ -30,46 +30,46 @@ export class OwnerRequests implements OwnerRequestPort {
       signal.addEventListener('abort', finish, { once: true });
     });
   }
-  constructor(private readonly clock: () => number = () => performance.now()) {}
+  constructor(private readonly clock: () => number = () => performance.now(), private readonly wallClock: () => number = Date.now) {}
   observe(session: string, journalId: string, words: string): void {
     this.seenFinal.add(session); this.pendingFinal.delete(session);
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
     const grants = new Map<ActionKind, Grant>();
-    const cues: [ActionKind, RegExp][] = [
-      ['open', /(?:\b(?:open|show|pull up|search for|oeffne|zeige|zeig)\b|(?:^|\s)öffne\b)/iu],
-      ['set_alarm', /\bwake me\b|\bset\b[^.!?]*\balarm\b|\bremind me\s+(?:in|at)\b/i],
-      ['cancel_alarm', /\b(?:cancel|stop)\b[^.!?]*\balarm\b/i],
-      ['snooze_alarm', /\bsnooze\b/i],
-      ['list_alarms', /\bshow\b[^.!?]*\balarms?\b/i],
-      ['lux_note', /\b(?:save|remember)\b|\b(?:note|write|put)\b[^.!?]*\blux\b/i],
-    ];
-    for (const [kind, cue] of cues) {
-      const match = cue.exec(words);
-      if (!match) continue;
-      const before = words.slice(0, match.index);
-      if (/\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)[\s,]*(?:(?:please|you|ever)\s+)*$/i.test(before)) { previous?.grants.delete(kind); continue; }
-      grants.set(kind, {});
-    }
+    // Finalized owner input is authority for non-destructive tools, not a phrase grammar.
+    for (const kind of ['open', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
+    // Saving notes keeps its separate admission policy.
+    const note = /\b(?:save|remember)\b|\b(?:note|write|put)\b[^.!?]*\blux\b/i.exec(words);
+    if (note && !/\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)[\s,]*$/i.test(words.slice(0, note.index))) grants.set('lux_note', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
-      previous.words = words.startsWith(previous.words) ? words : `${previous.words} ${words}`;
+      previous.words = words.startsWith(previous.words) ? words : `${previous.words} ${words}`.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
       previous.finals++; previous.journalId = journalId;
       for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
       delete previous.pending;
       return;
     }
     // Retain even a cue-free first fragment: the next final may finish the request.
-    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), finals: 1, journalId, grants, sources: {}, shown: [] });
+    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt: this.wallClock(), finals: 1, journalId, grants, sources: {}, shown: [] });
   }
 
   answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
-    if (!request) return { code: 'no_owner_request' };
-    const common = { id: request.id, words: request.words, journalId: request.journalId };
+    if (!request || request.answered && !request.pending) return { code: 'no_owner_request' };
+    const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
-    if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
+    if (kind === 'lux_note' && (age < 0 || age > 120000)) return { ...common, code: 'request_expired' };
+    const negations = /\b(?:don['’]?t|do not|never|no need to)\s+([^.!?]*)/gi;
+    for (const match of request.words.matchAll(negations)) {
+      const clause = match[1]!;
+      const negated = kind === 'open' ? /\b(?:open|show|launch)\b/i.test(clause)
+        : kind === 'set_alarm' ? /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b/i.test(clause)
+        : kind === 'cancel_alarm' ? /\b(?:cancel|stop)\b/i.test(clause)
+        : kind === 'snooze_alarm' ? /\bsnooze\b/i.test(clause)
+        : kind === 'list_alarms' ? /\b(?:list|show)\b.*\balarm/i.test(clause) : false;
+      if (negated) return { ...common, code: 'no_owner_request' };
+    }
     const authority = request.grants.get(kind);
     if (!authority) return { ...common, code: 'no_owner_request' };
     const grant = kind === 'open' ? authority.targets?.get(target) ?? {} : authority;

@@ -1139,8 +1139,8 @@ test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction
     runtime.owner.applyConnection(policy);
     const second = await runtime.port.discover(family);
     assert.equal(second.state, 'discovered');
-    runtime.owner.projectConnection('calendar');
-    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['calendar'] };
+    runtime.owner.projectConnection(family);
+    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: [family] };
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 

@@ -61,3 +61,44 @@ test('direct102 authority: external content records provenance counts but never 
   const otherOwner = new OwnerRequests(() => 0);
   assert.equal(otherOwner.authorize('s', 'lux_note', 'summary').code, 'no_owner_request');
 });
+
+test('direct102 authority: in-flight reservations serialize opens and an old completion cannot spend a new ask', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'open the pitch deck');
+  const first = requests.authorize('s', 'open', 'deck');
+  assert.equal(first.code, 'allowed');
+  assert.ok(first.id);
+  assert.equal(requests.claim('s', 'open', 'deck', first.id).code, 'allowed');
+  assert.equal(requests.claim('s', 'open', 'other', first.id).code, 'grant_spent');
+  requests.observe('s', 'j2', 'open the new pitch deck');
+  requests.commit('s', 'open', 'deck', { code: 'opened' }, first.id);
+  assert.equal(requests.authorize('s', 'open', 'new').code, 'allowed');
+  assert.equal(requests.claim('s', 'open', 'deck', first.id).code, 'no_owner_request');
+});
+
+for (const words of ['do not open the deck', 'why did you open the deck?', 'do not set an alarm', 'do not save this into Lux']) {
+  test(`direct102 authority: nonimperative and negated speech creates no grant: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j1', words);
+    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) assert.equal(requests.authorize('s', kind, 'x').code, 'no_owner_request');
+  });
+}
+
+test('direct102 authority: a quoted title in a direct ask is a target, not quoted action authority', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'open the deck called "Synthetic plan"');
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
+});
+
+test('direct102 authority: a pending final waits for its event, never a timer that returns empty', async () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'what is on my calendar?');
+  requests.partial('s');
+  let finished = false;
+  const waiting = requests.waitForFinal('s', new AbortController().signal).then(() => { finished = true; });
+  await Promise.resolve();
+  assert.equal(finished, false);
+  requests.observe('s', 'j2', 'open the synthetic deck');
+  await waiting;
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
+});

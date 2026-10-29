@@ -845,7 +845,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   let live: LiveAuthority | null = null;
   const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
   owner.applyConnection({
-    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 2, enabled: true, connector: 'mattermost',
     endpoint: { ...f.config, credentialRef: null }, toolNames: f.names, schemaDigest: f.discovery.schemaDigest,
     sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: 'voice', allowedClasses: ['ordinary'] },

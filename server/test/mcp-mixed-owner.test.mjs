@@ -96,3 +96,40 @@ test('40 mixed owner reads in one fake minute, then one more of every kind', asy
     assert.ok(h.now - start < 60_000);
   } finally { await h.close(); }
 });
+
+test('two overlapping owner runs retain the pending projection while the other run settles', async () => {
+  const h = await harness();
+  const entered = deferred(), resume = deferred();
+  let pendingCall;
+  try {
+    const first = h.run('pending-run'), second = h.run('settling-run');
+    let held, settled;
+    h.intercept(async (request, result) => {
+      assert.equal(result.state, 'completed');
+      assert.equal(result.payload.state, 'available');
+      const entry = { request, payload: result.payload };
+      if (!held) {
+        held = entry;
+        entered.resolve();
+        await resume.promise; // Barrier, no timer: retain bytes before owner projection begins.
+      } else settled = entry;
+      return result;
+    });
+    const slice = entry => h.adapter.readSlice({ endpointId: entry.request.endpointId, generation: entry.request.generation, account: entry.request.account, resource: entry.request.resource, handle: entry.payload.handle, offset: 0, length: Math.min(entry.payload.byteLength, 97) });
+    pendingCall = first('gmail_search_messages', {});
+    await Promise.race([entered.promise, pendingCall.then(() => { throw Error('first run settled before the projection barrier'); })]);
+    assert.equal(slice(held).state, 'available');
+    await second('gmail_search_messages', {});
+    assert.ok(settled, 'second run reached the shared adapter while the first was pending');
+    assert.notEqual(held.payload.handle, settled.payload.handle);
+    assert.equal(slice(held).state, 'available', 'settling another run cannot evict pending projection bytes');
+    assert.notEqual(slice(settled).state, 'available', 'the settled run releases its own bytes immediately');
+    resume.resolve();
+    await pendingCall;
+    assert.notEqual(slice(held).state, 'available', 'the pending entry releases only after its own projection');
+  } finally {
+    resume.resolve();
+    if (pendingCall) await pendingCall.catch(() => {});
+    await h.close();
+  }
+});

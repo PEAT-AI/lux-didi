@@ -814,7 +814,7 @@ for (const channel of ['eng', 'synthetic-missing']) {
       registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
     });
-    assert.equal(batch.tools[0]?.status, 'completed');
+    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
     const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
     assert.equal(row.state, 'completed');
     assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);

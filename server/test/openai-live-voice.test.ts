@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../live/types.js';
 import { hostConversationScenarios, assertHostConversationReply, assertFreshProgressPhrases } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
@@ -2343,4 +2344,15 @@ test('C-STEADY104: a fake provider rejecting commentary delegation_id does not e
   sendAudio(f, 12_000);
   await until(() => captured.events.filter(event => event.type === 'audio').length > before);
   assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
+});
+
+test('alarm sessions seed no fresh-opening direction', async t => {
+  const f = await fixture(t);
+  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+    .open(request({ system: { text: `Synthetic normal persona\n${ALARM_MODE_MARKER} call the bank`, dataClass: 'ordinary' }, opening: 'model_first' }), control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const start = f.frames[0] as unknown as Start;
+  assert.ok(!JSON.stringify(start.session['input'] ?? []).includes(FRESH_OPENING));
+  assert.match(JSON.stringify(start.session), /call the bank/);
 });

@@ -77,9 +77,11 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
-const ALARM_MODE_MARKER = '[alarm mode]';
+import { ALARM_MODE_MARKER } from './types.js';
 export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
-  return `${ALARM_MODE_MARKER} Wake ${JSON.stringify(input.ownerDisplayName)} for the alarm at ${JSON.stringify(input.scheduledTime)}. Address them by name and briefly invite a spoken answer. Continue brief wake-up reminders until they answer. You are Naya. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  const reminder = input.label?.trim();
+  const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -1347,6 +1349,76 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; announcedAt: number; timer?: { cancel(): void } }>>();
+
+  /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
+  announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
+    const handle = [...this.#active.values()].find(value => !value.terminal && value.ready);
+    if (!handle || !setup.alarmId) return undefined;
+    const alarms = this.#alarmSessions.get(handle.liveSessionId) ?? new Map();
+    alarms.get(setup.alarmId)?.timer?.cancel();
+    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
+    this.#alarmSessions.set(handle.liveSessionId, alarms);
+    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    this.#armAlarm(handle);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
+    return this.get(handle.liveSessionId);
+  }
+
+  #ringingAlarms(handle: ActiveSession) {
+    const alarms = this.#alarmSessions.get(handle.liveSessionId);
+    if (!alarms) return [];
+    for (const [id, alarm] of alarms) {
+      const ringing = this.#store.transaction(tx => tx.get("SELECT id FROM alarms WHERE id=? AND state='ringing' AND ring_deadline_utc>?", [id, this.#now()]));
+      if (!ringing) { alarm.timer?.cancel(); alarms.delete(id); }
+    }
+    return [...alarms.values()];
+  }
+
+  #armAlarm(handle: ActiveSession): void {
+    const now = this.#now();
+    for (const alarm of this.#ringingAlarms(handle)) {
+      if (alarm.timer) continue;
+      alarm.timer = this.#schedule(() => {
+        delete alarm.timer;
+        if (handle.terminal || !this.#ringingAlarms(handle).includes(alarm)) return;
+        // Audio only advances lastAudibleAt. The existing timer checks the remaining silence once.
+        if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
+          alarm.lastPromptAt = this.#now();
+          if (handle.ready) {
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
+          }
+        }
+        this.#armAlarm(handle);
+      }, Math.max(1, Math.min((alarm.setup.ringDeadlineUtc ?? now + 30_000) - now, Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) + 30_000 - now)));
+    }
+  }
+
+  #ackAlarm(handle: ActiveSession, words: string): void {
+    const alarms = this.#ringingAlarms(handle);
+    if (!alarms.length) return;
+    // The most recently announced alarm owns this confirmation, not every ringing occurrence.
+    const alarm = alarms.reduce((latest, candidate) => candidate.announcedAt > latest.announcedAt ? candidate : latest);
+    // Gemini can finalize accumulated deltas with an empty frame, or the host can seal them at model start.
+    // Never borrow speech from before the announcement or from an earlier finalized utterance.
+    const utterance = this.#store.transaction(tx => {
+      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id DESC", [handle.liveSessionId, alarm.afterJournalId]);
+      const parts: string[] = [];
+      for (const [i, row] of rows.entries()) {
+        if (i > 0 && Number(row.finished) === 1) break;
+        parts.unshift(String(row.text ?? ''));
+      }
+      return parts.join('');
+    });
+    const confirms = (value: string) => /\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(value.replace(/[^\p{L}\p{N}'’]+/gu, ' '));
+    if (!confirms(words) && !confirms(utterance)) return;
+    if (this.#tools?.acknowledgeAlarm) this.#tools.acknowledgeAlarm(alarm.setup.alarmId!);
+    else this.#store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [alarm.setup.alarmId!]));
+    alarm.timer?.cancel();
+    this.#alarmSessions.get(handle.liveSessionId)?.delete(alarm.setup.alarmId!);
+    try { handle.session.sendText({ text: hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.') }); } catch { /* The acknowledged alarm remains stopped if transport is unavailable. */ }
+  }
+
   #revision = 1;
   #invalidated = false;
   #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
@@ -1597,7 +1669,7 @@ export class LiveSessionOwner {
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Briefly mention the missed alarm times: ' + missedAlarms.map(alarm => new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))).join(', ') + '.' : '';
       for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: input.alarm ? alarmSessionInstructions(input.alarm) : composed.text + missedNote, dataClasses: input.alarm ? ['ordinary'] : classes.filter(value => selectedClasses.has(value)), memory: input.alarm ? { status: 'empty', selectedIds: [], omitted: [] } : memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
@@ -1614,6 +1686,7 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
+    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
     this.#armExpiry();
     return snapshot;
   }
@@ -1905,6 +1978,7 @@ export class LiveSessionOwner {
       ...(silentStart ? { openingText: LIVE_DROPPED_LINE_MARK } : {}),
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
+    const alarmIdleMs = Math.max(this.#profile.limits.idleMs, ...[...(this.#alarmSessions.get(liveSessionId)?.values() ?? [])].map(alarm => (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now()));
     const sessionMs = Math.min(this.#profile.limits.sessionMs, this.#profile.limits.callMaxMs);
     const deadlineMs = Date.now() + sessionMs;
     const deadlineAt = this.#now() + sessionMs;
@@ -1916,7 +1990,7 @@ export class LiveSessionOwner {
     const openedAt = this.#now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits, trace: this.#tracePort(liveSessionId, connection) });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: { ...this.#profile.limits, idleMs: alarmIdleMs }, trace: this.#tracePort(liveSessionId, connection) });
       hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
         seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {
@@ -1969,6 +2043,7 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
+    this.#armAlarm(handle);
     handle.openedAt = openedAt;
     this.#noteState(handle, 'created');
     void handle.done.promise.catch(() => {});
@@ -2179,6 +2254,7 @@ export class LiveSessionOwner {
 
   #armIdle(handle: ActiveSession, remainingMs: number, resetBy: IdleResetCause): void {
     if (this.#settled(handle)) return;
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) remainingMs = Math.max(remainingMs, (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now());
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
     // #592 / C-LIVE N-2: one record per change of cause, so the log testifies what restarted the clock without one
@@ -3116,8 +3192,9 @@ export class LiveSessionOwner {
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
-    // An alarm occurrence has one provider attempt. Local ringing is independent of recovery.
-    if (handle.request.system.text.startsWith(ALARM_MODE_MARKER)) return false;
+    const ringing = this.#ringingAlarms(handle);
+    if (ringing.some(alarm => alarm.rebuilds >= 1)) return false;
+    for (const alarm of ringing) alarm.rebuilds += 1;
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
@@ -3620,6 +3697,7 @@ export class LiveSessionOwner {
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
         // nothing else; it neither re-arms the deadline nor answers the obligation.
         const audible = event.type === 'audio' && event.audible !== false;
+        if (audible) for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.lastAudibleAt = this.#now();
         // The answer's own audible audio is the one thing that clears the owed reply; tool text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
         if (audible || event.type === 'turnComplete') {
@@ -3955,6 +4033,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      this.#ackAlarm(handle, '');
       // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
       // #720: it is also the owner's last word of the turn so far, so the dead-air anchor moves to it.
       handle.inputFinalAt = this.#now();
@@ -4773,6 +4852,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
+        if (transcription?.finalOrigin !== 'typed') queueMicrotask(() => this.#ackAlarm(handle, text ?? ''));
         if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
 
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
@@ -4792,6 +4872,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();
+    this.#alarmSessions.delete(handle.liveSessionId);
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     const attempt = (action: () => void): void => {
@@ -4817,7 +4899,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         });
       });
       attempt(() => this.#observeState(handle, 'ended', 'settle'));
-      if (this.#tools && handle.request.system.text.startsWith(ALARM_MODE_MARKER)
+      if (this.#tools && handle.request.system.text.includes(ALARM_MODE_MARKER)
         && ['failed', 'deadline', 'not_started', 'outcome_unknown'].includes(outcome.state)) {
         attempt(() => {
           const alarm = this.#store.transaction(tx => tx.get("SELECT a.id,a.fire_at_utc FROM alarms a JOIN alarm_session_attempts s ON s.alarm_id=a.id WHERE s.live_session_id=? AND a.state='ringing'", [handle.liveSessionId]));
@@ -4859,6 +4941,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 
   #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number, final = false): void {
     if (event.type !== 'inputTranscription') return;
+    if (this.#alarmSessions.get(handle.liveSessionId)?.size && /\bstop\b/i.test(event.text)) return;
     if (handle.muted || handle.terminal || generation !== handle.generation || event.finalOrigin === 'typed') return;
     const now = this.#now();
     if (handle.stopGeneration !== generation || handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) {

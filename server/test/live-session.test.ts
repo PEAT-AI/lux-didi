@@ -1,3 +1,4 @@
+import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler.js';
 import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
@@ -160,6 +161,7 @@ async function harness(t: TestContext, overrides: {
   scheduler?: DeadlineClock;
   system?: string;
   language?: string;
+  calendarDigest?: import('../live/index.js').CalendarDigestOwner;
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
@@ -410,7 +412,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -7580,4 +7582,193 @@ test('C-POLISH10: an open_web call through the tool registry logs its closed aud
   assert.deepEqual(audit.map(({ requestAgeMs: _age, ...fields }) => fields), [{ event: 'open_audit', grantKind: 'open', grantState: 'spent', ownerFinals: 1, refusalCode: 'failed' }]);
   assert.equal((frame.toolResponse.functionResponses[0]!.response as Record<string, unknown>)['code'], 'failed');
   assert.equal(/Margit|Halden|deck|https?:/u.test(JSON.stringify(audit)), false, 'the audit names no target word and no address');
+});
+
+
+// C-WAKE104: real scheduler/store boundaries, synthetic clock and provider only.
+test('alarm session speaks its reminder, repeats after silence and acknowledges only its alarm', async t => {
+  const clock = new DeadlineClock();
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+  t.after(() => scheduler.stop());
+  const first = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-alarm' });
+  const other = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'other reminder', createdJournalId: 'synthetic-other' });
+  const alarm = { alarmId: first.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: first.label, ringDeadlineUtc: clock.now + 600000 };
+  const session = h.owner.create({ idempotencyKey: 'wake-104', inputClass: 'ordinary', alarm }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  await settlePort();
+  assert.match(fake.requests[0]!.system.text, /call the bank/);
+  assert.match(fake.requests[0]!.system.text, /Synthetic system/);
+  clock.now += 29999; clock.runDue();
+  assert.equal(fake.texts.length, 0);
+  clock.now += 1; clock.runDue();
+  assert.match(fake.texts[0]!, /Alarm wake reminder 1/);
+  fake.emit({ type: 'inputTranscription', text: 'mm', finished: true });
+  await settlePort();
+  assert.equal(scheduler.list().find(row => row.id === first.id)!.state, 'ringing');
+  fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
+  await settlePort();
+  assert.equal(scheduler.list().find(row => row.id === first.id)!.state, 'done');
+  assert.ok(fake.texts.some(text => text.includes('This alarm is acknowledged')));
+  assert.ok(fake.texts.every(text => text.startsWith('[host note, not the owner] ')), 'wake and acknowledgement guidance are marked host notes');
+  assert.equal(scheduler.list().find(row => row.id === other.id)!.state, 'ringing');
+  const count = fake.texts.length;
+  clock.now += 30000; clock.runDue();
+  assert.equal(fake.texts.length, count, 'acknowledgement stops wake prompts');
+  assert.equal(h.owner.current().state, 'listening', 'acknowledgement leaves the call open');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it', async t => {
+  const clock = new DeadlineClock();
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const { session, attachment } = await openPort(h, 'wake-existing');
+  const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+  t.after(() => scheduler.stop());
+  const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-live-alarm' });
+  fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
+  await settlePort();
+  assert.equal(scheduler.list()[0]!.state, 'ringing', 'speech in an unrelated call cannot acknowledge a due alarm');
+  const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true,
+    open: setup => h.owner.announceAlarm(setup)!.liveSessionId, degraded: () => assert.fail('unexpected degradation') });
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').liveSessionId, session.liveSessionId);
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').status, 'attempted');
+  assert.equal(fake.sessionsOpened, 1);
+  assert.equal(fake.texts.length, 1);
+  assert.match(fake.texts[0]!, /call the bank/);
+  assert.equal(scheduler.list()[0]!.state, 'ringing');
+  fake.emit({ type: 'inputTranscription', text: 'got it', finished: true });
+  await settlePort();
+  assert.equal(scheduler.list()[0]!.state, 'done');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('an alarm permits one provider rebuild while its ring deadline is open', async t => {
+  const clock = new DeadlineClock();
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+  t.after(() => scheduler.stop());
+  const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-rebuild' });
+  const session = h.owner.create({ idempotencyKey: 'wake-rebuild', inputClass: 'ordinary', alarm: { alarmId: alarm.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: alarm.label, ringDeadlineUtc: clock.now + 600000 } }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'goAway', timeLeftMs: 5000 });
+  await settlePort();
+  assert.equal(fake.sessionsOpened, 2);
+  fake.emit({ type: 'goAway', timeLeftMs: 5000 });
+  await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'no second rebuild');
+  clock.now += 6000; clock.runDue();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+
+test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`, calendarDigest: {
+    forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
+  await h.owner.prepareCalendar();
+  const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.match(fake.requests[0]!.system.text, /09:00 Project review/);
+  assert.ok(fake.requests[0]!.system.text.includes(NAYA_LIVE_BASE));
+  assert.match(fake.requests[0]!.system.text, /calendar digest/);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+
+for (const finalization of ['provider-empty-final', 'app-model-start'] as const) {
+  test(`alarm acknowledgement accepts accumulated speech at ${finalization}`, async t => {
+    const clock = new DeadlineClock();
+    const fake = fakeLiveVoicePort();
+    const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+    const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+    t.after(() => scheduler.stop());
+    const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-fragments' });
+    const session = h.owner.create({ idempotencyKey: finalization, inputClass: 'ordinary', alarm: { alarmId: alarm.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: alarm.label, ringDeadlineUtc: clock.now + 600000 } }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    fake.emit({ type: 'inputTranscription', text: "I'm " });
+    fake.emit({ type: 'inputTranscription', text: 'awake' });
+    await settlePort();
+    assert.equal(scheduler.list()[0]!.state, 'ringing', 'partial speech alone is not acknowledgement');
+    if (finalization === 'provider-empty-final') fake.emit({ type: 'inputTranscription', text: '', finished: true });
+    else fake.emit({ type: 'modelTurnStarted' });
+    await settlePort();
+    clock.now += 300; clock.runDue();
+    await settlePort();
+    assert.equal(scheduler.list()[0]!.state, 'done');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  });
+}
+
+test('alarm audio keeps one timer until the last-audible silence window expires', async t => {
+  const clock = new DeadlineClock();
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+  t.after(() => scheduler.stop());
+  const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-silence-window' });
+  const session = h.owner.create({ idempotencyKey: 'wake-window', inputClass: 'ordinary', alarm: { alarmId: alarm.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: alarm.label, ringDeadlineUtc: clock.now + 600000 } }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const output = attachment.output[Symbol.asyncIterator]();
+  const startedAt = clock.now;
+  const timer = [...clock.pending].find(entry => entry.due === startedAt + 30000);
+  assert.ok(timer, 'one initial silence timer');
+  for (const elapsed of [10000, 20000]) {
+    clock.now = startedAt + elapsed;
+    for (let frame = 0; frame < 10; frame++) {
+      fake.emit({ type: 'audio', pcm, rate: 24000, audible: true });
+      let chunk = await output.next();
+      while (!chunk.done && chunk.value.kind !== 'audio') chunk = await output.next();
+      assert.equal(chunk.value?.kind, 'audio', 'observe every frame before advancing the fake clock');
+    }
+    fake.emit({ type: 'turnComplete' });
+    await settlePort();
+    assert.ok(clock.pending.has(timer), 'audio updates a timestamp, not the existing timer');
+  }
+  clock.now = startedAt + 30000; clock.runDue();
+  assert.equal(fake.texts.length, 0, 'the original timer cannot nudge ten seconds after the last audio');
+  assert.equal([...clock.pending].filter(entry => entry.due === startedAt + 50000).length, 1, 'exactly one timer for remaining silence');
+  clock.now = startedAt + 49999; clock.runDue();
+  assert.equal(fake.texts.length, 0);
+  clock.now += 1; clock.runDue();
+  assert.match(fake.texts[0]!, /Alarm wake reminder 1/);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('confirmation targets the alarm announced most recently by time after a reannouncement', async t => {
+  const clock = new DeadlineClock();
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const { session, attachment } = await openPort(h, 'wake-announcement-order');
+  const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+  t.after(() => scheduler.stop());
+  const first = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'first reminder', createdJournalId: 'synthetic-first-announcement' });
+  const second = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'second reminder', createdJournalId: 'synthetic-second-announcement' });
+  const setup = { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', ringDeadlineUtc: clock.now + 600000 };
+  h.owner.announceAlarm({ ...setup, alarmId: first.id, label: first.label });
+  clock.now += 1;
+  h.owner.announceAlarm({ ...setup, alarmId: second.id, label: second.label });
+  clock.now += 1;
+  h.owner.announceAlarm({ ...setup, alarmId: first.id, label: first.label });
+  fake.emit({ type: 'inputTranscription', text: 'got it', finished: true });
+  await settlePort();
+  assert.equal(scheduler.list().find(row => row.id === first.id)!.state, 'done', 'the reannounced first alarm owns this confirmation');
+  assert.equal(scheduler.list().find(row => row.id === second.id)!.state, 'ringing');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });

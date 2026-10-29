@@ -15,6 +15,8 @@ if [ -n "$console_log" ]; then
 fi
 # Exercise the documented build producer, using the current compiler layout.
 bash scripts/run-local.sh --build-only
+# Pure fake canary records: no installed app, provider or native shell is contacted.
+node --test server/test/canary.test.mjs
 # Compile the complete shell, including its idle alarm subscription, without launching it.
 if [ "$(uname -s)" = Darwin ]; then
   (

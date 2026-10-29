@@ -1087,7 +1087,7 @@ test('finished connector reads cannot starve a shared store within one TTL', asy
             if (result.state !== 'completed') throw Error('read failed');
             assert.equal(result.payload.state, 'available');
             if (result.payload.state !== 'available') throw Error('payload missing');
-            const slice = adapter.readSlice({ ...request, handle: result.payload.handle, offset: 0, length: 97 });
+            const slice = adapter.readSlice({ ...request, handle: result.payload.handle, offset: 0, length: Math.min(97, result.payload.byteLength) });
             assert.equal(slice.state, 'available');
           }
         });

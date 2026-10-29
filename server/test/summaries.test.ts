@@ -719,7 +719,12 @@ test('research recall replay keeps named-person dialogue, offers more, and opens
     seedSession(f.store, 'past-trip');
     seedTurn(f.store, 'past-trip', 'inputTranscription', 'A synthetic introduction. '.repeat(40) + 'Mira and I chose the cobalt lighthouse for our trip.');
     seedTurn(f.store, 'past-trip', 'outputTranscription', 'I suggested bringing the violet map.');
-    f.store.transaction(tx => { tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]); backfillHistoryTurns(tx); });
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      tx.run('UPDATE live_journal SET arrived_at=?', [NOW - 86400000]);
+      tx.run('UPDATE live_sessions SET terminal_at=?', [NOW - 86400000]);
+      backfillHistoryTurns(tx);
+    });
     const reader = createHistoryReader(() => NOW);
     const scope = { ownerId: f.store.assistantId, runId: 'current-live-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
     const deps: ResearchDeps = {

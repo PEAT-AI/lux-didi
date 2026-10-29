@@ -3985,7 +3985,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
 function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
-  const live = liveSessionIds(hits, question, history);
+  const live = currentSessionId ? new Set([currentSessionId]) : liveSessionIds(hits, question, history);
   const kept = hits.filter(hit => {
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
     const sessionId = hit['sessionId'];

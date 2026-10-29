@@ -426,6 +426,7 @@ class Session implements LiveVoiceSession {
         const refused: LiveToolResponse[] = [];
         for (const call of structuredClone(calls) as LiveToolCall[]) {
           if (call.name === 'research' && this.researchCalls >= 6) {
+            this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
             refused.push({ id: call.id, name: call.name, response: {
               status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question',
             } });
@@ -437,7 +438,6 @@ class Session implements LiveVoiceSession {
         this.researchAwaitingInput = true;
         this.pendingCalls = admitted;
         if (refused.length) {
-          for (const call of refused) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: 2, intentAt: Date.now(), providerCallId: call.id });
           const delivered = this.write(JSON.stringify({ toolResponse: { functionResponses: refused } }));
           for (const call of refused) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
           if (!delivered) return;

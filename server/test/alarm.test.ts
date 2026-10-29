@@ -177,3 +177,22 @@ test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-28T14:05:00Z'));
 });
+
+for (const [words, minute] of [
+  ['set an alarm for fi twenty past five p.m.', 20],
+  ['set an alarm for um five past five p.m.', 5],
+  ['set an alarm for fi ten past five p.m.', 10],
+] as const) test(`hear104 R5 one filler before spoken time: ${words}`, () => {
+  const result = parseAlarmTime(words, now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.UTC(2026, 9, 29, 9, minute));
+});
+for (const time of [
+  '5', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+  'five past five', 'twenty past five', 'twenty-five to five', 'thirty past five', 'forty past five', 'fifty to five',
+  'quarter past five', 'half past five', 'noon', 'midnight',
+]) test(`hear104 R5 filler does not change the instant: ${time}`, () => {
+  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz);
+  assert.equal(clean.status, 'ready');
+  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz), clean);
+});

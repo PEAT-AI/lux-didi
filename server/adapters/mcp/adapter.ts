@@ -1,3 +1,4 @@
+import { currentResultScope } from './lifecycle.js';
 import { hostClockDomain, hostMonotonicMs } from '../../trace/clock.js';
 import { Client, ProtocolError, SdkError, SdkErrorCode, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -403,7 +404,11 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
   function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number, decodedResult: unknown = result): CompletedResult {
     const full = JSON.stringify(result); const text = full.slice(0, budgets.projectionChars);
     let payload: StoredPayload;
-    try { payload = options.store.put(scope, bytes); } catch { payload = { state: 'unavailable', reason: 'store-unavailable' }; }
+    try { payload = options.store.put(scope, bytes); } catch {
+      const lifecycle = currentResultScope();
+      if (lifecycle) lifecycle.failureCode = 'result_store_unavailable';
+      payload = { state: 'unavailable', reason: 'store-unavailable' };
+    }
     return {
       state, decodedResult: structuredClone(decodedResult), ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
       coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },

@@ -15,7 +15,7 @@ import { MemoryResultStore } from '../dist/adapters/mcp/store.js';
 import { noteGmailAccount } from '../dist/tools/open-handles.js';
 import { GOOGLE_TOOLS } from '../dist/connectors/google.js';
 const here = dirname(fileURLToPath(import.meta.url));
-for (const failure of ['full', 'oversize']) {
+for (const failure of ['full', 'oversize', 'success']) {
 test(`result store ${failure} is a specific owner failure and reaches the host log`, async () => {
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
@@ -59,17 +59,23 @@ test(`result store ${failure} is a specific owner failure and reaches the host l
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
     const callArgs = {};
-    const intent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
-    assert.equal(owner.journal.intent(intent), 'fresh');
     const definition = owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
     assert.ok(definition?.execute);
-    const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
-    assert.deepEqual(outcome, { status: 'failed', code: `result_store_${failure}` });
-    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw).event === 'tool_classified_failure');
-    assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
-    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: `result_store_${failure}` });
-    assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
-    assert.equal(safeEvent({ ...(rows[0]), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');
+    for (let index = 0; index < (failure === 'success' ? 40 : 1); index++) {
+      const intent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: `run:1:${index}`, toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: `call-${index}`, accountId: 'local', resourceId: 'google-fixture' };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
+      if (failure === 'success') assert.equal(outcome.status, 'completed');
+      else assert.deepEqual(outcome, { status: 'failed', code: `result_store_${failure}` });
+    }
+    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && raw.event === 'tool_classified_failure');
+    if (failure === 'success') assert.deepEqual(rows, []);
+    else {
+      assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
+      assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: `result_store_${failure}` });
+      assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits every closed field');
+      assert.equal(safeEvent({ ...rows[0], args: { q: 'synthetic' } }), undefined);
+    }
   } finally {
     detach();
     await adapter.close();

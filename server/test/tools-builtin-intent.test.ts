@@ -143,11 +143,14 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   for (const entry of cases) {
     for (const words of entry.words) { noteOwnerWords(session.liveSessionId, words); owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now()); }
     const args = { kind: entry.kind, target: entry.target };
-    const execute = async (): Promise<unknown> => {
-      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: web.name,
-        argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: web.accountId, resourceId: web.resourceId };
-      assert.equal(owner.journal.intent(intent), 'fresh');
-      return web.execute(args, { ...intent, signal });
+    const execute = async () => {
+      const batch = await runToolCalls(owner, [{ id: randomUUID(), name: 'open_web', args }], {
+        registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
+        authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 },
+        step: 0, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+      });
+      assert.equal(batch.error, undefined);
+      return batch.accepted.map(entry => entry.response);
     };
     const first = await execute();
     assert.equal(JSON.stringify(first).includes('"code":"opened"'), true, `${entry.kind}: ${JSON.stringify(first)}`);

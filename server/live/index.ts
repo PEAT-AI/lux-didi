@@ -1060,11 +1060,11 @@ const MEMORY_STOP_WORDS = new Set(['i', 'my', 'me', 'a', 'an', 'to', 'on', 'is',
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
   'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
   'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
-// Third-person framing is not note content: "Rob prefers", "he wants" and "the owner" say who the
+// Third-person framing is not note content: "The owner prefers", "he wants" and "the owner" say who the
 // note is about, and the owner never speaks their own name. Only the SUBJECT is dropped: the verb stays
 // a content word, because the verb is the word that says which way the owner feels.
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
-const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
+const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|he|she|they|i)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
 /** The provider's deltas joined up to the closing boundary of one journal kind: never one fragment. */
 function finishedUtterance(tx: Transaction, liveSessionId: string, kind: 'inputTranscription' | 'outputTranscription'): string {

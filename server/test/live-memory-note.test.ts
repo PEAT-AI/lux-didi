@@ -80,19 +80,19 @@ const LONG_TURN = 'rob prefers short answers in the morning and no meetings befo
 test('a paraphrased note supported by a long delta-assembled owner turn is remembered', async t => {
   assert.ok(LONG_TURN.length > 100, 'the owner turn arrives as more than 100 deltas');
   const store = liveSession(t, deltas(LONG_TURN));
-  const result = await remember(store, 'Rob prefers short answers in the morning');
+  const result = await remember(store, 'The owner prefers short answers in the morning');
   assert.equal(result.remembered, true, 'the paraphrase is supported by the owner turn');
   const stored = entry(store, result.entryId);
-  assert.equal(stored.text, 'Rob prefers short answers in the morning', 'the model note text is what is stored, not the raw delta soup');
+  assert.equal(stored.text, 'The owner prefers short answers in the morning', 'the model note text is what is stored, not the raw delta soup');
   assert.match(String(stored.externalId), new RegExp(`^${SESSION}:\\d+:[0-9a-f]{8}$`), 'the supporting owner turn journal seq and a note discriminator are the provenance');
 });
 
 test('a note whose content only appears in the model output transcript is refused', async t => {
   const store = liveSession(t, [
     { text: 'what is worth remembering here', finished: true },
-    { kind: 'outputTranscription', text: 'Rob prefers short answers in the morning', finished: true },
+    { kind: 'outputTranscription', text: 'The owner prefers short answers in the morning', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a note copied from a tool result is refused', async t => {
@@ -109,22 +109,22 @@ test('unsupported content refuses even when most words match', async t => {
 
 test('an owner turn older than the ten minute window is refused', async t => {
   const store = liveSession(t, deltas(LONG_TURN, NOW - 11 * MINUTE));
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('the same supporting owner turn is remembered once', async t => {
   const store = liveSession(t, deltas(LONG_TURN));
-  const first = await remember(store, 'Rob prefers short answers in the morning');
+  const first = await remember(store, 'The owner prefers short answers in the morning');
   assert.equal(first.remembered, true);
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'already_remembered', entryId: first.entryId });
+  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning')), { remembered: false, code: 'already_remembered', entryId: first.entryId });
 });
 
 const SHARED_TURN = 'rob prefers short answers in the morning and takes the early train to the office on tuesdays';
 
 test('two distinct notes supported by the same owner turns are both stored', async t => {
   const store = liveSession(t, [{ text: SHARED_TURN, finished: true }]);
-  const first = await remember(store, 'Rob prefers short answers in the morning');
-  const second = await remember(store, 'Rob takes the early train to the office on tuesdays');
+  const first = await remember(store, 'The owner prefers short answers in the morning');
+  const second = await remember(store, 'The owner takes the early train to the office on tuesdays');
   assert.equal(first.remembered, true);
   assert.equal(second.remembered, true, 'a second distinct note over the same owner turns is kept, not refused');
   assert.notEqual(second.entryId, first.entryId);
@@ -137,8 +137,8 @@ test('forgetting one of two notes from the same turns leaves the other, and it s
   const session = '7f2f4a1e-0d3c-4a7a-9d3e-0e5b1c2d3f40';
   const path = dir(t);
   let store = openSession(path, [{ text: SHARED_TURN, finished: true }], session);
-  const first = await remember(store, 'Rob prefers short answers in the morning', NOW, session);
-  const second = await remember(store, 'Rob takes the early train to the office on tuesdays', NOW, session);
+  const first = await remember(store, 'The owner prefers short answers in the morning', NOW, session);
+  const second = await remember(store, 'The owner takes the early train to the office on tuesdays', NOW, session);
   assert.equal(first.remembered, true);
   assert.equal(second.remembered, true);
   store.transaction(tx => memory.deleteEntry(tx, String(first.entryId), new Date(NOW).toISOString(), 'principal-a'));
@@ -150,7 +150,7 @@ test('forgetting one of two notes from the same turns leaves the other, and it s
   t.after(() => store.close());
   assert.ok(store.transaction(tx => tx.get('SELECT 1 AS one FROM entries WHERE id=?', [String(second.entryId)])),
     'the other note survives the reopen');
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning', NOW, session)),
+  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning', NOW, session)),
     { remembered: false, code: 'already_remembered', entryId: first.entryId }, 'the forgotten note stays forgotten');
 });
 
@@ -162,7 +162,7 @@ test('a note the owner marked private stays refused', async t => {
 test('a third-person paraphrase of one owner sentence is stored', async t => {
   // The owner never says their own name: "Rob" and "prefers" are framing the note adds, not content.
   const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword', finished: true }]);
-  const result = await remember(store, 'Rob prefers tea and the crossword');
+  const result = await remember(store, 'The owner prefers tea and the crossword');
   assert.equal(result.remembered, true, 'the note\'s content words are the owner\'s own');
 });
 
@@ -187,7 +187,7 @@ test('a note combining words from no owner turn is still refused', async t => {
 test('a note that negates what the owner affirmed is refused', async t => {
   // Every content word is spoken, but the claim is the opposite one: the ratio cannot see polarity.
   const store = liveSession(t, [{ text: 'i want the tuesday plumber to come with a ladder', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Rob does not want the tuesday plumber to come with a ladder')),
+  assert.deepEqual(refusal(await remember(store, 'The owner does not want the tuesday plumber to come with a ladder')),
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
@@ -207,45 +207,45 @@ test('a note stitched across a completed answer is refused', async t => {
 test('a note that turns the owner\'s love into hate is refused', async t => {
   // The polarity verb is the word the note must be supported by, so it cannot be framing.
   const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Rob hates brussels sprouts')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'The owner hates brussels sprouts')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a contracted negation in the owner\'s ask is read as negation', async t => {
   // "don't" tokenizes to don and t; a negation the reader cannot see is a flip it cannot refuse.
   const store = liveSession(t, [{ text: "i don't want the tuesday plumber to come with a ladder", finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Rob wants the tuesday plumber to come with a ladder')),
+  assert.deepEqual(refusal(await remember(store, 'The owner wants the tuesday plumber to come with a ladder')),
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a note keeping the owner\'s own preference verb still stores', async t => {
   // The positive control: retaining the verb must not make an honest paraphrase fail.
   const store = liveSession(t, [{ text: 'i prefer short answers in the morning', finished: true }]);
-  assert.equal((await remember(store, 'Rob prefers short answers in the morning')).remembered, true);
+  assert.equal((await remember(store, 'The owner prefers short answers in the morning')).remembered, true);
 });
 
 test('a short ordinary note stores against the preference the owner stated', async t => {
   // The owner's defect: a two-word-ish note was refused because "prefers" is not "prefer". The
   // polarity verb decides direction, not support, so it must not dilute the ratio either.
   const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
-  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+  assert.equal((await remember(store, 'The owner prefers tea')).remembered, true);
 });
 
 test('the same short note stores when the owner stated it without a preference verb', async t => {
   // The reviewer's second acceptance payload: "just tea for me first thing" says nothing about
   // preference, so the note's verb must not be refused for want of a matching one.
   const store = liveSession(t, [{ text: 'just tea for me first thing', finished: true }]);
-  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+  assert.equal((await remember(store, 'The owner prefers tea')).remembered, true);
 });
 
 test('that same short note is still refused when it flips the preference', async t => {
   // The paired guard: with the verb out of the ratio the support is 1 of 1, so only polarity refuses.
   const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Rob hates tea')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'The owner hates tea')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers tea and the crossword')), { remembered: false, code: 'owner_transcript_not_final' });
+  assert.deepEqual(refusal(await remember(store, 'The owner prefers tea and the crossword')), { remembered: false, code: 'owner_transcript_not_final' });
 });
 
 test('the memory_note receipt is a closed shape of counts and no text', async () => {
@@ -392,4 +392,10 @@ test('unfinished owner words cannot authorize memory', t => {
   const store = liveSession(t, [{ text: 'Remember my blue desk.', finished: false }]);
   t.after(() => store.close());
   assert.equal(remember(store, 'My blue desk.').remembered, false);
+});
+
+test('a personal name cannot be invented as third-person framing', t => {
+  const store = liveSession(t, [{ text: 'Remember I prefer quiet mornings.' }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'Zelda prefers quiet mornings.').remembered, false);
 });

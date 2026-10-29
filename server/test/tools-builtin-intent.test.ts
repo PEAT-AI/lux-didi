@@ -97,7 +97,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const openCases = [
     { name: 'open_source', args: { handle }, ask: 'open this email in my browser' },
     { name: 'open_home', args: { app: 'gmail' }, ask: 'open my gmail' },
-    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open this local file' },
+    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open the local file ~/synthetic' },
     { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
     { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
   ];

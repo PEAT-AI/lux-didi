@@ -39,11 +39,10 @@ export class OwnerRequests implements OwnerRequestPort {
     const grants = new Map<ActionKind, Grant>();
     // Finalized owner input is authority for non-destructive tools, not a phrase grammar.
     for (const kind of ['open', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
-    // Saving notes keeps its separate admission policy.
-    const note = /\b(?:save|remember)\b|\b(?:note|write|put)\b[^.!?]*\blux\b/i.exec(words);
-    if (note && !/\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)[\s,]*$/i.test(words.slice(0, note.index))) grants.set('lux_note', {});
+    grants.set('lux_note', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
       previous.words = words.startsWith(previous.words) ? words : `${previous.words} ${words}`.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
+      previous.answered = false;
       previous.finals++; previous.journalId = journalId;
       for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
       delete previous.pending;
@@ -59,7 +58,7 @@ export class OwnerRequests implements OwnerRequestPort {
     if (!request || request.answered && !request.pending) return { code: 'no_owner_request' };
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
-    if (kind === 'lux_note' && (age < 0 || age > 120000)) return { ...common, code: 'request_expired' };
+    if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
     const negations = /\b(?:don['’]?t|do not|never|no need to)\s+([^.!?]*)/gi;
     for (const match of request.words.matchAll(negations)) {
       const clause = match[1]!;
@@ -67,7 +66,8 @@ export class OwnerRequests implements OwnerRequestPort {
         : kind === 'set_alarm' ? /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b/i.test(clause)
         : kind === 'cancel_alarm' ? /\b(?:cancel|stop)\b/i.test(clause)
         : kind === 'snooze_alarm' ? /\bsnooze\b/i.test(clause)
-        : kind === 'list_alarms' ? /\b(?:list|show)\b.*\balarm/i.test(clause) : false;
+        : kind === 'list_alarms' ? /\b(?:list|show)\b.*\balarm/i.test(clause)
+        : kind === 'lux_note' ? /\b(?:save|remember|note|write|put)\b/i.test(clause) : false;
       if (negated) return { ...common, code: 'no_owner_request' };
     }
     const authority = request.grants.get(kind);
@@ -137,7 +137,7 @@ export class OwnerRequests implements OwnerRequestPort {
   sources(session: string): Record<string, number> { return { ...this.requests.get(session)?.sources }; }
   audit(session: string, kind: ActionKind): { ownerFinals: number; requestAgeMs: number; grantKind: ActionKind; grantState: string } {
     const request = this.requests.get(session);
-    const grant = request?.grants.get(kind);
+    const grant = this.authorize(session, kind, '').code === 'no_owner_request' ? undefined : request?.grants.get(kind);
     return { ownerFinals: request?.finals ?? 0, requestAgeMs: request ? Math.max(0, Math.round(this.clock() - request.start)) : 0,
       grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined || [...(grant.targets?.values() ?? [])].some(target => target.target !== undefined) ? 'spent' : 'available' };
   }

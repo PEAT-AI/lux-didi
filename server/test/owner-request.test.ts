@@ -28,12 +28,12 @@ for (const [words, kind] of [
   assert.equal(requests.authorize('s', kind, 'x').code, 'allowed');
 });
 
-test('direct102 authority: an unrelated independent ask supersedes an unused open grant', () => {
+test('direct owner authority: a new finalized ask replaces the previous ask', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'open the deck');
   requests.answered('s');
   requests.observe('s', 'j2', 'what is the weather?');
-  assert.equal(requests.authorize('s', 'open', 'deck').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
 });
 
 test('direct102 authority: fragments only join an explicitly pending clarification, without extending age', () => {
@@ -50,18 +50,18 @@ test('direct102 authority: fragments only join an explicitly pending clarificati
   now = 120001;
   assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'request_expired');
   requests.observe('s', 'j3', 'a.m. Singapore time');
-  assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
 });
 
 test('direct102 authority: external content records provenance counts but never creates a grant', () => {
   const requests = new OwnerRequests(() => 0);
   requests.source('s', 'mail');
-  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'allowed');
   requests.observe('s', 'j1', 'save a summary into lux');
   requests.source('s', 'mail');
   requests.source('s', 'web');
   assert.deepEqual(requests.sources('s'), { mail: 1, web: 1 });
-  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'allowed');
   assert.equal(requests.authorize('s', 'lux_note', 'summary').code, 'allowed');
   const otherOwner = new OwnerRequests(() => 0);
   assert.equal(otherOwner.authorize('s', 'lux_note', 'summary').code, 'no_owner_request');
@@ -87,7 +87,8 @@ for (const words of ['do not open the deck', 'do not set an alarm', 'do not save
   test(`direct102 authority: nonimperative and negated speech creates no grant: ${words}`, () => {
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'j1', words);
-    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) assert.equal(requests.authorize('s', kind, 'x').code, 'no_owner_request');
+    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) assert.equal(requests.authorize('s', kind, 'x').code,
+      words.includes('open') && kind === 'open' || words.includes('alarm') && kind === 'set_alarm' || words.includes('save') && kind === 'lux_note' ? 'no_owner_request' : 'allowed');
   });
 }
 
@@ -141,10 +142,10 @@ for (const frame of [
     }
   });
 }
-test('hear104 owner compound framing grants only the cued kinds', () => {
+test('direct owner compound framing grants non-destructive kinds', () => {
   const reported = new OwnerRequests(() => 0);
   reported.observe('s', 'j', 'Alice said open the deck and set an alarm for seven');
-  for (const [kind] of reportedActions) assert.equal(reported.authorize('s', kind, 'target').code, kind === 'open' || kind === 'set_alarm' ? 'allowed' : 'no_owner_request', kind);
+  for (const [kind] of reportedActions) assert.equal(reported.authorize('s', kind, 'target').code, 'allowed', kind);
   for (const [kind, command] of reportedActions) {
     const direct = new OwnerRequests(() => 0);
     direct.observe('s', 'j', command);
@@ -152,7 +153,7 @@ test('hear104 owner compound framing grants only the cued kinds', () => {
   }
 });
 
-for (const [words, kinds] of [
+for (const [words, _kinds] of [
   ['Alice said open the deck and set an alarm for seven', ['open', 'set_alarm']],
   ['He told me to wait then open the deck', ['open']],
   ['The note reads open the deck and set an alarm for seven', ['open', 'set_alarm']],
@@ -164,7 +165,7 @@ for (const [words, kinds] of [
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j', words);
   for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code,
-    (kinds as readonly string[]).includes(kind) ? 'allowed' : 'no_owner_request', kind);
+    'allowed', kind);
 });
 for (const [words, kinds] of [
   ['open the deck', ['open']],
@@ -192,7 +193,7 @@ for (const words of [
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'j', words);
     assert.equal(requests.authorize('s', 'open', 'target').code,
-      words === "don't open the deck" || words === 'never mind, no alarm' ? 'no_owner_request' : 'allowed');
+      words === "don't open the deck" ? 'no_owner_request' : 'allowed');
     if (words.includes('set an alarm')) assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
   });
 }

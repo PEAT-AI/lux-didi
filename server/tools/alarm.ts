@@ -44,6 +44,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (parts.length === 2 && !(parts[0] === 'oh' || (values[parts[0]!]! >= 20 && values[parts[1]!]! < 10))) return NaN;
     return parts.reduce((sum, part) => sum + values[part]!, 0);
   };
+  text = text.replace(/\b([ap]m)(?:\s+\1)+\b/g, '$1');
   // Find time expressions independently of the owner's action wording.
   const temporal = new RegExp(`\\b(?:in\\s+)?(?:\\d{1,2}|${Object.keys(values).join('|')}|half|quarter|noon|midnight)\\b`);
   const first = temporal.exec(text);

@@ -672,7 +672,7 @@ test('recall ranks concrete words, centres a late match, pairs speech and exclud
       tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
       backfillHistoryTurns(tx);
       const reader = createHistoryReader(() => NOW);
-      const scope = { ownerId: f.store.assistantId, runId: 'current-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
+      const scope = { ownerId: f.store.assistantId, runId: 'different-research-run', currentSessionId: 'current-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
       const page = reader.read(tx, scope, { query: 'what did we talk about yesterday about the trip lighthouse' }).response;
       const hits = page.hits as Array<Record<string, unknown>>;
       assert.equal(hits.length, 1);
@@ -786,4 +786,28 @@ test('startup captures legacy speech before pruning and explicit session reads p
       assert.equal(reader.read(tx, { ...scope, allowedClasses: ['ordinary'] }, { recordRef: 'session:startup-legacy' }).response.status, 'history_reference_unavailable');
     });
   } finally { reopened?.close(); f.cleanup(); }
+});
+
+
+test('F4: explicit Live identity excludes current speech and summary before all five past slots', () => {
+  const f = open();
+  try {
+    for (const id of ['active-call', 'past-1', 'past-2', 'past-3', 'past-4', 'past-5']) {
+      seedSession(f.store, id);
+      seedTurn(f.store, id, 'inputTranscription', id === 'active-call' ? 'lighthouse lighthouse lighthouse' : 'We discussed the lighthouse for a synthetic fixture.');
+    }
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      summaries.insertSummary(tx, { liveSessionId: 'active-call', status: 'complete', summary: 'Current lighthouse summary.', endedAt: NOW, now: NOW });
+      backfillHistoryTurns(tx);
+      const reader = createHistoryReader(() => NOW);
+      const scope = { ownerId: f.store.assistantId, runId: 'distinct-research-run', currentSessionId: 'active-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
+      const page = reader.read(tx, scope, { query: 'lighthouse' }).response;
+      const hits = page.hits as Array<Record<string, unknown>>;
+      assert.equal(hits.length, 5);
+      assert.equal(page.totalMatches, 5);
+      assert.deepEqual(hits.map(hit => hit.sessionId).sort(), ['past-1', 'past-2', 'past-3', 'past-4', 'past-5']);
+      assert.equal(reader.read(tx, scope, { recordRef: 'session:active-call' }).response.status, 'history_reference_unavailable');
+    });
+  } finally { f.cleanup(); }
 });

@@ -937,7 +937,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             exactIntent(tx, expected);
             const accepted = validateCallRun(tx, call).acceptance;
             const conversation = chatRun(tx, call.runId);
-            const read = historyReader.read(tx, { ownerId, runId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
+            const read = historyReader.read(tx, { ownerId, runId: call.runId, currentSessionId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
               routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
             const response = redactSecretsWithCount(read.response).value;
             return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });

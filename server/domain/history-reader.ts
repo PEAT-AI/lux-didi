@@ -126,10 +126,10 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
     if (value.text.trim()) records.push(value);
   };
   for (const row of tx.all('SELECT id FROM entries ORDER BY id')) admit(entryValue(tx, String(row.id)));
-  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? scope.runId])) admit(summaryValue(tx, String(row.id), eligibility));
+  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? ''])) admit(summaryValue(tx, String(row.id), eligibility));
   const terms = recallTerms(query);
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
-  const current = scope.currentSessionId ?? scope.runId;
+  const current = scope.currentSessionId ?? '';
   const hits = !tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'") ? [] : expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
     JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id JOIN live_sessions l ON l.live_session_id=t.live_session_id
     WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<?
@@ -188,7 +188,7 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
       if (!stored && args.recordRef?.startsWith('session:')) {
         const id = args.recordRef.slice('session:'.length);
         const value = liveValue(tx, scope.ownerId, id);
-        if (value && id !== (scope.currentSessionId ?? scope.runId) && scope.allowedClasses.includes(value.ref.dataClass)) {
+        if (value && id !== (scope.currentSessionId ?? '') && scope.allowedClasses.includes(value.ref.dataClass)) {
           const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS,
             sources: [value.ref], references: [args.recordRef], coverage: { transcripts: 'automatic_transcription_not_verbatim_audio' }, limit: 1, snippets: [] };
           stored = { snapshot, index: 0, offset: 0, detail: true };

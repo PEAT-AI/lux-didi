@@ -437,6 +437,7 @@ class Session implements LiveVoiceSession {
         this.researchAwaitingInput = true;
         this.pendingCalls = admitted;
         if (refused.length) {
+          for (const call of refused) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: 2, intentAt: Date.now(), providerCallId: call.id });
           const delivered = this.write(JSON.stringify({ toolResponse: { functionResponses: refused } }));
           for (const call of refused) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
           if (!delivered) return;

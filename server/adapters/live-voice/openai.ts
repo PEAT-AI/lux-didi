@@ -1512,7 +1512,7 @@ class Session implements LiveVoiceSession {
       this.recordCommand(outputId, 'tool_out');
       // O1b-A: the result the host produced is executed and prepared here, before the wire sees it.
       const preparedAt = this.clock.now();
-      this.receipt('call.executed', this.callIds(call.id), { executedAt: preparedAt });
+      if (response['reason'] !== 'research_cap_reached') this.receipt('call.executed', this.callIds(call.id), { executedAt: preparedAt });
       this.receipt('call.output_prepared', this.callIds(call.id), { outputPreparedAt: preparedAt });
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));

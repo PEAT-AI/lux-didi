@@ -766,3 +766,24 @@ test('Text body owner integration: independent parents, unknown and cross-run cu
   const crossed = await runToolCalls(f.owner, [{ id: 'cross-run', name: 'read_received_body', args: { cursor: f.cursor } }], { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, step: 1, contentIndex: 0, seenIds: new Set(), authorize: true, baseClasses: ['ordinary'] });
   assert.equal(crossed.tools[0]!.status, 'refused'); assert.equal(crossed.error, undefined); assert.equal(f.calls.length, 2);
 });
+
+for (const effect of ['read', 'write'] as const) {
+  test(`a handler that throws outside its own catch writes one closed tool_handler_error line: ${effect}`, async t => {
+    const f = await fixture(t);
+    const lines: Record<string, unknown>[] = [];
+    const detach = attachHostLogSink({ event: raw => { lines.push(raw as Record<string, unknown>); } });
+    t.after(detach);
+    const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
+    const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', limit: 1 } }], {
+      registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: 'account', resourceId: 'resource' }] },
+      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
+      seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
+    });
+    assert.equal(batch.tools[0]?.status, effect === 'write' ? 'unknown' : 'failed');
+    const logged = lines.filter(line => line['event'] === 'tool_handler_error');
+    assert.equal(logged.length, 1);
+    assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: throwing.name, class: 'TypeError', reason: 'handler_outcome' });
+    assert.equal(JSON.stringify(logged).includes('synthetic handler failure'), false, 'the exception message is not diagnostic payload');
+  });
+}

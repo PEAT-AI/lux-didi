@@ -63,6 +63,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
   };
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  for (const enabled of [undefined, true, false]) {
+    const surface = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), enabled);
+    assert.equal(surface.some(tool => tool.name === 'stage_lux_note'), enabled !== false, 'an explicit owner feature disable remains authoritative');
+  }
   assert.ok(live.some(tool => tool.name === 'stage_lux_note'), 'stage owns its own registry intent name');
   assert.equal(live.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false, 'retired write tools are not catalog capabilities');
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(live.some(tool => tool.name === name), `registered ${name}`);

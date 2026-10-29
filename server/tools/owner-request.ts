@@ -41,7 +41,10 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const kind of ['open', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
     grants.set('lux_note', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
-      previous.words = words.startsWith(previous.words) ? words : `${previous.words} ${words}`.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
+      const combined = (words.startsWith(previous.words) ? words : `${previous.words} ${words}`).replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
+      const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
+      if (!relative.test(previous.words) && relative.test(combined)) previous.observedAt = observedAt;
+      previous.words = combined;
       previous.answered = false;
       previous.finals++; previous.journalId = journalId;
       for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);

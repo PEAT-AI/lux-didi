@@ -162,7 +162,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     const suffix = relative ? '' : `${! /\b[ap]m\b/.test(expression) ? periods[0] ?? '' : ''} ${day}`;
     const parsed = parseSingleAlarmTime(`${relative ? '' : 'at '}${expression.replace(/^(?:at|on|for)\s+/, '')} ${suffix} ${zone}`.trim(), now, tz, modelAt);
     if (parsed.status !== 'ready') return parsed;
-    if (agreed && Math.abs(agreed.fireAtUtc - parsed.fireAtUtc) > 1000) return { status: 'clarify', reason: 'unsupported_time_expression' };
+    if (agreed && Math.floor(agreed.fireAtUtc / 60000) !== Math.floor(parsed.fireAtUtc / 60000)) return { status: 'clarify', reason: 'unsupported_time_expression' };
     agreed = parsed;
   }
   return agreed ?? direct;

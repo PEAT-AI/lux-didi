@@ -709,7 +709,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
-    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
+    const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const cutoff = Date.now() - days * DAY_MS;
     const scored: { item: AttentionItem; at: number }[] = [];
     const seen = new Set<string>();
@@ -915,7 +915,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // asks about Ada, and searching either finds every post the owner ever wrote (F2: the display name too).
     const asked = withoutOwner(query, who.owner.username, who.owner.displayName);
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
-    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
+    const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };
     const span = window.to === undefined ? ` since ${window.from}` : window.to === window.from ? ` on ${window.from}` : ` from ${window.from} to ${window.to}`;
     const about = asked === '' ? '' : `, about ${asked}`;
@@ -1003,7 +1003,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           rows = folded;
         }
       } else {
-        const channels = await loadChannels(signal);
+        const channels = await loadChannels(signal, capture);
         if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
         const wanted = key.split(' ');
         rows = channels.filter(channel => channel.type !== 'D' && channel.type !== 'G').filter(channel => {

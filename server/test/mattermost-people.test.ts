@@ -776,7 +776,7 @@ test('recency person reads use empty query and do not inherit a channel', async 
 test('discussion noun asks and product mishearings route to chat, not unrelated research', () => {
   for (const question of ['recent discussions with Ada', 'Ada discussions', 'check metamorph', 'check MetaMask']) {
     assert.equal(chatAsk(question), true, question);
-    assert.equal(chatIntent(question).kind === 'topic-search' && !/meta/iu.test(question), false, question);
+    assert.equal(chatIntent(question, { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' }).kind === 'topic-search' && !/meta/iu.test(question), false, question);
   }
   for (const question of ['recent news from Acme', 'mask this image', 'metamorphic rocks']) assert.equal(chatAsk(question), false, question);
 });

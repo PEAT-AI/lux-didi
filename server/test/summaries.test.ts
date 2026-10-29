@@ -111,7 +111,8 @@ test('the distillation prompt is the authored verbatim constant and output parse
   assert.ok(prompt.includes('the owner said'));
   assert.ok(prompt.includes('Tool outcomes come only from the Tool outcomes block below'));
   assert.ok(prompt.includes("never by Mira's spoken explanation of it"));
-  assert.ok(prompt.endsWith('Set skip to true when nothing worth remembering happened.'));
+  assert.ok(prompt.includes('Set skip to true only for calls consisting entirely of small talk or app tests.'));
+  assert.ok(prompt.includes('A substantive story, decision or discussion must be summarised'));
   assert.deepEqual(parseDistillationResult('```json\n{"skip": false, "summary": "the owner said hello"}\n```'),
     { skip: false, summary: 'the owner said hello', openLoop: null });
   assert.equal(parseDistillationResult('no json here'), null);
@@ -122,7 +123,7 @@ test('the input cap keeps the first 4000 and last 20000 characters and marks the
   const input = buildDistillationInput({ assistantName: 'Naya', turns: [{ speaker: 'owner', text: 'O'.repeat(30_000) }], toolNames: [], dateMs: NOW, timeZone: 'UTC', injected: [] });
   assert.equal(input.truncated, true);
   assert.ok(input.text.startsWith('Session date:'));
-  assert.ok(input.text.includes('[... transcript shortened ...]'));
+  assert.ok(input.text.includes('middle of conversation omitted; opening 4000 and ending 20000 characters retained'));
   assert.deepEqual(capDistillationInput('small'), { text: 'small', truncated: false });
 });
 
@@ -654,6 +655,57 @@ test('Store permits only the FTS read-only data_version pragma', () => {
       assert.throws(() => tx.run('PRAGMA journal_mode=DELETE'), /authoriz/i);
       assert.throws(() => tx.run('PRAGMA writable_schema=ON'), /authoriz/i);
       assert.throws(() => tx.run('PRAGMA data_version=1'), /authoriz/i);
+    });
+  } finally { f.cleanup(); }
+});
+
+test('recall ranks concrete words, centres a late match, pairs speech and excludes the current call', () => {
+  const f = open();
+  try {
+    for (const id of ['trip-answer', 'filler', 'current-call']) seedSession(f.store, id);
+    seedTurn(f.store, 'trip-answer', 'inputTranscription', 'Unrelated opening. '.repeat(40) + 'The cobalt lighthouse is our trip destination.');
+    seedTurn(f.store, 'trip-answer', 'outputTranscription', 'We will bring the violet map.');
+    seedTurn(f.store, 'filler', 'inputTranscription', 'What did we talk about yesterday? '.repeat(50));
+    seedTurn(f.store, 'current-call', 'inputTranscription', 'The cobalt lighthouse is our trip destination.');
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      backfillHistoryTurns(tx);
+      const reader = createHistoryReader(() => NOW);
+      const scope = { ownerId: f.store.assistantId, runId: 'current-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
+      const page = reader.read(tx, scope, { query: 'what did we talk about yesterday about the trip lighthouse' }).response;
+      const hits = page.hits as Array<Record<string, unknown>>;
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]?.sessionId, 'trip-answer');
+      assert.match(String(hits[0]?.snippet), /Owner:.*cobalt lighthouse/s);
+      assert.match(String(hits[0]?.snippet), /Naya: We will bring the violet map/);
+      assert.equal(hits[0]?.truncated, true);
+      const detail = reader.read(tx, scope, { recordRef: String(hits[0]?.recordRef) }).response;
+      assert.match(String(detail.text), /^Owner: Unrelated opening/);
+      assert.match(String(detail.text), /Naya: We will bring the violet map/);
+      const freshRun = { ...scope, runId: 'later-research-run', conversationId: 'same-call' };
+      const issued = reader.read(tx, freshRun, { query: 'lighthouse' }).response.hits as Array<Record<string, unknown>>;
+      assert.equal(reader.read(tx, { ...freshRun, runId: 'third-research-run' }, { recordRef: String(issued[0]?.recordRef) }).response.status, 'ok');
+    });
+  } finally { f.cleanup(); }
+});
+
+test('a skipped summary retains finished speech but never tools or unfinished fragments', () => {
+  const f = open();
+  try {
+    seedSession(f.store, 'skipped-story');
+    seedTurn(f.store, 'skipped-story', 'inputTranscription', 'The synthetic journey crossed the violet valley.');
+    seedTurn(f.store, 'skipped-story', 'outputTranscription', 'I suggested the northern path.');
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      summaries.insertSummary(tx, { liveSessionId: 'skipped-story', status: 'skipped', skipReason: 'model_skip', endedAt: NOW, now: NOW });
+      tx.run("INSERT INTO live_journal(live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES(?,'toolResult',?,1,1,?)", ['skipped-story', 'Tool-only secret fixture', NOW]);
+      tx.run("INSERT INTO live_journal(live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES(?,'inputTranscription',?,0,1,?)", ['skipped-story', 'unfinished fixture', NOW]);
+      assert.equal(backfillHistoryTurns(tx), 2);
+      const rows = tx.all('SELECT text FROM history_turns');
+      assert.equal(rows.length, 2);
+      assert.doesNotMatch(JSON.stringify(rows), /Tool-only|unfinished/);
+      const result = createHistoryReader(() => NOW).read(tx, { ownerId: f.store.assistantId, runId: 'other-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] }, { query: 'violet valley' });
+      assert.match(JSON.stringify(result.response), /synthetic journey/);
     });
   } finally { f.cleanup(); }
 });

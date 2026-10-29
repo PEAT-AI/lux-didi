@@ -703,7 +703,7 @@ struct RootView: View {
     private var loginLaunch = false
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
-    private let quitDeadline = NativeQuitDeadline()
+    private let quitDeadline = NativeQuitDeadline.shared
     /// The one owner of the visible surface (#311). Every entry point (Dock
     /// click, hotkey, orb click, mode button, close) reports through it, so no
     /// sequence leaves two surfaces on screen.
@@ -1552,9 +1552,10 @@ struct RootView: View {
         let first = quitDeadline.request(schedule: { seconds, fire in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds, execute: fire)
         }, forced: { stage in
+            NativeHostProcessRegistry.shared.forceStop(pid: NativeQuitDeadline.shared.ownedChildPID)
             logger.error("quit_forced stage=\(stage.rawValue, privacy: .public)")
             // No MainActor hop or AppKit callback: even a wedged executor cannot hold Quit.
-            // The OS releases audio and closes host stdin, preserving its existing EOF drain.
+            // The owned host has received bounded TERM/KILL; the OS releases native audio.
             Darwin._exit(EXIT_SUCCESS)
         })
         if first {

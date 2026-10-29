@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import AppKit
 import Darwin
+import OSLog
 import Security
 
 // Probe failures retain a status-only cause while the service boundary still reports invalidNode.
@@ -182,6 +183,7 @@ struct OwnedServiceConnection {
     }
     private func observeStop(_ owned: OwnedServiceChild) {
         guard owned.pid > 0, !owned.isRunning else { return }
+        NativeHostProcessRegistry.shared.stopped(pid: owned.pid)
         lastStop = ["requested": true, "observedExited": true, "pid": Int(owned.pid),
                     "exitStatus": Int(owned.process.terminationStatus),
                     "terminationReason": owned.process.terminationReason == .exit ? "exit" : "uncaughtSignal",
@@ -373,6 +375,10 @@ struct OwnedServiceConnection {
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
+            let pidfile = stateURL.appendingPathComponent("owned-host.json")
+            let executable = runtime.node
+            try await Task.detached { try NativeHostProcessRegistry.recover(file: pidfile, executable: executable) }.value
+            guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             lastStage = "node-probe"
             diagnosticStage = .nodeProbe
             try await probeNode()
@@ -407,6 +413,8 @@ struct OwnedServiceConnection {
                 if let ownerProfilePath = settings.ownerProfilePath { hostArguments.append(contentsOf: ["--owner-profile", ownerProfilePath.path]) }
             }
             try owned.launch(executable: runtime.node, arguments: hostArguments)
+            try NativeHostProcessRegistry.shared.spawned(pid: owned.pid, executable: runtime.node,
+                file: stateURL.appendingPathComponent("owned-host.json"))
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
             lastStage = "ready-frame"
@@ -480,5 +488,103 @@ struct OwnedServiceConnection {
         if let proofGrace = shutdownGraceForProof { grace = proofGrace }
         #endif
         if let child { await child.stop(graceNanoseconds: grace); observeStop(child); self.child = nil }
+    }
+}
+
+struct NativeHostIdentity: Codable, Equatable, Sendable {
+    let executable: String
+    let startedSeconds: UInt64
+    let startedMicroseconds: UInt64
+
+    static func read(_ pid: Int32) -> NativeHostIdentity? {
+        guard pid > 1 else { return nil }
+        var path = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return nil }
+        var info = proc_bsdinfo()
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == Int32(MemoryLayout<proc_bsdinfo>.size) else { return nil }
+        let executable = URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath().path
+        return NativeHostIdentity(executable: executable, startedSeconds: info.pbi_start_tvsec,
+                                  startedMicroseconds: info.pbi_start_tvusec)
+    }
+    static func alive(_ pid: Int32) -> Bool {
+        guard pid > 1 else { return false }
+        return kill(pid, 0) == 0 || errno == EPERM
+    }
+}
+struct NativeHostRecord: Codable, Equatable, Sendable {
+    let pid: Int32
+    let identity: NativeHostIdentity
+}
+
+/// Policy shared by forced exit and stale-pidfile recovery. Every signal revalidates identity.
+enum NativeHostReaper {
+    enum Outcome: String { case absent, foreign, reaped, signaled, failed }
+    static func reap(record: NativeHostRecord, expectedExecutable: String,
+                     inspect: (Int32) -> NativeHostIdentity?, alive: (Int32) -> Bool,
+                     signal: (Int32, Int32) -> Void, pause: () -> Void,
+                     remove: () -> Void, confirmDeath: Bool) -> Outcome {
+        guard record.pid > 1 else { return .foreign }
+        guard alive(record.pid) else { remove(); return .absent }
+        guard record.identity.executable == expectedExecutable, inspect(record.pid) == record.identity else { return .foreign }
+        signal(record.pid, SIGTERM)
+        pause()
+        guard alive(record.pid) else { remove(); return .reaped }
+        guard inspect(record.pid) == record.identity else { return .foreign }
+        signal(record.pid, SIGKILL)
+        guard confirmDeath else { return .signaled }
+        if alive(record.pid) { pause() }
+        guard !alive(record.pid) else { return .failed }
+        remove()
+        return .reaped
+    }
+}
+
+/// Snapshot is written at spawn on MainActor and consumed without an actor hop by the watchdog.
+final class NativeHostProcessRegistry: @unchecked Sendable {
+    static let shared = NativeHostProcessRegistry()
+    private let lock = NSLock()
+    private var current: (record: NativeHostRecord, file: URL)?
+    private static func pause() { _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .milliseconds(300)) }
+
+    func spawned(pid: Int32, executable: URL, file: URL) throws {
+        guard let identity = NativeHostIdentity.read(pid),
+              identity.executable == executable.resolvingSymlinksInPath().path else { throw NativeServiceError.invalidRuntime }
+        let record = NativeHostRecord(pid: pid, identity: identity)
+        lock.lock(); current = (record, file); lock.unlock()
+        NativeQuitDeadline.shared.setOwnedChildPID(pid)
+        try JSONEncoder().encode(record).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+    func stopped(pid: Int32) {
+        lock.lock()
+        guard let saved = current, saved.record.pid == pid else { lock.unlock(); return }
+        current = nil
+        lock.unlock()
+        if let data = try? Data(contentsOf: saved.file),
+           let record = try? JSONDecoder().decode(NativeHostRecord.self, from: data), record == saved.record {
+            try? FileManager.default.removeItem(at: saved.file)
+        }
+        NativeQuitDeadline.shared.clearOwnedChildPID(pid)
+    }
+    func forceStop(pid: Int32?) {
+        lock.lock(); let saved = current; lock.unlock()
+        guard let saved, saved.record.pid == pid else { return }
+        let outcome = NativeHostReaper.reap(record: saved.record, expectedExecutable: saved.record.identity.executable,
+            inspect: NativeHostIdentity.read, alive: NativeHostIdentity.alive,
+            signal: { _ = kill($0, $1) }, pause: Self.pause, remove: {}, confirmDeath: false)
+        Self.log(outcome)
+    }
+    static func recover(file: URL, executable: URL) throws {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        let record = try JSONDecoder().decode(NativeHostRecord.self, from: Data(contentsOf: file))
+        let outcome = NativeHostReaper.reap(record: record, expectedExecutable: executable.resolvingSymlinksInPath().path,
+            inspect: NativeHostIdentity.read, alive: NativeHostIdentity.alive,
+            signal: { _ = kill($0, $1) }, pause: pause,
+            remove: { try? FileManager.default.removeItem(at: file) }, confirmDeath: true)
+        log(outcome)
+        guard outcome == .absent || outcome == .reaped else { throw NativeServiceError.invalidRuntime }
+    }
+    private static func log(_ outcome: NativeHostReaper.Outcome) {
+        Logger(subsystem: "LuxDidi", category: "host_recovery").notice("host_recovery outcome=\(outcome.rawValue, privacy: .public)")
     }
 }

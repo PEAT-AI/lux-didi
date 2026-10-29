@@ -389,6 +389,11 @@ enum NativeQuitStage: String, Sendable {
 }
 
 final class NativeQuitDeadline: @unchecked Sendable {
+    static let shared = NativeQuitDeadline()
+    private var childPID: Int32?
+    var ownedChildPID: Int32? { lock.lock(); defer { lock.unlock() }; return childPID }
+    func setOwnedChildPID(_ pid: Int32) { lock.lock(); defer { lock.unlock() }; childPID = pid }
+    func clearOwnedChildPID(_ pid: Int32) { lock.lock(); defer { lock.unlock() }; if childPID == pid { childPID = nil } }
     private enum State { case idle, running, exiting, forced }
     private let lock = NSLock()
     private var state: State = .idle
@@ -407,7 +412,7 @@ final class NativeQuitDeadline: @unchecked Sendable {
         }
         state = .running
         lock.unlock()
-        schedule(3) { [self] in
+        schedule(2.5) { [self] in
             lock.lock()
             guard state == .running || state == .exiting else { lock.unlock(); return }
             state = .forced

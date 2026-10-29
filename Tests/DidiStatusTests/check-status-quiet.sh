@@ -54,6 +54,12 @@ assert "NSApp.activate" not in menu and "NSApp.activate" not in presentation
 termination = app.split("    func applicationShouldTerminate(_ sender:", 1)[1].split("    @objc private func pickupLiveCall", 1)[0]
 assert "DispatchQueue.global(qos: .userInitiated).asyncAfter" in termination
 assert "Darwin._exit(EXIT_SUCCESS)" in termination
+assert termination.index("NativeHostProcessRegistry.shared.forceStop") < termination.index("Darwin._exit")
+supervisor = Path("Sources/LuxDidi/NativeServiceSupervisor.swift").read_text()
+assert "try await Task.detached { try NativeHostProcessRegistry.recover" in supervisor
+assert supervisor.index("NativeHostProcessRegistry.recover(file:") < supervisor.index("try owned.launch(executable: runtime.node")
+assert "try NativeHostProcessRegistry.shared.spawned(pid: owned.pid" in supervisor
+assert "NativeHostProcessRegistry.shared.stopped(pid: owned.pid)" in supervisor
 assert "quit_forced stage=" in termination and "quitDeadline.complete()" in termination
 assert termination.index("quitDeadline.request") < termination.index("await model.shutdown")
 shutdown = app.split("    func shutdown(stage:", 1)[1].split("    /// Quit ends", 1)[0]

@@ -1166,3 +1166,32 @@ test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction
   }
 });
 }
+
+// C2: compare the exposed wire surface, allowing Didi's intentionally smaller page budgets.
+function assertGoogleWireContract(recording: { families: Record<string, { tools: { name: string; inputSchema: { properties: Record<string, { type: string; maximum?: number }> } }[] }> }) {
+  const remote = new Map(Object.values(recording.families).flatMap(family => family.tools).map(tool => [tool.name, tool]));
+  for (const declaration of connectorDescriptor('google').declarations({} as ConnectionPolicy)) {
+    const helper = remote.get(declaration.name);
+    assert.ok(helper, `${declaration.name} missing from helper`);
+    const properties = declaration.parameters['properties'] as Record<string, { type: string; maximum?: number }>;
+    assert.deepEqual(Object.keys(properties).sort(), Object.keys(helper.inputSchema.properties).sort(), `${declaration.name} wire keys drifted`);
+    for (const [key, schema] of Object.entries(properties)) {
+      const accepted = helper.inputSchema.properties[key]!;
+      assert.equal(schema.type, accepted.type, `${declaration.name}.${key} type drifted`);
+      if (schema.maximum !== undefined && accepted.maximum !== undefined) assert.ok(schema.maximum <= accepted.maximum, `${declaration.name}.${key} exceeds helper budget`);
+    }
+  }
+}
+test('Google child declarations match the dated recorded tools/list wire contract', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  assert.equal(recording.helper, 'lux-google-mcp');
+  assert.equal(recording.version, '0.1.0');
+  assert.equal(recording.retrieved, '2026-10-30');
+  assertGoogleWireContract(recording);
+});
+test('Google wire contract catches injected schema drift', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const events = recording.families.calendar.tools.find((tool: { name: string }) => tool.name === 'calendar_list_events');
+  delete events.inputSchema.properties.q;
+  assert.throws(() => assertGoogleWireContract(recording), /wire keys drifted/);
+});

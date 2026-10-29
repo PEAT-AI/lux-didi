@@ -164,8 +164,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
-  // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
-  const persistenceFailures = new Set<string>();
   const historyReader = createHistoryReader();
   const retained = new Map<string, { runId: string; executionId: string; resultSha256: string; evidence: HostEvidenceRef }>();
   const bodyPages = new Map<string, ReceivedBodyPage>();
@@ -326,30 +324,28 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
     const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
     let maxResultBytes = 0;
-    try {
-      const commit = (tx: Transaction) => {
-        const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
-        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
-        maxResultBytes = bound.policy.bounds.maxResultBytes;
-        if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
-        classSet(dataClasses); exact(response, [], Object.keys(response));
-        if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
-        if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
-        if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
-        if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
-        const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
-        if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
-        return persistTerminal(tx, call, 'completed', value);
-      };
-      const result = transaction ? commit(transaction) : store.transaction(commit);
-      if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
-      if (cursor && hostEvidence?.kind === 'remote-body') {
-        const parent = { executionId: call.executionId, name: call.toolName, ...(call.callId ? { callId: call.callId } : {}), result };
-        const end = receivedBodyEnd(hostEvidence.body, 0, maxResultBytes);
-        bodyPages.set(cursor, { runId: call.runId, maxResultBytes, rootCursor: cursor, parent, offset: 0, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < hostEvidence.body.length ? { nextCursor: randomUUID() } : {}) });
-      }
-      return result;
-    } catch (error) { persistenceFailures.add(call.executionId); throw error; }
+    const commit = (tx: Transaction) => {
+      const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
+      const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
+      maxResultBytes = bound.policy.bounds.maxResultBytes;
+      if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
+      classSet(dataClasses); exact(response, [], Object.keys(response));
+      if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
+      if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
+      if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
+      if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
+      const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+      if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
+      return persistTerminal(tx, call, 'completed', value);
+    };
+    const result = transaction ? commit(transaction) : store.transaction(commit);
+    if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
+    if (cursor && hostEvidence?.kind === 'remote-body') {
+      const parent = { executionId: call.executionId, name: call.toolName, ...(call.callId ? { callId: call.callId } : {}), result };
+      const end = receivedBodyEnd(hostEvidence.body, 0, maxResultBytes);
+      bodyPages.set(cursor, { runId: call.runId, maxResultBytes, rootCursor: cursor, parent, offset: 0, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < hostEvidence.body.length ? { nextCursor: randomUUID() } : {}) });
+    }
+    return result;
   };
   const journal: ToolsOwner['journal'] = {
     intent(input, capture) {
@@ -376,7 +372,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     },
     fail(input, status, reason) {
       const call = callDTO(input);
-      if (persistenceFailures.has(call.executionId)) throw Error('result_persistence_failed');
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);

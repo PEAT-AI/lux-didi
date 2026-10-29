@@ -338,7 +338,7 @@ const saveParaphrases = [
   ['Remember I prefer fast responses.', 'The owner prefers quick responses.'],
   ['Remember I dislike loud music.', 'The owner does not like loud music.'],
 ];
-for (const [owner, note] of saveParaphrases) test(`meaning saves: ${note}`, t => {
+for (const [owner, note] of saveParaphrases) test(`faithful paraphrase saves: ${note}`, t => {
   const store = liveSession(t, [{ text: owner! }]);
   t.after(() => store.close());
   assert.equal(remember(store, note!).remembered, true);
@@ -398,4 +398,33 @@ test('a personal name cannot be invented as third-person framing', t => {
   const store = liveSession(t, [{ text: 'Remember I prefer quiet mornings.' }]);
   t.after(() => store.close());
   assert.equal(remember(store, 'Zelda prefers quiet mornings.').remembered, false);
+});
+
+// Reviewer stage 4: execute the previously reasoned cases against the real store.
+for (const [owner, note] of [
+  ['My commute takes 30 minutes.', 'My journey to work takes 30 minutes.'],
+  ['I walk every morning.', 'I take a walk every morning.'],
+  ['I enjoy tea each morning.', 'I like tea every morning.'],
+  ['The room is quiet.', 'The room is peaceful.'],
+  ['I prefer concise replies.', 'I prefer brief replies.'],
+  ['I purchase apples daily.', 'I buy apples every day.'],
+  ['I need to phone the dentist.', 'I need to call the dentist.'],
+  ['I prefer rapid responses.', 'I prefer quick replies.'],
+  ['The appointment lasts 30 minutes.', 'The appointment takes 30 minutes.'],
+  ['I go for a walk every morning.', 'I walk every morning.'],
+]) test(`reviewer faithful paraphrase saves: ${note}`, t => {
+  const store = liveSession(t, [{ text: owner! }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, note!).remembered, true);
+});
+for (const [owner, note] of [
+  ['My commute takes 30 minutes.', 'My journey to Paris takes 30 minutes.'],
+  ['I walk every morning.', 'I take a walk every evening.'],
+  ['I enjoy tea each morning.', 'I like tea with sugar every morning.'],
+  ['The room is quiet.', 'The room is peaceful and spacious.'],
+  ['I purchase apples daily.', 'I buy 3 apples every day.'],
+]) test(`paraphrase normalization still refuses invention: ${note}`, t => {
+  const store = liveSession(t, [{ text: owner! }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, note!).remembered, false);
 });

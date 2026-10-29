@@ -1156,7 +1156,7 @@ test(`a ${mode} ${family} call stores an auth failure and a later success clears
     assert.equal(flipped?.error, `auth needed: run lux-google-mcp authorize --family ${family} to sign in again`);
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.match(String(stored.response['text']), /auth needed: run lux-google-mcp authorize --family ${family}/);
+    assert.match(String(stored.response['text']), new RegExp(`auth needed: run lux-google-mcp authorize --family ${family}`));
 
     const intentTwo: ToolCallIntent = { ...intent, executionId: 'run:1:1', callId: 'call-2' };
     assert.equal(runtime.owner.journal.intent(intentTwo), 'fresh');

@@ -12,7 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
-  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
+  connectorDescriptor, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
 import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
@@ -799,4 +799,33 @@ test('empty topic read retries hybrid exactly once with the same DM and date fil
   assert.equal(searches[1]?.['channel'], ADA_DM);
   assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
   assert.match(read.read, /hybrid/iu);
+});
+
+// Synthetic tools/list recording supplied with C-CHAT, retrieved 2026-10-29.
+// Deliberately independent of Didi's declarations: unsupported argument names fail closed.
+const recordedMattermostToolsList = {
+  retrievedOn: '2026-10-29',
+  tools: [{ name: 'mattermost_search', inputSchema: { type: 'object', properties: {
+    query: { type: 'string' }, author: { type: 'string' }, channel: { type: 'string' },
+    from_date: { type: 'string' }, to_date: { type: 'string' }, replies_to: { type: 'string' },
+    limit: { type: 'integer' }, offset: { type: 'integer' }, sort: { type: 'string' },
+    mode: { type: 'string' }, rerank: { type: 'boolean' }, format: { type: 'string' },
+  } } }],
+};
+
+test('Mattermost declared child argument schemas match the recorded binary tools/list', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 } };
+  const declared = connectorDescriptor('mattermost')!.declarations(policy as never);
+  const check = (properties: Record<string, unknown>, binary: Record<string, { type: string }>) => {
+    for (const [key, schema] of Object.entries(properties)) {
+      assert.ok(key in binary, `binary does not accept ${key}`);
+      assert.equal((schema as { type: string }).type, binary[key]!.type, key);
+    }
+  };
+  for (const recorded of recordedMattermostToolsList.tools) {
+    const tool = declared.find(tool => tool.name === recorded.name)!;
+    check(tool.parameters.properties, recorded.inputSchema.properties);
+    const drift = { ...tool.parameters.properties, after: { type: 'string' } };
+    assert.throws(() => check(drift, recorded.inputSchema.properties), /binary does not accept after/u);
+  }
 });

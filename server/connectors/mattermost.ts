@@ -73,6 +73,7 @@ export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTIO
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence extends SourceDispatchEvidence {
+  searchMode?: 'hybrid';
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostEvidenceTool;
@@ -89,7 +90,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string; /** C-CHAT: the page after the ones already read. */ offset?: number }
+export interface QueryInput { query: string; limit?: number; from_date?: string; to_date?: string; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string; /** C-CHAT: the page after the ones already read. */ offset?: number }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -385,6 +386,7 @@ function preflight(registry: McpRegistry, settings: Settings, tool: MattermostEv
 export function nameKey(text: string): string {
   return text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/&/gu, ' and ')
     .split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    .filter((word, index, words) => index === 0 || word !== words[index - 1])
     .map(word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)).join(' ');
 }
 
@@ -592,15 +594,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     }
     return { channels, origin };
   }
-  async function loadChannels(signal?: AbortSignal): Promise<MattermostChannel[] | { error: string }> {
+  async function loadChannels(signal?: AbortSignal, capture?: (evidence: SourceDispatchEvidence) => void): Promise<MattermostChannel[] | { error: string }> {
     const cached = channelIndex.get();
-    if (cached) { port.recordReuse?.(channelIndex.origin); return cached; }
+    if (cached) { port.recordReuse?.(channelIndex.origin); if (channelIndex.origin) capture?.({ [SOURCE_DISPATCH]: channelIndex.origin }); return cached; }
     const denied = preflight(registry, settings, 'mattermost_list_channels');
     if (denied) return { error: denied };
     const loaded = await readChannels(signal);
     if ('error' in loaded) return loaded;
     channelIndex.set(loaded.channels);
     channelIndex.origin = loaded.origin;
+    if (loaded.origin) capture?.({ [SOURCE_DISPATCH]: loaded.origin });
     return loaded.channels;
   }
   async function resolveAgainstIndex(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
@@ -672,11 +675,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const lower = after === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString() : boundedText(after);
     if (lower === undefined) return undefined;
     const day = (iso: string): string => iso.slice(0, 10);
-    const window: Record<string, string> = { after: lower, from_date: day(lower) };
+    const window: Record<string, string> = { from_date: day(lower) };
     if (before !== undefined) {
       const upper = boundedText(before);
       if (upper === undefined) return undefined;
-      window['before'] = upper;
       window['to_date'] = day(upper);
     }
     const declared = declaredSearchArguments();
@@ -708,7 +710,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
-    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
+    const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const cutoff = Date.now() - days * DAY_MS;
     const scored: { item: AttentionItem; at: number }[] = [];
     const seen = new Set<string>();
@@ -815,7 +817,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
-  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
+  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[]; broadened?: string } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
     if (declared.includes('sort')) args['sort'] = 'newest';
@@ -829,13 +831,22 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!declared.includes('offset')) return { ok: false, result: { state: 'refused', reason: 'search-filter-missing: offset' } };
       args['offset'] = offset;
     }
-    const result = await read('mattermost_search', args, signal);
+    let result = await read('mattermost_search', args, signal);
     if (!result.ok) return result;
     capture(result.evidence);
+    let broadened: string | undefined;
+    // Retry once, only for a real topic and only with a mode the child declares.
+    // Keep every scope filter and page boundary on the broader read.
+    if ((postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '' && declared.includes('mode')) {
+      result = await read('mattermost_search', { ...args, mode: 'hybrid', ...(declared.includes('rerank') ? { rerank: false } : {}) }, signal);
+      if (!result.ok) return result;
+      capture(result.evidence);
+      broadened = 'hybrid search after no keyword matches';
+    }
     const data = contentJson(result.evidence.decodedResult);
     const posts = (postsIn(result.evidence.decodedResult) ?? []).map(post => chatPost(post, owner));
     const total = isRecord(data) && Number.isSafeInteger(data['total']) ? data['total'] as number : undefined;
-    return { ok: true, ...(total === undefined ? {} : { total }), posts };
+    return { ok: true, ...(total === undefined ? {} : { total }), posts, ...(broadened === undefined ? {} : { broadened }) };
   }
 
   type PersonOutcome = { kind: 'person'; username: string; display: string; dmChannelId?: string; missing?: string }
@@ -845,8 +856,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * C-CHAT R8-W9: the direct conversation that already exists with one handle, read from the channel
    * index. Nothing is created, and a child that grants no channel list says so instead of implying none.
    */
-  async function dmChannelOf(username: string, signal?: AbortSignal): Promise<{ channel?: string; missing?: string }> {
-    const channels = await loadChannels(signal);
+  async function dmChannelOf(username: string, signal?: AbortSignal, capture?: (evidence: SourceDispatchEvidence) => void): Promise<{ channel?: string; missing?: string }> {
+    const channels = await loadChannels(signal, capture);
     if (!Array.isArray(channels)) return { missing: 'finding your direct messages needs the channel list this child does not grant' };
     const wanted = username.trim().replace(/^@/u, '').toLowerCase();
     const found = channels.find(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
@@ -858,7 +869,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * name is a question back, never a pick. A child without it is matched on the direct message channel
    * whose name is that username, and the reply says person lookups need the newer archive.
    */
-  async function findPerson(name: string, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
+  async function findPerson(name: string, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
     // W15: the owner's roster decides who a spoken name is before any child search runs, so an alias
     // such as "Sandy" binds to the colleague itself and the child's prefix match never guesses.
     const known = currentBinding(name);
@@ -866,7 +877,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (known.person.mattermost.length === 0) return { kind: 'not-found', text: `${known.person.name} has no team chat handle in the owner's people list.` };
       // R8-W9: the roster says who the person is, never which conversation, so the existing DM channel is
       // looked up here; without it the read answered "no direct messages" while the conversation held posts.
-      const dm = await dmChannelOf(known.person.mattermost, signal);
+      const dm = await dmChannelOf(known.person.mattermost, signal, capture);
       return { kind: 'person', username: known.person.mattermost, display: known.person.name, ...(dm.channel === undefined ? {} : { dmChannelId: dm.channel }), ...(dm.missing === undefined ? {} : { missing: dm.missing }) };
     }
     if (known.kind === 'ambiguous') return { kind: 'clarify', text: `Which ${name} do you mean: ${ambiguityQuestion(name, known.people)}` };
@@ -886,7 +897,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       return { kind: 'person', username, display: firstText(top, ['display_name']) || username, ...(dm !== '' ? { dmChannelId: dm } : {}) };
     }
     const missing = 'person lookups by name need the newer chat archive';
-    const channels = await loadChannels(signal);
+    const channels = await loadChannels(signal, capture);
     if (!Array.isArray(channels)) return { kind: 'failed', result: { state: 'refused', reason: channels.error } };
     const wanted = name.trim().replace(/^@/u, '').toLowerCase();
     const direct = channels.filter(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
@@ -912,16 +923,18 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!who.ok) return who.result;
     // R8-W9: the owner's own name and handle are never a search term; "what Ada and Robert Smith decided"
     // asks about Ada, and searching either finds every post the owner ever wrote (F2: the display name too).
-    const asked = withoutOwner(query, who.owner.username, who.owner.displayName);
+    // A model's recency labels are not topics. Keep real topic phrases, but read
+    // the DM newest-first when the entire query is only a recency request.
+    const recency = /^(?:(?:latest|recent|last|today|yesterday|new|messages?|posts?|dms?|direct|what|did|we|discuss|what's|whats|is|the|our|my|your|lately|conversations?)\s*)+$/iu.test(query.trim());
+    const asked = withoutOwner((input.intent === 'person' || input.intent === 'overview') && recency ? '' : query, who.owner.username, who.owner.displayName);
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
-    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
+    const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };
     const span = window.to === undefined ? ` since ${window.from}` : window.to === window.from ? ` on ${window.from}` : ` from ${window.from} to ${window.to}`;
     const about = asked === '' ? '' : `, about ${asked}`;
     const dates = { from_date: window.from, ...(window.to === undefined ? {} : { to_date: window.to }) };
     const base = { intent: input.intent, window, returned: 0, offset, posts: [] as ChatReadPost[] };
     const finish = (out: MattermostChatRead): MattermostResult => {
-      if (channelIndex.origin && !children.includes(channelIndex.origin)) children.push(channelIndex.origin);
       const composed = { ...who.evidence };
       delete composed[SOURCE_DISPATCH];
       return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_CHAT_TOOL, decodedResult: out };
@@ -930,8 +943,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const said = notes.filter((note): note is string => note !== undefined);
       return said.length === 0 ? {} : { missing: said.join('; ') };
     };
-    const page = (read: string, posts: { total?: number; posts: ChatReadPost[] }, missing?: string): MattermostResult => finish({
-      ...base, read: `${read}${span}${about}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
+    const page = (read: string, posts: { total?: number; posts: ChatReadPost[]; broadened?: string }, missing?: string): MattermostResult => finish({
+      ...base, read: `${read}${span}${about}${posts.broadened === undefined ? '' : ` (${posts.broadened})`}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
     });
 
     if (input.intent === 'person' || input.intent === 'overview') {
@@ -962,7 +975,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const overviewMissing = input.intent === 'overview' ? 'an overview across group chats and channels needs the newer chat archive' : undefined;
       if (person.kind !== 'person') return finish({ ...base, read: `a person called ${name}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }), ...missingOf(person.missing, overviewMissing) });
       const label = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
-      const theirs = input.intent === 'person' && input.sides !== 'both';
+      const theirs = input.intent === 'person' && (input.sides === 'theirs' || (input.sides !== 'both' && !recency));
       if (person.dmChannelId === undefined) {
         // R8-W9 (F1): you have no direct conversation with them, so the answer reads their mentions instead
         // and says both facts: whose mentions these are, and why they are what came back.
@@ -1003,7 +1016,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           rows = folded;
         }
       } else {
-        const channels = await loadChannels(signal);
+        const channels = await loadChannels(signal, capture);
         if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
         const wanted = key.split(' ');
         rows = channels.filter(channel => channel.type !== 'D' && channel.type !== 'G').filter(channel => {
@@ -1094,12 +1107,21 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     async search(input: QueryInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_search');
       if (denied) return { state: 'refused', reason: denied };
-      const query = boundedText(input.query);
-      if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
+      const rawQuery = boundedText(input.query);
+      if (rawQuery === undefined) return { state: 'refused', reason: 'invalid-query' };
+      let from = input.from_date ?? input.after;
+      let to = input.to_date ?? input.before;
+      // Older research plans can contain compiled operators. Consume them here;
+      // the binary accepts date arguments, never inline After:/Before: filters.
+      const query = rawQuery.replace(/\b(after|before|on):(\d{4}-\d{2}-\d{2})\b/giu, (_match, kind: string, day: string) => {
+        if (kind.toLowerCase() !== 'before') from ??= day;
+        if (kind.toLowerCase() !== 'after') to ??= day;
+        return '';
+      }).trim();
       // #610: a search limit over the maximum is clamped to it, never sent as the child would refuse it.
       const bounded = limited(input.limit, true);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      const window = searchWindow(input.after, input.before);
+      const window = searchWindow(from, to);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
       // #610/F10: the channel an ask names is only sent where the child declares the filter, so a
       // child without one searches its whole archive rather than refusing the read.
@@ -1115,7 +1137,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // C-CHAT: the next page of the same search, sent only where the child declares paging.
       if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > MATTERMOST_CHAT.maxOffset)) return { state: 'refused', reason: 'invalid-offset' };
       const page = input.offset !== undefined && input.offset > 0 && declaredSearchArguments().includes('offset') ? { offset: input.offset } : {};
-      return dispatch('mattermost_search', { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page }, signal);
+      const args = { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page };
+      const first = await dispatch('mattermost_search', args, signal);
+      if (first.state !== 'completed' || query === '' || (postsIn(first.decodedResult) ?? []).length > 0 || !declaredSearchArguments().includes('mode')) return first;
+      const second = await dispatch('mattermost_search', { ...args, mode: 'hybrid', ...(declaredSearchArguments().includes('rerank') ? { rerank: false } : {}) }, signal);
+      if (second.state !== 'completed') return second;
+      const children = [first[SOURCE_DISPATCH], second[SOURCE_DISPATCH]].filter((ref): ref is SourceDispatchRef => ref !== undefined);
+      const result = { ...second, searchMode: 'hybrid' as const, [SOURCE_CHILD_DISPATCHES]: children };
+      delete result[SOURCE_DISPATCH];
+      return result;
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

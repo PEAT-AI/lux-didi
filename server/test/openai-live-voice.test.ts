@@ -2290,3 +2290,9 @@ test('C-AUDIO10: overflowing speech never retains silence heartbeats ahead of sp
   assert.ok(drained.length > 0, 'retained speech actually drains onto the wire');
   assert.ok(drained.every(pcm => pcm.readInt16LE(0) !== 0), 'all older silence is gone before speech is discarded');
 });
+
+test('direct102 fresh opening demands speech itself, not an acknowledgment of startup directions', () => {
+  assert.match(FRESH_OPENING, /Speak one original opening line now/);
+  assert.match(FRESH_OPENING, /Do not acknowledge/);
+  assert.doesNotMatch(FRESH_OPENING, /Internal startup direction/);
+});

@@ -365,3 +365,10 @@ test('#665: the research procedure answers with what it has instead of chasing a
   assert.equal(NAYA_BACKEND_PROCEDURE.split(rule).length - 1, 1, 'the procedure states the page-limit rule once');
   assert.equal(instruction.split(rule).length - 1, 1, 'and the compiled instruction carries it once');
 });
+
+test('direct102 public procedure acts on direct asks and states the enforced one-operation budget', () => {
+  assert.match(NAYA_VOICE_TOOLS, /direct asks without asking permission/i);
+  assert.match(NAYA_VOICE_TOOLS, /never send him to his own device/i);
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /two research operations|retain confirmation/i);
+  assert.match(NAYA_BACKEND_PROCEDURE, /One owner turn allows one research operation/);
+});

@@ -18,7 +18,9 @@ import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 const FIXTURE_NOW = Date.parse('2026-10-25T09:00:00Z');
 const ACCOUNT = 'local';
 const RESOURCE = 'mattermost';
-const child = join(process.cwd(), 'server/test/fixtures/stdio-mattermost-people-child.mjs');
+const child = existsSync(join(process.cwd(), 'server/test/fixtures/stdio-mattermost-people-child.mjs'))
+  ? join(process.cwd(), 'server/test/fixtures/stdio-mattermost-people-child.mjs')
+  : join(process.cwd(), 'test/fixtures/stdio-mattermost-people-child.mjs');
 const fixtureDaysAgo = (days: number): string => new Date(FIXTURE_NOW - days * 86400000).toISOString().slice(0, 10);
 type Call = { name: string; arguments: Record<string, unknown> };
 async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: 'people' | 'legacy', grant?: (names: string[]) => string[], extraEnv: Record<string, string> = {}) {

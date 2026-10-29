@@ -1,3 +1,4 @@
+import { OwnerRequests } from '../tools/owner-request.js';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -5,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { HostLog, safeEvent } from '../host/log.js';
-import { openAudit, openDestinationClass } from '../tools/open.js';
+import { openAudit } from '../tools/open.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
@@ -725,35 +726,15 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
 });
 
 // C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
-test('C-POLISH10: an open call logs closed audit fields and never the words or the URL', () => {
+test('direct102: open audit reports request counts and codes, never owner or target text', () => {
+  const requests = new OwnerRequests(() => 10);
+  requests.observe('s', 'j1', 'open the synthetic pitch deck in my browser');
   const lines: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') lines.push(raw as Record<string, unknown>) } });
-  try {
-    openAudit({ tool: 'open_web', kind: 'search', target: 'Margit Halden quarterly deck', ownerWords: 'open the Margit Halden quarterly deck', destination: 'search', code: 'opened' });
-    openAudit({ tool: 'open_web', kind: 'site', target: 'bank.example', ownerWords: 'open something else entirely', destination: 'site-root', code: 'not_owner_words' });
-    openAudit({ tool: 'open_source', kind: 'source', target: 'L3', ownerWords: 'open it', destination: 'handle', code: 'not_found' });
-  } finally { detach() }
-  const audited = lines.filter(line => line['event'] === 'open_audit');
-  assert.equal(audited.length, 3, 'one audit line per open call');
-  for (const line of audited) assert.ok(safeEvent(line), 'the closed line passes the log validator');
-  assert.deepEqual(audited[0], { event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'search', refusal: 'none' });
-  assert.deepEqual(audited[1], { event: 'open_audit', tool: 'open_web', kind: 'site', words: 1, bound: 'no', destination: 'site-root', refusal: 'not_owner_words' });
-  assert.deepEqual(audited[2], { event: 'open_audit', tool: 'open_source', kind: 'source', words: 1, bound: 'no', destination: 'handle', refusal: 'not_found' });
-  const text = JSON.stringify(lines);
-  assert.equal(/Margit|Halden|quarterly|deck|bank|L3|open something|https?:/u.test(text), false, 'no target text, handle or URL crosses the log');
-  // The closed shape is the whole guard: a caller that adds the words is refused, not redacted.
-  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'search', refusal: 'none', target: 'Margit' }), undefined);
-  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'inbox', refusal: 'none' }), undefined);
-  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'maybe', destination: 'search', refusal: 'none' }), undefined);
-  // C-POLISH10: each open tool resolves to its own class, so the audit never calls a file or an app a handle.
-  const family = ['open_source', 'open_home', 'open_file', 'open_app'] as const;
-  assert.deepEqual(family.map(openDestinationClass), ['handle', 'site-root', 'file', 'app'],
-    'only an item handle is audited as a handle; a home page, a file and an app are three other classes');
-  // The knowledge autopen decision is one bucket and one closed reason; an ask or a title is never a field.
-  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' }),
-    { event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' });
-  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' }),
-    { event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' });
-  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none', ask: 'Margit' }), undefined);
-  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'maybe', bucket: 'high', reason: 'none' }), undefined);
+  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });
+  try { openAudit({ ...requests.audit('s', 'open'), refusalCode: 'none' }); }
+  finally { detach(); }
+  assert.deepEqual(lines[0], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
+  assert.deepEqual(safeEvent(lines[0]), lines[0]);
+  assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
+  assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
 });

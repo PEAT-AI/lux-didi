@@ -1028,7 +1028,8 @@ struct RootView: View {
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         if let button = statusItem.button {
             let imageKey = presentation.symbol + ":" + presentation.text
-            StatusQuiet.publish(current: statusImageKey, next: imageKey) { key in
+            StatusQuiet.publish(current: statusImageKey, next: Optional(imageKey)) { _ in
+                let key = imageKey
                 if statusImages[key] == nil {
                     statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
                 }

@@ -150,6 +150,7 @@ async function harness(t: TestContext, overrides: {
   const saved: import('../tools/vault-write.js').VaultSaveArgs[] = [];
   const vaultTransport: import('../adapters/lux-write/client.js').LuxWriteTransport = {
     nearDuplicate: async () => undefined,
+    backoff: async () => {},
     save: async args => { saved.push(args); if (overrides.crashAfterInsert) throw Error('synthetic crash after insert'); return overrides.vaultUnavailable ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'synthetic-81' }; },
   };
   owner = createLiveSessionOwner({ store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
@@ -267,11 +268,11 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     await ownerBlock(h, 'save a summary of this into Lux');
     await assistantBlock(h, 'On it.', false);
     const result = await call(h, 'stage_lux_note', candidate);
-    assert.equal(h.saved.length, 1, 'the real transport was called before any yes or readback');
+    assert.equal(h.saved.length, outcome === 'unavailable' ? 2 : 1, 'unavailable retries exactly once; other outcomes never retry');
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
     if (outcome === 'saved') {
       assert.equal(result['insightId'], 'synthetic-81');
-      assert.match(String(result['say']), /Saved: Synthetic plan.*synthetic-81/);
+      assert.equal(result['say'], 'Saved to lux as Synthetic plan.');
       assert.match(h.saved[0]!.content, /Provenance: request request-\d+; source counts/);
       const retry = await call(h, 'stage_lux_note', candidate);
       assert.equal(retry['insightId'], 'synthetic-81');

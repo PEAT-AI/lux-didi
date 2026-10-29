@@ -781,6 +781,7 @@ for (const effect of ['read', 'write'] as const) {
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
     });
     assert.equal(batch.tools[0]?.status, effect === 'write' ? 'unknown' : 'failed');
+    assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, effect === 'write' ? 'unknown' : 'failed');
     const logged = lines.filter(line => line['event'] === 'tool_handler_error');
     assert.equal(logged.length, 1);
     assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: throwing.name, class: 'TypeError', reason: 'handler_outcome' });

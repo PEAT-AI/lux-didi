@@ -192,16 +192,19 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   const blockedCalls = calls.filter(call => call.outcome === 'blocked').length;
   // Count in SQL: a normal audit must never export transcript text. Prefer the canonical journal
   // when linked, and count each turn once even when the provider split its final transcript.
+  const journalAvailable = !!read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_journal'");
+  const claimText = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END' : 'u.text';
+  const claimFinal = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END' : 'u.final';
   const announcedClaimsWithoutCall = Number(read.get(`SELECT COUNT(DISTINCT u.turn_id) AS count
     FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
-    LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id
+    ${journalAvailable ? 'LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id' : ''}
     WHERE t.live_session_id=? AND u.role='model'
-      AND (CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END)=1
-      AND (lower(CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END) LIKE '%looking this up%'
-        OR lower(CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END) LIKE '%looking that up%'
-        OR lower(CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END) LIKE '%looking it up%'
-        OR lower(CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END) LIKE '%let me check%'
-        OR lower(CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END) LIKE '%one second%checking%')
+      AND (${claimFinal})=1
+      AND (lower(${claimText}) LIKE '%looking this up%'
+        OR lower(${claimText}) LIKE '%looking that up%'
+        OR lower(${claimText}) LIKE '%looking it up%'
+        OR lower(${claimText}) LIKE '%let me check%'
+        OR lower(${claimText}) LIKE '%one second%checking%')
       AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
 
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));

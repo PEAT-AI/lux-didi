@@ -176,7 +176,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const started = log.filter(row => row.event === 'alarm_scheduler_started');
   assert.equal(started.length, 1, 'one alarm_scheduler_started line at start');
   assert.equal(typeof started[0].pending, 'number', 'the line names the pending count');
-  assert.deepEqual(Object.keys(started[0]).filter(key => !['event', 'pending', 'at', 'ms', 'monoMs', 'seq', 'level', 'scope', 'pid'].includes(key)), [], 'no field beyond the count');
+  assert.deepEqual(Object.keys(started[0]).sort(), ['event', 'pending', 'timestamp'], 'the count and the envelope timestamp, nothing else');
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'provider_unavailable'));
   for (const row of log.filter(row => row.event.startsWith('alarm_'))) assert.doesNotMatch(JSON.stringify(row), /wake me|Synthetic Owner|snooze my/);

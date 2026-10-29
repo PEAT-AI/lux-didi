@@ -1349,14 +1349,14 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
-  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; timer?: { cancel(): void } }>>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; timer?: { cancel(): void } }>>();
 
   /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
   announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
     const handle = [...this.#active.values()].find(value => !value.terminal && value.ready);
     if (!handle || !setup.alarmId) return undefined;
     const alarms = this.#alarmSessions.get(handle.liveSessionId) ?? new Map();
-    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0 });
+    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0 });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
     handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
     this.#armAlarm(handle);
@@ -1388,12 +1388,23 @@ export class LiveSessionOwner {
   }
 
   #ackAlarm(handle: ActiveSession, words: string): void {
-    const normalized = words.replace(/[^\p{L}\p{N}'’]+/gu, ' ');
-    if (!/\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(normalized)) return;
     const alarms = this.#ringingAlarms(handle);
     if (!alarms.length) return;
     // The most recently announced alarm owns this confirmation, not every ringing occurrence.
     const alarm = alarms[alarms.length - 1]!;
+    // Gemini can finalize accumulated deltas with an empty frame, or the host can seal them at model start.
+    // Never borrow speech from before the announcement or from an earlier finalized utterance.
+    const utterance = this.#store.transaction(tx => {
+      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id DESC", [handle.liveSessionId, alarm.afterJournalId]);
+      const parts: string[] = [];
+      for (const [i, row] of rows.entries()) {
+        if (i > 0 && Number(row.finished) === 1) break;
+        parts.unshift(String(row.text ?? ''));
+      }
+      return parts.join('');
+    });
+    const confirms = (value: string) => /\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(value.replace(/[^\p{L}\p{N}'’]+/gu, ' '));
+    if (!confirms(words) && !confirms(utterance)) return;
     if (this.#tools?.acknowledgeAlarm) this.#tools.acknowledgeAlarm(alarm.setup.alarmId!);
     else this.#store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [alarm.setup.alarmId!]));
     alarm.timer?.cancel();
@@ -1668,7 +1679,7 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
-    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0 }]]));
+    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0 }]]));
     this.#armExpiry();
     return snapshot;
   }
@@ -4015,6 +4026,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      this.#ackAlarm(handle, '');
       // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
       // #720: it is also the owner's last word of the turn so far, so the dead-air anchor moves to it.
       handle.inputFinalAt = this.#now();

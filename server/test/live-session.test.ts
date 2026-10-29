@@ -7685,3 +7685,30 @@ test('overview alarms compose the same cached calendar digest and normal memory 
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
+
+
+for (const finalization of ['provider-empty-final', 'app-model-start'] as const) {
+  test(`alarm acknowledgement accepts accumulated speech at ${finalization}`, async t => {
+    const clock = new DeadlineClock();
+    const fake = fakeLiveVoicePort();
+    const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+    const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
+    t.after(() => scheduler.stop());
+    const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-fragments' });
+    const session = h.owner.create({ idempotencyKey: finalization, inputClass: 'ordinary', alarm: { alarmId: alarm.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: alarm.label, ringDeadlineUtc: clock.now + 600000 } }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    fake.emit({ type: 'inputTranscription', text: "I'm " });
+    fake.emit({ type: 'inputTranscription', text: 'awake' });
+    await settlePort();
+    assert.equal(scheduler.list()[0]!.state, 'ringing', 'partial speech alone is not acknowledgement');
+    if (finalization === 'provider-empty-final') fake.emit({ type: 'inputTranscription', text: '', finished: true });
+    else fake.emit({ type: 'modelTurnStarted' });
+    await settlePort();
+    clock.now += 300; clock.runDue();
+    await settlePort();
+    assert.equal(scheduler.list()[0]!.state, 'done');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  });
+}

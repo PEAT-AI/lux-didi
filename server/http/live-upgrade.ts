@@ -12,6 +12,7 @@ import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.
 import type { LiveAccent } from '../prompt/live-persona.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
 import { nativeActions } from '../tools/open.js';
+import { canarySessions } from '../live/canary.js';
 import type { CalendarDigestSnapshot } from '../live/warm-context.js';
 import type { WarmPrewarmReceipt } from '../live/index.js';
 
@@ -249,7 +250,8 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
     // One native-action sender per Live session; this socket is also the only path audio already uses.
     const forgetActions = nativeActions.bind(attachment.liveSessionId, frame => {
       if (ws.readyState !== ws.OPEN) return false;
-      ws.send(JSON.stringify(frame));
+      // A model/tool frame cannot request native dry-run authority. Only the host opener can.
+      ws.send(JSON.stringify(canarySessions.nativeFrame(attachment.liveSessionId, frame)));
       return true;
     });
     const detach = onceDetach(attachment);
@@ -265,7 +267,13 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
         return;
       }
       const raw = data.toString();
-      if (raw.includes('"native_action_result"') && nativeActions.settle(attachment.liveSessionId, parseFrame(raw))) return;
+      if (raw.includes('"native_action_result"')) {
+        const frame = parseFrame(raw);
+        if (nativeActions.settle(attachment.liveSessionId, frame)) {
+          canarySessions.acknowledgeNative(attachment.liveSessionId, frame);
+          return;
+        }
+      }
       // O1b-N: a playback receipt is a bounded closed frame. It is validated and recorded inside the
       // session (trace/ingest.ts); a refused one is journaled by typed code and dropped, never closing
       // the socket. An unknown control below still closes, exactly as before.

@@ -507,3 +507,61 @@ extension NativeLiveConversation.State {
         }
     }
 }
+
+private struct InstalledCanaryEnvelope<T: Decodable>: Decodable { let data: T }
+private struct InstalledCanaryReport: Decodable { let lines: [String]; let failed: Int }
+private final class InstalledCanaryRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
+}
+
+extension NativeLiveConversation {
+    /// The already-running shell claims a private local request. No app launch, UI, audio device or fake native client.
+    @MainActor static func runInstalledCanary(authority: (origin: URL, request: NativeLiveRequestBuilder), asks: Data, deadline: Double) async throws -> Data {
+        let http = NativeLiveOperatorHTTP(authority: authority)
+        let intent = try await http.beginIntent()
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil; config.urlCache = nil
+        config.timeoutIntervalForRequest = 355; config.timeoutIntervalForResource = 355
+        let session = URLSession(configuration: config, delegate: InstalledCanaryRedirectBlocker(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        func post(_ path: String, _ body: Data) async throws -> Data {
+            var request = try authority.request(authority.origin.appendingPathComponent(path), intent.authorityEpoch)
+            request.httpMethod = "POST"; request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let (data, response) = try await session.data(for: request)
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw LiveClientError.unavailable }
+            return data
+        }
+        let askValue = try JSONSerialization.jsonObject(with: asks)
+        let opened = try await post("api/v1/live-canary/open", JSONSerialization.data(withJSONObject: ["asks": askValue, "deadline": deadline]))
+        let snapshot = try JSONDecoder().decode(InstalledCanaryEnvelope<LiveSnapshot>.self, from: opened).data
+        let socket: any LiveSocket
+        do { socket = try await LiveSessionCoordinator.attachCanary(intent, snapshot: snapshot, sockets: LiveSocketTransport(requests: http)) }
+        catch {
+            _ = try? await post("api/v1/live-sessions/\(snapshot.liveSessionId)/revoke", Data("{}".utf8))
+            throw error
+        }
+        // Receive on the production transport: it ACKs native actions before returning frames.
+        // Provider audio is decoded then discarded. There is no capture device and no audio playback.
+        let receive = Task {
+            do {
+                while !Task.isCancelled {
+                    if case .terminal = try await socket.receive() { break }
+                }
+            } catch { /* Host runner observes the terminal session and reports FAIL. */ }
+        }
+        do {
+            let body = try JSONSerialization.data(withJSONObject: ["sessionId": snapshot.liveSessionId])
+            let data = try await post("api/v1/live-canary/run", body)
+            let report = try JSONDecoder().decode(InstalledCanaryEnvelope<InstalledCanaryReport>.self, from: data).data
+            receive.cancel(); await socket.cancel()
+            return try JSONSerialization.data(withJSONObject: ["lines": report.lines, "failed": report.failed])
+        } catch {
+            receive.cancel(); await socket.cancel()
+            _ = try? await post("api/v1/live-sessions/\(snapshot.liveSessionId)/revoke", Data("{}".utf8))
+            throw error
+        }
+    }
+}

@@ -1,3 +1,4 @@
+import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
@@ -1990,6 +1991,7 @@ export class LiveSessionOwner {
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
       session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: { ...this.#profile.limits, idleMs: alarmIdleMs }, trace: this.#tracePort(liveSessionId, connection) });
+      session = canarySessions.wrapSession(liveSessionId, session);
       hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
         seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {
@@ -3291,6 +3293,7 @@ export class LiveSessionOwner {
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
         trace: this.#tracePort(handle.liveSessionId, handle.connection),
       });
+      handle.session = canarySessions.wrapSession(handle.liveSessionId, handle.session);
       handle.openedAt = this.#now(); handle.readyAt = undefined;
       hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
         instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });

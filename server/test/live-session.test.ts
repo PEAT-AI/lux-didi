@@ -7611,6 +7611,8 @@ test('alarm session speaks its reminder, repeats after silence and acknowledges 
   fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
   await settlePort();
   assert.equal(scheduler.list().find(row => row.id === first.id)!.state, 'done');
+  assert.ok(fake.texts.some(text => text.includes('This alarm is acknowledged')));
+  assert.ok(fake.texts.every(text => text.startsWith('[host note, not the owner] ')), 'wake and acknowledgement guidance are marked host notes');
   assert.equal(scheduler.list().find(row => row.id === other.id)!.state, 'ringing');
   const count = fake.texts.length;
   clock.now += 30000; clock.runDue();
@@ -7671,14 +7673,14 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
 
 test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, calendarDigest: {
+  const h = await harness(t, { port: fake.port, tools: true, system: NAYA_LIVE_BASE, calendarDigest: {
     forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
   await h.owner.prepareCalendar();
   const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
   assert.match(fake.requests[0]!.system.text, /09:00 Project review/);
-  assert.match(fake.requests[0]!.system.text, /Synthetic system/);
+  assert.ok(fake.requests[0]!.system.text.includes(NAYA_LIVE_BASE));
   assert.match(fake.requests[0]!.system.text, /calendar digest/);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;

@@ -2941,9 +2941,10 @@ const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 
  * C-CAL8: a schedule ask is answered by the calendar first, so its reply opens with the meetings and the
  * knowledge behind them follows. Every other ask keeps the declared order.
  */
-const sourceOrderFor = (question: string): readonly SourceKind[] => ownerScheduleQuestion(question)
-  ? ['calendar', ...SOURCE_ORDER.filter(source => source !== 'calendar')]
-  : SOURCE_ORDER;
+const sourceOrderFor = (question: string): readonly SourceKind[] => {
+  const first = ownerScheduleQuestion(question) ? 'calendar' : chatQuestionWords(question) ? 'chat' : requiredSources(question)[0];
+  return first === undefined ? SOURCE_ORDER : [first, ...SOURCE_ORDER.filter(source => source !== first)];
+};
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -3905,8 +3906,10 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     // One grammar: `start, title, location | calendar`, so the comma fields are the event and the last
     // pipe segment is the calendar it came from, never a title.
     const body = event.line.replace(/^- /u, '').replace(/ \[id [^\]\s]+\]$/u, '');
-    const pipeAt = body.indexOf(' | ');
-    const fields = (pipeAt < 0 ? body : body.slice(0, pipeAt)).split(', ');
+    const header = body.split('\n')[0]!;
+    const attendees = body.match(/(?:^|\n| \| )\s*(attendees: [^\n;]+)/u)?.[1];
+    const pipeAt = header.indexOf(' | ');
+    const fields = (pipeAt < 0 ? header : header.slice(0, pipeAt)).split(', ');
     const head = fields[0] ?? '';
     const rest = fields.slice(1).filter(part => part.length > 0).join(', ');
     // #7: an all-day entry starts as a bare date; reading it as a UTC instant would shift it into the
@@ -3921,7 +3924,8 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     // another day (the overlap the helper returns) is that day's, not this answer's, and is dropped.
     if (dateOnly && singleDay !== undefined && calendarStamp(event.start, true) !== singleDay) continue;
     const entries = days.get(day) ?? [];
-    entries.push([time, rest].filter(part => part.length > 0).join(' '));
+    const summary = [time, rest].filter(part => part.length > 0).join(' ');
+    entries.push(attendees === undefined ? summary : `${summary} | ${attendees}`);
     days.set(day, entries);
   }
   return [...days].map(([day, entries]) => ({ day, entries }));
@@ -4315,7 +4319,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${[...(group.meta ?? []), ...group.lines].join('\n')}${note}`;
         // #575: a block this session already gave is one line, never a second copy of the same evidence.
-        if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
+        if (group.source !== 'calendar' && run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
       });
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
@@ -7179,11 +7183,15 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     // on the body's own next page once the store's slices are spent.
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
-  const { lines, rest } = fitUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
+  const units = voiceUnitsOf(reply);
+  const remainingNote = (count: number): string => `+${count} more lines; continue with pageCursor to fetch the rest.`;
+  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/gu, 'more on the next page') : '';
+  // Reserve the continuation line before packing, so announcing a cut never breaks the voice cap.
+  const pagedEnvelope: JsonObject = { ...envelope, note: `${previousNote} ${remainingNote(units.length)}`.trim() };
+  const { lines, rest } = fitUnits(pagedEnvelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
-  // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;
-  return { ...page, canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+  return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, pagedEnvelope, rest), pagesRemaining: pagesLeft(rest) };
 }
 
 /**

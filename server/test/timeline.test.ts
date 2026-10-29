@@ -509,3 +509,19 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('C-STEADY104: count-only audit detects unfulfilled spoken lookup claims', () => {
+  withStore(store => {
+    for (const [index, text] of ["One second, I'm looking this up", 'Let me check', 'One second, checking', 'I checked it already'].entries()) {
+      const id = `claim-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    const read = store.transaction(tx => buildTimeline(tx, SESSION));
+    assert.equal(buildCallAudit(read, scanLogs([])).aggregates.claimsWithoutCall, 3);
+    assert.equal(read.transcript, undefined, 'audit exports counts, not transcript content');
+    assert.ok(read.turns.every(track => track.utterances === undefined));
+    call(store, SESSION, 'claim-1', 'fulfilling-call', 'research', 'completed', 10, T0 + 1002);
+    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 2);
+  });
+});

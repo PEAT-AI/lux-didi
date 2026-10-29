@@ -54,6 +54,7 @@ export interface TimelineReport {
   callFailures: { count: number; kinds: Record<string, number> };
   /** C-RESEARCH-CONTRACT T-04: calls the admission refused. Not a failure: they reached no source. */
   blockedCalls: number;
+  announcedClaimsWithoutCall?: number;
   coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
   contentAccess?: DiagnosticContentAccess;
   transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
@@ -189,10 +190,27 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   const callFailures = callFailuresOf(read, liveSessionId, responses, calls);
   // C-RESEARCH-CONTRACT T-04: a blocked call is counted on its own line, never inside the failure count.
   const blockedCalls = calls.filter(call => call.outcome === 'blocked').length;
+  // Count in SQL: a normal audit must never export transcript text. Prefer the canonical journal
+  // when linked, and count each turn once even when the provider split its final transcript.
+  const journalAvailable = !!read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_journal'");
+  const claimText = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END' : 'u.text';
+  const claimFinal = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END' : 'u.final';
+  const announcedClaimsWithoutCall = Number(read.get(`SELECT COUNT(DISTINCT u.turn_id) AS count
+    FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
+    ${journalAvailable ? 'LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id' : ''}
+    WHERE t.live_session_id=? AND u.role='model'
+      AND (${claimFinal})=1
+      AND (lower(${claimText}) LIKE '%looking this up%'
+        OR lower(${claimText}) LIKE '%looking that up%'
+        OR lower(${claimText}) LIKE '%looking it up%'
+        OR lower(${claimText}) LIKE '%let me check%'
+        OR lower(${claimText}) LIKE '%one second%checking%')
+      AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
+
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
     tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
-    liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
+    announcedClaimsWithoutCall, liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     callFailures,
     blockedCalls,
@@ -828,7 +846,7 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit
       slowestCalls: slowest,
       refusalsByCode,
       turnsOver4s: turns.filter(turn => turn.finalToProviderMs !== null && turn.finalToProviderMs > AUDIT_TURN_ALERT_MS).length,
-      claimsWithoutCall: lines.filter(line => line.event === 'live_claim_without_call').length,
+      claimsWithoutCall: Math.max(report.announcedClaimsWithoutCall ?? 0, lines.filter(line => line.event === 'live_claim_without_call').length),
       deadAirEvents: lines.filter(line => line.event === 'live_dead_air').length,
     },
   };

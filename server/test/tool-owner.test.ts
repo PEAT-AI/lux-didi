@@ -41,12 +41,13 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
+  const sourceTools = options.sourceTools ?? tools;
   const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -54,8 +55,8 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const calls: { name: string; arguments: unknown; signal: AbortSignal }[] = [];
   let onDispatch: (() => void) | undefined;
   let result: unknown = options.result ?? { content: [{ type: 'text', text: 'nonempty synthetic α insight' }] };
-  sdk.setRequestHandler('tools/list', () => ({ tools }) as never);
-  sdk.setRequestHandler('tools/call', () => { onDispatch?.(); return result as never; });
+  sdk.setRequestHandler('tools/list', () => ({ tools: sourceTools }) as never);
+  sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name) : result) as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -730,8 +731,8 @@ async function receivedOwnerFixture(t: TestContext) {
 test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
   const f = await receivedOwnerFixture(t);
   f.store.transaction(tx => tx.run("CREATE TRIGGER fail_body_completion BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' AND json_extract(NEW.intent_json,'$.toolName')='read_received_body' BEGIN SELECT RAISE(ABORT,'synthetic body completion'); END"));
-  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.error?.reason, 'tool_journal_failed');
-  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'intent');
+  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.tools[0]?.status, 'failed');
+  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'failed');
   f.store.transaction(tx => tx.run('DROP TRIGGER fail_body_completion'));
   const retry = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(retry.error, undefined);
   const response = retry.accepted[0]!.response, slice = (response['bodySlices'] as JsonObject[])[0]!;
@@ -781,9 +782,41 @@ for (const effect of ['read', 'write'] as const) {
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
     });
     assert.equal(batch.tools[0]?.status, effect === 'write' ? 'unknown' : 'failed');
+    assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, effect === 'write' ? 'unknown' : 'failed');
     const logged = lines.filter(line => line['event'] === 'tool_handler_error');
     assert.equal(logged.length, 1);
     assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: throwing.name, class: 'TypeError', reason: 'handler_outcome' });
     assert.equal(JSON.stringify(logged).includes('synthetic handler failure'), false, 'the exception message is not diagnostic payload');
+  });
+}
+
+test('C-STEADY104: a rolled-back read completion still permits a failed terminal', async t => {
+  const f = await fixture(t);
+  const call = f.intent();
+  f.owner.journal.intent(call);
+  assert.throws(() => f.owner.complete(call, { text: 'x'.repeat(10000) }, ['private']));
+  f.owner.journal.fail(call, 'failed', 'handler_outcome');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'failed');
+});
+
+for (const channel of ['eng', 'synthetic-missing']) {
+  test(`C-STEADY104: channel ${channel} closes its owner journal with a speakable result`, async t => {
+    const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
+    const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+    const names = sourceTools.map(tool => tool.name);
+    const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
+    const f = await fixture(t, { policy: p, sourceTools, resultOf: name => ({ content: [{ type: 'text', text: JSON.stringify(name === 'mattermost_whoami'
+      ? { username: 'synthetic-owner', id: 'synthetic-owner-id' }
+      : [{ id: 'eng-general', name: 'engineering-general', display_name: 'Eng General', type: 'O' }, { id: 'eng-security', name: 'engineering-security', display_name: 'Eng Security', type: 'O' }]) }] }) });
+    const tool = f.definitions().find(tool => tool.name === 'mattermost_chat')!;
+    assert.ok(tool, 'the chat capability is published');
+    const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 3 } }], {
+      registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
+      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
+    });
+    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
+    const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
+    assert.equal(row.state, 'completed');
+    assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);
   });
 }

@@ -1847,7 +1847,12 @@ function noteChatReads(run: RunState, subs: readonly IntentSubCall[], results: r
     if (read !== undefined && clarify === undefined && notFound === undefined) add(`I read ${read}.`);
     if (missing !== undefined) add(`Say once: ${missing}.`);
     if (clarify !== undefined) { add(`Ask him: ${clarify}`); run.chatUnresolved = 'needs_clarification'; }
-    if (notFound !== undefined) { add(notFound); run.chatUnresolved ??= 'name_not_found'; }
+    if (notFound !== undefined) {
+      add(notFound);
+      const channelMissing = sub.args['intent'] === 'channel';
+      run.chatUnresolved ??= channelMissing ? 'channel_not_found' : 'name_not_found';
+      if (channelMissing) run.unavailableReasons.set('chat', 'channel_not_found');
+    }
     const matched = Number(lead('matched') ?? Number.NaN);
     const returned = (result.text.match(/^\*\*.+\*\*$/gmu) ?? []).length;
     const offset = typeof sub.args['offset'] === 'number' ? sub.args['offset'] : 0;
@@ -2138,7 +2143,7 @@ export interface RunState {
   /** C-CHAT: what each chat read said it read, a capability it lacks, or the question it asks back. Said once. */
   chatNotes: string[];
   /** C-CHAT: a chat read asked which person, channel or group was meant, or knew nobody by that name. */
-  chatUnresolved?: 'needs_clarification' | 'name_not_found';
+  chatUnresolved?: 'needs_clarification' | 'name_not_found' | 'channel_not_found';
   /** C-CHAT: the next page of the last chat read that matched more than it returned. */
   chatPage?: { sub: IntentSubCall; next: number; total: number };
   /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */

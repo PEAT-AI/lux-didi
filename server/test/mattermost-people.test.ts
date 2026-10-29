@@ -727,3 +727,18 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   const noEgress = await start([{ id: 'mattermost', path: '/old', enabled: true, allowEgress: false }], { '/old': MATTERMOST_TOOLS });
   assert.deepEqual(acceptanceIds(noEgress), ['mattermost'], 'an enabled entry stays active with no egress, and the deleted one stays retired');
 });
+
+for (const [channel, phrase] of [['eng', /Which channel do you mean/u], ['synthetic-missing-channel', /not found/u]] as const) {
+  test(`C-STEADY104: channel ${channel} returns a completed speakable empty read`, async t => {
+    const f = await setup(t, 'people');
+    const result = await f.reader.chat({ intent: 'channel', channel, limit: 8 });
+    assert.equal(result.state, 'completed');
+    if (result.state !== 'completed') return;
+    const projection = projectMattermostResult(f.adapter, result);
+    assert.equal(projection.ok, true);
+    if (!projection.ok) return;
+    assert.equal(projection.projection.shape, 'empty');
+    assert.match(projection.projection.text, phrase);
+    assert.equal(projection.projection.itemCount, 0);
+  });
+}

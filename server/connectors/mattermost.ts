@@ -1014,8 +1014,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const strong = rows.filter(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
       const target = strong.length === 1 ? strong[0]! : undefined;
       if (target === undefined || target.id === undefined) {
-        // #637: a channel nobody has is the connector's closed refusal, which the reply already says in words.
-        if (rows.length === 0) return { state: 'refused', reason: `channel-not-found: ${spoken}; closest names: none` };
+        // A successful discovery with no match is an empty read the model can speak, not a failed handler.
+        if (rows.length === 0) return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I could not find a channel called ${spoken}. Which channel did you mean?` });
         const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
         return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
       }

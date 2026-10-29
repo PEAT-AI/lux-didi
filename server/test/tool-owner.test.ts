@@ -731,8 +731,8 @@ async function receivedOwnerFixture(t: TestContext) {
 test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
   const f = await receivedOwnerFixture(t);
   f.store.transaction(tx => tx.run("CREATE TRIGGER fail_body_completion BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' AND json_extract(NEW.intent_json,'$.toolName')='read_received_body' BEGIN SELECT RAISE(ABORT,'synthetic body completion'); END"));
-  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.error?.reason, 'tool_journal_failed');
-  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'intent');
+  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.tools[0]?.status, 'failed');
+  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'failed');
   f.store.transaction(tx => tx.run('DROP TRIGGER fail_body_completion'));
   const retry = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(retry.error, undefined);
   const response = retry.accepted[0]!.response, slice = (response['bodySlices'] as JsonObject[])[0]!;
@@ -802,10 +802,9 @@ test('C-STEADY104: a rolled-back read completion still permits a failed terminal
 for (const channel of ['eng', 'synthetic-missing']) {
   test(`C-STEADY104: channel ${channel} closes its owner journal with a speakable result`, async t => {
     const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
-    const { composedGrantedNames } = await import('../connectors/index.js');
     const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', additionalProperties: true } }));
     const names = sourceTools.map(tool => tool.name);
-    const p = policy({ connector: 'mattermost', toolNames: [...names, ...composedGrantedNames('mattermost', names)], schemaDigest: canonicalToolDigest(sourceTools) });
+    const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
     const f = await fixture(t, { policy: p, sourceTools, resultOf: name => ({ content: [{ type: 'text', text: JSON.stringify(name === 'mattermost_whoami'
       ? { username: 'synthetic-owner', id: 'synthetic-owner-id' }
       : [{ id: 'eng-general', name: 'engineering-general', display_name: 'Eng General', type: 'O' }, { id: 'eng-security', name: 'engineering-security', display_name: 'Eng Security', type: 'O' }]) }] }) });

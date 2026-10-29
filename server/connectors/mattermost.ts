@@ -592,15 +592,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     }
     return { channels, origin };
   }
-  async function loadChannels(signal?: AbortSignal): Promise<MattermostChannel[] | { error: string }> {
+  async function loadChannels(signal?: AbortSignal, capture?: (evidence: SourceDispatchEvidence) => void): Promise<MattermostChannel[] | { error: string }> {
     const cached = channelIndex.get();
-    if (cached) { port.recordReuse?.(channelIndex.origin); return cached; }
+    if (cached) { port.recordReuse?.(channelIndex.origin); capture?.({ [SOURCE_DISPATCH]: channelIndex.origin }); return cached; }
     const denied = preflight(registry, settings, 'mattermost_list_channels');
     if (denied) return { error: denied };
     const loaded = await readChannels(signal);
     if ('error' in loaded) return loaded;
     channelIndex.set(loaded.channels);
     channelIndex.origin = loaded.origin;
+    capture?.({ [SOURCE_DISPATCH]: loaded.origin });
     return loaded.channels;
   }
   async function resolveAgainstIndex(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
@@ -815,7 +816,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
-  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
+  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
     if (declared.includes('sort')) args['sort'] = 'newest';
@@ -845,8 +846,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * C-CHAT R8-W9: the direct conversation that already exists with one handle, read from the channel
    * index. Nothing is created, and a child that grants no channel list says so instead of implying none.
    */
-  async function dmChannelOf(username: string, signal?: AbortSignal): Promise<{ channel?: string; missing?: string }> {
-    const channels = await loadChannels(signal);
+  async function dmChannelOf(username: string, signal?: AbortSignal, capture?: (evidence: SourceDispatchEvidence) => void): Promise<{ channel?: string; missing?: string }> {
+    const channels = await loadChannels(signal, capture);
     if (!Array.isArray(channels)) return { missing: 'finding your direct messages needs the channel list this child does not grant' };
     const wanted = username.trim().replace(/^@/u, '').toLowerCase();
     const found = channels.find(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
@@ -858,7 +859,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * name is a question back, never a pick. A child without it is matched on the direct message channel
    * whose name is that username, and the reply says person lookups need the newer archive.
    */
-  async function findPerson(name: string, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
+  async function findPerson(name: string, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
     // W15: the owner's roster decides who a spoken name is before any child search runs, so an alias
     // such as "Sandy" binds to the colleague itself and the child's prefix match never guesses.
     const known = currentBinding(name);
@@ -866,7 +867,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (known.person.mattermost.length === 0) return { kind: 'not-found', text: `${known.person.name} has no team chat handle in the owner's people list.` };
       // R8-W9: the roster says who the person is, never which conversation, so the existing DM channel is
       // looked up here; without it the read answered "no direct messages" while the conversation held posts.
-      const dm = await dmChannelOf(known.person.mattermost, signal);
+      const dm = await dmChannelOf(known.person.mattermost, signal, capture);
       return { kind: 'person', username: known.person.mattermost, display: known.person.name, ...(dm.channel === undefined ? {} : { dmChannelId: dm.channel }), ...(dm.missing === undefined ? {} : { missing: dm.missing }) };
     }
     if (known.kind === 'ambiguous') return { kind: 'clarify', text: `Which ${name} do you mean: ${ambiguityQuestion(name, known.people)}` };
@@ -886,7 +887,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       return { kind: 'person', username, display: firstText(top, ['display_name']) || username, ...(dm !== '' ? { dmChannelId: dm } : {}) };
     }
     const missing = 'person lookups by name need the newer chat archive';
-    const channels = await loadChannels(signal);
+    const channels = await loadChannels(signal, capture);
     if (!Array.isArray(channels)) return { kind: 'failed', result: { state: 'refused', reason: channels.error } };
     const wanted = name.trim().replace(/^@/u, '').toLowerCase();
     const direct = channels.filter(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
@@ -921,7 +922,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const dates = { from_date: window.from, ...(window.to === undefined ? {} : { to_date: window.to }) };
     const base = { intent: input.intent, window, returned: 0, offset, posts: [] as ChatReadPost[] };
     const finish = (out: MattermostChatRead): MattermostResult => {
-      if (channelIndex.origin && !children.includes(channelIndex.origin)) children.push(channelIndex.origin);
       const composed = { ...who.evidence };
       delete composed[SOURCE_DISPATCH];
       return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_CHAT_TOOL, decodedResult: out };

@@ -151,8 +151,11 @@ export function requestRefusal(code: string): { status: 'refused'; code: string;
   const sentences: Record<string, string> = {
     no_owner_request: 'There is no current owner request authorizing that action.',
     request_expired: 'That owner request has expired.', grant_spent: 'That request has already completed this kind of action.',
-    target_not_authorized: 'That target is not authorized by this request.', missing_time: 'The alarm request has no time yet.',
-    missing_timezone: 'The requested time zone is not recognized.', unsupported_time_expression: 'That time expression is not supported.',
+    target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?',
+    missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',
+    time_mismatch: 'The alarm was not set because the requested time differs from yours.',
+    invalid_time: 'The alarm was not set because that time is invalid.', alarm_not_active: 'That alarm is not active.',
+    alarm_failed: 'The alarm action failed; no alarm was set.',
   };
   return { status: 'refused', code, say: sentences[code] ?? 'The host could not authorize that action.' };
 }

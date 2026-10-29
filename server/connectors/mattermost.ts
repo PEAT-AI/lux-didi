@@ -1105,12 +1105,21 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     async search(input: QueryInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_search');
       if (denied) return { state: 'refused', reason: denied };
-      const query = boundedText(input.query);
-      if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
+      const rawQuery = boundedText(input.query);
+      if (rawQuery === undefined) return { state: 'refused', reason: 'invalid-query' };
+      let from = input.from_date ?? input.after;
+      let to = input.to_date ?? input.before;
+      // Older research plans can contain compiled operators. Consume them here;
+      // the binary accepts date arguments, never inline After:/Before: filters.
+      const query = rawQuery.replace(/\b(after|before|on):(\d{4}-\d{2}-\d{2})\b/giu, (_match, kind: string, day: string) => {
+        if (kind.toLowerCase() !== 'before') from ??= day;
+        if (kind.toLowerCase() !== 'after') to ??= day;
+        return '';
+      }).trim();
       // #610: a search limit over the maximum is clamped to it, never sent as the child would refuse it.
       const bounded = limited(input.limit, true);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      const window = searchWindow(input.from_date ?? input.after, input.to_date ?? input.before);
+      const window = searchWindow(from, to);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
       // #610/F10: the channel an ask names is only sent where the child declares the filter, so a
       // child without one searches its whole archive rather than refusing the read.

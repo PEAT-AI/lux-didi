@@ -1,4 +1,4 @@
-import { canarySessions } from '../live/canary.js';
+import { InstalledCanary, canarySessions } from '../live/canary.js';
 import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler.js';
 import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7834,4 +7834,52 @@ test('typed owner text refuses before provider setup completes without sending',
   assert.equal(h.owner.providerReady(session.liveSessionId), true);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
+});
+
+test('production Live wrapper forwards delayed provider readiness', async t => {
+  const h = await harness(t);
+  const live = composeLive(h.store, h.dir, {
+    profile: validateLiveProfile(profileInput()),
+    credentials: { resolve: async () => CANARY }, socketFactory: h.f.socketFactory,
+  }).service;
+  t.after(() => live.shutdown());
+  const session = live.create('ordinary', 'wrapper-ready', h.ctx);
+  const attachment = live.attach(session.liveSessionId, h.ctx);
+  await h.f.frame(1);
+  assert.equal(live.providerReady?.(session.liveSessionId), false);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  assert.equal(live.providerReady?.(session.liveSessionId), true);
+  live.revoke(session.liveSessionId);
+  await attachment.done;
+  assert.equal(live.providerReady?.(session.liveSessionId), false);
+});
+
+test('actual InstalledCanary never-ready close releases production session and logs terminal', async t => {
+  const h = await harness(t);
+  const live = composeLive(h.store, h.dir, {
+    profile: validateLiveProfile(profileInput()),
+    credentials: { resolve: async () => CANARY }, socketFactory: h.f.socketFactory,
+  }).service;
+  t.after(() => live.shutdown());
+  let clock = 0;
+  const host = new InstalledCanary(h.store, live, async () => { clock += 5000; }, () => clock);
+  t.after(() => host.shutdown());
+  const asks = [{ id: 'synthetic-ready', finals: ['synthetic owner text'], expect: { tool: 'search', codeClass: 'success' as const, nonEmpty: true } }];
+  const session = host.open(asks, h.ctx);
+  const attachment = live.attach(session.liveSessionId, h.ctx);
+  await h.f.frame(1);
+  const receipts: Record<string, unknown>[] = [];
+  const stop = attachHostLogSink({ event: raw => { const event = safeEvent(raw); if (event) receipts.push(event); } });
+  try {
+    const report = await host.run(session.liveSessionId, h.ctx.clientId);
+    assert.match(report.lines[0]!, /code=provider_not_ready ms=10000/);
+    assert.equal(live.snapshot(session.liveSessionId).terminal?.state, 'revoked');
+    await attachment.done;
+    assert.equal(canarySessions.isCanary(session.liveSessionId), false);
+    assert.equal(receipts.filter(row => row['event'] === 'live_terminal' && row['liveSessionId'] === session.liveSessionId).length, 1);
+    const next = host.open(asks, h.ctx);
+    assert.notEqual(next.liveSessionId, session.liveSessionId);
+    host.shutdown();
+  } finally { stop(); }
 });

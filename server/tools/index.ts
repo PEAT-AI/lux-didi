@@ -731,7 +731,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             hostLogEvent({ event: 'alarm_audit', ...ownerRequests.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
-            if (name === 'list_alarms') return finish({ alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) });
+            if (name === 'list_alarms') {
+              const result: JsonObject = { alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) };
+              ownerRequests.commit(runId, name, requestTarget, result);
+              return finish(result);
+            }
             const now = options.alarms?.now() ?? Date.now();
             if (name === 'cancel_alarm') {
               if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
@@ -739,7 +743,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
-            if (parsed.status !== 'ready') return finish(parsed);
+            if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {
               const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;

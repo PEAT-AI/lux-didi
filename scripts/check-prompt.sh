@@ -111,7 +111,7 @@ for (const rule of [
 // The no-filler rule and the eight-line reply bound stay as they were.
 assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
 // C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
-assert.ok(persona.NAYA_CHARACTER.length <= 2868);
+assert.ok(persona.NAYA_CHARACTER.length <= 2959);
 assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
 for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
   'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',

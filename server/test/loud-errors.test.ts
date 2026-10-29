@@ -265,6 +265,8 @@ for (const source of ['mail', 'calendar'] as const) {
         topic: 'synthetic residue', lookups: [{ source, query: source === 'mail' ? 'Willow' : 'this week' }],
       }, new AbortController().signal);
       assert.equal(attempts, 2, 'one in-deadline retry');
+      const reads = h.calls.filter(call => call.name !== 'calendar_list_calendars');
+      assert.deepEqual(reads[1]?.args, reads[0]?.args, 'the failed page is retried, not a broader empty search');
       const text = JSON.stringify(reply);
       const receipt = h.sources.find(entry => entry.source === source);
       assert.ok(receipt);

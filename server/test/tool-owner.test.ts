@@ -51,10 +51,15 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const sourceTools = options.sourceTools ?? tools;
   const rpcErrors: unknown[] = [];
   if (options.sourceTools) {
-    const request = Client.prototype.request;
-    t.mock.method(Client.prototype, 'request', async function(this: Client, ...args: Parameters<Client['request']>) {
-      try { return await request.apply(this, args); }
-      catch (error) { rpcErrors.push({ clientError: String(error) }); throw error; }
+    const connect = Client.prototype.connect;
+    t.mock.method(Client.prototype, 'connect', async function(this: Client, ...args: Parameters<Client['connect']>) {
+      const result = await connect.apply(this, args);
+      const request = this.request.bind(this);
+      this.request = (async (...args: Parameters<Client['request']>) => {
+        try { return await request(...args); }
+        catch (error) { rpcErrors.push({ clientError: String(error) }); throw error; }
+      }) as typeof this.request;
+      return result;
     });
   }
   const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };

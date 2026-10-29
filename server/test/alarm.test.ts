@@ -115,3 +115,28 @@ test('direct102 alarm: a clarified zone overrides the unrecognized earlier zone'
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T03:10:00Z'));
 });
+
+for (const words of [
+  'set an alarm for eleven at seven',
+  'set an alarm at seven for eleven',
+  'set an alarm noon at seven',
+  'set an alarm for noon at seven',
+  'set an alarm for eleven in twenty minutes',
+  'set an alarm eleven at seven',
+  'set an alarm for seven am eleven pm',
+  'set an alarm at seven and at eleven',
+  'set an alarm at seven and set an alarm in twenty minutes',
+  'set an alarm eleven and set an alarm at seven',
+]) {
+  test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
+    assert.deepEqual(parseAlarmTime(words, now, tz), { status: 'clarify', reason: 'unsupported_time_expression' });
+  });
+}
+
+for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  tomorrow at seven', 'set an alarm for tomorrow seven am']) {
+  test(`R5 F2: one date-qualified time remains valid: ${words}`, () => {
+    const parsed = parseAlarmTime(words, now, tz);
+    assert.equal(parsed.status, 'ready');
+    if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
+  });
+}

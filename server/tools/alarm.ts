@@ -31,9 +31,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (parts.length === 2 && !(parts[0] === 'oh' || (values[parts[0]!]! >= 20 && values[parts[1]!]! < 10))) return NaN;
     return parts.reduce((sum, part) => sum + values[part]!, 0);
   };
+  if ([...text.matchAll(/\b(?:am|pm)\b/g)].length > 1) return { status: 'clarify', reason: 'unsupported_time_expression' };
+  // Strip only the first action prefix: a later alarm clause must not erase an earlier time.
   let fireAtUtc: number;
   const relative = new RegExp(`\\bin\\s+((?:\\d+|${Object.keys(values).join('|')})(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?)\\s+(minutes?|hours?)\\b`).exec(text);
   if (relative) {
+    const prefix = text.slice(0, relative.index).replace(/^.*?\b(?:alarm|wake me)\b/, '').replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
+    if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     const amount = number(relative[1]!);
     if (!Number.isFinite(amount)) return { status: 'clarify', reason: 'unsupported_time_expression' };
     if (amount <= 0 || amount > 1440) return { status: 'refused', reason: 'invalid_time' };
@@ -41,18 +45,23 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (rest) return { status: 'clarify', reason: 'unsupported_time_expression' };
     fireAtUtc = now + amount * (relative[2]!.startsWith('hour') ? 3600000 : 60000);
   } else {
-    const start = /\bat\s+/.exec(text) ?? /\bfor\s+/.exec(text);
-    const noon = /\b(noon|midnight)\b/.exec(text);
-    if (!start && !noon) return { status: 'clarify', reason: 'missing_time' };
-    let expression = text.slice(start ? start.index + start[0].length : noon!.index).trim();
+    // Select the first temporal introducer and consume its entire remainder, never prefer a later "at".
+    const start = /\b(?:at|for)\s+|\b(?:noon|midnight)\b/.exec(text);
+    if (!start) return { status: 'clarify', reason: 'missing_time' };
+    const prefix = text.slice(0, start.index).replace(/^.*?\b(?:alarm|wake me)\b/, '').replace(/^\s*snooze\b/, '')
+      .replace(/\b(?:tomorrow|morning|evening|tonight|am|pm|in|the|for|please)\b|[,;:]/g, '').trim();
+    if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
+    let expression = text.slice(start.index + (/^(?:noon|midnight)$/.test(start[0]) ? 0 : start[0].length)).trim();
+    expression = expression.replace(/^(?:(?:tomorrow|morning|evening|tonight|in the morning|in the evening)\s+)+at\s+/, '');
     const tomorrow = /\btomorrow\b/.test(text);
     const period = /\bam\b|\bmorning\b/.test(text) ? 'am'
       : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
+    const namedTime = expression === 'noon' || expression === 'midnight';
     let hour: number;
     let minute = 0;
     let offset = 0;
-    if (expression === 'noon' || expression === 'midnight') {
+    if (namedTime) {
       hour = expression === 'noon' ? 12 : 0;
     } else {
       const past = /^(quarter|half|[\w -]+?)\s+(past|to)\s+([\w -]+)$/.exec(expression);
@@ -82,7 +91,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
       }
       return instant;
     };
-    const candidates = !period && !noon ? [hour % 12, hour % 12 + 12] : [hour];
+    const candidates = !period && !namedTime ? [hour % 12, hour % 12 + 12] : [hour];
     const instants = candidates.flatMap(h => [0, 1].map(extra => resolve(Date.UTC(year, month - 1, day + (tomorrow ? 1 : 0) + extra, h, minute + offset))))
       .filter(instant => instant > now).sort((a, b) => a - b);
     fireAtUtc = instants[0]!;

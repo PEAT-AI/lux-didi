@@ -5528,7 +5528,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
-  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now: () => run.startedAt, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };

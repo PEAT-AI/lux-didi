@@ -933,6 +933,7 @@ test('MM-4: twenty-post DM recency reads use newest history and actual today/yes
     const window = chatWindow(query, FIXTURE_NOW, 'UTC');
     const read = chatRead(await f.reader.chat({ intent: 'person', person: '@person.a', query, from_date: window.from!, to_date: window.to! }));
     assert.ok(read.posts.length > 0);
+    assert.deepEqual(read.window, window, 'the owner hears the real window read through from_date/to_date');
     assert.ok(read.posts.every(post => post.time.slice(0, 10) === window.from));
   }
 });

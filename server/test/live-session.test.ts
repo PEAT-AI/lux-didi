@@ -3206,7 +3206,8 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
   const descriptions = new Map(CONNECTOR_DESCRIPTORS['mattermost']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
   assert.equal(descriptions.has('mattermost_list_channels'), false, 'the model never gets a channel dump');
-  assert.match(descriptions.get('mattermost_search')!, /From:<user>/);
+  assert.match(descriptions.get('mattermost_search')!, /author/);
+  assert.match(descriptions.get('mattermost_search')!, /from_date.*to_date/);
   assert.match(descriptions.get('mattermost_search')!, /After:<date>/);
   assert.match(descriptions.get('mattermost_search')!, /In:<channel>/);
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);

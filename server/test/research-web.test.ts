@@ -593,7 +593,7 @@ test('WEB-1024: fallback query clipping keeps entity date and place tokens befor
 test('#1028: a misheard organisation resolves to the name her own calendar digest carries', async () => {
   const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
   const deps: ResearchDeps = {
-    ...h.deps, configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
+    ...h.deps, now: () => Date.parse('2026-10-21T12:00:00Z'), configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
     calendarDigest: () => '09:00 Standup, 11:00 Acme Seeds quarterly review',
   };
   const reply = await runResearch(deps, {
@@ -607,15 +607,15 @@ test('#1028: a misheard organisation resolves to the name her own calendar diges
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran for a named organisation');
   const targeted = h.subcalls.find(call => call.name === 'calendar_list_events');
   assert.equal(targeted?.args['q'], 'Acme Seeds', 'calendar is targeted at the resolved entity');
-  assert.equal(targeted?.args['timeMin'], undefined, 'not the rest-of-today window');
-  assert.equal(targeted?.args['timeMax'], undefined, 'no automatic today window');
+  assert.equal(targeted?.args['timeMin'], '2026-09-19T12:00:00.000Z', 'C3 named-event window starts 32 days before the turn, not rest-of-today');
+  assert.equal(targeted?.args['timeMax'], '2027-04-23T12:00:00.000Z', 'C3 named-event window ends 184 days after the turn');
   assert.ok(reply['researchId'] !== undefined, 'the round answered');
 });
 
 test('#1028: a named organisation runs her knowledge and calendar even when the model named no lookup', async () => {
   const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
   const deps: ResearchDeps = {
-    ...h.deps, configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
+    ...h.deps, now: () => Date.parse('2026-10-21T12:00:00Z'), configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
     calendarDigest: () => '11:00 Acme Seeds quarterly review',
   };
   await runResearch(deps, { action: 'start', question: 'what did Akme Seats decide', lookups: [] }, new AbortController().signal);
@@ -623,8 +623,8 @@ test('#1028: a named organisation runs her knowledge and calendar even when the 
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran with no lookup named for it');
   const targeted = h.subcalls.find(call => call.name === 'calendar_list_events');
   assert.equal(targeted?.args['q'], 'Acme Seeds', 'calendar is targeted at the resolved entity');
-  assert.equal(targeted?.args['timeMin'], undefined, 'not the rest-of-today window');
-  assert.equal(targeted?.args['timeMax'], undefined, 'no automatic today window');
+  assert.equal(targeted?.args['timeMin'], '2026-09-19T12:00:00.000Z', 'C3 named-event window starts 32 days before the turn, not rest-of-today');
+  assert.equal(targeted?.args['timeMax'], '2027-04-23T12:00:00.000Z', 'C3 named-event window ends 184 days after the turn');
 });
 
 test('#1028: a full batch keeps the model its own lookups and never cuts one to make room', async () => {

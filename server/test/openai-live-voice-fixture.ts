@@ -175,7 +175,7 @@ export class FakeSocket extends EventEmitter {
 }
 
 /** A session on the fake socket, taken past the start barrier. Nothing here touches the network or a real clock. */
-export async function fakeReady(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}) {
+export async function fakeReady(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}, trace?: import('../trace/record.js').LiveTracePort) {
   const socket = new FakeSocket();
   const session = new OpenAiLiveVoiceAdapter(options({
     ...overrides,
@@ -183,7 +183,7 @@ export async function fakeReady(t: TestContext, overrides: Partial<LiveVoiceAdap
       queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
       return socket as unknown as WebSocket;
     }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
-  })).open(request(), { signal: new AbortController().signal, deadlineMs: Date.now() + 600_000 });
+  })).open(request(), { signal: new AbortController().signal, deadlineMs: Date.now() + 600_000, ...(trace ? { trace } : {}) });
   t.after(() => session.close());
   const captured = collect(session);
   for (let attempt = 0; attempt < 20 && !socket.sent.length; attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));

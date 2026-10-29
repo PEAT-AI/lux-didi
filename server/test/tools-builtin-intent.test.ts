@@ -144,7 +144,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     for (const words of entry.words) owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
     const args = { kind: entry.kind, target: entry.target };
     const execute = async (): Promise<unknown> => {
-      const intent = { ...authority, executionId: randomUUID(), toolCallId: randomUUID(), toolName: web.name, tool: web.name, effect: 'read' as const,
+      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: web.name,
         argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: web.accountId, resourceId: web.resourceId };
       assert.equal(owner.journal.intent(intent), 'fresh');
       return web.execute(args, { ...intent, signal });

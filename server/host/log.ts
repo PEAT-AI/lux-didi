@@ -204,6 +204,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
     return { event: 'host_ready_ms', ms: value.ms };
   }
+  if (value.event === 'alarm_model_time_ignored') {
+    if (!closedKeys(value, ['event', 'skewMs']) || !Number.isSafeInteger(value.skewMs)) return;
+    return { event: 'alarm_model_time_ignored', skewMs: value.skewMs };
+  }
   if (value.event === 'alarm_scheduler_started') {
     // #751: a count only. A label or a time here would be the owner's schedule in the diagnostic log.
     if (!closedKeys(value, ['event', 'pending']) || !isSafeCount(value.pending)) return;

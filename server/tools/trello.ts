@@ -151,12 +151,9 @@ const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, 
 export const TRELLO_WRITE_ARGUMENT_FIELDS: readonly string[] =
   [...new Set(Object.values(WRITE_SHAPES).flatMap(shape => [...shape.required, ...shape.optional]))];
 
-/** C-FILLER: a declared property the chosen action does not use is absent, whatever value it carries: an empty or
- *  whitespace-only string, an enum word, `false`, `due:"none"`. A property the action does use keeps exactly
- *  today's validation, so `false` for checked, complete or remove on the action that uses it stays a real value. */
-
-/** C-FILLER (council 98187): drop every declared property this action's shape does not use, and name each one.
- *  An unknown property still refuses in the validator, and is never named in the log. */
+/** Use the same admission as reads; report removed declared paths, never their values.
+ * Required values retain validation; optional false booleans are real values, not filler.
+ */
 export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: string[] } {
   if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) {
     return { args: isRecord(args) ? args : {}, normalized: [] };

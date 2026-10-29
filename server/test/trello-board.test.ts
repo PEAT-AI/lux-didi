@@ -759,3 +759,16 @@ test('C-TRELLO: optional write filler is absent, receipts name card and list, re
     assert.equal(writes().length, before + 2);
   }
 });
+
+test('C-TRELLO: normalization preserves required validation and explicit-ask write authority', async () => {
+  for (const missing of [undefined, null, '', ' ']) {
+    assert.equal(validateTrelloRead({ view: 'list', list: missing, query: null, limit: null }), false);
+    assert.equal(validateTrelloRead({ view: 'search', query: missing, card: 'x', limit: null }), false);
+    assert.equal(validateTrelloWrite({ action: 'create', list: 'Ideas', name: missing, due: null }), false);
+    assert.equal(validateTrelloWrite({ action: 'move', card: 'Call the plumber', list: missing }), false);
+  }
+  const before = writes().length;
+  const refused = await board.write(session(), { action: 'create', list: 'Ideas', name: 'Synthetic unasked write', due: null }, 'what is in my short-term backlog');
+  assert.equal(refused.ok, false);
+  assert.equal(writes().length, before);
+});

@@ -265,3 +265,7 @@ test('raw side-effect reply is retained for cleanup even if provider send throws
   assert.equal(sessions.progress('send-failure').completed, 0);
   sessions.close('send-failure');
 });
+
+test('empty data cannot pass because query/reason metadata is non-empty', () => {
+  assert.equal(assertCanaryResult(ask, { ...result, result: { code: 'ok', query: 'synthetic project', reason: 'no matching rows', items: [] } }).code, 'empty_payload');
+});

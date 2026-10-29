@@ -5860,7 +5860,7 @@ const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTIN
  */
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
   // An explicit local record handle is navigation, not a new topic.
-  if (call.lookups?.some(lookup => lookup.history?.recordRef || lookup.history?.cursor)) return true;
+  if (Array.isArray(call.lookups) && call.lookups.some(lookup => isRecord(lookup) && isRecord(lookup['history']) && (lookup['history']['recordRef'] || lookup['history']['cursor']))) return true;
   const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).

@@ -23,7 +23,6 @@ const PAGE_CHARACTERS = 6000;
 const REFERENCE_LIFETIME_MS = 30 * 60_000;
 const digest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const knownClass = (value: unknown): value is DataClass => HISTORY_CLASSES.includes(value as DataClass);
-const hasTable = (tx: Transaction, name: string): boolean => !!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name=?", [name]);
 
 function entryValue(tx: Transaction, id: string): RecordValue | null {
   const row = tx.get(`SELECT e.*,s.revision AS parent_revision FROM entries e JOIN sessions s ON s.id=e.session_id WHERE e.id=?`, [id]);

@@ -7575,7 +7575,9 @@ test('C-POLISH10: an open_web call through the tool registry logs its closed aud
   await settleLiveTool(h, 'open-web-audit', 'open_web', { kind: 'search', target: 'Margit Halden deck' });
   const frame = h.f.frames.filter(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry).at(-1) as { toolResponse: { functionResponses: { response: unknown }[] } };
   const audit = receipts.filter(record => record.event === 'open_audit');
-  assert.deepEqual(audit, [{ event: 'open_audit', tool: 'open_web', kind: 'search', words: 3, bound: 'yes', destination: 'search', refusal: 'failed' }],
-    `the registry audited the call: tool, kind, counted words, binding, destination class and the closed code; reply ${JSON.stringify(frame.toolResponse.functionResponses[0]!.response)}`);
+  assert.equal(audit.length, 1);
+  assert.ok(typeof audit[0]!['requestAgeMs'] === 'number' && audit[0]!['requestAgeMs'] >= 0);
+  assert.deepEqual(audit.map(({ requestAgeMs: _age, ...fields }) => fields), [{ event: 'open_audit', grantKind: 'open', grantState: 'spent', ownerFinals: 1, refusalCode: 'failed' }]);
+  assert.equal((frame.toolResponse.functionResponses[0]!.response as Record<string, unknown>)['code'], 'failed');
   assert.equal(/Margit|Halden|deck|https?:/u.test(JSON.stringify(audit)), false, 'the audit names no target word and no address');
 });

@@ -222,7 +222,7 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     const failed = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
     assert.equal(failed.status, 7, 'the build exit status is the CLI status');
     assert.match(failed.stderr, /tsc: synthetic compile error/, "the build's own error is shown");
-    assert.equal(readFileSync(calls, 'utf8').trim(), `--prefix ${join(tree, 'server')} run build`, 'the documented build ran');
+    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build'], 'the documented build ran');
     // A fresh dist is authority: no build runs and the real module answers.
     rmSync(calls, { force: true });
     utimesSync(join(tree, 'server', 'settings.ts'), older, older);

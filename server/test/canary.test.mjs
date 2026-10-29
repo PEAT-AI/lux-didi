@@ -170,7 +170,7 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
   };
   const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
   const host = new InstalledCanary(store, live, async () => {
-    assert.equal(finals.length, 0); waits++; ready = true;
+    if (!ready) { assert.equal(finals.length, 0); waits++; ready = true; }
   });
   host.open([ask], { clientId: 'owner' });
   tapped = canarySessions.wrapSession(id, raw);

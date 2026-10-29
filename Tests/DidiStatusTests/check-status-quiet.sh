@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+cd "$(dirname "$0")/../.."
+work="$(mktemp -d "${TMPDIR:-/tmp}/didi-status-build.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/base"
+git archive c77491b713808192e6314babd8b0bdbb3154cbdf Sources/LuxDidi | tar -x -C "$work/base"
+compile() {
+  local output="$1"; shift
+  bash scripts/with-compile-lock.sh -- xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
+    -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" \
+    "$@" Tests/DidiStatusTests/Main.swift -o "$output"
+}
+if compile "$work/base-test" "$work/base"/Sources/LuxDidi/*.swift >"$work/base.log" 2>&1; then
+  echo 'STATUS-QUIET BASE FAIL: unexpectedly compiled' >&2; exit 1
+fi
+grep -q "cannot find 'StatusQuiet' in scope" "$work/base.log"
+echo 'STATUS-QUIET BASE RED: missing change-only publishing boundary'
+compile "$work/head-test" Sources/LuxDidi/*.swift
+"$work/head-test"

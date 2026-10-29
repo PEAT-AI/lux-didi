@@ -12,7 +12,7 @@ const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-uttera
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
 for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' / ')}`, async () => {
-  const owner = new OwnerRequests(() => 0, () => row.now ?? now);
+  const owner = new OwnerRequests(() => 0);
   row.finals.forEach((words, i) => {
     owner.observe('synthetic', `final-${i}`, words);
     if (row.clarifyAfter?.includes(i)) { owner.clarify('synthetic', 'set_alarm', 'missing_time'); owner.answered('synthetic'); }

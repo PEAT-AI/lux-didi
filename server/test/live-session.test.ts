@@ -7588,7 +7588,7 @@ test('C-POLISH10: an open_web call through the tool registry logs its closed aud
 test('alarm session speaks its reminder, repeats after silence and acknowledges only its alarm', async t => {
   const clock = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock });
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
   const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
   t.after(() => scheduler.stop());
   const first = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-alarm' });
@@ -7616,13 +7616,14 @@ test('alarm session speaks its reminder, repeats after silence and acknowledges 
   assert.equal(fake.texts.length, count, 'acknowledgement stops wake prompts');
   assert.equal(h.owner.current().state, 'listening', 'acknowledgement leaves the call open');
   h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
 test('alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it', async t => {
   const clock = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock });
-  const { session } = await openPort(h, 'wake-existing');
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const { session, attachment } = await openPort(h, 'wake-existing');
   fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
   await settlePort();
   const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
@@ -7640,12 +7641,13 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   await settlePort();
   assert.equal(scheduler.list()[0]!.state, 'done');
   h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
 test('an alarm permits one provider rebuild while its ring deadline is open', async t => {
   const clock = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock });
+  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
   const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
   t.after(() => scheduler.stop());
   const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-rebuild' });
@@ -7658,5 +7660,8 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
   fake.emit({ type: 'goAway', timeLeftMs: 5000 });
   await settlePort();
   assert.equal(fake.sessionsOpened, 2, 'no second rebuild');
+  clock.now += 6000; clock.runDue();
+  await settlePort();
   h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });

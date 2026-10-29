@@ -6,11 +6,13 @@ const binding = { endpointId: 'synthetic', generation: 1, account: 'account', re
 const bytes = new TextEncoder().encode('{"content":[{"type":"text","text":"synthetic"}]}');
 
 test('two runs retain their own pending entries and release failed partial reads', async () => {
-  const store = new MemoryResultStore({ maxEntries: 2, now: () => 1000 });
+  let now = 1000;
+  const store = new MemoryResultStore({ maxEntries: 2, now: () => now });
   const first = createResultScope(), second = createResultScope();
   const a = first.run(() => store.put(binding, bytes));
   const b = second.run(() => store.put(binding, bytes));
   assert.equal(a.state, 'available'); assert.equal(b.state, 'available');
+  now += 60_001; // Pending entries are not eviction candidates, even after their nominal TTL.
   assert.deepEqual(store.put(binding, bytes), { state: 'unavailable', reason: 'capacity' });
   first.release(); first.release();
   if (b.state !== 'available' || a.state !== 'available') throw Error('missing payload');

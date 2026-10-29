@@ -16,7 +16,7 @@ import { noteGmailAccount } from '../dist/tools/open-handles.js';
 import { GOOGLE_TOOLS } from '../dist/connectors/google.js';
 const here = dirname(fileURLToPath(import.meta.url));
 for (const failure of ['full', 'oversize', 'success']) {
-test(`result store ${failure} is a specific owner failure and reaches the host log`, async () => {
+test(failure === 'success' ? '40 settled owner projections release a one-entry store' : `result store ${failure} is a specific owner failure and reaches the host log`, async () => {
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');

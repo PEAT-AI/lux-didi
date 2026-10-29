@@ -876,3 +876,15 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu);
   }
 });
+
+test('CH-R4: question words never become part of the person before and I', () => {
+  for (const lead of ['what', 'who', 'when', 'did', 'have', 'with']) {
+    for (const name of ['Ada', 'Ada Moss']) {
+      const intent = chatIntent(`check ${lead} ${name} and I discussed`, { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+      assert.equal(intent.kind, 'person-overview');
+      assert.equal(intent.person, name);
+    }
+  }
+  const invalid = chatIntent('check what and I discussed', { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+  assert.equal(invalid.person, undefined);
+});

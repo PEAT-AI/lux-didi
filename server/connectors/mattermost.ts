@@ -975,7 +975,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const overviewMissing = input.intent === 'overview' ? 'an overview across group chats and channels needs the newer chat archive' : undefined;
       if (person.kind !== 'person') return finish({ ...base, read: `a person called ${name}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }), ...missingOf(person.missing, overviewMissing) });
       const label = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
-      const theirs = input.intent === 'person' && input.sides !== 'both';
+      const theirs = input.intent === 'person' && (input.sides === 'theirs' || (input.sides !== 'both' && !recency));
       if (person.dmChannelId === undefined) {
         // R8-W9 (F1): you have no direct conversation with them, so the answer reads their mentions instead
         // and says both facts: whose mentions these are, and why they are what came back.

@@ -313,6 +313,8 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `CREATE TABLE trace_call_result_keep AS SELECT call_key, text, text_truncated, content_pruned_at FROM trace_call_result`,
     `DROP TABLE trace_call_result`,
     `CREATE TABLE trace_call_next (
+       outcome_code TEXT,
+       delivered INTEGER CHECK (delivered IN (0,1)),
        call_key TEXT PRIMARY KEY,
        live_session_id TEXT NOT NULL,
        connection_epoch TEXT NOT NULL,
@@ -351,7 +353,5 @@ export const traceMigrations: readonly SchemaMigration[] = [{
      )`,
     `INSERT INTO trace_call_result(call_key, text, text_truncated, content_pruned_at) SELECT call_key, text, text_truncated, content_pruned_at FROM trace_call_result_keep`,
     `DROP TABLE trace_call_result_keep`,
-    `ALTER TABLE trace_call ADD COLUMN outcome_code TEXT`,
-    `ALTER TABLE trace_call ADD COLUMN delivered INTEGER CHECK (delivered IN (0,1))`,
   ],
 } ];

@@ -2109,7 +2109,7 @@ export class LiveSessionOwner {
       try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
       catch { receipt = { saved: false, code: 'outcome_unknown' }; }
       const response: JsonObject = receipt.saved && receipt.insightId
-        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved: ${args.title} (${receipt.insightId}).` }
+        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved to lux as ${args.title}.` }
         : { saved: false, code: receipt.code ?? 'write_failed', say: 'The note was not saved.' };
       if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response, request.id);
       hostLogEvent({ event: 'lux_note_audit', ...requests!.audit(liveSessionId, 'lux_note'), refusalCode: response.saved ? 'none' : response.code });

@@ -272,7 +272,7 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
     if (outcome === 'saved') {
       assert.equal(result['insightId'], 'synthetic-81');
-      assert.match(String(result['say']), /Saved: Synthetic plan.*synthetic-81/);
+      assert.equal(result['say'], 'Saved to lux as Synthetic plan.');
       assert.match(h.saved[0]!.content, /Provenance: request request-\d+; source counts/);
       const retry = await call(h, 'stage_lux_note', candidate);
       assert.equal(retry['insightId'], 'synthetic-81');

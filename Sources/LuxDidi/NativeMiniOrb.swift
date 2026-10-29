@@ -354,8 +354,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     }
 
     private func updateClickThrough() {
-        guard isVisible else { ignoresMouseEvents = false; return }
-        ignoresMouseEvents = !MiniOrbClickThrough.keepsClick(at: NSEvent.mouseLocation, in: frame)
+        let next = isVisible && !MiniOrbClickThrough.keepsClick(at: NSEvent.mouseLocation, in: frame)
+        StatusQuiet.publish(current: ignoresMouseEvents, next: next) { ignoresMouseEvents = $0 }
     }
 
     func dragBegan() { userDragging = true }

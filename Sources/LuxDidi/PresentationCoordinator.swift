@@ -295,3 +295,11 @@ final class DockMenu: NSObject {
         return menu
     }
 }
+
+/// Keep side effects out of an unchanged polling result. The setter runs only on a transition.
+enum StatusQuiet {
+    static func publish<Value: Equatable>(current: Value, next: Value, set: (Value) -> Void) {
+        guard current != next else { return }
+        set(next)
+    }
+}

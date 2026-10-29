@@ -159,7 +159,8 @@ import WebKit
             client = CompanionClient(descriptor: descriptor, credential: { try descriptor.credential() })
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
-    func refresh() async { voice.refresh(); notificationStatus = await notifications.capability() }
+    func refresh() async { voice.refresh() }
+    func refreshNotificationCapability() async { notificationStatus = await notifications.capability() }
     func reconnect() async {
         guard !connecting else { return }
         connecting = true; defer { connecting = false }
@@ -270,10 +271,9 @@ import WebKit
             let http = NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder())
             let jobs = try await http.pendingCalls().filter(\.isReady)
             liveCallDelivery.reconcile(jobs.map(\.id))
-            pendingLiveCalls = jobs.filter { liveCallDelivery.canPickUp($0.id) }
-            liveCallsError = nil
+            StatusQuiet.publish(current: pendingLiveCalls, next: jobs.filter { liveCallDelivery.canPickUp($0.id) }) { pendingLiveCalls = $0 }
+            StatusQuiet.publish(current: liveCallsError, next: nil) { liveCallsError = $0 }
             live?.offerPendingCall(pendingLiveCalls.first)
-            notificationStatus = await notifications.capability()
             for job in pendingLiveCalls {
                 guard liveCallDelivery.beginAttempt(job.id, permitted: notificationStatus.canSchedule) else { continue }
                 let result = await notifications.submitLiveCall(jobID: job.id)
@@ -281,9 +281,9 @@ import WebKit
             }
         } catch {
             liveCallDelivery.reconcile(nil)
-            pendingLiveCalls = []
+            StatusQuiet.publish(current: pendingLiveCalls, next: []) { pendingLiveCalls = $0 }
             live?.offerPendingCall(nil)
-            liveCallsError = "Callbacks offline. Pending calls will return when the local service reconnects."
+            StatusQuiet.publish(current: liveCallsError, next: "Callbacks offline. Pending calls will return when the local service reconnects.") { liveCallsError = $0 }
         }
     }
     func requestNotificationPermission() async {
@@ -302,8 +302,8 @@ import WebKit
                 let pickedUp = try await NativeLiveCallPickup.perform(validate: {
                     let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
                     self.liveCallDelivery.reconcile(jobs.map(\.id))
-                    self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
-                    self.liveCallsError = nil
+                    StatusQuiet.publish(current: self.pendingLiveCalls, next: jobs.filter { self.liveCallDelivery.canPickUp($0.id) }) { self.pendingLiveCalls = $0 }
+                    StatusQuiet.publish(current: self.liveCallsError, next: nil) { self.liveCallsError = $0 }
                     self.live?.offerPendingCall(self.pendingLiveCalls.first)
                     return self.liveCallDelivery.canPickUp(selected)
                 }, stop: {
@@ -319,9 +319,9 @@ import WebKit
                 }
             } catch {
                 self.liveCallDelivery.reconcile(nil)
-                self.pendingLiveCalls = []
+                StatusQuiet.publish(current: self.pendingLiveCalls, next: []) { self.pendingLiveCalls = $0 }
                 self.live?.offerPendingCall(nil)
-                self.liveCallsError = "Callbacks offline. Your current conversation was not changed."
+                StatusQuiet.publish(current: self.liveCallsError, next: "Callbacks offline. Your current conversation was not changed.") { self.liveCallsError = $0 }
                 self.error = self.liveCallsError
             }
         }
@@ -739,6 +739,10 @@ struct RootView: View {
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { await model.refreshNotificationCapability() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
@@ -888,6 +892,7 @@ struct RootView: View {
         Task {
             if launchKind.presentsOrbAtLaunch { _ = coordinator.presentMini(trigger: .other) }
             if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
+            await model.refreshNotificationCapability()
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -1015,14 +1020,27 @@ struct RootView: View {
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
+    private var statusImages: [String: NSImage] = [:]
+    private var statusImageKey: String?
     private func updateLiveStatus(state: NativeLiveConversation.State? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
         let liveState = state ?? model.live?.state ?? .idle
         let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
-        statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
-        statusItem.button?.title = AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall)
-        statusItem.button?.toolTip = presentation.text
-        statusItem.button?.setAccessibilityLabel(presentation.text)
+        if let button = statusItem.button {
+            let imageKey = presentation.symbol + ":" + presentation.text
+            StatusQuiet.publish(current: statusImageKey, next: imageKey) { key in
+                if statusImages[key] == nil {
+                    statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+                }
+                button.image = statusImages[key]
+                statusImageKey = key
+            }
+            StatusQuiet.publish(current: button.title, next: AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall)) { button.title = $0 }
+            StatusQuiet.publish(current: button.toolTip, next: presentation.text) {
+                button.toolTip = $0
+                button.setAccessibilityLabel($0)
+            }
+        }
         liveMenuItem?.title = presentation.text
         muteMenuItem?.title = model.live?.isMuted == true ? "Unmute" : "Mute"
     }

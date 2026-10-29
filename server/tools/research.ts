@@ -4000,7 +4000,9 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
-  return pastConversationAsk(question) ? kept : rankMemoryEvidence(kept, tokenize(question));
+  return pastConversationAsk(question)
+    ? [...kept.filter(hit => hit['sourceKind'] === 'live'), ...rankMemoryEvidence(kept.filter(hit => hit['sourceKind'] !== 'live'), tokenize(question))]
+    : rankMemoryEvidence(kept, tokenize(question));
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */

@@ -181,14 +181,14 @@ test('#615/#638: an owner line leads her own entry at the same match without rem
   assert.deepEqual(hits.map(hit => hit['role']), ['user', 'assistant'], 'the newer owner entry leads at the same match');
 });
 
-test('#638: a matching summary is evidence beside the owner entry and leads it at the same match', async () => {
+test('C-RECALL104: verbatim recall leads the matching summary and entry', async () => {
   const reply = await memoryAsk(memoryDeps([
     { snippet: 'we talked about the dentist', role: 'user', date: minutesAgo(1440), sessionId: 'earlier-session', sourceKind: 'entry' },
     { snippet: 'we talked about the dentist', role: 'assistant', date: minutesAgo(1500), sessionId: 'summary-session', sourceKind: 'summary' },
     { snippet: 'we talked about the dentist', role: 'assistant', date: minutesAgo(60), sessionId: 'past-live-session', sourceKind: 'live' },
   ]));
-  assert.deepEqual(keptHits(reply).map(hit => hit['sourceKind']), ['summary', 'entry', 'live'],
-    'a summary leads an entry leads a live transcript line at the same match, whatever the role');
+  assert.deepEqual(keptHits(reply).map(hit => hit['sourceKind']), ['live', 'summary', 'entry'],
+    'verbatim speech leads recall, while summary and entry fallback ordering stays unchanged');
 });
 
 test('#638: a recall ask keeps the summary beside the owner lines it shares words with', async () => {

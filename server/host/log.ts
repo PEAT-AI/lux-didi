@@ -10,7 +10,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { LOG_CAUSES, TOOL_CALL_OUTCOMES, TOOL_REFUSAL_CODES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { LOG_CAUSES, TOOL_CALL_OUTCOMES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -393,8 +393,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, callKey: value.callKey, tool: value.tool };
   }
   if (value.event === 'tool_call_outcome') {
-    // C-LOGS11: what one call settled as, as a closed outcome and a closed refusal code; a call that did not
-    // refuse carries no code, so a missing code is never mistaken for a `refused`. `ms` is the host's own
+    // Business outcomes have bounded tool-owned codes, including clarification and handler failures.
+    // A missing code stays absent. `ms` is the host's own
     // measured duration when it has one, and the field is absent when it does not, never a zero.
     const withCode = value.refusalCode !== undefined;
     const withMs = value.ms !== undefined;
@@ -403,10 +403,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.tool !== 'string' || !SAFE_TOKEN.test(value.tool)) return;
     if (!isSafeMember(value.outcome, TOOL_CALL_OUTCOMES)) return;
     if (withMs && !isSafeCount(value.ms)) return;
-    if (withCode && !isSafeMember(value.refusalCode, TOOL_REFUSAL_CODES)) return;
-    // A code belongs to a refusal: a call that completed or failed did not refuse, so a code beside it is a
-    // mislabelled line, and the line is dropped rather than published with a contradictory pair.
-    if (withCode && value.outcome !== 'refused' && value.outcome !== 'blocked') return;
+    if (withCode && (typeof value.refusalCode !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(value.refusalCode))) return;
+    // Success and empty results carry no refusal or failure code.
+    if (withCode && (value.outcome === 'completed' || value.outcome === 'empty')) return;
     return { event: 'tool_call_outcome', callKey: value.callKey, tool: value.tool, outcome: value.outcome,
       ...(withMs ? { ms: value.ms } : {}), ...(withCode ? { refusalCode: value.refusalCode } : {}) };
   }
@@ -1225,6 +1224,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
     if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
     return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param };
+  }
+  if (value.event === 'live_continuation_timing') {
+    const times = ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt'] as const;
+    if (!times.every(key => value[key] === null || (typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0))) return;
+    if (!['b', 'b-second', 'c', 'd-chain'].includes(String(value.class))) return;
+    return { event: 'live_continuation_timing', ...Object.fromEntries(times.map(key => [key, value[key]])), class: value.class };
   }
   if (value.event === 'gptlive_tool_output') {
     // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.

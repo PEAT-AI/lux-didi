@@ -3,8 +3,8 @@
 // Read-only canonical SQLite timeline. See docs/diagnostic-store.md.
 const { DatabaseSync } = require('node:sqlite');
 const { spawnSync } = require('node:child_process');
-const { existsSync, readdirSync, readFileSync, statSync } = require('node:fs');
-const { homedir } = require('node:os');
+const { existsSync, readdirSync, readFileSync, statSync, mkdtempSync, copyFileSync, rmSync } = require('node:fs');
+const { homedir, tmpdir } = require('node:os');
 const { join } = require('node:path');
 
 const usage = `didi-timeline call <liveSessionId|latest> [--content] [--json] [--audit]
@@ -132,11 +132,22 @@ async function traceModule() {
 }
 
 function storeReader(database) {
-  const db = new DatabaseSync(database, { readOnly: true });
+  // SQLite may need to recover WAL and create shared memory even for a read-only connection.
+  // Only the private copy is writable; the app directory is never opened for writing.
+  const directory = mkdtempSync(join(tmpdir(), 'didi-timeline-'));
+  const snapshot = join(directory, 'snapshot.sqlite');
+  let db;
+  try {
+    copyFileSync(database, snapshot);
+    if (existsSync(`${database}-wal`)) copyFileSync(`${database}-wal`, `${snapshot}-wal`);
+    db = new DatabaseSync(snapshot);
+    db.exec('PRAGMA query_only=ON');
+  } catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
+  process.stderr.write('didi-timeline store mode: private snapshot (database and WAL)\n');
   db.exec('BEGIN');
   return {
     read: { all: (sql, params = []) => db.prepare(sql).all(...params), get: (sql, params = []) => db.prepare(sql).get(...params) },
-    close: () => { if (db.isTransaction) db.exec('ROLLBACK'); db.close(); },
+    close: () => { if (db.isTransaction) db.exec('ROLLBACK'); db.close(); rmSync(directory, { recursive: true, force: true }); },
   };
 }
 

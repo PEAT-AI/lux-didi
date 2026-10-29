@@ -7,7 +7,7 @@ import './alarm-logs.test.js';
 import './alarm-atomic.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -36,7 +36,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
   t.after(() => port.close());
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
+  let alarmNow = Date.now();
+  const owner = createToolsOwner({ alarms: { now: () => alarmNow, recheck() {}, health: () => ({ degraded: false, reasons: [] }) }, grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
   const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
   const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
@@ -105,12 +106,14 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
     { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
   ];
-  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
+  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask', 'cue-free ask'] as const) {
     await t.test(`${entry.name}: ${mode}`, async () => {
       owner.ownerRequests.answered?.(session.liveSessionId);
       noteModelOutput(session.liveSessionId);
-      noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
-      owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
+      if (mode !== 'no ask') {
+        noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
+        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
+      }
       const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
       const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
         executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
@@ -118,8 +121,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(owner.journal.intent(intent), 'fresh');
       const before = dispatched;
       // Finalized microphone authority is explicit; a tool call cannot wait out an absent request.
-      if (mode !== 'ask') {
-        const words = mode === 'split ask' ? entry.ask : 'nothing else';
+      if (mode === 'split ask') {
+        const words = entry.ask;
         noteOwnerWords(session.liveSessionId, words);
         owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
       }
@@ -174,6 +177,62 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   assert.match(response, /"say"/);
   assert.match(response, /nothing is open/);
   assert.ok(events.some(event => { const row = event as Record<string, unknown>; return row.event === 'tool_handler_error' && row.reason === 'executor_intent_mismatch'; }));
+
+  // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
+  const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
+    id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
+    call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
+  }[];
+  const oldTZ = process.env.TZ;
+  process.env.TZ = 'UTC';
+  t.after(() => { if (oldTZ === undefined) delete process.env.TZ; else process.env.TZ = oldTZ; });
+  for (const row of corpus.filter(row => row.call.tool === 'set_alarm' || row.call.tool.startsWith('open_'))) {
+    await t.test(`wire corpus ${row.id}`, async () => {
+      owner.ownerRequests.release(session.liveSessionId);
+      alarmNow = row.now ?? Date.UTC(2026, 9, 30, 6);
+      for (const [i, words] of row.finals.entries()) {
+        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, alarmNow + (row.finalOffsetsMs?.[i] ?? 0));
+        if (row.clarifyAfter?.includes(i)) {
+          owner.ownerRequests.clarify(session.liveSessionId, 'set_alarm', 'missing_time');
+          owner.ownerRequests.answered?.(session.liveSessionId);
+        }
+      }
+      alarmNow += row.toolDelayMs ?? 0;
+      t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return row.nativeCode ?? 'opened'; });
+      const { tool, ...raw } = row.call;
+      const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
+      if (tool === 'open_source') args.handle = handle;
+      const definition = definitions.find(entry => entry.name === tool)!;
+      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: tool,
+        argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+        accountId: definition.accountId, resourceId: definition.resourceId };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const before = urls.length;
+      const outcome = await definition.execute(args, { ...intent, signal });
+      assert.equal(outcome.status, 'completed');
+      if (outcome.status !== 'completed') return;
+      const gate = await owner.resultGate.authorize({ ...authority, grants: [] }, [{ executionId: intent.executionId,
+        name: tool, callId: intent.callId!, contentIndex: 0, partIndex: 0, result: outcome.result }], ['ordinary'], signal);
+      assert.equal(gate.state, 'allowed');
+      if (gate.state !== 'allowed') return;
+      const result = gate.results[0]!.response;
+      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
+      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
+      assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
+      if (expected === 'set') {
+        const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
+        assert.equal(stored?.fire_at_utc, row.fire_at_utc);
+        assert.equal(result.fire_at_utc, row.fire_at_utc);
+        assert.match(String(result.say), /Alarm set for/);
+      } else if (expected === 'opened') {
+        assert.equal(urls.length - before, 1);
+      } else {
+        assert.equal(urls.length - before, row.nativeCode ? 1 : 0);
+        assert.equal(typeof result.say, 'string', 'HON-2: the real refusal carries one spoken failure line');
+        assert.doesNotMatch(String(result.say), /I'll try|sure|\n/i);
+      }
+    });
+  }
 
 });
 
@@ -269,7 +328,7 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
     // The fake provider selects only an advertised tool; the host receives real wire events,
     // parses the owner's words, journals the call and commits the alarm in a synthetic store.
     await f.frame(2); // startup nudge
-    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true }, turnComplete: true } });
+    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true } } });
     f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
     await f.frame(3);
     const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };

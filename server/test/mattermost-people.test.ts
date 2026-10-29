@@ -9,17 +9,17 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { EndpointConfig } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
-  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
+  connectorDescriptor, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
 import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
 import { shapeMattermost } from '../tools/live-shape.js';
 import { INTERNAL, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { ResearchLedger, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
-import { chatAsk, chatIntent, chatWindow, spokenChannel } from '../tools/chat-intent.js';
+import { ResearchLedger, routedSelection, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
+import { chatAsk, chatIntent, chatSubs, chatWindow, spokenChannel } from '../tools/chat-intent.js';
 import { installPeople, parsePeople, type PeopleSnapshot } from '../people/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,7 +63,7 @@ async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: '
   registry.approve({ endpointId: 'mattermost', schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   const reader = createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names: [...names, ...composedGrantedNames('mattermost', names)] } });
   const calls = (): Call[] => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Call) : [];
-  return { adapter, registry, reader, calls, published, names };
+  return { adapter, registry, reader, calls, published, names, dir, config, discovery };
 }
 
 function chatRead(result: MattermostResult): MattermostChatRead {
@@ -742,3 +742,198 @@ for (const [channel, phrase] of [['eng', /Which channel do you mean/u], ['synthe
     assert.equal(projection.projection.itemCount, 0);
   });
 }
+
+// Night-shift regression: a channel index from an earlier call is not evidence for an overview.
+test('overview does not import channel-index dispatches from an unrelated earlier read', async t => {
+  const f = await setup(t, 'people');
+  const call = f.adapter.call.bind(f.adapter);
+  let dispatch = 0;
+  f.adapter.call = async (...args) => {
+    const result = await call(...args);
+    if (result.state === 'completed') result[SOURCE_DISPATCH] = { id: `synthetic-${++dispatch}` };
+    return result;
+  };
+  assert.equal((await f.reader.getChannelHistory({ channel: 'Builders', limit: 5 })).state, 'completed');
+  const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: fixtureDaysAgo(7) });
+  const read = chatRead(result);
+  assert.ok(read.posts.length > 0);
+  // Identity and overview are the only children used by this call.
+  assert.equal(result.state === 'completed' ? result[SOURCE_CHILD_DISPATCHES]?.length : undefined, 2);
+});
+
+test('recency person reads use empty query and do not inherit a channel', async t => {
+  const f = await setup(t, 'people');
+  for (const query of ['latest messages', 'recent messages', 'what did we discuss', 'today', 'yesterday']) {
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query, channel: 'unrelated-channel', from_date: fixtureDaysAgo(7) }));
+    assert.ok(read.posts.length > 0, query);
+    const search = f.calls().filter(call => call.name === 'mattermost_search').at(-1)!;
+    assert.equal(search.arguments['query'], '');
+    assert.equal(search.arguments['channel'], ADA_DM);
+    assert.equal(search.arguments['sort'], 'newest');
+  }
+});
+
+test('discussion noun asks and product mishearings route to chat, not unrelated research', () => {
+  for (const question of ['recent discussions with Ada', 'Ada discussions', 'check metamorph', 'check MetaMask']) {
+    assert.equal(chatAsk(question), true, question);
+    assert.equal(chatIntent(question, { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' }).kind === 'topic-search' && !/meta/iu.test(question), false, question);
+  }
+  for (const question of ['recent news from Acme', 'mask this image', 'metamorphic rocks']) assert.equal(chatAsk(question), false, question);
+});
+
+test('empty topic read retries hybrid exactly once with the same DM and date filters', async t => {
+  const f = await setup(t, 'people');
+  const call = f.adapter.call.bind(f.adapter);
+  const searches: Record<string, unknown>[] = [];
+  f.adapter.call = async (request, signal) => {
+    if (request.toolName !== 'mattermost_search') return call(request, signal);
+    searches.push({ ...request.arguments });
+    // The fake archive has related DM posts, but only the broader engine finds them.
+    return call(request.arguments['mode'] === 'hybrid' ? { ...request, arguments: { ...request.arguments, query: '' } } : request, signal);
+  };
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) }));
+  assert.ok(read.posts.length > 0);
+  assert.equal(searches.length, 2);
+  assert.equal(searches[0]?.['mode'], 'keyword');
+  assert.equal(searches[1]?.['mode'], 'hybrid');
+  assert.equal(searches[1]?.['channel'], ADA_DM);
+  assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
+  assert.match(read.read, /hybrid/iu);
+});
+
+// Synthetic tools/list recording supplied with C-CHAT, retrieved 2026-10-29.
+// Deliberately independent of Didi's declarations: unsupported argument names fail closed.
+const recordedMattermostToolsList = {
+  retrievedOn: '2026-10-29',
+  tools: [{ name: 'mattermost_search', inputSchema: { type: 'object', properties: {
+    query: { type: 'string' }, author: { type: 'string' }, channel: { type: 'string' },
+    from_date: { type: 'string' }, to_date: { type: 'string' }, replies_to: { type: 'string' },
+    limit: { type: 'integer' }, offset: { type: 'integer' }, sort: { type: 'string' },
+    mode: { type: 'string' }, rerank: { type: 'boolean' }, format: { type: 'string' },
+  } } }],
+};
+
+test('Mattermost declared child argument schemas match the recorded binary tools/list', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 } };
+  const declared = connectorDescriptor('mattermost')!.declarations(policy as never);
+  const check = (properties: Record<string, unknown>, binary: Record<string, { type: string }>) => {
+    for (const [key, schema] of Object.entries(properties)) {
+      assert.ok(key in binary, `binary does not accept ${key}`);
+      assert.equal((schema as { type: string }).type, binary[key]!.type, key);
+    }
+  };
+  for (const recorded of recordedMattermostToolsList.tools) {
+    const tool = declared.find(tool => tool.name === recorded.name)!;
+    const properties = tool.parameters.properties as Record<string, unknown>;
+    check(properties, recorded.inputSchema.properties);
+    const drift = { ...properties, after: { type: 'string' } };
+    assert.throws(() => check(drift, recorded.inputSchema.properties), /binary does not accept after/u);
+  }
+});
+
+test('CH-R4: question words never become part of the person before and I', () => {
+  for (const lead of ['what', 'who', 'when', 'did', 'have', 'with']) {
+    for (const name of ['Ada', 'Ada Moss']) {
+      const intent = chatIntent(`check ${lead} ${name} and I discussed`, { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+      assert.equal(intent.kind, 'person-overview');
+      assert.equal(intent.person, name);
+    }
+  }
+  const invalid = chatIntent('check what and I discussed', { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+  assert.equal(invalid.person, undefined);
+});
+
+// The parser receives the accumulated finalized words; the actual accepted-host publication
+// sequence is tested separately above. No recognizer or live adapter is started here.
+test('MM-1 and MM-6: repeated channel names and inflected topics return the named archive posts', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  const fragments = [' And like, can you like check in the', ' Alpha Alpha Alpha channel and metamorph what Ada was yelling at me', ', about like', ' deploying something'];
+  const intent = chatIntent(fragments.join(''), { terms: 'deploying', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+  assert.equal(intent.kind, 'channel-recent');
+  assert.equal(intent.channel, 'Alpha Alpha Alpha');
+  const calls = chatSubs(intent, 8, '');
+  const first = chatRead(await f.reader.chat(calls[0]!.args as never));
+  assert.equal(first.clarify, undefined);
+  assert.ok(first.posts.some(post => /deployed sandbox/u.test(post.text)));
+  assert.match(first.read, /hybrid/u);
+  const revised = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Alpha Alpha Alpha Alpha', query: 'university', from_date: fixtureDaysAgo(7) }));
+  assert.equal(revised.clarify, undefined);
+  assert.ok(revised.posts.some(post => /https:\/\/example.invalid\/article/u.test(post.text)));
+});
+
+test('MM-5 and MM-7: discussion shapes and every recorded product mishearing select chat research', async t => {
+  const f = await setup(t, 'people');
+  for (const question of ['recent discussions with Ada', 'Ada discussions', ...['Metamos', 'Metamost', 'Metamo', 'metamorph', 'MetaMask', 'MetaMouse'].map(name => `can you access ${name}`)]) {
+    assert.equal(chatAsk(question), true, question);
+    assert.ok(routedSelection(question, ['chat'], FIXTURE_NOW)?.actions.some(action => action.kind === 'chat_search'), question);
+    const planned: IntentSubCall[] = [];
+    const reply = await runResearch(researchDeps(f, planned), { action: 'start', question, topic: question }, new AbortController().signal);
+    assert.ok(planned.some(call => call.name === INTERNAL.chatRead || call.name === INTERNAL.chatSearch), question);
+    assert.doesNotMatch(String(reply['coverage']), /chat skipped_by_route/u, question);
+  }
+});
+
+test('MM-8: noisy overview parser compiles its own person and topic', () => {
+  const options = { terms: 'old-topic', nowMs: FIXTURE_NOW, timeZone: 'UTC' };
+  const prior = chatSubs(chatIntent('what is new in the Builders channel about pilot', options), 8, '');
+  assert.equal(prior[0]?.args['channel'], 'Builders');
+  const current = chatSubs(chatIntent('Yes, um, check Metamos, uh what we need to discuss with Ada. T-Is he all of the past conversations that we have been having', options), 8, '');
+  assert.equal(current[0]?.args['intent'], 'overview');
+  assert.equal(current[0]?.args['person'], 'Ada');
+  assert.equal(current[0]?.args['channel'], undefined);
+  assert.equal(current[0]?.args['query'], undefined);
+});
+
+test('MM-9: chat owner approval is named as a permission gate with its actual terminal approval surface', async t => {
+  const f = await setup(t, 'people');
+  const deps = researchDeps(f);
+  deps.unavailableNow = () => [{ source: 'chat', reason: 'owner-approval-required' }];
+  const reply = await runResearch(deps, { action: 'start', question: 'my DMs with Ada', topic: 'Ada DMs' }, new AbortController().signal);
+  assert.match(String(reply['coverage']), /chat grant_missing/u);
+  assert.match(JSON.stringify(reply), /owner approval/u);
+  assert.match(JSON.stringify(reply), /mcp-cli\.js approve/u);
+  assert.equal(f.calls().filter(call => call.name === 'mattermost_search').length, 0);
+});
+
+test('plain topic searches also retry broader once and disclose hybrid to the model', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  const result = await f.reader.search({ query: 'deploying', channel: 'Alpha Alpha Alpha', from_date: fixtureDaysAgo(7) } as never);
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /deployed sandbox/u);
+  assert.match(projected.projection.text, /hybrid/u);
+  const calls = searches(f.calls());
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.['mode'], 'hybrid');
+  assert.equal(calls[1]?.['from_date'], fixtureDaysAgo(7));
+});
+
+test('a refused broader chat read is a refusal, never a false empty success', async t => {
+  const f = await setup(t, 'people');
+  const call = f.adapter.call.bind(f.adapter);
+  f.adapter.call = (request, signal) => request.arguments['mode'] === 'hybrid' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) });
+  assert.equal(result.state, 'refused');
+  assert.equal('reason' in result && result.reason, 'read-grant-missing');
+});
+
+
+test('MM-4: twenty-post DM recency reads use newest history and actual today/yesterday windows', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  for (const query of ['latest messages', 'recent messages', 'last messages', "what's new", 'what did we discuss']) {
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: '@person.a', query, from_date: fixtureDaysAgo(7) }));
+    assert.equal(read.total, 20);
+    assert.equal(read.posts[0]?.text, 'entry 1');
+    const sent = searches(f.calls()).at(-1)!;
+    assert.equal(sent['query'], '');
+    assert.equal(sent['sort'], 'newest');
+  }
+  for (const query of ['today', 'yesterday']) {
+    const window = chatWindow(query, FIXTURE_NOW, 'UTC');
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: '@person.a', query, from_date: window.from!, to_date: window.to! }));
+    assert.ok(read.posts.length > 0);
+    assert.deepEqual(read.window, window, 'the owner hears the real window read through from_date/to_date');
+    assert.ok(read.posts.every(post => post.time.slice(0, 10) === window.from));
+  }
+});

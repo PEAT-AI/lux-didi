@@ -358,6 +358,10 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     },
     async deliver(frame, cause = 'provider') {
       record();
+      // A completed continuation has consumed its batch. A subsequent silent-done rescue answers that
+      // response, not the original outputs. Duplicated creates before the terminal event still violate 2.
+      const nested = frame['event'] as Record<string, unknown> | undefined;
+      if (frame['type'] === 'response.event' && nested?.['type'] === 'response.done' && currentBatch?.creates.length) currentBatch = undefined;
       const call = isFunctionCall(frame);
       // A repeated call event is the same call, exactly as the adapter reads it (openai.ts "3r A: a repeated call
       // event is the same call, not a second one"), so the ledger holds one obligation per call id and generation.

@@ -54,7 +54,7 @@ export interface TraceDetailMap {
   'call.intent': { name: string; argsChars: number; intentAt: number; providerCallId?: string };
   'call.executed': { executedAt: number };
   'call.output_prepared': { outputPreparedAt: number };
-  'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; ms: number; resultChars: number };
+  'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; refusalCode?: string; delivered?: boolean; ms: number; resultChars: number };
   /** O1b-A: the single continuation owner's decision, and why a `response.create` was skipped. */
   'continuation.decided': { decidedAt: number; outcome: ContinuationOutcome; skipReason?: SkipReason };
   'playback.received': { segmentSeq: number; receivedAt: number };
@@ -140,7 +140,7 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   'call.intent': { name: { check: isId }, argsChars: { check: isCount }, intentAt: { check: isCount }, providerCallId: { check: isId, optional: true } },
   'call.executed': { executedAt: { check: isCount } },
   'call.output_prepared': { outputPreparedAt: { check: isCount } },
-  'call.output_written': { outputWrittenAt: { check: isCount }, outcome: { check: oneOf(CALL_OUTCOMES) }, ms: { check: isCount }, resultChars: { check: isCount } },
+  'call.output_written': { outputWrittenAt: { check: isCount }, outcome: { check: oneOf(CALL_OUTCOMES) }, refusalCode: { check: value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(value), optional: true }, delivered: { check: value => typeof value === 'boolean', optional: true }, ms: { check: isCount }, resultChars: { check: isCount } },
   'playback.received': { segmentSeq: { check: isCount }, receivedAt: { check: isCount } },
   'playback.audible': { audibleAt: { check: isCount } },
   'playback.enqueued': { enqueuedAt: { check: isCount } },
@@ -326,8 +326,8 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
     case 'call.output_written': {
       const d = detail as TraceDetailMap['call.output_written'];
       assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
-      tx.run('UPDATE trace_call SET output_written_at=?, outcome=?, ms=?, result_chars=? WHERE call_key=?',
-        [d.outputWrittenAt, d.outcome, d.ms, d.resultChars, ids.callKey!]);
+      tx.run('UPDATE trace_call SET output_written_at=?, outcome=?, ms=?, result_chars=?, outcome_code=?, delivered=? WHERE call_key=?',
+        [d.outputWrittenAt, d.outcome, d.ms, d.resultChars, d.refusalCode ?? null, d.delivered === undefined ? null : Number(d.delivered), ids.callKey!]);
       return;
     }
     case 'playback.received': {

@@ -368,7 +368,8 @@ test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owne
   assert.equal(chat(), 'After:2026-10-21', 'the default names a real day, never a word the parser ignores');
   // #581: the day the question named rides the tool's own window argument, never inline query text.
   assert.equal(chat('budget after:yesterday'), 'budget');
-  assert.equal(sub('budget after:yesterday')?.args['after'], '2026-10-21', 'and the day is still the window it read');
+  assert.equal(sub('budget after:yesterday')?.args['to_date'], '2026-10-21');
+  assert.equal(sub('budget after:yesterday')?.args['from_date'], '2026-10-21', 'and the day is still the window it read');
   assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
   // ONE-1023: a question that names no day carries no invented operator, and the direction words are filler.
   assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');

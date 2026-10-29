@@ -1,3 +1,4 @@
+import './tool-outcome.test.js';
 import { ALARM_MODE_MARKER } from '../live/types.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import './live-remember.test.js';
@@ -1128,4 +1129,77 @@ test('Gemini alarm mode speaks the alarm without the fresh-opening direction', a
   assert.match(JSON.stringify(f.frames[0]), /call the bank/);
   assert.ok(!JSON.stringify(f.frames[1]).includes(FRESH_OPENING), 'alarm startup must not send the neutral fresh-opening direction');
   assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: '[host note, not the owner] Speak the alarm now, following the session instructions.' }] }], turnComplete: true } });
+});
+
+
+test('SI-R3 Gemini: parallel research batch admits six and immediately answers the excess', async t => {
+  const { FakeSocket } = await import('./openai-live-voice-fixture.js');
+  const socket = new FakeSocket();
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (() => {
+    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+    return socket as unknown as WebSocket;
+  }) })).open(request(), control());
+  t.after(() => session.close());
+  const captured = collect(session);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  socket.deliver({ setupComplete: {} });
+  await session.ready;
+  socket.deliver({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const calls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(calls.length, 6);
+  const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
+  assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
+  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
+  assert.match(JSON.stringify(responses().at(-1)), /research cap reached for this question/, 'the cap spans provider rounds');
+  socket.deliver({ voiceActivity: { type: 'ACTIVITY_START' } });
+  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-next-question', name: 'research', args: {} }] } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')), 'a new owner question resets the cap');
+});
+
+test('IN-R1 Gemini: cap outcomes are traced and parallel research batch admits six and immediately answers the excess', async t => {
+  const receipts: { kind: string; id?: string; detail: Record<string, unknown> }[] = [];
+  const trace: import('../trace/record.js').LiveTracePort = {
+    receipt: (kind, ids, detail) => { receipts.push({ kind, ...(ids.callKey ? { id: ids.callKey } : {}), detail: { ...detail } }); },
+  };
+  const { FakeSocket } = await import('./openai-live-voice-fixture.js');
+  const socket = new FakeSocket();
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (() => {
+    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+    return socket as unknown as WebSocket;
+  }) })).open(request(), { ...control(), trace });
+  t.after(() => session.close());
+  const captured = collect(session);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  socket.deliver({ setupComplete: {} });
+  await session.ready;
+  socket.deliver({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const calls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(calls.length, 6);
+  const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
+  assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
+  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
+  assert.equal(responses().filter(frame => frame.toolResponse!.functionResponses.some(call => call.id === 'synthetic-cap-0')).length, 1, 'one admitted-batch response resumes the Gemini model exactly once');
+  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
+  const settled = receipts.filter(row => row.kind === 'call.output_written');
+  for (let i = 0; i < 8; i++) {
+    const row = settled.find(row => row.id === `synthetic-cap-${i}`);
+    assert.ok(row);
+    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
+    assert.equal(row.detail['delivered'], true);
+    if (i >= 6) {
+      assert.equal(row.detail['refusalCode'], 'research_cap_reached');
+      assert.equal(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id), false);
+    } else assert.ok(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id));
+  }
+  assert.match(JSON.stringify(responses().at(-1)), /research cap reached for this question/, 'the cap spans provider rounds');
+  socket.deliver({ voiceActivity: { type: 'ACTIVITY_START' } });
+  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-next-question', name: 'research', args: {} }] } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')), 'a new owner question resets the cap');
 });

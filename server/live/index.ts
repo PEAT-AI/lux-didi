@@ -1,3 +1,4 @@
+import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
@@ -33,7 +34,7 @@ import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
-import type { ToolCallOutcome, ToolRefusalCode } from '../host/events.js';
+import { toolOutcomeOf } from './tool-outcome.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { VoiceProfileMeter } from './voice-profile.js';
@@ -598,24 +599,6 @@ function stepSourceOf(name: string): string {
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
 
-/** C-LOGS11: what one tool response settled as, in the log's closed outcome and refusal vocabulary. A
- *  refusal code is only ever a member of TOOL_REFUSAL_CODES, so a reader counts refusals by code. The research
- *  reply carries its own closed status (`answered`, `partial`, `stopped`, `unavailable`), so the map is explicit
- *  instead of treating any status other than `completed` as a failure. */
-function toolOutcomeOf(response: JsonObject): { outcome: ToolCallOutcome; refusalCode?: ToolRefusalCode } {
-  const status = typeof response.status === 'string' ? response.status : undefined;
-  const error = typeof response.error === 'string' ? response.error : undefined;
-  const stated = typeof response.reason === 'string' ? response.reason : typeof response.code === 'string' ? response.code : undefined;
-  const code = (reason: string): ToolRefusalCode => refusalCode(reason) as ToolRefusalCode;
-  if (status === 'refused' || stated === 'no_owner_input' || error === 'opener_not_fetched') return { outcome: 'refused', refusalCode: code(stated ?? error ?? 'refused') };
-  // A call the registry did not grant never reached a source: that is a refusal of admission, by code.
-  if (error === 'Tool not granted') return { outcome: 'refused', refusalCode: 'grant_not_permitted' };
-  if (status === 'blocked' || error === 'tool_result_denied') return { outcome: 'blocked' };
-  if (status === 'stopped') return { outcome: 'cancelled' };
-  if (error !== undefined || status === 'unavailable' || status === 'failed' || status === 'error') return { outcome: 'failed' };
-  return { outcome: 'completed' };
-}
-
 /** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
 const RESEARCH_PROJECTION_CHARS = 240;
 
@@ -1053,18 +1036,18 @@ const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensi
 // speech is 64 rows: the window is ten minutes, capped so one session cannot grow it without bound.
 const MEMORY_WINDOW_MS = 10 * 60 * 1000;
 const MEMORY_WINDOW_ROWS = 2_000;
-// A paraphrase is still the owner's memory when this share of the note's content words is spoken.
-const MEMORY_SUPPORT_RATIO = 0.6;
-const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
+// Every normalized content term needs owner support; partial lexical overlap permits invention.
+const MEMORY_SUPPORT_RATIO = 1;
+const MEMORY_STOP_WORDS = new Set(['i', 'my', 'me', 'a', 'an', 'to', 'on', 'is', 'of', 'rather', 'the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
   'had', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'about', 'into', 'than', 'then', 'they', 'them', 'there',
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
   'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
   'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
-// Third-person framing is not note content: "Rob prefers", "he wants" and "the owner" say who the
+// Third-person framing is not note content: "The owner prefers", "he wants" and "the owner" say who the
 // note is about, and the owner never speaks their own name. Only the SUBJECT is dropped: the verb stays
 // a content word, because the verb is the word that says which way the owner feels.
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
-const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
+const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|he|she|they|i)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
 /** The provider's deltas joined up to the closing boundary of one journal kind: never one fragment. */
 function finishedUtterance(tx: Transaction, liveSessionId: string, kind: 'inputTranscription' | 'outputTranscription'): string {
@@ -1093,12 +1076,17 @@ function feel(text: string): 'affirm' | 'deny' | undefined {
   if (words.some(word => MEMORY_AFFIRM.has(word))) return 'affirm';
   return undefined;
 }
-// Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
-// stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
-// clarification; a wider span is a different topic.
-const MEMORY_SPAN_TURNS = 3;
+
 // A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
-const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+// Normalize equivalent constructions, not isolated words taken out of their meaning:
+// a commute includes work, but a journey to Paris does not; taking a walk is not
+// permission to drop 'take' from arbitrary tasks. Negators and numbers stay intact.
+const memoryPhrases = (text: string): string => text.toLowerCase()
+  .replace(/\bjourney\s+to\s+work\b/g, 'commute')
+  .replace(/\b(?:take|takes|taking|go\s+for|goes\s+for|going\s+for)\s+(?:a\s+)?walk\b/g, 'walk')
+  .replace(/\b(?:every|each)\s+day\b/g, 'daily')
+  .replace(/\blasts(?=\s+\d+\s+(?:minutes?|hours?)\b)/g, 'takes');
+const tokens = (text: string): string[] => memoryPhrases(text).replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
 // Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
 // affirm "short answers in the morning" and then say "no meetings before nine".
 const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
@@ -1113,8 +1101,14 @@ function dominantClause(text: string, words: ReadonlySet<string>): string {
 /** The note's content words: lower-cased tokens without stop words, framing or two-letter noise.
  * The preference and polarity verbs are excluded on purpose: they decide direction through feel(),
  * and counting them in the ratio refused a short honest note whose ask used another tense. */
-const contentWords = (text: string): string[] => tokens(text)
-  .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
+const MEMORY_WORD_MEANINGS: Readonly<Record<string, string>> = {
+  brief: 'short', concise: 'short', little: 'small', quick: 'fast', rapid: 'fast',
+  walking: 'walk', walks: 'walk', works: 'work', each: 'every', peaceful: 'quiet',
+  purchase: 'buy', purchases: 'buy', phone: 'call', replies: 'response', responses: 'response',
+};
+const memoryWord = (word: string): string => MEMORY_WORD_MEANINGS[word] ?? word;
+const contentWords = (text: string): string[] => tokens(text).map(memoryWord)
+  .filter(word => (word.length >= 3 || /^\d+$/.test(word)) && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
     && !MEMORY_AFFIRM.has(word) && !MEMORY_DENY.has(word));
 /** What she must say when a note did not reach memory: plain English, persona-independent, actionable. */
 const REFUSAL_GUIDANCE: Readonly<Record<string, string>> = {
@@ -1132,27 +1126,36 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const noteText = String(args.text).replace(command, '').replace(/\s+/g, ' ').trim();
   const words = contentWords(noteText.replace(MEMORY_FRAMING_LEAD, ''));
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
-  const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND arrived_at>=? ORDER BY journal_id DESC LIMIT ?", [liveSessionId, now - MEMORY_WINDOW_MS, MEMORY_WINDOW_ROWS]).reverse();
+  const boundary = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1", [liveSessionId]);
+  const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? AND arrived_at>=? ORDER BY journal_id DESC LIMIT ?", [liveSessionId, Number(boundary?.id ?? 0), now - MEMORY_WINDOW_MS, MEMORY_WINDOW_ROWS]).reverse();
   const turns: { seq: number; text: string }[] = [];
   let pending = '', pendingSeq = 0;
   for (const row of rows) {
     pending += String(row.text ?? ''); pendingSeq = Number(row.journal_id);
     if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: stripNonLexicalTags(pending) }); pending = ''; }
   }
-  // The model's tool call is the intent: the latest partial turn is owner speech too, because the
-  // provider may never set the finished flag before the call arrives.
-  if (pending.trim().length) turns.push({ seq: pendingSeq, text: stripNonLexicalTags(pending) });
+  // Only an explicit owner confirmation can authorize the immediately preceding answer.
+  // Tool-result rows never enter either source, and partial owner speech never grants authority.
+  if (turns.some(turn => /^(?:yes[, ]+)?(?:please )?(?:remember|save|keep) (?:that|this)(?:[.!]|$)/i.test(turn.text.trim()))) {
+    const answer = finishedUtterance(tx, liveSessionId, 'outputTranscription');
+    if (answer) turns.unshift({ seq: turns[0]!.seq, text: answer });
+  }
   // The window's own support, for a refusal that has no ask to report: how much of the note any turn
   // in the window carries at all.
-  const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text)));
+  const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text).map(memoryWord)));
   const windowSupported = words.filter(word => windowSpoken.has(word));
   const windowRatio = words.length ? windowSupported.length / words.length : 0;
   // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
   const wordSet = new Set(words);
-  const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
+  // A correction retracts the old item, even though it remains in the transcript.
+  const retracted = new Set<string>();
+  for (const turn of turns) for (const match of turn.text.matchAll(/\breplace\s+(.+?)\s+with\b/gi)) {
+    for (const word of contentWords(match[1]!)) retracted.add(word);
+  }
+  const turnTokens = turns.map(turn => new Set(tokens(turn.text).map(memoryWord).filter(word => !retracted.has(word))));
   let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined; request: string } | undefined;
   for (let end = turns.length - 1; end >= 0 && !ask; end--) {
-    for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
+    for (let width = 1; width <= turns.length && end - width + 1 >= 0; width++) {
       const first = end - width + 1;
       const spoken = new Set<string>();
       for (let index = first; index <= end; index++) for (const word of turnTokens[index]!) spoken.add(word);
@@ -1169,17 +1172,14 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
       words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
     // A refusal is never silent: the model is told what to say, so the owner hears that nothing was kept.
-    if (result.remembered === true) return result;
+    if (result.remembered === true) return { ...result, guidance: `Saved to your notes. ${String(result.guidance ?? '')}`.trim() };
     const code = String(result.code ?? '');
-    return { ...result, guidance: REFUSAL_GUIDANCE[code] ?? DEFAULT_REFUSAL_GUIDANCE };
+    return { ...result, guidance: result.guidance ?? REFUSAL_GUIDANCE[code] ?? DEFAULT_REFUSAL_GUIDANCE };
   };
   const pointer = normalized(noteText);
   if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
-  // A note copied word for word from one utterance names that utterance, whatever the span search found.
-  for (let index = turns.length - 1; index >= 0; index--) {
-    if (!normalized(turns[index]!.text).includes(pointer)) continue;
-    ask = { turn: turns[index]!, ratio: 1, supported: words.length, request: turns[index]!.text, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
-    break;
+  if ((/\b(?:them|it|they|this|that)\b/i.test(noteText) && !words.length) || /\b(?:them|it)\b/i.test(noteText)) {
+    return receipt({ remembered: false, code: 'note_referent_missing', guidance: 'Who or what should I name in the note?' });
   }
   if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner
@@ -1991,6 +1991,7 @@ export class LiveSessionOwner {
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
       session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: { ...this.#profile.limits, idleMs: alarmIdleMs }, trace: this.#tracePort(liveSessionId, connection) });
+      session = canarySessions.wrapSession(liveSessionId, session);
       hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
         seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {
@@ -2102,7 +2103,7 @@ export class LiveSessionOwner {
       try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
       catch { receipt = { saved: false, code: 'outcome_unknown' }; }
       const response: JsonObject = receipt.saved && receipt.insightId
-        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved: ${args.title} (${receipt.insightId}).` }
+        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved to lux as ${args.title}.` }
         : { saved: false, code: receipt.code ?? 'write_failed', say: 'The note was not saved.' };
       if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response, request.id);
       hostLogEvent({ event: 'lux_note_audit', ...requests!.audit(liveSessionId, 'lux_note'), refusalCode: response.saved ? 'none' : response.code });
@@ -2418,7 +2419,7 @@ export class LiveSessionOwner {
     return callCeilingMs(handle.pendingCalls.get(callId));
   }
 
-  async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {
+  async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild', postToolNoOutput = false): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
@@ -2443,7 +2444,7 @@ export class LiveSessionOwner {
     // #538 R4: an answer in flight is never the ladder's to lose, but a response the owner cannot hear is not an
     // answer she is listening to. It buys the rung DEAD_AIR_RESPONSE_GRACE_MS and no more: a response that produced
     // no audio buys nothing, and a response that did has already cleared this debt.
-    if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
+    if (!postToolNoOutput && step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
       handle.debtDeferred = true;
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
@@ -2453,7 +2454,7 @@ export class LiveSessionOwner {
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
-    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
@@ -2727,6 +2728,15 @@ export class LiveSessionOwner {
   #watchdogEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
     if (this.#settled(handle) || handle.rebuilding) return;
     const type = event.type;
+    // SI-R2: only a post-tool provider response with no output item earns the early rung.
+    // The adapter owns the item deadline; the host owns the existing recovery, never a parallel create.
+    if (type === 'interactionStatus' && event.value === 'post_tool_no_output') {
+      if (handle.debtSince !== undefined && handle.pendingCallIds.size === 0 && handle.deadAirNudgedAt === undefined) {
+        handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+        void this.#debtRung(handle, handle.generation, 'rung', true).catch(() => { /* recovery settles its own failures */ });
+      }
+      return;
+    }
     // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming
     // on one would push the deadline out forever and no stall would ever be witnessed.
     if (type === 'audio' && event.audible === false) return;
@@ -3283,6 +3293,7 @@ export class LiveSessionOwner {
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
         trace: this.#tracePort(handle.liveSessionId, handle.connection),
       });
+      handle.session = canarySessions.wrapSession(handle.liveSessionId, handle.session);
       handle.openedAt = this.#now(); handle.readyAt = undefined;
       hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
         instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });

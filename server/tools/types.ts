@@ -72,15 +72,15 @@ export type StageNotePort = (tx: Transaction, runId: string, args: { title: stri
 export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note';
 export type RequestCode = 'allowed' | 'idempotent' | 'no_owner_request' | 'request_expired' | 'grant_spent';
 export type RequestAuthorization =
-  | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string }
-  | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; receipt?: unknown };
+  | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string; observedAt?: number }
+  | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; observedAt?: number; receipt?: unknown };
 
 export interface OwnerRequestPort {
   answered?(session: string): void;
   partial(session: string): void;
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;
-  observe(session: string, journalId: string, words: string): void;
+  observe(session: string, journalId: string, words: string, observedAt?: number): void;
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
   claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization;
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;

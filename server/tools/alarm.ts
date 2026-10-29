@@ -12,7 +12,7 @@ function localParts(instant: number, tz: string): number[] {
 }
 
 /** Interpret owner words, never use a model argument to choose the instant. */
-export function parseAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
+function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
   // Labels come from owner input, not the model's arguments.
   const trailing = /\b(?:and\s+((?:give|tell|show|read)\b.*)|that\s+(.+))$/i.exec(words);
   const reminder = /\bremind me\b/i.test(words)
@@ -21,10 +21,14 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const label = (trailing ? trailing[1] ?? trailing[2] : reminder?.[1])?.trim() ?? '';
   const timeWords = labelMatch ? words.slice(0, labelMatch.index) : words;
   let text = timeWords.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
-  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\b(?:today|tonight)\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
+  text = text.replace(/\b(?:um|uh|like|so)\b|\s-\s/g, ' ').replace(/(\d)\s*:\s*(\d)/g, '$1:$2')
+    .replace(/\b([ap]m)(?:\s+\1)+\b/g, '$1').replace(/\bfor\s+(today|tomorrow|tonight)\b/g, '$1')
+    .replace(/\b(\d{1,2})\s+([ap]m)\s+(\d{1,2})\b/g, '$1:$3 $2')
+    .replace(/\bin\s+(?:an?|one)\s+hour\b/g, 'in one hour');
+  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
   text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
-  const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
-  const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
+  const named: Record<string, string> = { 'utc time': 'UTC', 'gmt time': 'UTC', 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
+  const zonePattern = /\b(singapore time|new york time|utc time|gmt time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
   const zones = [...text.matchAll(zonePattern)];
   const zone = zones.at(-1)?.[0];
   const suffix = /\b([A-Z]{2,8})[.!?]?\s*$/.exec(words)?.[1];
@@ -40,12 +44,25 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (parts.length === 2 && !(parts[0] === 'oh' || (values[parts[0]!]! >= 20 && values[parts[1]!]! < 10))) return NaN;
     return parts.reduce((sum, part) => sum + values[part]!, 0);
   };
+  text = text.replace(/\b([ap]m)(?:\s+\1)+\b/g, '$1');
+  // Find time expressions independently of the owner's action wording.
+  const temporal = new RegExp(`\\b(?:in\\s+)?(?:\\d{1,2}|${Object.keys(values).join('|')}|half|quarter|noon|midnight)\\b`);
+  const first = temporal.exec(text);
+  if (first) {
+    const before = text.slice(0, first.index);
+    const context = before.match(/\b(?:tomorrow|morning|evening)\b/g)?.join(' ') ?? '';
+    text = `${context} ${text.slice(first.index)}`.trim();
+    // Relative speech often finishes with the request rather than starting with it.
+    text = text.replace(/(minutes?|hours?)\s+(?:from now\s*)?(?:can you|could you|please)\b[^0-9]*$/, '$1')
+      .replace(/(minutes?|hours?)\s+from now\s*$/, '$1');
+    if (!/^in\b/.test(text)) text = `at ${text}`;
+  }
   if ([...text.matchAll(/\b(?:am|pm)\b/g)].length > 1) return { status: 'clarify', reason: 'unsupported_time_expression' };
   // Strip only the first action prefix: a later alarm clause must not erase an earlier time.
   let fireAtUtc: number;
   const relative = new RegExp(`\\bin\\s+((?:\\d+|${Object.keys(values).join('|')})(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?)\\s+(minutes?|hours?)\\b`).exec(text);
   if (relative) {
-    const prefix = text.slice(0, relative.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
+    const prefix = text.slice(0, relative.index).replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     const amount = number(relative[1]!);
     if (!Number.isFinite(amount)) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -57,13 +74,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     // Select the first temporal introducer and consume its entire remainder, never prefer a later "at".
     const start = /\b(?:at|for)\s+|\b(?:noon|midnight)\b/.exec(text);
     if (!start) return { status: 'clarify', reason: 'missing_time' };
-    const prefix = text.slice(0, start.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '')
+    const prefix = text.slice(0, start.index).replace(/^\s*snooze\b/, '')
       .replace(/\b(?:tomorrow|morning|evening|tonight|am|pm|in|the|for|please)\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     let expression = text.slice(start.index + (/^(?:noon|midnight)$/.test(start[0]) ? 0 : start[0].length)).trim();
     expression = expression.replace(/^(?:(?:tomorrow|morning|evening|tonight|in the morning|in the evening)\s+)+at\s+/, '');
     const tomorrow = /\btomorrow\b/.test(text);
-    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(text) && !/\bpm\b|\bevening\b/.test(text) ? 'am'
+    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(words) && !/\bpm\b|\bevening\b/.test(text) ? 'am'
       : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
     const namedTime = expression === 'noon' || expression === 'midnight';
@@ -113,6 +130,42 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   }
   const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(fireAtUtc);
   return { status: 'ready', fireAtUtc, tz, label, confirmation: `Alarm set for ${dateTime} (${tz}).` };
+}
+
+/** Repeated speech finals may restate the same time; every stated time must agree. */
+export function parseAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
+  const direct = parseSingleAlarmTime(words, now, tz, modelAt);
+  if (direct.status !== 'clarify' || direct.reason !== 'unsupported_time_expression') return direct;
+  const text = words.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m')
+    .replace(/(\d)\s*:\s*(\d)/g, '$1:$2').replace(/\b(\d{1,2})\s+([ap]m)\s+(\d{1,2})\b/g, '$1:$3 $2')
+    .replace(/\b(?:um|uh|like|so)\b|\s-\s/g, ' ').replace(/\bin\s+an?\s+hour\b/g, 'in one hour');
+  const periods = [...new Set(text.match(/\b[ap]m\b/g) ?? [])];
+  if (periods.length > 1) return direct;
+  const unit = '(?:one|two|three|four|five|six|seven|eight|nine)';
+  const num = `(?:\\d{1,2}|(?:twenty|thirty|forty|fifty)(?:[ -]${unit})?|${unit}|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)`;
+  const period = '(?:\\s+[ap]m)?';
+  const clock = `(?:\\d{1,2}:\\d{2}|${num}(?:[ -]+${num})?)${period}`;
+  const pattern = new RegExp(`\\bin\\s+${num}\\s+(?:minutes?|hours?)\\b|\\b(?:quarter|half|${num})(?:\\s+minutes?)?\\s+(?:past|to)\\s+${num}${period}\\b|\\b\\d{1,2}:\\d{2}${period}\\b|\\b${num}(?:[ -]+${num})?\\s+[ap]m\\b|\\b(?:at|on|for)\\s+${clock}\\b|\\b(?:noon|midnight)\\b`, 'g');
+  const matches = [...text.matchAll(pattern)];
+  const expressions = matches.map(match => match[0]);
+  const remainder = text.replace(pattern, ' ');
+  if (/\b(?:minutes?|hours?)\b/.test(remainder)) return direct;
+  const leftoverNumbers = remainder.match(new RegExp(`\\b${num}\\b`, 'g')) ?? [];
+  if (leftoverNumbers.some(value => !expressions.some(expression => expression.replace(/^(?:at|on|for)\s+/, '').startsWith(value + ' ')))) return direct;
+  if (!expressions.length) return direct;
+  const zone = [...text.matchAll(/\b(?:[a-z_+-]+\/[a-z_+-]+|[a-z]+ time|sgt|utc|gmt)\b/g)].at(-1)?.[0] ?? '';
+  const day = /\btomorrow\b/.test(text) ? 'tomorrow' : /\btonight\b/.test(text) ? 'tonight' : '';
+  let agreed: Extract<AlarmTime, { status: 'ready' }> | undefined;
+  for (let expression of expressions) {
+    expression = expression.replace(/\s+minutes?\s+(past|to)\s+/, ' $1 ');
+    const relative = /^in\b/.test(expression);
+    const suffix = relative ? '' : `${!/\b[ap]m\b/.test(expression) ? periods[0] ?? '' : ''} ${day}`;
+    const parsed = parseSingleAlarmTime(`${relative ? '' : 'at '}${expression.replace(/^(?:at|on|for)\s+/, '')} ${suffix} ${zone}`.trim(), now, tz, modelAt);
+    if (parsed.status !== 'ready') return parsed;
+    if (agreed && Math.floor(agreed.fireAtUtc / 60000) !== Math.floor(parsed.fireAtUtc / 60000)) return { status: 'clarify', reason: 'unsupported_time_expression' };
+    agreed = parsed;
+  }
+  return agreed ?? direct;
 }
 
 export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;

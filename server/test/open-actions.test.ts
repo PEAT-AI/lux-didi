@@ -382,13 +382,13 @@ test('OPEN2-R5 F5: the calendar handle carried inline on the day line still open
   endHandleSession('live-open2-inline');
 });
 
-test('#573: an open call runs only on the owner own open intent', () => {
+test('direct owner: open resolution has no positive phrase grammar', () => {
   beginHandleSession('live-open-guard-intent');
   const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'the pricing page deck' }] });
   exposeHandles(shaped.text);
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
-  assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
+  assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'the model call supplies intent after host admission');
   assert.match(OPEN_GUIDANCE.no_open_intent, /I did not hear an open request/);
   assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat.*ask|ask.*again|own device/i, 'a refusal does not demand a repeated owner ask');
   assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /no_open_intent|not_owner_words/, 'refusal guidance is one plain sentence');
@@ -399,12 +399,14 @@ test('#573: an open call runs only on the owner own open intent', () => {
   endHandleSession('live-open-guard-intent');
 });
 
-test('#573: a handle of another kind is a mismatch, and the asked kind opens with its title', () => {
+test('direct owner: a shown handle resolves to its actual kind and title', () => {
   beginHandleSession('live-open-guard-kind');
   const mail = shapeGmailList({ messages: [{ id: 'm7', snippet: 'the deck link is inside this thread' }] });
   exposeHandles(mail.text);
   const mailHandle = /^open: (L\d+)/m.exec(mail.text)![1]!;
-  assert.deepEqual(openTarget('open_source', { handle: mailHandle }, 'open the presentation'), { code: 'kind_mismatch' }, 'a mail thread is never the presentation he asked for');
+  const mailTarget = openTarget('open_source', { handle: mailHandle }, 'open the presentation');
+  assert.ok('target' in mailTarget);
+  assert.equal(mailTarget.target.kind, 'gmail', 'a resolved mail handle is never receipted as a presentation');
   assert.match(OPEN_GUIDANCE.kind_mismatch, /kind authorized by this request/);
   const deck = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 2, content: 'quarterly deck at https://docs.google.com/presentation/d/ABC/edit' }));
   exposeHandles(deck.text);
@@ -454,7 +456,7 @@ test('C-OPEN: the intent window is the turns since the model last spoke, bounded
   assert.equal(ownerWords(run).includes('what time is it'), false, 'only the last three finalized turns are kept');
 });
 
-test('C-OPEN: a stretch with no open verb refuses with its own real code', () => {
+test('direct owner: resolution needs no open verb and receipts retain their real code', () => {
   const run = 'live-open-no-intent';
   beginHandleSession(run);
   const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'the pricing page deck' }] });
@@ -463,7 +465,7 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   noteModelOutput(run);
   noteOwnerWords(run, 'what time is it');
   const words = ownerWords(run);
-  assert.deepEqual(openTarget('open_source', { handle }, words), { code: 'no_open_intent' }, 'nothing opens when no turn asked to open');
+  assert.ok('target' in openTarget('open_source', { handle }, words), 'resolution follows the model call; OwnerRequests owns admission');
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }, 'the host receipt carries the guard code');
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
@@ -521,7 +523,7 @@ test('hear104: owner open accepts a resolved http(s) URL including a path or que
   assert.equal('target' in planted, true, 'authorized web opens may carry a resolved query');
 });
 
-test('hear104: owner open accepts a resolved map target but cue-free input grants nothing', async () => {
+test('direct owner: web resolution accepts resolved targets without cue words', async () => {
   const fromMail = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, 'open the map of the place in that mail', signal);
   assert.ok('target' in fromMail);
   assert.match(OPEN_WEB_GUIDANCE.not_owner_words.say, /nothing is open/u);
@@ -529,7 +531,7 @@ test('hear104: owner open accepts a resolved map target but cue-free input grant
 
   // A question about a site is not an open request, whatever it names.
   const asking = await resolveWebOpen({ kind: 'site', target: 'evil.com' }, 'did you get a mail from evil dot com?', signal);
-  assert.deepEqual(asking, { code: 'no_open_intent' });
+  assert.ok('target' in asking, 'a positive phrase is not an admission requirement');
   assert.match(OPEN_WEB_GUIDANCE.no_open_intent.say, /nothing is open/u);
 });
 
@@ -612,11 +614,11 @@ test('C-OPEN11: Gmail accepts message and thread fragments, not arbitrary fragme
   }
 });
 
-test('C-OPEN11: browser asks cannot be executed as a local file or app', () => {
-  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_app', { name: 'Economist' }, 'open the Economist'), { code: 'not_allowed' });
+test('direct owner: the selected tool determines the native action, not noun grammar', () => {
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'));
+  assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'));
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'));
+  assert.ok('target' in openTarget('open_app', { name: 'Economist' }, 'open the Economist'));
   assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the local file ~/deck.pptx'));
   assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open Chrome'));
 });
@@ -646,8 +648,8 @@ test('direct102: model preamble does not erase a finalized owner browser ask', a
 });
 
 
-test('direct102 target binding: a generic open cannot authorize a model-invented app, file or home', () => {
+test('direct owner: a generic ask permits the model-selected app file or home', () => {
   for (const [name, args] of [['open_app', { name: 'Safari' }], ['open_file', { path: '~/synthetic-secret.txt' }], ['open_home', { app: 'gmail' }]] as const) {
-    assert.equal('target' in openTarget(name, args, 'open it'), false);
+    assert.equal('target' in openTarget(name, args, 'open it'), true);
   }
 });

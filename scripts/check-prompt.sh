@@ -42,7 +42,7 @@ cp server/host/log.ts "$out/source/host/"
 # L2: host/log.ts re-exports the call-context helpers from host/events.ts, so stage that module too.
 cp server/host/events.ts "$out/source/host/"
 # host/log.ts names the stop gate constants, so stage the module it imports.
-cp server/live/stop-phrase.ts "$out/source/live/"
+cp server/live/stop-phrase.ts server/live/tool-outcome.ts "$out/source/live/"
 # The live-voice adapters import the alarm mode marker, so stage its module too.
 cp server/live/alarm-mode.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"

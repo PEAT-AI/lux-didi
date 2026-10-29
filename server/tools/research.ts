@@ -648,13 +648,13 @@ function statusProbeOf(lookup: ResearchLookup, question: string): ResearchLookup
 }
 
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
-const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
+const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|coming days|next few days|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
 
 /** #5: the same grammar found anywhere in the owner's sentence, longest form first, never a bare
  *  `week` on its own, since "the week after next" names no window this grammar can read. */
 /** #5: a window or date word that is present but not in the grammar, so it is unparsed, never today. */
 const CALENDAR_WINDOW_WORD = /\b(?:week|weeks|month|months|weekend|year|after next)\b/u;
-const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
+const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|coming days|next few days|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
 
 /**
  * #5: recognize only explicit supported calendar grammar, read out of the owner's own sentence. Two
@@ -2941,9 +2941,10 @@ const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 
  * C-CAL8: a schedule ask is answered by the calendar first, so its reply opens with the meetings and the
  * knowledge behind them follows. Every other ask keeps the declared order.
  */
-const sourceOrderFor = (question: string): readonly SourceKind[] => ownerScheduleQuestion(question)
-  ? ['calendar', ...SOURCE_ORDER.filter(source => source !== 'calendar')]
-  : SOURCE_ORDER;
+const sourceOrderFor = (question: string): readonly SourceKind[] => {
+  const first = ownerScheduleQuestion(question) ? 'calendar' : chatQuestionWords(question) ? 'chat' : requiredSources(question)[0];
+  return first === undefined ? SOURCE_ORDER : [first, ...SOURCE_ORDER.filter(source => source !== first)];
+};
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -2986,7 +2987,7 @@ const COUNT_WINDOWS = 'today, yesterday, last N days, this or last week, this or
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
   not_connected: label => `${label} is not connected`,
   not_configured: label => `${label} is not set up`,
-  grant_missing: label => `${label} needs permission`,
+  grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
@@ -3132,6 +3133,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
 function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   if (run.cutShort.has(source)) return 'timed_out';
   const code = run.unavailableReasons.get(source);
+  if (source === 'chat' && code === 'owner-approval-required') return 'grant_missing';
   // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
   if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
   // C-CLAIMS9 outcome 3: a source the host or the connector reports as unconnected was never served, so it
@@ -3905,8 +3907,10 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     // One grammar: `start, title, location | calendar`, so the comma fields are the event and the last
     // pipe segment is the calendar it came from, never a title.
     const body = event.line.replace(/^- /u, '').replace(/ \[id [^\]\s]+\]$/u, '');
-    const pipeAt = body.indexOf(' | ');
-    const fields = (pipeAt < 0 ? body : body.slice(0, pipeAt)).split(', ');
+    const header = body.split('\n')[0]!;
+    const people = [...body.matchAll(/(?:^|\n| \| )\s*((?:attendees|organizer): [^\n;]+)/gu)].map(match => match[1]);
+    const pipeAt = header.indexOf(' | ');
+    const fields = (pipeAt < 0 ? header : header.slice(0, pipeAt)).split(', ');
     const head = fields[0] ?? '';
     const rest = fields.slice(1).filter(part => part.length > 0).join(', ');
     // #7: an all-day entry starts as a bare date; reading it as a UTC instant would shift it into the
@@ -3921,7 +3925,8 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     // another day (the overlap the helper returns) is that day's, not this answer's, and is dropped.
     if (dateOnly && singleDay !== undefined && calendarStamp(event.start, true) !== singleDay) continue;
     const entries = days.get(day) ?? [];
-    entries.push([time, rest].filter(part => part.length > 0).join(' '));
+    const summary = [time, rest].filter(part => part.length > 0).join(' ');
+    entries.push([summary, ...people].join(' | '));
     days.set(day, entries);
   }
   return [...days].map(([day, entries]) => ({ day, entries }));
@@ -4229,6 +4234,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // owner hears the helper's own line (for Drive consent: the exact authorize command) and not a
     // search that found nothing.
     ...[...run.failureLines.values()],
+    ...(['calendar', 'mail'] as const).filter(source => run.sourcesFailed.has(source) || run.cutShort.has(source)).map(source => `I couldn't read your ${source}${run.sourcesDone.has(source) ? ' completely' : ''}.`),
     ...cutShort,
     ...searchedNothing,
     ...(coverage !== undefined ? [coverage] : []),
@@ -4314,7 +4320,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${[...(group.meta ?? []), ...group.lines].join('\n')}${note}`;
         // #575: a block this session already gave is one line, never a second copy of the same evidence.
-        if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
+        if (group.source !== 'calendar' && run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
       });
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
@@ -4663,11 +4669,14 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
+export function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
   if (!inputSchema) return args;
   const properties = inputSchema(INTERNAL.calendarList)?.['properties'];
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
-  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject;
+  const registered = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'deadlineAt' && Object.hasOwn(properties, key))) as JsonObject;
+  const cap = (properties as Record<string, { maximum?: number }>)['maxResults']?.maximum;
+  if (typeof registered['maxResults'] === 'number' && typeof cap === 'number') registered['maxResults'] = Math.min(registered['maxResults'], cap);
+  return registered;
 }
 
 function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedReadUnfiltered>[1] & { inputSchema?: ResearchDeps['inputSchema'] }): ReturnType<typeof routedReadUnfiltered> {
@@ -4703,8 +4712,9 @@ function routedReadUnfiltered(lookup: ResearchLookup, context: { question: strin
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
   // The calendar list rides along only so the result can say what it did not read.
   if (lookup.source === 'calendar') {
-    if (lookup.calendarEntity !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
-      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: lookup.calendarEntity, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
+    const namedEvent = lookup.calendarEntity ?? (/\b(?:wedding|birthday|graduation|recital|funeral)\b/iu.test(query) && !calendarWindowOf(query) ? query.replace(/^(?:do you find|can you find|find|search for)\s+/iu, '').replace(/[?.!]+$/u, '') : undefined);
+    if (namedEvent !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
+      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: namedEvent, timeMin: new Date(context.now() - 32 * 86400000).toISOString(), timeMax: new Date(context.now() + 184 * 86400000).toISOString(), maxResults: RESEARCH.pageResults.calendar } as JsonObject },
     ] };
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
@@ -5128,7 +5138,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let scopeSlot: number | undefined;
     reads.forEach((read, n) => {
       slots.push(calls.length);
-      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt }, deps.inputSchema) ?? {} });
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), maxMs: Math.max(1, sourceDeadlineAt - now()) }, deps.inputSchema) ?? {} });
       // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
       // did not read and the batch is the read, its list, then any further window.
       if (n === 0 && listScope) {
@@ -5518,7 +5528,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
-  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now: () => run.startedAt, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };
@@ -7174,11 +7184,14 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     // on the body's own next page once the store's slices are spent.
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
-  const { lines, rest } = fitUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
+  const remainingNote = (count: number): string => `+${count} more lines; continue with pageCursor to fetch the rest.`;
+  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/gu, 'more on the next page') : '';
+  // Reserve the continuation line before packing, so announcing a cut never breaks the voice cap.
+  const pagedEnvelope: JsonObject = { ...envelope, note: `${previousNote} ${remainingNote(units.length)}`.trim() };
+  const { lines, rest } = fitUnits(pagedEnvelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
-  // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;
-  return { ...page, canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+  return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
 }
 
 /**

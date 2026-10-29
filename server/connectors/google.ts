@@ -1,3 +1,4 @@
+import { decodeGoogleEnvelope } from '../tools/google.js';
 import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
@@ -68,14 +69,14 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
-export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
+export interface GcalCalendarsInput { maxResults?: number; pageToken?: string; refresh?: boolean }
 /** C-DRIVE drive_search_files: a name query, optional type filter and window, at most ten files. */
 export interface DriveSearchInput { query: string; mime_types?: readonly string[]; modified_after?: string; limit?: number }
 export interface DriveGetInput { file_id: string }
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
-  calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
+  calendarId?: string; calendarIds?: readonly string[]; q?: string; maxMs?: number; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
   /** The caller's remaining source budget as an absolute epoch ms; the fan-out never plans past it. */
   deadlineAt?: number;
 }
@@ -235,6 +236,13 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };
+    if (evidence.state === 'completed') {
+      const text = contentText(evidence.decodedResult);
+      const decoded = text === undefined ? undefined : decodeGoogleEnvelope(text);
+      if (decoded && !decoded.ok && decoded.reason === 'credential-missing') return {
+        ...evidence, state: 'tool-error', decodedResult: { content: [{ type: 'text', text: 'credential-missing: auth needed' }], isError: true },
+      };
+    }
     return evidence;
   }
 
@@ -245,8 +253,8 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   function listArgs(input: { maxResults?: number; pageToken?: string }, defaultResults: number = GOOGLE_DEFAULTS.listResults): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
     const args: Record<string, unknown> = {};
     if (input.maxResults !== undefined) {
-      if (!Number.isSafeInteger(input.maxResults) || input.maxResults < 1 || input.maxResults > settings.maxListResults) return { ok: false, reason: 'max-results-out-of-budget' };
-      args['maxResults'] = input.maxResults;
+      if (!Number.isSafeInteger(input.maxResults) || input.maxResults < 1) return { ok: false, reason: 'max-results-out-of-budget' };
+      args['maxResults'] = Math.min(input.maxResults, settings.maxListResults);
     } else {
       args['maxResults'] = Math.min(defaultResults, settings.maxListResults);
     }
@@ -402,6 +410,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
         if (typeof input.q !== 'string' || input.q.length < 1 || input.q.length > 2048) return { state: 'refused', reason: 'invalid-query' };
         bounded.args['q'] = input.q;
       }
+      bounded.args['maxResults'] = Math.min(Number(bounded.args['maxResults']), 25);
       return dispatch('gmail_search_messages', bounded.args, signal);
     },
     async gmailRead(input: GmailReadInput, signal?: AbortSignal): Promise<GoogleResult> {
@@ -417,6 +426,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (denied) return { state: 'refused', reason: denied };
       const bounded = listArgs(input, GOOGLE_DEFAULTS.listResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
+      if (input.refresh !== undefined) {
+        if (typeof input.refresh !== 'boolean') return { state: 'refused', reason: 'invalid-refresh' };
+        bounded.args['refresh'] = input.refresh;
+      }
       return dispatch('calendar_list_calendars', bounded.args, signal);
     },
     async gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult> {
@@ -426,10 +439,18 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
       const window = eventWindow(input);
       if (!window.ok) return { state: 'refused', reason: window.reason };
+      if (input.q !== undefined) {
+        if (typeof input.q !== 'string' || input.q.trim().length < 1 || input.q.length > 2048) return { state: 'refused', reason: 'invalid-query' };
+        bounded.args['q'] = input.q;
+      }
       bounded.args['timeMin'] = window.timeMin;
       bounded.args['timeMax'] = window.timeMax;
       // The fan-out plans inside the caller's remaining source budget when it names one (#473).
-      const deadlineAt = typeof input.deadlineAt === 'number' && Number.isFinite(input.deadlineAt) ? input.deadlineAt : undefined;
+      if (input.maxMs !== undefined) {
+        if (!Number.isSafeInteger(input.maxMs) || input.maxMs < 1) return { state: 'refused', reason: 'invalid-max-ms' };
+        bounded.args['maxMs'] = input.maxMs;
+      }
+      const deadlineAt = Math.min(input.deadlineAt ?? Number.POSITIVE_INFINITY, input.maxMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + input.maxMs);
       // No calendarId (or an explicit list) means every selected calendar, merged into one result.
       if (input.calendarIds !== undefined) {
         const ids = input.calendarIds;

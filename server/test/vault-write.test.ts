@@ -31,7 +31,7 @@ function harness(t: TestContext, url: string): Harness {
   const store = new Store(dir, [...liveMigrations]);
   t.after(() => store.close());
   const events: Record<string, unknown>[] = [];
-  const writer = new VaultWriter({ store, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
+  const writer = new VaultWriter({ store, backoff: async () => {}, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
   return { store, writer, events };
 }
 
@@ -70,7 +70,7 @@ test('a natural ask with nothing of his own to save writes nothing and says the 
 test('an unreachable vault is logged as unavailable with its closed code', async t => {
   const h = harness(t, 'http://127.0.0.1:1/mcp');
   speak(h, '41', `save to my vault: ${NOTE}`);
-  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'the vault is not reachable right now' });
+  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'Retried lux once. the vault is not reachable right now' });
   const attempt = h.events.at(-1);
   assert.equal(attempt?.['state'], 'unavailable');
   assert.equal(attempt?.['code'], 'vault_unavailable');
@@ -346,4 +346,51 @@ for (const phase of ['initialize_http', 'initialize_transport', 'initialized_not
 
 test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () => {
   assert.equal(safeEvent({ event: 'vault_transport', phase: 'arbitrary model text' }), undefined);
+});
+
+test('startup claims an authorized operation by its execution identity exactly once', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  speak(h, 'restart', `save this to lux: ${NOTE}`);
+  const calls: string[] = [];
+  const options = { store: h.store, now: () => NOW, log: () => {},
+    transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };
+  const restarted = new VaultWriter(options);
+  await restarted.recovery;
+  await new VaultWriter(options).recovery;
+  assert.deepEqual(calls, [NOTE]);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM vault_writes WHERE utterance_id=?', ['restart']))?.state, 'confirmed');
+});
+
+test('unavailable retries once with backoff and then confirms without a duplicate', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  let calls = 0;
+  const delays: number[] = [];
+  const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
+    backoff: async ms => { delays.push(ms); },
+    transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
+  h.store.transaction(tx => writer.observe(tx, SESSION, 'retry', `save this to lux: ${NOTE}`));
+  const claim = writer.claim(SESSION, NOTE);
+  assert.equal(claim.state, 'dispatch');
+  if (claim.state !== 'dispatch') return;
+  const result = await writer.dispatch(claim);
+  assert.equal(result.saved, true);
+  assert.match(String(result.guidance), /retried.*lux/i);
+  assert.deepEqual(delays, [250]);
+  assert.equal(calls, 2);
+  assert.equal(writer.claim(SESSION, NOTE).state, 'settled');
+});
+
+test('startup retries a legacy unavailable row only once across restarts', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  speak(h, 'legacy-unavailable', `save this to lux: ${NOTE}`);
+  h.store.transaction(tx => tx.run("UPDATE vault_writes SET state='failed',code='vault_unavailable'"));
+  let calls = 0;
+  const delays: number[] = [];
+  const options = { store: h.store, now: () => NOW, log: () => {}, backoff: async (ms: number) => { delays.push(ms); },
+    transport: { save: async () => { calls++; return { outcome: 'inserted' as const, insightId: 'recovered-7' }; } } };
+  await new VaultWriter(options).recovery;
+  await new VaultWriter(options).recovery;
+  assert.equal(calls, 1);
+  assert.deepEqual(delays, [250]);
+  assert.equal(h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE utterance_id='legacy-unavailable'"))?.state, 'confirmed');
 });

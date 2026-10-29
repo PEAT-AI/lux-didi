@@ -2147,7 +2147,7 @@ describe('openai gpt-live receipts', () => {
 });
 
 
-test('research 469: unavailable output preserves completed transport receipt without local retry', async t => {
+test('research 469: unavailable output records failed business result and successful delivery without local retry', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-research-469-trace-')), store = new Store(dir);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const trace = liveTracePort({ port: store, liveSessionId: 'synthetic-469', connectionEpoch: 'e0', turnId: () => 'synthetic-469:t1' });
@@ -2167,8 +2167,10 @@ test('research 469: unavailable output preserves completed transport receipt wit
   const response = { researchId: 'known-stopped', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
   session.sendToolResponse({ responses: [{ id: 'research-469', name: 'research', response }] });
   await tick();
-  const rows = store.transaction(tx => tx.all("SELECT outcome FROM trace_call WHERE name='research'"));
-  assert.deepEqual(rows.map(row => row['outcome']), ['completed'], 'successful error output retains existing transport convention');
+  const rows = store.transaction(tx => tx.all("SELECT outcome, delivered, outcome_code FROM trace_call WHERE name='research'"));
+  assert.deepEqual(rows.map(row => row['outcome']), ['failed']);
+  assert.equal(rows[0]!['delivered'], 1);
+  assert.equal(rows[0]!['outcome_code'], 'continuation_unavailable');
   const outputs = socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { output?: string } }).filter(frame => frame.type === 'response.item.create');
   assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
   assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');
@@ -2355,4 +2357,180 @@ test('alarm sessions seed no fresh-opening direction', async t => {
   const start = f.frames[0] as unknown as Start;
   assert.ok(!JSON.stringify(start.session['input'] ?? []).includes(FRESH_OPENING));
   assert.match(JSON.stringify(start.session), /call the bank/);
+});
+
+
+
+const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
+async function continuation(t: TestContext) {
+  const clock = new FakeClock();
+  const opened = await fakeReady(t, { clock });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-initial' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-call', name: 'research', arguments: '{}' } }));
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-initial', status: 'completed' } }));
+  await quiet();
+  opened.session.sendToolResponse({ responses: [{ id: 'synthetic-call', name: 'research', response: { ok: true } }] });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-continuation' } }));
+  await quiet();
+  return { ...opened, clock };
+}
+
+test('SILENCE b-second: silent done immediately rescues without tools, once', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before + 1);
+  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-rescue' } }));
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-rescue', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before + 1, 'no rescue loop');
+});
+
+test('SILENCE b: no item at five seconds requests the existing nudge without another create', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.clock.advance(4_999);
+  await quiet();
+  const nudges = () => opened.captured.events.filter(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output');
+  assert.equal(nudges().length, 0);
+  opened.clock.advance(1);
+  await quiet();
+  assert.equal(nudges().length, 1);
+  assert.equal(creates(opened.socket).length, before, 'never overlaps an active response');
+  opened.clock.advance(3_000);
+  await quiet();
+  assert.equal(nudges().length, 1);
+});
+
+test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
+  const opened = await continuation(t);
+  opened.clock.advance(4_500);
+  opened.socket.deliver(delegated('response.output_item.added', { item: { type: 'message', id: 'synthetic-message' } }));
+  opened.clock.advance(3_500);
+  await quiet();
+  assert.equal(opened.captured.events.some(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output'), false);
+});
+
+test('SILENCE chain: third tool round forces the fourth response to answer', async t => {
+  const opened = await continuation(t);
+  for (let round = 2; round <= 3; round++) {
+    const id = `synthetic-call-${round}`;
+    opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: id, name: 'research', arguments: '{}' } }));
+    opened.socket.deliver(delegated('response.done', { response: { status: 'completed' } }));
+    await quiet();
+    opened.session.sendToolResponse({ responses: [{ id, name: 'research', response: { ok: true } }] });
+    if (round < 3) opened.socket.deliver(delegated('response.created', { response: { id: `synthetic-round-${round}` } }));
+  }
+  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+});
+
+test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
+  const logs: unknown[] = [];
+  const detach = attachHostLogSink({ event: event => logs.push(event) });
+  t.after(detach);
+  const opened = await continuation(t);
+  opened.clock.advance(200);
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'message' } }));
+  opened.socket.deliver(delegated('response.done', { response: { status: 'completed' } }));
+  await quiet();
+  const receipt = logs.find((event): event is Record<string, unknown> => typeof event === 'object' && event !== null && 'event' in event && event.event === 'live_continuation_timing');
+  assert.ok(receipt);
+  for (const key of ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt', 'class']) assert.ok(key in receipt, key);
+  assert.equal(receipt['firstAudioAt'], null);
+  assert.equal(receipt['class'], 'b-second');
+  assert.deepEqual(safeEvent(receipt), {
+    event: 'live_continuation_timing', toolOutputAt: receipt['toolOutputAt'], createAt: receipt['createAt'],
+    createdAt: receipt['createdAt'], firstItemAt: receipt['firstItemAt'], firstAudioAt: null, class: 'b-second',
+  }, 'timing survives the actual host.log whitelist');
+  assert.ok(Number(receipt['toolOutputAt']) <= Number(receipt['createAt']));
+  assert.ok(Number(receipt['createAt']) <= Number(receipt['createdAt']));
+  assert.equal(Number(receipt['firstItemAt']) - Number(receipt['createdAt']), 200);
+});
+
+
+test('SILENCE timing: short completed audio keeps its receipt until actual playback', async t => {
+  const logs: unknown[] = [];
+  const detach = attachHostLogSink({ event: event => logs.push(event) });
+  t.after(detach);
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.clock.advance(200);
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before, 'buffered speech is not a silent response');
+  opened.clock.advance(1_000);
+  await quiet();
+  const receipt = logs.find((event): event is Record<string, unknown> => typeof event === 'object' && event !== null && 'event' in event && event.event === 'live_continuation_timing' && 'firstAudioAt' in event && event.firstAudioAt !== null);
+  assert.ok(receipt, 'the audible landmark survives an earlier terminal frame');
+  assert.equal(receipt['class'], 'c');
+  assert.ok(Number(receipt['firstAudioAt']) > Number(receipt['createdAt']));
+});
+
+
+test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the excess once', async t => {
+  const opened = await fakeReady(t, { clock: new FakeClock() });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-cap' } }));
+  for (let i = 0; i < 8; i++) opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: `synthetic-cap-${i}`, name: 'research', arguments: '{}' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-cap-7', name: 'research', arguments: '{}' } }));
+  await quiet();
+  const dispatched = opened.captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(dispatched.length, 6);
+  const results = opened.socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { call_id: string; output: string } }).filter(frame => frame.type === 'response.item.create');
+  assert.equal(results.length, 2, 'over-cap calls get immediate results, even before the admitted calls finish');
+  assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
+  assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
+  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, 1);
+  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
+});
+
+test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits six and honestly answers the excess once', async t => {
+  const receipts: { kind: string; id?: string; detail: Record<string, unknown> }[] = [];
+  const trace: import('../trace/record.js').LiveTracePort = {
+    receipt: (kind, ids, detail) => { receipts.push({ kind, ...(ids.callKey ? { id: ids.callKey } : {}), detail: { ...detail } }); },
+  };
+  const opened = await fakeReady(t, { clock: new FakeClock() }, trace);
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-cap' } }));
+  for (let i = 0; i < 8; i++) opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: `synthetic-cap-${i}`, name: 'research', arguments: '{}' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-cap-7', name: 'research', arguments: '{}' } }));
+  await quiet();
+  const dispatched = opened.captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(dispatched.length, 6);
+  const results = opened.socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { call_id: string; output: string } }).filter(frame => frame.type === 'response.item.create');
+  assert.equal(results.length, 2, 'over-cap calls get immediate results, even before the admitted calls finish');
+  assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
+  assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
+  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, 1);
+  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  const settled = receipts.filter(row => row.kind === 'call.output_written');
+  for (let i = 0; i < 8; i++) {
+    const row = settled.find(row => row.id === `synthetic-cap-${i}`);
+    assert.ok(row);
+    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
+    assert.equal(row.detail['delivered'], true);
+    if (i >= 6) {
+      assert.equal(row.detail['refusalCode'], 'research_cap_reached');
+      assert.equal(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id), false);
+    } else assert.ok(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id));
+  }
+  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
 });

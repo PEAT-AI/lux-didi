@@ -23,6 +23,8 @@ public struct NativeActionFrame: Sendable, Equatable {
         case openURL = "open_url"
         case openFile = "open_file"
         case openApp = "open_app"
+        // Only the host canary-session transport emits this action, never a model tool.
+        case canaryAcknowledgement = "canary_ack"
     }
     public let id: String
     public let action: Action
@@ -239,6 +241,9 @@ public actor NativeActions: NativeActionExecuting {
 
     public func perform(_ action: NativeActionFrame.Action, target: String) async -> NativeActionResult {
         switch action {
+        case .canaryAcknowledgement:
+            // Deliberately before URL resolution, workspace calls and focus-changing code.
+            return receipt(action, .opened, "canary_ack")
         case .openURL:
             guard let destination = OpenDestination.of(target, mattermostHost: mattermostHost), let url = URL(string: target)
             else { return receipt(action, .notAllowed, "none") }

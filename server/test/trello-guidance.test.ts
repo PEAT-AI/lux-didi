@@ -22,7 +22,7 @@ test('the write description: asked this turn, single turn, receipt only, clarify
   assert.match(TRELLO_WRITE_DESCRIPTION, /On outcome_unknown say you are not sure it landed/);
   assert.match(TRELLO_WRITE_DESCRIPTION, /You cannot remind him or call him back: offer a due date instead/);
   assert.match(TRELLO_WRITE_DESCRIPTION, /Nothing is ever deleted; archive is the furthest/);
-  assert.match(TRELLO_ARGUMENT_GUIDANCE, /null is not supported/);
+  assert.match(TRELLO_ARGUMENT_GUIDANCE, /Unused and empty optional properties are ignored/);
 });
 
 test('a note is a dated line in the description, because the server has no comment tool (W7-R5)', () => {

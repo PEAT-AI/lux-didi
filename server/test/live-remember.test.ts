@@ -1,4 +1,3 @@
-import { ready as openAiReady } from './openai-live-voice-fixture.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';

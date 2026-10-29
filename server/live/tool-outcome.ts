@@ -16,7 +16,7 @@ export function toolOutcomeOf(response: Readonly<Record<string, unknown>>): Tool
   if (status === 'stopped' || status === 'cancelled') return result('cancelled');
   if (status === 'partial') return result('partial');
   if (status === 'empty' || response.total === 0) return { outcome: 'empty' };
-  if (status !== undefined && !['answered', 'completed', 'ok', 'success', 'scheduled', 'created', 'set', 'available'].includes(String(status))) return { outcome: 'unknown' };
+  if (status !== undefined && !['answered', 'complete', 'completed', 'ok', 'success', 'scheduled', 'created', 'set', 'available'].includes(String(status))) return { outcome: 'unknown' };
   const content = ['findings', 'result', 'entryId', 'alarmId', 'card', 'boards', 'lists', 'posts', 'answer', 'text', 'content', 'messages', 'results', 'items', 'cards', 'channels', 'note', 'alarm', 'id']
     .some(key => {
       const value = response[key];

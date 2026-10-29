@@ -158,7 +158,7 @@ const speak=async()=>speakAt(positive);
 // The fake Gmail leg answers provider_failed in this fixture, which is neither this contract's surface nor a
 // refusal it changes, so the admitted reads asserted here are the knowledge and calendar legs.
 const admittedOutcomes=[];
-for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(['answered','partial'].includes(response.status),JSON.stringify(response));admittedOutcomes.push(response.status==='partial'?'partial':'completed');assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
+for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(['complete','answered','partial'].includes(response.status),JSON.stringify(response));admittedOutcomes.push(response.status==='partial'?'partial':'completed');assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
 // C-RESEARCH-CONTRACT T-04: a call the admission refuses is `blocked` in the trace, never `completed`, and the
 // reply names the rule that applied.
 const blocked=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});

@@ -15,7 +15,7 @@ const cases = [
   [{ status: 'answered', answer: 'Synthetic answer' }, 'completed', undefined],
   [{}, 'unknown', undefined],
   [{ status: 'unrecognized', text: 'Not a known settlement' }, 'unknown', undefined],
-  [{ status: 'answered', findings: [{ text: 'Synthetic research finding' }] }, 'completed', undefined],
+  [{ status: 'complete', findings: [{ text: 'Synthetic research finding' }] }, 'completed', undefined],
   [{ status: 'completed' }, 'unknown', undefined],
   [{ saved: false, code: 'unrecognized_gate' }, 'refused', 'unrecognized_gate'],
 ] as const;

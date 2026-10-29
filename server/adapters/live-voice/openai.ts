@@ -936,6 +936,7 @@ class Session implements LiveVoiceSession {
     if (this.episodeQuiet === undefined) {
       this.toolRounds = 0;
       this.researchCalls = 0;
+      this.lastAnswerNow = false;
       this.researchAdmissions.clear();
       this.silentRescueUsed = false;
       this.clearNoItemTimer();
@@ -1222,16 +1223,16 @@ class Session implements LiveVoiceSession {
       intentAt: this.clock.now(), providerCallId: call.id,
     });
     // SI-R3: admission is per owner question, including parallel calls in one provider response.
-    if (call.name === 'research') {
-      if (this.researchCalls >= 6) {
+    if (this.lastAnswerNow || call.name === 'research') {
+      if (this.lastAnswerNow || this.researchCalls >= 6) {
         this.answerNow = true;
         this.sendToolResponse({ responses: [{ id: call.id, name: call.name, response: {
-          status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question',
+          status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question; answer now from the results already available. Do not call more tools.',
         } }] });
         this.touch();
         return;
       }
-      this.researchCalls += 1;
+      if (call.name === 'research') this.researchCalls += 1;
       this.researchAdmissions.add(call.id);
     }
     this.emit({ type: 'toolCall', calls: [call] });
@@ -1348,6 +1349,14 @@ class Session implements LiveVoiceSession {
       // #677: a continuation refused because a call still owes its output is still owed: the next output write or
       // terminal event sends it, so the turn is answered instead of falling to the dead-air rebuild.
       if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
+      else if (command?.kind === 'cont') {
+        if (this.continuationRetries < 1) this.continueTurn(0, 1);
+        else {
+          this.continuationOwed = false;
+          this.emit({ type: 'turnFailed', code: 'provider_error' });
+          this.endResponse(undefined);
+        }
+      }
       this.touch();
       return;
     }
@@ -1570,8 +1579,7 @@ class Session implements LiveVoiceSession {
     }
     const round = this.toolRounds + (!attempt && (calls > 0 || this.continuationCalls > 0) ? 1 : 0);
     const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3 || this.researchCalls >= 6;
-    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont'),
-      ...(answerNow ? { response: { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' } } : {}) }))) {
+    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
       this.continuationOwed = true;
       this.continuationReceipt('failed');
       return this.continuationOutcome = 'failed';

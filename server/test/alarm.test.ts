@@ -39,10 +39,10 @@ test('alarm: relative eight hours is host-derived despite model skew', () => {
   assert.equal(parseAlarmTime('wake me in eight hours', now, tz, now + 3600000).status, 'ready');
 });
 
-test('alarm: a model time alone cannot manufacture an owner time request', () => {
-  assert.deepEqual(parseAlarmTime('tell me the weather', now, tz, now + 3600000), {
-    status: 'clarify', reason: 'missing_time',
-  });
+test('alarm: without an owner time the model epoch is the fallback', () => {
+  const parsed = parseAlarmTime('set an alarm', now, tz, now + 3600000);
+  assert.equal(parsed.status, 'ready');
+  if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, now + 3600000);
 });
 
 test('alarm: a resolved instant remains fixed when the system time zone changes', () => {

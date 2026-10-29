@@ -699,7 +699,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
         description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
-        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional consistency check only, UTC milliseconds.' } }, additionalProperties: false },
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
@@ -745,6 +745,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             }
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
+            if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
+              hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
+            }
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {
               const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;

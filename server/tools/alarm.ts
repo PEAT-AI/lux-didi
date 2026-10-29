@@ -73,7 +73,13 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
   } else {
     // Select the first temporal introducer and consume its entire remainder, never prefer a later "at".
     const start = /\b(?:at|for)\s+|\b(?:noon|midnight)\b/.exec(text);
-    if (!start) return { status: 'clarify', reason: 'missing_time' };
+    if (!start) {
+      if (modelAt !== undefined && Number.isFinite(modelAt) && modelAt > now) {
+        const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(modelAt);
+        return { status: 'ready', fireAtUtc: modelAt, tz, label, confirmation: `Alarm set for ${dateTime} (${tz}).` };
+      }
+      return { status: 'clarify', reason: 'missing_time' };
+    }
     const prefix = text.slice(0, start.index).replace(/^\s*snooze\b/, '')
       .replace(/\b(?:tomorrow|morning|evening|tonight|am|pm|in|the|for|please)\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -124,9 +130,6 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
     const actual = localParts(fireAtUtc, tz);
     const expectedMinute = ((minute + offset) % 60 + 60) % 60;
     if (actual[4] !== expectedMinute) return { status: 'refused', reason: 'invalid_time' };
-  }
-  if (modelAt !== undefined && (!Number.isFinite(modelAt) || Math.abs(modelAt - fireAtUtc) > 60000)) {
-    return { status: 'refused', reason: 'time_mismatch' };
   }
   const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(fireAtUtc);
   return { status: 'ready', fireAtUtc, tz, label, confirmation: `Alarm set for ${dateTime} (${tz}).` };

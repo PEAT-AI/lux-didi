@@ -2424,6 +2424,11 @@ test('SILENCE chain: third tool round forces the fourth response to answer', asy
     if (round < 3) opened.socket.deliver(delegated('response.created', { response: { id: `synthetic-round-${round}` } }));
   }
   assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  const before = opened.captured.events.filter(event => event.type === 'toolCall').length;
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-fourth', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.equal(opened.captured.events.filter(event => event.type === 'toolCall').length, before);
+  assert.ok(opened.socket.sent.some(frame => frame.includes('synthetic-fourth') && frame.includes('answer now')));
 });
 
 test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
@@ -2533,4 +2538,17 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
   await quiet();
   assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
+});
+
+for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects retries plain once then fails loudly`, async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  for (let i = 0; i < rejects; i++) {
+    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
+    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unknown_parameter', param: 'response', client_event_id: frame.event_id } });
+    await quiet();
+  }
+  assert.equal(creates(opened.socket).length, before + 1);
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), rejects === 2);
 });

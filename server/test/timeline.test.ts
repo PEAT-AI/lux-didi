@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { record } from '../trace/record.js';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
@@ -191,7 +191,7 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
 });
 
 test('#699: a stale server/dist is rebuilt before the read, and a failed build stops the CLI (#752)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'didi-timeline-build-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-build-')));
   try {
     const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
     const timelineModule = new URL('../trace/timeline.js', import.meta.url).href;

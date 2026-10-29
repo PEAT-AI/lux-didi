@@ -930,6 +930,14 @@ class Session implements LiveVoiceSession {
    * generating on real speech by itself (lux 90233) and queued audio plays out (ruling W1-R1).
    */
   private noteInput(): void {
+    // Reset on the first real owner fragment, not its quiet tail: a fast provider may start before that tail.
+    if (this.episodeQuiet === undefined) {
+      this.toolRounds = 0;
+      this.researchCalls = 0;
+      this.silentRescueUsed = false;
+      this.clearNoItemTimer();
+      this.continuationTiming = undefined;
+    }
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
     const token = this.episodeToken + 1, epoch = this.socket;
     this.episodeToken = token;
@@ -969,11 +977,6 @@ class Session implements LiveVoiceSession {
       return;
     }
     // Plain owner-end notices have no provider response id: currentResponse may belong to an old delegation.
-    this.toolRounds = 0;
-    this.researchCalls = 0;
-    this.silentRescueUsed = false;
-    this.clearNoItemTimer();
-    this.continuationTiming = undefined;
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }

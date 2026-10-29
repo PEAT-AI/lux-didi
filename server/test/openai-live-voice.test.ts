@@ -2486,4 +2486,9 @@ test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the 
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
   assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
 });

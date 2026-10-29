@@ -106,6 +106,7 @@ class HostLiveService implements LiveService {
     }
   }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }
+  providerReady(liveSessionId: string): boolean { return this.owner.providerReady(liveSessionId); }
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage {
     return this.owner.listFragments({ liveSessionId, ...(cursor === undefined ? {} : { cursor }), ...(limit === undefined ? {} : { limit }) });
   }

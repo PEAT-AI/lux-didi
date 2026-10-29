@@ -270,6 +270,7 @@ export class InstalledCanary {
     if (!this.live.providerReady?.(id)) {
       const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=${ask.expect.tool} code=provider_not_ready ms=${Math.max(0, this.now() - readyStarted)}`);
       lines.push(`CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0`);
+      this.shutdown();
       return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
     }
     let prior = new Set<string>();
@@ -324,7 +325,7 @@ export class InstalledCanary {
         return effect;
       },
       providerTurns: () => canarySessions.progress(id)?.turns ?? 0,
-      close: () => { clearTimeout(session.timer); session.abort.abort(); this.live.revoke(id); canarySessions.close(id); this.#session = undefined; },
+      close: () => this.shutdown(),
     };
     return runCanaryAsks(session.asks, port, session.abort.signal);
   }

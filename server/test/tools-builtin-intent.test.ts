@@ -180,7 +180,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
 
   // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
   const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-    id: string; finals: string[]; now?: number; clarifyAfter?: number[];
+    id: string; finals: string[]; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[];
     call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
   }[];
   const oldTZ = process.env.TZ;
@@ -197,6 +197,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
           owner.ownerRequests.answered?.(session.liveSessionId);
         }
       }
+      alarmNow += row.toolDelayMs ?? 0;
+      t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return row.nativeCode ?? 'opened'; });
       const { tool, ...raw } = row.call;
       const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
       if (tool === 'open_source') args.handle = handle;
@@ -224,7 +226,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       } else if (expected === 'opened') {
         assert.equal(urls.length - before, 1);
       } else {
-        assert.equal(urls.length - before, 0);
+        assert.equal(urls.length - before, row.nativeCode ? 1 : 0);
         assert.equal(typeof result.say, 'string', 'HON-2: the real refusal carries one spoken failure line');
         assert.doesNotMatch(String(result.say), /I'll try|sure|\n/i);
       }

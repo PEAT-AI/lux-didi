@@ -1549,5 +1549,248 @@
     "code": "ready",
     "fire_at_utc": 1793358600000,
     "clarifyAfter": []
+  },
+  {
+    "id": "GA-R4-124",
+    "finals": [
+      "Remind me in 20 minutes"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-125",
+    "finals": [
+      "in an hour"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-126",
+    "finals": [
+      "search the web for synthetic clocks"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-127",
+    "finals": [
+      "Remind me in 20 minutes."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-128",
+    "finals": [
+      "in an hour."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-129",
+    "finals": [
+      "search the web for synthetic clocks."
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-130",
+    "finals": [
+      "Remind me in 20 minutes!"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-131",
+    "finals": [
+      "in an hour!"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-132",
+    "finals": [
+      "search the web for synthetic clocks!"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-133",
+    "finals": [
+      "Remind me in 20 minutes?"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-134",
+    "finals": [
+      "in an hour?"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-135",
+    "finals": [
+      "search the web for synthetic clocks?"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-136",
+    "finals": [
+      "Remind me in 20 minutes..."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-137",
+    "finals": [
+      "in an hour..."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-138",
+    "finals": [
+      "search the web for synthetic clocks..."
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "turn-time-not-dispatch-time",
+    "finals": [
+      "put an alarm",
+      "in nine minutes"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340540000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000,
+    "toolDelayMs": 120000
+  },
+  {
+    "id": "native-failed",
+    "finals": [
+      "example.com please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "failed",
+    "fire_at_utc": null,
+    "nativeCode": "failed"
+  },
+  {
+    "id": "native-timeout",
+    "finals": [
+      "example.com please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "native_timeout",
+    "fire_at_utc": null,
+    "nativeCode": "native_timeout"
+  },
+  {
+    "id": "bad-scheme",
+    "finals": [
+      "that website please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "javascript:alert(1)"
+    },
+    "code": "not_allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "good-scheme",
+    "finals": [
+      "that website please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
   }
 ]

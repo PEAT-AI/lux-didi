@@ -7,7 +7,7 @@ import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
 
 const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-  id: string; now?: number; clarifyAfter?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
+  id: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
   code: string; fire_at_utc: number | null;
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
@@ -32,7 +32,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     const result = name === 'open_web'
       ? await resolveWebOpen(args as unknown as Parameters<typeof resolveWebOpen>[0], authorization.words ?? '', new AbortController().signal)
       : openTarget(name, args as Record<string, string>, authorization.words ?? '');
-    code = 'target' in result ? 'allowed' : result.code;
+    code = 'target' in result ? row.nativeCode ?? 'allowed' : result.code;
     endHandleSession(row.id);
   }
   assert.equal(code, row.code);

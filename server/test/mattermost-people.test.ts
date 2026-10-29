@@ -1,6 +1,10 @@
 // C-CHAT (W2b): Naya reads the team chat by person, direct message, group and channel. Every test runs
 // against the synthetic stdio child (fixtures/stdio-mattermost-people-child.mjs): no account, no network.
 import { test } from 'node:test';
+import { Store } from '../runtime/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { runToolCalls } from '../tools/declarations.js';
+import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,7 +67,7 @@ async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: '
   registry.approve({ endpointId: 'mattermost', schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   const reader = createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names: [...names, ...composedGrantedNames('mattermost', names)] } });
   const calls = (): Call[] => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Call) : [];
-  return { adapter, registry, reader, calls, published, names };
+  return { adapter, registry, reader, calls, published, names, dir, config, discovery };
 }
 
 function chatRead(result: MattermostResult): MattermostChatRead {
@@ -828,5 +832,47 @@ test('Mattermost declared child argument schemas match the recorded binary tools
     check(properties, recorded.inputSchema.properties);
     const drift = { ...properties, after: { type: 'string' } };
     assert.throws(() => check(drift, recorded.inputSchema.properties), /binary does not accept after/u);
+  }
+});
+
+// MM-3 / original 15:29-15:31 regression: one owner, one accepted host run, five executions.
+test('MM-3: channel topic, person topic, overview and two recency reads all publish in ONE host run', async t => {
+  const f = await setup(t, 'people');
+  installPeople(parsePeople({ version: 1, people: [{ id: 'person-a', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['person-a@example.invalid'], mattermost: 'ada.moss' }] }));
+  t.after(() => installPeople(null));
+  const store = new Store(join(f.dir, 'synthetic-host'), toolsMigrations);
+  t.after(() => store.close());
+  let live: LiveAuthority | null = null;
+  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
+  owner.applyConnection({
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+    endpoint: { ...f.config, credentialRef: null }, toolNames: f.names, schemaDigest: f.discovery.schemaDigest,
+    sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'voice', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
+  } as never);
+  assert.equal((await f.adapter.discover('mattermost')).state, 'discovered');
+  owner.projectConnection('mattermost');
+  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'chat-sequence', authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
+  const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
+  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+  const host = { ...live, grants: [...f.names, MATTERMOST_CHAT_TOOL].map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
+  const sequence = [
+    { intent: 'channel', channel: 'Builders', query: 'pilot' },
+    { intent: 'person', person: 'Ada', query: 'pilot' },
+    { intent: 'overview', person: 'Ada', channel: 'stale-channel', query: 'stale-topic' },
+    { intent: 'person', person: 'Ada', query: 'latest messages' },
+    { intent: 'person', person: 'Ada', query: 'recent messages' },
+  ];
+  for (const [step, args] of sequence.entries()) {
+    const batch = await runToolCalls(owner, [{ id: `chat-${step}`, name: MATTERMOST_CHAT_TOOL, args: { ...args, from_date: fixtureDaysAgo(7) } }], {
+      registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
+      control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+    });
+    assert.equal(batch.error, undefined, `step ${step}: ${JSON.stringify(batch.tools)}`);
+    assert.equal(batch.tools[0]?.status, 'completed', `step ${step}: ${JSON.stringify(batch.tools)}`);
+    assert.match(JSON.stringify(batch.responses), /pilot/iu, `step ${step} delivers actual post bodies`);
+    assert.doesNotMatch(JSON.stringify(batch.responses), /dispatch_reference_denied|no messages/iu);
   }
 });

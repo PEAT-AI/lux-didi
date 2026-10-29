@@ -68,7 +68,7 @@ export interface ConnectionIntent { expectedPolicySha256: string | null; policy:
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
 export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused' | 'unavailable'; reason: string };
 /** W6: the host decides a composed-note stage; the tool only asks, and the frozen payload is the host's own. */
-export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue;
+export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue | (() => Promise<JsonValue>);
 
 export interface ToolsOwner {
   readonly ownerRequests: OwnerRequests;

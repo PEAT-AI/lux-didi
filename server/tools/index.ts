@@ -656,13 +656,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return call as ToolCallIntent;
           };
           try {
-            const result = store.transaction(tx => {
+            let staged: ReturnType<NonNullable<typeof stageNote>> = { saved: false, code: 'not_enabled' };
+            store.transaction(tx => {
               const call = booked(tx);
               const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }), ['ordinary'], tx);
+              assertLiveIdentity(tx, call); target(snapshot, call, tx);
+              if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+              if (stageNote) staged = stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] });
             });
+            // Remote writes start only after the synchronous authorization transaction commits.
+            const response = typeof staged === 'function' ? await staged() : staged;
+            const result = store.transaction(tx => complete(booked(tx), response as JsonObject, ['ordinary'], tx));
             return { status: 'completed', result };
           } catch {
             // A stage that throws is a named refusal the model can speak, never an unknown write outcome.

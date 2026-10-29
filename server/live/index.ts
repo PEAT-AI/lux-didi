@@ -1,3 +1,4 @@
+import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -9,7 +10,7 @@ import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -2011,19 +2012,31 @@ export class LiveSessionOwner {
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
 
   /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
-  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
-    const gate = this.#noteRequests.get(liveSessionId);
-    const request = gate?.claim();
-    if (!request) return { staged: false, code: 'authorization_missing', guidance: 'It was not saved: a fresh owner save request is required.' };
-    const result = stageComposedNote(tx, liveSessionId, args,
-      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true, heldEvidence: gate?.heldEvidence ?? new Set() }, this.#now(), this.#composedNotes(), request, gate?.externalContextPresent === true);
-    if (result['staged'] === true) {
-      this.#noteSessions.add(liveSessionId);
-      this.#noteReadback.delete(liveSessionId);
-      this.#noteOnset.delete(liveSessionId);
-      this.#noteSpeech.set(liveSessionId, { stageId: String(result['stageId']), text: '', matched: false });
-    }
-    return result;
+  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject | (() => Promise<JsonObject>) {
+    void handle;
+    const requests = this.#tools?.owner.ownerRequests;
+    const target = sha256(canonicalJSON(args));
+    const request = requests?.authorize(liveSessionId, 'lux_note', target);
+    if (!request || request.code === 'no_owner_request' || request.code === 'request_expired' || request.code === 'grant_spent') return requestRefusal(request?.code ?? 'no_owner_request');
+    if (request.code === 'idempotent') return request.receipt as JsonObject;
+    const sources = requests!.sources(liveSessionId);
+    const external = Object.keys(sources).some(kind => ['mail', 'web', 'chat'].includes(kind));
+    const provenance = `Provenance: request ${request.id}; source counts ${JSON.stringify(sources)}; ${external ? 'contains external content' : 'owner conversation'}.`;
+    const body = `${args.body.trim()}\n\n${provenance}`;
+    const frozen = freezeNote({ title: args.title, body, externalContextPresent: true });
+    if (frozen.state !== 'frozen') return { saved: false, code: frozen.code };
+    const claim = authorizeComposedWrite(tx, { liveSessionId, stageId: request.id, content: body, title: args.title, now: this.#now(), externalContextPresent: external, payloadSha: frozen.payloadSha });
+    return async () => {
+      let receipt: VaultReceipt;
+      try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
+      catch { receipt = { saved: false, code: 'outcome_unknown' }; }
+      const response: JsonObject = receipt.saved && receipt.insightId
+        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved: ${args.title} (${receipt.insightId}).` }
+        : { saved: false, code: receipt.code ?? 'write_failed', say: 'The note was not saved.' };
+      if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response);
+      hostLogEvent({ event: 'lux_note_audit', ...requests!.audit(liveSessionId, 'lux_note'), refusalCode: response.saved ? 'none' : response.code });
+      return response;
+    };
   }
 
   /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
@@ -4808,6 +4821,12 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           if (event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalResult(event.calls.filter(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name)).map(call => `tool:${call.id}`));
+          for (const call of event.calls) {
+            if (call.name === 'research') {
+              const lookups = (call.args as { lookups?: { source?: string }[] }).lookups ?? [];
+              for (const lookup of lookups) if (lookup.source) this.#tools?.owner.ownerRequests.source(handle.liveSessionId, lookup.source);
+            }
+          }
           exposeToolResults(responses);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.

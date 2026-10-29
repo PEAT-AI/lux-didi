@@ -1352,7 +1352,7 @@
     "fire_at_utc": null
   },
   {
-    "id": "OP-1-0",
+    "id": "OP-1",
     "finals": [
       " Open it in my",
       " browser"
@@ -1846,5 +1846,18 @@
       0,
       120000
     ]
+  },
+  {
+    "id": "HON-2",
+    "finals": [
+      "set an alarm at seven am"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793347200000
+    },
+    "code": "time_mismatch",
+    "fire_at_utc": null,
+    "expectedSay": "The alarm was not set because the requested time differs from yours."
   }
 ]

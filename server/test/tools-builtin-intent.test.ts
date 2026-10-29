@@ -180,7 +180,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
 
   // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
   const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-    id: string; finals: string[]; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
+    id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
     call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
   }[];
   const oldTZ = process.env.TZ;
@@ -216,6 +216,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
+      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
       const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
       if (expected === 'set') {

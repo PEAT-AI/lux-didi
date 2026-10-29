@@ -140,3 +140,15 @@ for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  to
     if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
   });
 }
+
+for (const words of [
+  'Well, okay, set an alarm for ten past six p.m. today',
+  'set an alarm for um ten past six p.m.',
+  'wake me up tomorrow at eight and give me a summary',
+  'remind me in nine minutes that I have to call the library',
+]) test(`hear104 time and label: ${words}`, () => {
+  const result = parseAlarmTime(words, now, tz);
+  assert.equal(result.status, 'ready');
+  if (words.includes('summary')) assert.equal('label' in result && result.label, 'give me a summary');
+  if (words.includes('library')) assert.equal('label' in result && result.label, 'I have to call the library');
+});

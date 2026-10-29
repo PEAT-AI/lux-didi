@@ -177,3 +177,49 @@ for (const [words, kinds] of [
     for (const kind of kinds) assert.equal(requests.authorize('s', kind, 'target').code, 'allowed', kind);
   });
 }
+
+for (const words of [
+  'open the deck and if I ask later then set an alarm for seven',
+  'open the deck if I say so',
+  ...['if', 'unless', 'when I', 'whenever', 'once I', 'in case', 'later', 'after I', 'before I', 'should I', 'would you', 'maybe', 'perhaps', 'suppose', 'WHEN  I']
+    .map(condition => `open the deck and ${condition} set an alarm for seven`),
+  "don't open the deck",
+  'never mind, no alarm',
+]) {
+  test(`R8 conditional or deferred final grants nothing for any kind: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+  });
+}
+for (const [words, kind] of [
+  ['Naya open the deck', 'open'],
+  ['set an alarm for seven thirty tomorrow', 'set_alarm'],
+] as const) {
+  test(`R8 keeps unconditional direct asks: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    assert.equal(requests.authorize('s', kind, 'target').code, 'allowed');
+  });
+}
+
+for (const words of [
+  "don't open the deck", 'never mind, no alarm', 'do not save this',
+  ...["don't", 'do not', 'dont', 'never', 'not', 'never mind', 'no need to', 'forget it']
+    .map(negation => `open the deck and ${negation} save this into Lux`),
+]) {
+  test(`R9 negation revokes every unspent grant: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'old', 'open the deck and set an alarm for seven and cancel my alarm and snooze my alarm and show my alarms and save this into Lux');
+    for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code, 'allowed', `setup ${kind}`);
+    requests.observe('s', 'new', words);
+    for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+  });
+}
+for (const words of ['cancel the alarm', 'stop the alarm']) {
+  test(`R9 cancellation is an action rather than negation: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    assert.equal(requests.authorize('s', 'cancel_alarm', 'target').code, 'allowed');
+  });
+}

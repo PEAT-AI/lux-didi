@@ -36,19 +36,22 @@ export class OwnerRequests implements OwnerRequestPort {
     if (previous?.journalId === journalId) return;
     // Closed imperative grammar, not a growing blacklist of reported-speech subjects.
     const prefix = /^(?:(?:naya|please|can you|could you|would you|i want you to|go ahead and|and|then|also)\b[\s,]*)+/i;
-    const imperative = /^(?:open|show|pull up|set|wake|cancel|snooze|save|remember|put|note|write)\b/i;
+    const imperative = /^(?:open|show|pull up|set|wake|cancel|stop|snooze|save|remember|put|note|write)\b/i;
     const command = words.trim().replace(prefix, '');
     const clauses = command.split(/\b(?:and then|and|then|also)\b|[;!]|\.(?=\s|$)/i)
       .map(clause => clause.trim().replace(prefix, '')).filter(Boolean);
     const lastCue = Math.max(0, ...clauses.filter(clause => imperative.test(clause)).map(clause => words.lastIndexOf(clause)));
-    const direct = !/[\p{Quotation_Mark}`:]/u.test(words)
+    // A conditional, deferral or negation vetoes the whole final, not just its own clause.
+    const direct = !/\b(?:if|unless|whenever|later|maybe|perhaps|suppose)\b|\b(?:when|once|after|before|should)\s+i\b|\bin\s+case\b|\bwould\s+you\b/i.test(words)
+      && !/\b(?:don['’]?t|do\s+not|never|not|no\s+need\s+to|forget\s+it)\b/i.test(words)
+      && !/[\p{Quotation_Mark}`:]/u.test(words)
       && !/\b(?:said|says|told|tells|asked|wrote|writes|reads|the note|the instructions|the email|the message|the text)\b/i.test(words.slice(0, lastCue));
     const grants = new Map<ActionKind, Grant>();
     if (direct && imperative.test(command)) {
       const cues: [ActionKind, RegExp][] = [
         ['open', /^(?:open|show|pull up)\b/i],
         ['set_alarm', /^wake me\b|^set\b[^.!?]*\balarm\b/i],
-        ['cancel_alarm', /^cancel\b[^.!?]*\balarm\b/i],
+        ['cancel_alarm', /^(?:cancel|stop)\b[^.!?]*\balarm\b/i],
         ['snooze_alarm', /^snooze\b/i],
         ['list_alarms', /^show\b[^.!?]*\balarms?\b/i],
         ['lux_note', /^(?:save|remember|note|write)\b|^put\b[^.!?]*\blux\b/i],

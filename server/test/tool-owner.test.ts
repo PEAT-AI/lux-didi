@@ -708,13 +708,11 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   try {
     await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
   } finally { detach(); }
-  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
-  // ROUTE-R2: get_insight serves ids, id and include_links only (server/connectors/index.ts,
-  // normalizeGetInsightArgs, X2 1373de8a), and its diagnostic field list was set with no limit by
-  // 31cc08d5. An argument the tool does not declare is reported as an unknown-typed field, which is the
-  // intended redaction: the name never reaches the log.
-  assert.deepEqual(event.fields, ['ids:array', 'unknown:number']);
+  // D102-R2: key names and the validator reason code are diagnostic metadata, never values.
+  assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
+  assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 

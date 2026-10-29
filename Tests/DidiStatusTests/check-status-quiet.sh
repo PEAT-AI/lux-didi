@@ -24,7 +24,9 @@ poll = app.split("    func refreshLiveCalls() async {", 1)[1].split("    func re
 assert "notifications.capability()" not in poll, "poll must use cached notification capability"
 assert "notificationStatus.canSchedule" in poll, "delivery must still honor cached capability"
 assert "func applicationDidBecomeActive" in app
-assert app.count("await model.refreshNotificationCapability()") == 2, "launch and activation only"
+assert app.count("await model.refreshNotificationCapability(for: .launch)") == 1
+assert app.count("await model.refreshNotificationCapability(for: .didBecomeActive)") == 1
+assert "await refreshNotificationCapability(for: .poll)" in poll
 assert "quietStatusItem.update(" in app
 orb = Path("Sources/LuxDidi/NativeMiniOrb.swift").read_text()
 assert "StatusQuiet.publish(current: ignoresMouseEvents, next: next)" in orb

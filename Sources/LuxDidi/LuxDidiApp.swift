@@ -160,7 +160,13 @@ import WebKit
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
     func refresh() async { voice.refresh() }
-    func refreshNotificationCapability() async { notificationStatus = await notifications.capability() }
+    private lazy var notificationCapability = NativeNotificationCapabilityState(source: { [notifications] in
+        await notifications.capability()
+    })
+    func refreshNotificationCapability(for event: NativeNotificationCapabilityState.Event) async {
+        let next = await notificationCapability.refresh(for: event)
+        StatusQuiet.publish(current: notificationStatus, next: next) { notificationStatus = $0 }
+    }
     func reconnect() async {
         guard !connecting else { return }
         connecting = true; defer { connecting = false }
@@ -267,6 +273,7 @@ import WebKit
     func refreshLiveCalls() async {
         guard !checkingLiveCalls, let client else { return }
         checkingLiveCalls = true; defer { checkingLiveCalls = false }
+        await refreshNotificationCapability(for: .poll)
         do {
             let http = NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder())
             let jobs = try await http.pendingCalls().filter(\.isReady)
@@ -288,7 +295,7 @@ import WebKit
     }
     func requestNotificationPermission() async {
         _ = await notifications.requestPermission()
-        notificationStatus = await notifications.capability()
+        await refreshNotificationCapability(for: .permissionChanged)
         await refreshLiveCalls()
     }
     func pickUpLiveCall(_ jobID: String? = nil) {
@@ -740,7 +747,7 @@ struct RootView: View {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        Task { await model.refreshNotificationCapability() }
+        Task { await model.refreshNotificationCapability(for: .didBecomeActive) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -892,7 +899,7 @@ struct RootView: View {
         Task {
             if launchKind.presentsOrbAtLaunch { _ = coordinator.presentMini(trigger: .other) }
             if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
-            await model.refreshNotificationCapability()
+            await model.refreshNotificationCapability(for: .launch)
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])

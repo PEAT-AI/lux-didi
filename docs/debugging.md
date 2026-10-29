@@ -136,3 +136,11 @@ Old JSONL debug journals can contain private content. Current metadata readers a
 ## Verification after diagnosis
 
 Reproduce the defect with a targeted synthetic fixture or concrete authorized observation, then fix the owning layer. [Checks](checks.md) names the existing producers; [local development](local-development.md) explains managed routing and browser/compile prerequisites. Real-account probes, audio hardware checks and installed-app lifecycle work require separate authorization and cannot be inferred from an offline green suite.
+
+## Direct asks, safe receipts and calendar validation
+
+Opens, alarms and Lux notes share one per-ToolsOwner owner-request state, fed only by finalized microphone words. A direct ask survives a model preamble. There is no confirmation or 1500 ms grace path. Partial input waits for a final event, a short clarification cannot extend the original monotonic lifetime, and an independent owner ask supersedes the old verbs.
+
+`open_audit`, `alarm_audit` and `lux_note_audit` contain closed request/result/parse codes, counts and age/state flags only. They must not contain owner text, URLs, titles, spoken time expressions or note bodies. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are host decisions. Do not convert them into instructions to repeat a complete ask or use another device. A same-target retry returns the actual cached receipt, not a new native or remote effect. Only `opened` or an actual saved title/id receipt supports a success claim.
+
+Research constructs calendar arguments from the tool registration's runtime inputSchema properties, including later pagination/deadline arguments. `diagnosticInputFields` is a safe-log projection, not the validator. `tool_arguments_rejected` exposes rejected key names/types and the validator reason `arguments_not_object` or `schema_validation_failed`, never values. No live provider schema was available to this implementation lane; use the next authorized live rejection to identify its cause rather than inferring it from masked historical values. A missing runtime schema is explicitly `calendar_schema_unavailable`.

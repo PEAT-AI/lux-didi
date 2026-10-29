@@ -46,7 +46,7 @@ Trello is a separate host gateway, not a read-only registry connector. `server/h
 - `TRELLO_WRITE_ACTIONS` includes card creation, update, notes, checklist, due, move/done, labels and archive.
 - `TRELLO_READ_IDENTITY` and `TRELLO_WRITE_IDENTITY` are the advertised gateway tools.
 
-Only the configured board is in scope. A list or card reference does not authorize a different board. Ambiguous names require clarification, not a guessed target. Card writes already granted for this surface do not require the composed-note readback flow. Board/list administration, member changes and permanent deletion are not implied.
+Only the configured board is in scope. A list or card reference does not authorize a different board. Ambiguous names require clarification, not a guessed target. Card writes already granted for this surface keep their existing board policy. Board/list administration, member changes and permanent deletion are not implied.
 
 A due date can support the owner's Trello notification workflow; it is not a promise that Naya can call back. Setup and browser consent belong in [mcp-configuration.md](mcp-configuration.md).
 

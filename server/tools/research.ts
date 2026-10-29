@@ -2986,7 +2986,7 @@ const COUNT_WINDOWS = 'today, yesterday, last N days, this or last week, this or
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
   not_connected: label => `${label} is not connected`,
   not_configured: label => `${label} is not set up`,
-  grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
+  grant_missing: label => `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
@@ -3132,7 +3132,6 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
 function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   if (run.cutShort.has(source)) return 'timed_out';
   const code = run.unavailableReasons.get(source);
-  if (source === 'chat' && code === 'owner-approval-required') return 'grant_missing';
   // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
   if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
   // C-CLAIMS9 outcome 3: a source the host or the connector reports as unconnected was never served, so it

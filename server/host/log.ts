@@ -351,17 +351,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.refusalCode !== 'string' || !/^[a-z_]{1,64}$/.test(value.refusalCode)) return;
     return { event: value.event, ownerFinals: value.ownerFinals, requestAgeMs: value.requestAgeMs, grantKind: value.grantKind, grantState: value.grantState, refusalCode: value.refusalCode };
   }
-  if (value.event === 'open_audit') {
-    // C-POLISH10: what one open call was asked to open, as closed classes and counts: no words, no handle, no URL.
-    if (!closedKeys(value, ['bound', 'destination', 'event', 'kind', 'refusal', 'tool', 'words'])) return;
-    if (typeof value.tool !== 'string' || !OPEN_TOOL_NAMES.has(value.tool)) return;
-    if (!['maps', 'search', 'site', 'source', 'home', 'file', 'app'].includes(String(value.kind))) return;
-    if (!isSafeCount(value.words) || Number(value.words) > 64) return;
-    if (value.bound !== 'yes' && value.bound !== 'no') return;
-    if (!['maps', 'search', 'site-root', 'handle', 'file', 'app'].includes(String(value.destination))) return;
-    if (!isSafeMember(value.refusal, OPEN_RECEIPT_CODES) && value.refusal !== 'none') return;
-    return { event: 'open_audit', tool: value.tool, kind: value.kind, words: value.words, bound: value.bound, destination: value.destination, refusal: value.refusal };
-  }
+
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
     const allowed = ['action', 'code', 'detail', 'event'];

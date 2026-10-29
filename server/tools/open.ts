@@ -1,3 +1,4 @@
+import type { OwnerRequestPort } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
 import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
@@ -87,20 +88,9 @@ export function openDestinationClass(tool: OpenFamilyTool): OpenDestinationClass
   return 'handle';
 }
 
-/**
- * C-POLISH10: the one audit line an open call writes. It counts the target's words and says whether his own words
- * bound it, which destination class it resolved to, and the closed code it ended in: never the words, the handle or
- * the URL, because an open target is the owner's speech.
- */
-export function openAudit(input: { tool: string; kind: OpenAuditKind; target?: string | undefined; ownerWords?: string | undefined; destination: OpenDestinationClass; code: OpenReceiptCode }): void {
-  const target = input.target ?? '';
-  hostLogEvent({
-    event: 'open_audit', tool: input.tool, kind: input.kind,
-    words: target === '' ? 0 : webWords(target).length,
-    bound: target !== '' && input.ownerWords !== undefined && webBinding(target, input.ownerWords) ? 'yes' : 'no',
-    destination: input.destination,
-    refusal: input.code === 'opened' ? 'none' : input.code,
-  });
+/** Request audit metadata only: never target text, handles, URLs or owner words. */
+export function openAudit(input: ReturnType<OwnerRequestPort['audit']> & { refusalCode: string }): void {
+  hostLogEvent({ event: 'open_audit', ...input });
 }
 
 /** What a home app is called in plain words, so the open result can name it back to the owner. */

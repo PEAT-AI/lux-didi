@@ -24,7 +24,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit, openDestinationClass, ownerTurnWords, type OpenAuditKind, type OpenFamilyTool } from './open.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -789,7 +789,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
             if (!eligible) dispatched = undefined;
           }
-          if (authorization.code === 'allowed' && code !== 'opened') ownerRequests.failed(runId, 'open', requestTarget, authorization.id);
+          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
+            : !eligible ? requestRefusal(authorization.code)
+            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
+            : { code, say: 'The host could not confirm that the target opened.' };
+          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
           // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
           // model is told the reason the call was refused.
           const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : authorization.code === 'idempotent' ? 'opened' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
@@ -797,14 +802,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
           // refused handle is traceable without ever logging the handle or his words.
-          openAudit({
-            tool: openTool.name, kind: openTool.name.slice('open_'.length) as OpenAuditKind,
-            target: String(args[openTool.parameter] ?? ''), ownerWords: ownerWords(context.runId), destination: openDestinationClass(openTool.name as OpenFamilyTool), code,
-          });
+
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
-          hostLogEvent({ event: 'open_audit', ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? 'none') : authorization.code });
+          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
           if (code === 'opened' && dispatched) {
-            ownerRequests.commit(runId, 'open', requestTarget, { code: 'opened', kind: dispatched.kind, title: dispatched.title }, authorization.id);
             noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           }
           if (context.signal.aborted) return { status: 'failed' as const };
@@ -817,8 +818,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
-            return complete(call as ToolCallIntent, authorization.code === 'idempotent' ? authorization.receipt as JsonObject : !eligible ? requestRefusal(authorization.code) : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused } : opened ?? { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, payload, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },
@@ -849,23 +849,19 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           else nativeActionReceipt('open_url', code, 'web');
           // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
           // bound it and the class it resolved to, never the words or the address.
-          openAudit({
-            tool: OPEN_WEB_NAME, kind: args.kind, target: args.target, ownerWords: ownerTurnWords(context.runId),
-            destination: args.kind === 'maps' ? 'maps' : args.kind === 'search' ? 'search' : 'site-root', code,
-          });
-          hostLogEvent({ event: 'open_audit', ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? 'none') : authorization.code });
+
+          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
           if (code === 'opened' && dispatched) {
-            ownerRequests.commit(runId, 'open', requestTarget, { code: 'opened', kind: dispatched.kind, title: dispatched.title }, authorization.id);
             noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           }
-          if (authorization.code === 'allowed' && code === 'native_timeout') ownerRequests.commit(runId, 'open', requestTarget, { code }, authorization.id);
-          if (authorization.code === 'allowed' && code !== 'opened' && code !== 'native_timeout') ownerRequests.failed(runId, 'open', requestTarget, authorization.id);
           // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
           // case carries the domains so she asks which one he means.
-          const found = 'candidates' in resolved ? resolved.candidates : undefined;
-          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject : !eligible ? requestRefusal(authorization.code) : code === 'opened' && dispatched
-            ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
-            : { ...openWebFailure(refused ?? code), ...(found === undefined ? {} : { candidates: found }) };
+          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
+            : !eligible ? requestRefusal(authorization.code)
+            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
+            : { code, say: 'The host could not confirm that the target opened.' };
+          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');

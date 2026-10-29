@@ -4741,8 +4741,10 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
-      if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);
+      if (event.type === 'inputTranscription' && !event.finished && text) {
+        noteOwnerPartial(handle.liveSessionId, text);
         if (transcription?.finalOrigin !== 'typed') this.#tools?.owner.ownerRequests.partial(handle.liveSessionId);
+      }
       const mono = hostMonotonicMs();
       tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
         [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,

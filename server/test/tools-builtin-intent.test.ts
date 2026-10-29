@@ -131,6 +131,30 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   }
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;
+  // A5: three owner asks share one unfinished answer, but not an open receipt.
+  owner.ownerRequests.answered(session.liveSessionId);
+  const urls: unknown[] = [];
+  t.mock.method(nativeActions, 'dispatch', async (_run, _action, target) => { urls.push(target); return 'opened' as const; });
+  const cases = [
+    { kind: 'site', target: 'plantix dot net', words: ['but can you open', 'plantix dot net in my browser'], url: 'https://plantix.net/' },
+    { kind: 'maps', target: 'Odemira', words: ['open the map of Odemira'], url: 'https://www.google.com/maps/search/?api=1&query=Odemira' },
+    { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip%20irrigation' },
+  ];
+  for (const entry of cases) {
+    for (const words of entry.words) owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
+    const args = { kind: entry.kind, target: entry.target };
+    const execute = async () => {
+      const intent = { ...authority, toolCallId: randomUUID(), tool: web.name, effect: 'read' as const,
+        argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: web.accountId, resourceId: web.resourceId };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      return web.execute(args, { ...intent, signal });
+    };
+    const first = await execute();
+    assert.equal(JSON.stringify(first).includes('"code":"opened"'), true, entry.kind);
+    assert.equal(urls.at(-1), entry.url, entry.kind);
+    assert.deepEqual(await execute(), first, 'same target returns its own receipt');
+  }
+  assert.deepEqual(urls, cases.map(entry => entry.url), 'one native action per distinct target');
   const events: unknown[] = [];
   const detach = attachHostLogSink({ event: event => events.push(event) });
   t.after(detach);

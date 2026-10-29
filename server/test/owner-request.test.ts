@@ -223,3 +223,23 @@ for (const words of ['cancel the alarm', 'stop the alarm']) {
     assert.equal(requests.authorize('s', 'cancel_alarm', 'target').code, 'allowed');
   });
 }
+
+for (const [words, kind] of [
+  ['Great, okay, like set an alarm in nine minutes', 'set_alarm'],
+  ['Well, okay, could you open the', 'open'],
+  ['remind me in nine minutes to call the library', 'set_alarm'],
+] as const) {
+  test(`hear104 owner cue: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j1', words);
+    assert.equal(requests.authorize('s', kind, 'target').code, 'allowed');
+  });
+}
+test('hear104 split finals retain the complete ask', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'Okay, can you open the');
+  requests.observe('s', 'j2', 'example.com in my browser');
+  const ask = requests.authorize('s', 'open', 'example.com');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /example.com/);
+});

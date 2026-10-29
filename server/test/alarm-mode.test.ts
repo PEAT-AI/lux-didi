@@ -45,3 +45,9 @@ test('alarm guidance names all four tools and states the sleep and closed-lid li
 test('alarm tools name their runtime capability group', () => {
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.deepEqual(toolGroupNames([name]), ['alarms']);
 });
+
+test('alarm wake instruction says the reminder and requests an overview when asked', () => {
+  const input = { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'call the bank' };
+  assert.match(alarmSessionInstructions(input), /call the bank/);
+  assert.match(alarmSessionInstructions({ ...input, label: 'give me an overview' }), /calendar digest/);
+});

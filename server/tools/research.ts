@@ -7190,7 +7190,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   const { lines, rest } = fitUnits(pagedEnvelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   if (rest.length === 0) return page;
-  return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, pagedEnvelope, rest), pagesRemaining: pagesLeft(rest) };
+  return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
 }
 
 /**

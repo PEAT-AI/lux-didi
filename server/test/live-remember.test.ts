@@ -211,114 +211,6 @@ async function call(h: Harness, name: string, args: Record<string, unknown> = {}
   await until(() => result().length === 1);
   return result()[0]!.response;
 }
-function playback(attachment: Awaited<ReturnType<typeof attached>>['attachment'], receipt: string, seq: number, now: number, segment = 1): void {
-  attachment.playbackReceipt(JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: segment,
-    source_instance_id: 'synthetic-playback', source_seq: seq, mono_ms: 900 + seq, wall_ms: now }));
-}
-const candidate = { title: 'Synthetic plan', body: `The team chose the blue plan. Supporting detail.
-
-The budget is twelve units. Final detail.`, evidenceRefs: [] };
-async function stagedHost(t: TestContext, unavailable = false, crashAfterInsert = false) {
-  const clock = new RememberClock();
-  const h = await harness(t, { tools: true, scheduler: clock, vaultUnavailable: unavailable, crashAfterInsert });
-  const attachedSession = await attached(h);
-  for (const [owner, assistant] of [['Compare the plans', 'The blue plan fits.'], ['Explain the cost', 'It costs twelve units.'], ['What is the conclusion', 'The blue plan is the recommendation.']]) {
-    await ownerBlock(h, owner!); await assistantBlock(h, assistant!);
-  }
-  await ownerBlock(h, 'save all');
-  await ownerBlock(h, 'of this in great detail');
-  const result = await call(h, 'stage_lux_note', candidate);
-  assert.equal(result['staged'], true, JSON.stringify(result));
-  return { h, clock, ...attachedSession, result };
-}
-
-for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarmed', 'early', 'unavailable', 'read_all', 'crash'] as const) {
-  test(`C-LUXSAVE11 host: delayed synthesis, tool-output readback and ${confirmation}`, async t => {
-    const { h, clock, attachment, session, result } = await stagedHost(t, confirmation === 'unavailable', confirmation === 'crash');
-    assert.equal(h.requests[0]!.tools?.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false);
-    assert.equal(h.requests[0]!.tools?.some(tool => tool.name === 'stage_lux_note'), true);
-    const readback = String(result['readBack']);
-    assert.ok(readback.includes('The budget is twelve units.'));
-    assert.ok(String(result['instruction']).includes('verbatim'));
-    const frames = h.f.frames as Record<string, unknown>[];
-    assert.ok(frames.some(frame => (frame['toolResponse'] as { functionResponses?: { response: Record<string, unknown> }[] } | undefined)?.functionResponses?.some(entry => entry.response['readBack'] === readback)), 'host readback reaches the model inside the tool output');
-    assert.equal(frames.some(frame => JSON.stringify(frame['clientContent'] ?? {}).includes('The budget is twelve units.')), false, 'readback never rides a user frame');
-    if (confirmation === 'yes') {
-      // Feed this actual host-produced result through the other provider's real wire adapter.
-      const declaration = h.requests[0]!.tools!.find(tool => tool.name === 'stage_lux_note')!;
-      const other = await openAiReady(t, {}, { tools: [declaration] });
-      other.f.send({ type: 'session.delegation.created', delegation: { id: 'synthetic-delegation', response_id: 'synthetic-response', offset_ms: 0 } });
-      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.created', response: { id: 'synthetic-call-response' } } });
-      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'synthetic-stage', name: 'stage_lux_note', arguments: JSON.stringify(candidate) } } });
-      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.done', response: { id: 'synthetic-call-response' } } });
-      await until(() => other.captured.events.some(event => event.type === 'toolCall'));
-      other.session.sendToolResponse({ responses: [{ id: 'synthetic-stage', name: 'stage_lux_note', response: result as import('../adapters/model/types.js').JsonObject }] });
-      await until(() => other.f.frames.some(frame => (frame['item'] as { type?: string } | undefined)?.type === 'function_call_output'));
-      const output = other.f.frames.find(frame => (frame['item'] as { type?: string } | undefined)?.type === 'function_call_output')!;
-      const item = output['item'] as { output: string; call_id: string };
-      assert.equal(item.call_id, 'synthetic-stage');
-      assert.equal(JSON.parse(item.output).readBack, readback);
-      assert.ok(JSON.parse(item.output).instruction.includes('verbatim'));
-      assert.equal(other.f.frames.some(frame => {
-        const message = frame['item'] as { role?: string; content?: { text?: string }[] } | undefined;
-        return message?.role === 'user' && message.content?.some(part => part.text?.includes('The budget is twelve units.'));
-      }), false, 'OpenAI readback is never a user item');
-    }
-
-    h.advance(100); clock.advance(100);
-    if (confirmation === 'early') await ownerBlock(h, 'yes', false);
-    if (confirmation !== 'unarmed') {
-      await assistantBlock(h, confirmation === 'wrong_readback' ? 'Would you like to discuss a different question?' : readback);
-      playback(attachment, 'received', 1, NOW + 100);
-      playback(attachment, 'started', 2, NOW + 100);
-      h.advance(100); clock.advance(100);
-      playback(attachment, 'drained', 3, NOW + 200);
-      if (['yes', 'split', 'unavailable', 'read_all', 'crash'].includes(confirmation)) {
-        const armed = h.store.transaction(tx => tx.get('SELECT state,code,staged_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
-        const seen = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('outputTranscription','turnComplete') ORDER BY journal_id", [session.liveSessionId]));
-        assert.equal(armed?.['state'], 'armed', JSON.stringify({ armed, seen, trace: h.trace }));
-      }
-    }
-    if (confirmation === 'read_all') {
-      await ownerBlock(h, 'read it all');
-      await assistantBlock(h, `${candidate.title}\n${candidate.body}`);
-      h.advance(100); clock.advance(100);
-      playback(attachment, 'received', 4, NOW + 300, 2);
-      playback(attachment, 'started', 5, NOW + 300, 2);
-      playback(attachment, 'drained', 6, NOW + 300, 2);
-    }
-    await ownerBlock(h, confirmation === 'early' ? '' : 'yes');
-    if (confirmation === 'split' || confirmation === 'split_no') {
-      await ownerBlock(h, 'save it');
-      if (confirmation === 'split_no') await ownerBlock(h, 'no');
-    }
-    h.advance(2_000); clock.advance(2_000); await drain();
-    const expected = ['yes', 'split', 'unavailable', 'read_all', 'crash'].includes(confirmation) ? 1 : 0;
-    const state = h.store.transaction(tx => tx.all('SELECT state,code,armed_at,confirmation_text,settle_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
-    assert.equal(h.saved.length, expected, JSON.stringify({ saved: h.saved, state }));
-    if (expected) assert.equal(h.saved[0]!.content, candidate.body);
-    const rows = h.store.transaction(tx => tx.all('SELECT * FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
-    assert.equal(rows.length, 1);
-    if (confirmation === 'wrong_readback') assert.equal(rows[0]!['code'], 'readback_mismatch');
-    if (confirmation === 'early') assert.equal(rows[0]!['code'], 'speech_before_readback_end');
-    assert.equal(h.store.transaction(tx => tx.all('SELECT * FROM entries')).length, 0, 'no local memory fallback');
-    if (expected) await until(() => JSON.stringify(h.f.frames).includes(confirmation === 'unavailable' ? 'vault_unavailable' : confirmation === 'crash' ? 'outcome_unknown' : 'synthetic-81'));
-    const spokenInstructions = JSON.stringify(h.f.frames);
-    if (confirmation === 'unavailable') {
-      assert.ok(spokenInstructions.includes('vault_unavailable'));
-      assert.ok(!spokenInstructions.includes('Saved \\"Synthetic plan'));
-    } else if (confirmation === 'crash') {
-      assert.ok(spokenInstructions.includes('outcome_unknown'));
-      await ownerBlock(h, 'yes'); h.advance(2_000); clock.advance(2_000); await drain();
-      assert.equal(h.saved.length, 1, 'a retry after an uncertain commit cannot dispatch a second insert');
-    } else if (expected) {
-      assert.ok(spokenInstructions.includes('synthetic-81'));
-      assert.ok(spokenInstructions.includes('Synthetic plan'));
-    }
-    attachment.close();
-  });
-}
-
 test('C-LUXSAVE11 host: legacy live calls are absent and fail closed even with valid owner words', async t => {
   const h = await harness(t, { tools: true });
   const { attachment } = await attached(h);
@@ -363,59 +255,69 @@ test(`C-LUXSAVE11 F1: legacy ${kind} remains readable without teardown export (c
 }
 
 
-for (const order of ['read_then_save', 'read_then_save_tool', 'save_then_read'] as const) {
-  test(`C-LUXSAVE11 host: ${order} controls authority while external results always taint`, async t => {
-    const clock = new RememberClock();
-    const h = await harness(t, { tools: true, scheduler: clock });
-    const { session, attachment } = await attached(h);
-    await ownerBlock(h, order === 'save_then_read' ? 'save all of this' : 'find the synthetic record');
-    const heldToolRef = `tool:synthetic-call-${h.f.frames.length}-research`;
-    const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
-    assert.ok(external);
-    assert.ok(h.calls.some(call => call.name === 'search_knowledge'), `the external read actually executes: ${JSON.stringify(external)}`);
-    if (order !== 'save_then_read') { await assistantBlock(h, 'The synthetic record has twelve budget units.'); await ownerBlock(h, 'save all of this'); }
-    const journal = h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [session.liveSessionId]));
-    const result = await call(h, 'stage_lux_note', { ...candidate, evidenceRefs: order === 'read_then_save_tool' ? [heldToolRef] : [`journal:${journal!['id']}`] });
-    if (order === 'save_then_read') assert.equal(result['code'], 'authorization_missing');
-    else {
-      assert.equal(result['staged'], true, JSON.stringify(result));
-      assert.ok(String(result['readBack']).includes('Provenance: this note includes content from mail, web or chat read in that session.'));
-      assert.ok(String(result['body']).endsWith('Provenance: this note includes content from mail, web or chat read in that session.'));
-      const row = h.store.transaction(tx => tx.get('SELECT external_context_present FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
-      assert.equal(row?.['external_context_present'], 1, 'owner-only citations cannot clear host taint');
-      await assistantBlock(h, String(result['readBack']));
-      playback(attachment, 'received', 1, NOW);
-      playback(attachment, 'started', 2, NOW);
-      playback(attachment, 'drained', 3, NOW);
-      await ownerBlock(h, 'yes');
-      h.advance(2_000); clock.advance(2_000);
-      await until(() => h.saved.length === 1);
-      assert.equal(h.saved[0]!.content, result['body']);
-      const receipt = h.store.transaction(tx => tx.get('SELECT external_context_present,candidate_digest FROM vault_writes WHERE live_session_id=?', [session.liveSessionId]));
-      const digest = h.store.transaction(tx => tx.get('SELECT payload_sha256 FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
-      assert.equal(receipt?.['external_context_present'], 1);
-      assert.equal(receipt?.['candidate_digest'], digest?.['payload_sha256']);
+const candidate = { title: 'Synthetic plan', body: 'The team chose the blue plan. The budget is twelve units.', evidenceRefs: [] };
 
+for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
+  test(`direct102 real host: direct Lux save commits without yes, outcome ${outcome}`, async t => {
+    const h = await harness(t, { tools: true, vaultUnavailable: outcome === 'unavailable', crashAfterInsert: outcome === 'unknown' });
+    const { attachment } = await attached(h);
+    await ownerBlock(h, 'save a summary of this into Lux');
+    await assistantBlock(h, 'On it.');
+    const result = await call(h, 'stage_lux_note', candidate);
+    assert.equal(h.saved.length, 1, 'the real transport was called before any yes or readback');
+    assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
+    if (outcome === 'saved') {
+      assert.equal(result['insightId'], 'synthetic-81');
+      assert.match(String(result['say']), /Saved: Synthetic plan.*synthetic-81/);
+      assert.match(h.saved[0]!.content, /Provenance: request request-\d+; source counts/);
+      const retry = await call(h, 'stage_lux_note', candidate);
+      assert.equal(retry['insightId'], 'synthetic-81');
+      assert.equal(h.saved.length, 1, 'same candidate is idempotent');
+      const second = await call(h, 'stage_lux_note', { ...candidate, title: 'Different note' });
+      assert.equal(second['code'], 'grant_spent');
+    } else {
+      assert.equal(result['insightId'], undefined);
+      assert.doesNotMatch(String(result['say']), /Saved:/);
     }
-    assert.equal(h.saved.length, order !== 'save_then_read' ? 1 : 0);
+    await drain(); attachment.close();
+  });
+}
+
+for (const words of ['he said save this into Lux', 'if I say save this into Lux', 'what is in my calendar?']) {
+  test(`direct102 real host: non-save request cannot authorize a note: ${words}`, async t => {
+    const h = await harness(t, { tools: true });
+    const { attachment } = await attached(h);
+    await ownerBlock(h, words);
+    const result = await call(h, 'stage_lux_note', candidate);
+    assert.equal(result['code'], 'no_owner_request');
+    assert.equal(h.saved.length, 0);
     attachment.close();
   });
 }
 
-for (const shape of ['optional_evidence', 'body_limit', 'too_long'] as const) {
-  test(`C-LUXSAVE11 host: candidate boundary ${shape}`, async t => {
+for (const length of [4000, 4001]) {
+  test(`direct102 real host: note body boundary ${length}`, async t => {
     const h = await harness(t, { tools: true });
     const { attachment } = await attached(h);
-    await ownerBlock(h, 'save all of this');
-    const args = shape === 'optional_evidence' ? { title: 'Synthetic', body: 'Synthetic body.' }
-      : { title: 'Synthetic', body: 'x'.repeat(shape === 'body_limit' ? 4_000 : 4_001), evidenceRefs: [] };
-    const result = await call(h, 'stage_lux_note', args);
-    if (shape === 'too_long') {
-      assert.equal(result['staged'], false, JSON.stringify(result));
-      assert.equal(result['code'], 'too_long');
-      assert.ok(String(result['guidance']).includes('split'));
-    } else assert.equal(result['staged'], true, JSON.stringify(result));
-    assert.equal(h.saved.length, 0, 'staging is not a write');
+    await ownerBlock(h, 'save this into Lux');
+    const result = await call(h, 'stage_lux_note', { title: 'Synthetic', body: 'x'.repeat(length) });
+    assert.equal(result['saved'], length === 4000, JSON.stringify(result));
+    assert.equal(h.saved.length, length === 4000 ? 1 : 0);
+    attachment.close();
+  });
+}
+
+for (const order of ['read_then_save', 'save_then_read'] as const) {
+  test(`direct102 real host: source provenance follows this request: ${order}`, async t => {
+    const h = await harness(t, { tools: true });
+    const { attachment } = await attached(h);
+    await ownerBlock(h, order === 'save_then_read' ? 'save this into Lux' : 'find the synthetic record');
+    await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
+    assert.ok(h.calls.some(call => call.name === 'search_knowledge'));
+    if (order === 'read_then_save') await ownerBlock(h, 'save this into Lux');
+    const result = await call(h, 'stage_lux_note', candidate);
+    assert.equal(result['saved'], true, JSON.stringify(result));
+    assert.match(h.saved[0]!.content, order === 'save_then_read' ? /source counts \{"knowledge":1\}/ : /source counts \{\}/);
     attachment.close();
   });
 }

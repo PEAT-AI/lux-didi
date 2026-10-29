@@ -11,7 +11,7 @@ import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { beginStage, composedAsk, confirmAsk, stageComposedNote } from '../tools/lux-note.js';
+import { freezeNote } from '../tools/lux-note.js';
 import { VAULT_REMOTE_TOOL, VaultWriter, type VaultReceipt } from '../tools/vault-write.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { fakeLux } from './fixtures/fake-lux-vault.js';
@@ -109,38 +109,11 @@ test('research cannot reach a write: the lux-knowledge envelope is the two reads
   assert.ok(!(CONNECTOR_ENVELOPES['lux-knowledge'] ?? []).includes(VAULT_REMOTE_TOOL));
 });
 
-test('a note about the conversation needs the ask and then his fresh confirmation', () => {
-  assert.deepEqual(composedAsk('save a note about what we just discussed'), { decision: 'grant' });
-  const held = new Set(['journal:1']);
-  const stage = beginStage({ stageId: 'stage-1', sessionId: 'live-1', ownerText: 'save a note about what we just discussed',
-    title: 'Pontoon', body: NOTE, evidence: ['journal:1'], heldEvidence: held, enabled: true, now: NOW });
-  assert.equal(stage.state, 'staged', JSON.stringify(stage));
-  assert.equal(confirmAsk('yes, save it'), 'affirm');
-  assert.equal(confirmAsk('no, wait'), 'cancel');
-  // With the switch off, the same ask stages nothing: the owner feature flag is the first gate.
-  const off = beginStage({ stageId: 'stage-2', sessionId: 'live-1', ownerText: 'save a note about what we just discussed',
-    title: 'Pontoon', body: NOTE, evidence: ['journal:1'], heldEvidence: held, enabled: false, now: NOW });
-  assert.deepEqual(off, { state: 'refused', code: 'not_enabled' });
-});
-
-// W5 (C-LUX-SAVE-LANDS Q-05): the owner's ask arrived as two transcribed fragments. Nothing of the
-// request may become the note; after she answers, "store it" stages HER ANSWER through the composed
-// path, and the dictation ledger never holds the request's own words.
-test('the split ask stages the answer she just gave, never the request fragments', async t => {
-  const r = await replay(t);
-  await r.say('Can you, can you');
-  await r.say('store it in Lux Knowledge');
-  const answer = 'Rize is a materials research company: its platform automates formulation and testing of new polymer blends.';
-  const refs = r.store.transaction(tx => tx.all("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1", [r.sessionId])
-    .map(row => `journal:${Number(row['journal_id'])}`));
-  assert.equal(refs.length, 2, 'the two transcribed asks are one turn each');
-  const staged = r.store.transaction(tx => stageComposedNote(tx, r.sessionId,
-    { title: 'Rize materials research', body: answer, evidenceRefs: refs },
-    { inputAt: NOW, inputFinal: true }, NOW, true));
-  assert.equal(staged['staged'], true, `staged: ${JSON.stringify(staged)}`);
-  assert.equal(staged['body'], answer);
-  const rows = r.store.transaction(tx => tx.all('SELECT body,title FROM lux_note_stages'));
-  assert.deepEqual(rows.map(row => [row['title'], row['body']]), [['Rize materials research', answer]]);
-  const writes = r.store.transaction(tx => tx.all('SELECT content,title FROM vault_writes'));
-  assert.equal(writes.some(row => String(row['content']).includes('Can you') || String(row['title']).includes('Can you')), false);
+test('direct102: a model-composed summary freezes without adding the owner save command', () => {
+  const summary = 'Synthetic materials research: the blue plan costs twelve units.';
+  const frozen = freezeNote({ title: 'Synthetic summary', body: summary });
+  assert.equal(frozen.state, 'frozen');
+  if (frozen.state !== 'frozen') return;
+  assert.equal(JSON.parse(frozen.payload).content, summary);
+  assert.doesNotMatch(frozen.payload, /save me|Can you/);
 });

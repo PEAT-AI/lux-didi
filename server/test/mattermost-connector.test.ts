@@ -345,8 +345,8 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
 });
 
 // #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive, so
-// one chat read took tens of seconds. Every search this connector sends asks for keyword mode.
-test('#647: a search asks the child for keyword mode, never hybrid or semantic', async () => {
+// one chat read took tens of seconds. The first read must use keyword mode; C-CHAT permits one broader retry only after an empty read.
+test('#647: a search starts in keyword mode and broadens only once after an empty result', async () => {
   // The search schema the real mattermost-mcp child publishes, `mode` included (#647 re-read the child).
   const tools: ReturnType<McpPort['visibleTools']> = [{
     name: 'mattermost_search', description: 'Synthetic mattermost_search',
@@ -377,7 +377,9 @@ test('#647: a search asks the child for keyword mode, never hybrid or semantic',
   };
   registry.approve({ endpointId: 'mattermost', schemaDigest: digest, toolNames: ['mattermost_search'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   assert.equal((await reader(port, registry, digest).search({ query: 'release freeze' })).state, 'completed');
-  assert.deepEqual(sent.map(args => args['mode']), ['keyword'], 'the read never leaves the child free to embed the query');
+  assert.deepEqual(sent.map(args => args['mode']), ['keyword', 'hybrid'], 'only the empty initial read permits one broader retry');
+  assert.equal(sent[1]!['from_date'], sent[0]!['from_date'], 'the fallback retains its date window');
+  assert.equal(sent[1]!['query'], sent[0]!['query']);
   assert.equal(sent[0]!['query'], 'release freeze');
 });
 

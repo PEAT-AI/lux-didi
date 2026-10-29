@@ -430,7 +430,7 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
         person: { type: 'string', minLength: 1, maxLength: 80, description: 'The person as the owner said it: a first name, a full name or a username.' },
         people: { type: 'array', minItems: 2, maxItems: MATTERMOST_CHAT.maxPeople, items: { type: 'string', minLength: 1, maxLength: 80 } },
         channel: { type: 'string', minLength: 1, maxLength: 80, description: 'The channel name as the owner said it.' },
-        query: { type: 'string', minLength: 1, maxLength: 200, description: 'Topic words, only when the owner named a topic.' },
+        query: { type: 'string', minLength: 1, maxLength: 200, description: 'Topic words only when the current owner ask explicitly names a topic. Never carry query or channel from an earlier ask into a person or overview read; recency words are not topics.' },
         from_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'First local day of the window; the last 30 days by default.' },
         to_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
         sides: { type: 'string', enum: ['theirs', 'both'] },

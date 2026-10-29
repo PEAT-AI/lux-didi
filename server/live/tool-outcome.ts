@@ -21,7 +21,7 @@ export function toolOutcomeOf(response: Readonly<Record<string, unknown>>): Tool
   if (status !== undefined && !['answered', 'complete', 'completed', 'ok', 'success', 'scheduled', 'created', 'set', 'available'].includes(String(status))) return { outcome: 'unknown' };
   const collections = ['findings', 'messages', 'results', 'items', 'cards', 'posts'].filter(key => Array.isArray(response[key]));
   if (collections.length > 0 && collections.every(key => (response[key] as unknown[]).length === 0)) return { outcome: 'empty' };
-  const content = ['findings', 'result', 'entryId', 'alarmId', 'card', 'boards', 'lists', 'posts', 'answer', 'text', 'content', 'messages', 'results', 'items', 'cards', 'channels', 'note', 'alarm', 'id']
+  const content = ['findings', 'result', 'entryId', 'alarmId', 'card', 'boards', 'lists', 'posts', 'answer', 'text', 'content', 'messages', 'results', 'items', 'cards', 'channels', 'note', 'alarm']
     .some(key => {
       const value = response[key];
       return typeof value === 'string' ? value.trim().length > 0 : Array.isArray(value) ? value.length > 0 : value !== null && typeof value === 'object' && Object.keys(value).length > 0;

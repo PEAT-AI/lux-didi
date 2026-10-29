@@ -14,6 +14,7 @@ const cases = [
   [{ status: 'partial', answer: 'One synthetic result' }, 'partial', undefined],
   [{ status: 'answered', answer: 'Synthetic answer' }, 'completed', undefined],
   [{}, 'unknown', undefined],
+  [{ id: 'synthetic-id-only' }, 'unknown', undefined],
   [{ status: 'unrecognized', text: 'Not a known settlement' }, 'unknown', undefined],
   [{ status: 'complete', findings: [{ text: 'Synthetic research finding' }] }, 'completed', undefined],
   [{ status: 'complete', findings: [], note: 'No matches' }, 'empty', undefined],

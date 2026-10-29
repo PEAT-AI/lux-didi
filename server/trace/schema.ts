@@ -302,11 +302,7 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `DROP TABLE trace_call_result_keep`,
   ],
 }, {
-
-  // C-RESEARCH-CONTRACT T-04: `blocked` joins the call outcomes, so a call the admission refused is never
-  // recorded as one that answered. SQLite cannot alter a CHECK, so the call table and its one child (the result
-  // text) are rebuilt in dependency order. The child is dropped before the parent, and neither its rows nor the
-  // call rows are lost: the child's rows wait in a plain staging table until the new parent exists.
+  // Business outcomes and delivery metadata. Rebuild preserves calls and their result content.
   owner: 'trace',
   version: 9,
   statements: [
@@ -354,4 +350,4 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `INSERT INTO trace_call_result(call_key, text, text_truncated, content_pruned_at) SELECT call_key, text, text_truncated, content_pruned_at FROM trace_call_result_keep`,
     `DROP TABLE trace_call_result_keep`,
   ],
-} ];
+}];

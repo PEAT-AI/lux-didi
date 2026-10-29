@@ -12,7 +12,7 @@ test('alarm: an unqualified eight chooses the next future occurrence', () => {
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
 });
 
-test('alarm: wake me permits the morning default in the system IANA zone', () => {
+test('alarm: an unqualified wake request chooses the next occurrence in the system zone', () => {
   const result = parseAlarmTime('wake me at 8', now, tz);
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
@@ -51,13 +51,13 @@ test('alarm: a resolved instant remains fixed when the system time zone changes'
   const result = parseAlarmTime('wake me at 8', now, 'America/New_York');
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   const london = parseAlarmTime('wake me at 8', now, 'Europe/London');
   assert.equal(london.status, 'ready');
   if (london.status !== 'ready') return;
-  assert.equal(london.fireAtUtc, Date.parse('2026-10-29T08:00:00Z'));
+  assert.equal(london.fireAtUtc, Date.parse('2026-10-28T20:00:00Z'));
   assert.equal(london.tz, 'Europe/London');
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, 'America/New_York');
 });
 
@@ -101,4 +101,17 @@ test('direct102: an unknown spoken zone clarifies instead of falling back to the
 test('direct102: an unconsumed minute expression never silently schedules the hour', () => {
   const result = parseAlarmTime('set an alarm at eleven flibberty minutes in the morning', now, tz);
   assert.deepEqual(result, { status: 'clarify', reason: 'unsupported_time_expression' });
+});
+
+
+test('direct102 alarm: browser wording in a compound ask is not mistaken for a relative interval', () => {
+  const result = parseAlarmTime('open any deck in my browser and set an alarm in twenty minutes', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, now + 20 * 60000);
+});
+
+test('direct102 alarm: a clarified zone overrides the unrecognized earlier zone', () => {
+  const result = parseAlarmTime('set an alarm at eleven ten Atlantis time a.m. Singapore time', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T03:10:00Z'));
 });

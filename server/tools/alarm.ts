@@ -1,6 +1,6 @@
 type AlarmTime =
   | { status: 'ready'; fireAtUtc: number; tz: string; confirmation: string }
-  | { status: 'clarify'; reason: 'ambiguous_time' | 'missing_time' | 'missing_timezone' | 'unsupported_time_expression' }
+  | { status: 'clarify'; reason: 'missing_time' | 'missing_timezone' | 'unsupported_time_expression' }
   | { status: 'refused'; reason: 'time_mismatch' | 'invalid_time' };
 
 function localParts(instant: number, tz: string): number[] {
@@ -14,13 +14,14 @@ function localParts(instant: number, tz: string): number[] {
 /** Interpret owner words, never use a model argument to choose the instant. */
 export function parseAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
   let text = words.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
-  const zone = /\b(singapore time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/i.exec(text);
-  if (zone) {
-    const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC' };
-    tz = named[zone[0]] ?? zone[0];
-    text = text.slice(0, zone.index) + text.slice(zone.index + zone[0].length);
-  }
-  try { new Intl.DateTimeFormat('en', { timeZone: tz }).format(now); }
+  const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
+  const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
+  const zones = [...text.matchAll(zonePattern)];
+  const zone = zones.at(-1)?.[0];
+  const suffix = /\b([A-Z]{2,8})[.!?]?\s*$/.exec(words)?.[1];
+  if (zone) { tz = named[zone] ?? zone; text = text.replace(zonePattern, ' '); }
+  else if (suffix && !['AM', 'PM'].includes(suffix)) { tz = suffix; text = text.replace(new RegExp(`\\b${suffix.toLowerCase()}[.!?]?\\s*$`), ''); }
+  try { tz = new Intl.DateTimeFormat('en', { timeZone: tz }).resolvedOptions().timeZone; }
   catch { return { status: 'clarify', reason: 'missing_timezone' }; }
   const values: Record<string, number> = { zero: 0, oh: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50 };
   const number = (value: string): number => {
@@ -31,7 +32,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     return parts.reduce((sum, part) => sum + values[part]!, 0);
   };
   let fireAtUtc: number;
-  const relative = /\bin\s+([\w -]+?)\s+(minutes?|hours?)\b/.exec(text);
+  const relative = new RegExp(`\\bin\\s+((?:\\d+|${Object.keys(values).join('|')})(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?)\\s+(minutes?|hours?)\\b`).exec(text);
   if (relative) {
     const amount = number(relative[1]!);
     if (!Number.isFinite(amount)) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -45,7 +46,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     if (!start && !noon) return { status: 'clarify', reason: 'missing_time' };
     let expression = text.slice(start ? start.index + start[0].length : noon!.index).trim();
     const tomorrow = /\btomorrow\b/.test(text);
-    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(text) ? 'am'
+    const period = /\bam\b|\bmorning\b/.test(text) ? 'am'
       : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
     let hour: number;
@@ -99,35 +100,6 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
 export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;
 export type AlarmToolName = typeof ALARM_NAMES[number];
 export const ALARM_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'owner-alarms' } as const;
-interface OwnerAsk { journalId: string; words: string; at: number }
-/** Only the finalized microphone transcription branch may feed this authority window. */
-export class AlarmOwnerGate {
-  private turns = new Map<string, OwnerAsk[]>();
-  observeOwnerFinal(session: string, journalId: string, words: string, at: number): void {
-    const old = (this.turns.get(session) ?? []).filter(turn => at - turn.at <= 120000);
-    this.turns.set(session, [...old, { journalId, words: words.slice(0, 2000), at }].slice(-2));
-  }
-  authorize(session: string, operation: AlarmToolName, now: number): OwnerAsk | undefined {
-    const turns = this.turns.get(session) ?? [];
-    const last = turns.at(-1);
-    if (!last || now < last.at || now - last.at > 120000) return;
-    const words = turns.map(turn => turn.words).join(' ');
-    const pattern = operation === 'set_alarm' ? /\bwake me\b|\b(?:set|make|create)\b.*\balarm\b/i
-      : operation === 'cancel_alarm' ? /\b(?:cancel|delete|remove|stop)\b.*\balarm\b/i
-      : operation === 'snooze_alarm' ? /\bsnooze\b/i : /./;
-    if (!pattern.test(last.words)) {
-      const continuation = operation === 'cancel_alarm' ? /^(?:my|the|that|this)?\s*alarm\b/i
-        : /^(?:at|for|in|tomorrow|this|next|tonight|morning|evening|\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i;
-      if (!continuation.test(last.words.trim())) return;
-    }
-    return pattern.test(words) ? { ...last, words } : undefined;
-  }
-  consume(session: string, journalId: string): void {
-    if (this.turns.get(session)?.at(-1)?.journalId === journalId) this.turns.delete(session);
-  }
-  clear(session: string): void { this.turns.delete(session); }
-}
-
 export interface AlarmArguments { id?: string; fire_at_utc?: number }
 export function validateAlarmArguments(args: unknown): args is AlarmArguments {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;

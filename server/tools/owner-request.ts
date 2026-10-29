@@ -6,7 +6,9 @@ interface Request {
   grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
   sources: Record<string, number>;
 }
-export interface RequestAuthorization { code: RequestCode; id?: string; words?: string; journalId?: string; receipt?: unknown }
+export type RequestAuthorization =
+  | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string }
+  | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; receipt?: unknown };
 
 /** Per tools-owner state. Only finalized owner transcription may call observe. */
 export class OwnerRequests {

@@ -3,7 +3,6 @@ import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LO
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
-import { OPEN_RECEIPT_CODES, OPEN_TOOL_NAMES } from '../tools/open.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { ALARM_LOG_REASONS } from './events.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
@@ -205,6 +204,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
     return { event: 'host_ready_ms', ms: value.ms };
   }
+  if (value.event === 'alarm_scheduler_started') {
+    // #751: a count only. A label or a time here would be the owner's schedule in the diagnostic log.
+    if (!closedKeys(value, ['event', 'pending']) || !isSafeCount(value.pending)) return;
+    return { event: 'alarm_scheduler_started', pending: value.pending };
+  }
   if (value.event === 'alarm_set' || value.event === 'alarm_due' || value.event === 'alarm_ring_started'
     || value.event === 'alarm_acknowledged' || value.event === 'alarm_missed' || value.event === 'alarm_degraded') {
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)
@@ -343,17 +347,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
-  if (value.event === 'open_audit') {
-    // C-POLISH10: what one open call was asked to open, as closed classes and counts: no words, no handle, no URL.
-    if (!closedKeys(value, ['bound', 'destination', 'event', 'kind', 'refusal', 'tool', 'words'])) return;
-    if (typeof value.tool !== 'string' || !OPEN_TOOL_NAMES.has(value.tool)) return;
-    if (!['maps', 'search', 'site', 'source', 'home', 'file', 'app'].includes(String(value.kind))) return;
-    if (!isSafeCount(value.words) || Number(value.words) > 64) return;
-    if (value.bound !== 'yes' && value.bound !== 'no') return;
-    if (!['maps', 'search', 'site-root', 'handle', 'file', 'app'].includes(String(value.destination))) return;
-    if (!isSafeMember(value.refusal, OPEN_RECEIPT_CODES) && value.refusal !== 'none') return;
-    return { event: 'open_audit', tool: value.tool, kind: value.kind, words: value.words, bound: value.bound, destination: value.destination, refusal: value.refusal };
+  if (['open_audit', 'alarm_audit', 'lux_note_audit'].includes(String(value.event)) && 'grantKind' in value) {
+    if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;
+    if (!Number.isInteger(value.ownerFinals) || Number(value.ownerFinals) < 0 || !Number.isFinite(value.requestAgeMs) || Number(value.requestAgeMs) < 0) return;
+    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note'].includes(String(value.grantKind))) return;
+    if (!['absent', 'available', 'spent'].includes(String(value.grantState))) return;
+    if (typeof value.refusalCode !== 'string' || !/^[a-z_]{1,64}$/.test(value.refusalCode)) return;
+    return { event: value.event, ownerFinals: value.ownerFinals, requestAgeMs: value.requestAgeMs, grantKind: value.grantKind, grantState: value.grantState, refusalCode: value.refusalCode };
   }
+
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
     const allowed = ['action', 'code', 'detail', 'event'];
@@ -775,12 +777,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'tool_arguments_rejected') {
     // Closed shape: tool name and argument key:type paths only, never a value.
-    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)$/;
     if (!token(value.tool)) return;
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
-    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields };
+    if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
+    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields, reason: value.reason };
   }
   if (value.event === 'live_session_superseded') {
     // Closed shape: the superseded session id only, never any owner or transcript detail.

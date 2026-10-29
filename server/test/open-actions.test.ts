@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -112,8 +112,9 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
 
 test('an unknown handle is not_found with the sentence she says aloud', () => {
   assert.deepEqual(openTarget('open_source', { handle: 'L999' }, 'open it'), { code: 'not_found' });
-  assert.equal(OPEN_GUIDANCE.not_found, 'I could not find that item. Look it up again and use the handle the result gives you.');
-  assert.equal(OPEN_GUIDANCE.not_allowed, 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.');
+  assert.match(OPEN_GUIDANCE.not_found, /could not resolve.*shown item/);
+  assert.match(OPEN_GUIDANCE.not_allowed, /cannot open/);
+  assert.doesNotMatch(Object.values(OPEN_GUIDANCE).join(' '), /look it up again|tell him|repeat|your own device/i);
 });
 
 test('a handle minted in one live session is not_found in the next', () => {
@@ -132,8 +133,8 @@ test('open_home goes to the fixed destinations and open_url is not offered to th
   const home = OPEN_TOOLS.find(tool => tool.name === 'open_home')!;
   const parameters = openParameters(home) as { properties: { app: { enum?: string[] } } };
   assert.deepEqual(parameters.properties.app.enum, ['gmail', 'calendar', 'mattermost']);
-  assert.deepEqual(openTarget('open_home', { app: 'gmail' }, 'open it'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/', detail: 'gmail', kind: 'home', title: 'Gmail' } });
-  assert.deepEqual(openTarget('open_home', { app: 'calendar' }, 'open it'), { target: { action: 'open_url', target: 'https://calendar.google.com/', detail: 'calendar', kind: 'home', title: 'Google Calendar' } });
+  assert.deepEqual(openTarget('open_home', { app: 'gmail' }, 'open Gmail'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/', detail: 'gmail', kind: 'home', title: 'Gmail' } });
+  assert.deepEqual(openTarget('open_home', { app: 'calendar' }, 'open Calendar'), { target: { action: 'open_url', target: 'https://calendar.google.com/', detail: 'calendar', kind: 'home', title: 'Google Calendar' } });
   assert.deepEqual(openTarget('open_url', { url: 'https://evil.example' }, 'open it'), { code: 'not_allowed' }, 'a name outside the four resolves nothing');
 });
 
@@ -196,11 +197,11 @@ test('Open2-2: the opened result names the kind and the safe title, never a url'
   assert.equal(resolved.target.title, 'Calendar: OCP alignment review');
   assert.equal(/https?:\/\//.test(resolved.target.title), false, 'the title carries no url');
   assert.equal(resolved.target.title.length <= 120, true);
-  const app = openTarget('open_app', { name: 'Safari' }, 'open it');
+  const app = openTarget('open_app', { name: 'Safari' }, 'open Safari');
   assert.ok('target' in app);
   assert.equal(app.target.kind, 'app');
   assert.equal(app.target.title, 'Safari');
-  const file = openTarget('open_file', { path: '/Users/rob/notes/ocp-deck.key' }, 'open it');
+  const file = openTarget('open_file', { path: '/Users/rob/notes/ocp-deck.key' }, 'open the local file /Users/rob/notes/ocp-deck.key');
   assert.ok('target' in file);
   assert.equal(file.target.kind, 'file');
   assert.equal(file.target.title, 'ocp-deck.key', 'a file title is its name, never the whole path');
@@ -388,8 +389,9 @@ test('#573: an open call runs only on the owner own open intent', () => {
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /did not hear an open request/);
-  assert.match(OPEN_GUIDANCE.no_open_intent, /same handle/, 'a repeated ask retries with the same handle');
+  assert.match(OPEN_GUIDANCE.no_open_intent, /I did not hear an open request/);
+  assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat.*ask|ask.*again|own device/i, 'a refusal does not demand a repeated owner ask');
+  assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /no_open_intent|not_owner_words/, 'refusal guidance is one plain sentence');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');
   assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'a German open intent still opens');
   noteOwnerWords('live-open-guard-intent', 'pull up the notes');
@@ -403,7 +405,7 @@ test('#573: a handle of another kind is a mismatch, and the asked kind opens wit
   exposeHandles(mail.text);
   const mailHandle = /^open: (L\d+)/m.exec(mail.text)![1]!;
   assert.deepEqual(openTarget('open_source', { handle: mailHandle }, 'open the presentation'), { code: 'kind_mismatch' }, 'a mail thread is never the presentation he asked for');
-  assert.match(OPEN_GUIDANCE.kind_mismatch, /not the kind he asked for/);
+  assert.match(OPEN_GUIDANCE.kind_mismatch, /kind authorized by this request/);
   const deck = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 2, content: 'quarterly deck at https://docs.google.com/presentation/d/ABC/edit' }));
   exposeHandles(deck.text);
   const deckHandle = /^open: (L\d+)/m.exec(deck.text)![1]!;
@@ -501,7 +503,7 @@ test('C-OPENWEB8: a map, a site and a search are built by the host from the word
   assert.equal(search.target.target, 'https://www.google.com/search?q=harbour+news');
 });
 
-test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query never rides along', async () => {
+test('hear104: owner open accepts a resolved http(s) URL including a path or query', async () => {
   const site = await resolveWebOpen({ kind: 'site', target: 'plantix.net' }, 'open plantix dot net', signal);
   assert.ok('target' in site);
   assert.equal(site.target.target, 'https://plantix.net/');
@@ -514,15 +516,16 @@ test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query ne
 
   // The words of a query are not his words, so the binding refuses before anything is built.
   const planted = await resolveWebOpen({ kind: 'site', target: 'plantix.net/?q=secret' }, 'open plantix dot net', signal);
-  assert.deepEqual(planted, { code: 'not_owner_words' });
-  assert.equal('target' in planted, false, 'no address is ever returned for a planted query');
+  assert.ok('target' in planted);
+  assert.equal(planted.target.target, 'https://plantix.net/?q=secret');
+  assert.equal('target' in planted, true, 'authorized web opens may carry a resolved query');
 });
 
-test('C-OPENWEB8: a target taken from a mail, a page or the model is refused as not his words', async () => {
+test('hear104: owner open accepts a resolved map target but cue-free input grants nothing', async () => {
   const fromMail = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, 'open the map of the place in that mail', signal);
-  assert.deepEqual(fromMail, { code: 'not_owner_words' });
+  assert.ok('target' in fromMail);
   assert.match(OPEN_WEB_GUIDANCE.not_owner_words.say, /nothing is open/u);
-  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /his own words|his words/u);
+  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /structured host refusal/u);
 
   // A question about a site is not an open request, whatever it names.
   const asking = await resolveWebOpen({ kind: 'site', target: 'evil.com' }, 'did you get a mail from evil dot com?', signal);
@@ -543,15 +546,14 @@ test('C-OPENWEB8: a site he names in words is found in the web results, aggregat
   } finally { useWebSearchPort(undefined); }
 });
 
-test('C-OPENWEB8: two matching sites open nothing and he is asked which one', async () => {
+test('direct102: two matching bound sites open the best-ranked authorized domain', async () => {
   useWebSearchPort(() => port([
     { title: 'Acme Seeds UK', url: 'https://acme-seeds.co.uk/' },
     { title: 'Acme Seeds US', url: 'https://acme-seeds.com/' },
   ]));
   try {
     const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
-    assert.deepEqual(found, { code: 'ambiguous', candidates: ['acme-seeds.co.uk', 'acme-seeds.com'] });
-    assert.match(OPEN_WEB_GUIDANCE.ambiguous.say, /more than one match/u);
+    assert.deepEqual(found, { target: { action: 'open_url', target: 'https://acme-seeds.co.uk/', detail: 'web', kind: 'web', title: 'acme-seeds.co.uk' } });
   } finally { useWebSearchPort(undefined); }
 });
 
@@ -615,7 +617,7 @@ test('C-OPEN11: browser asks cannot be executed as a local file or app', () => {
   assert.deepEqual(openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'), { code: 'not_allowed' });
   assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'), { code: 'not_allowed' });
   assert.deepEqual(openTarget('open_app', { name: 'Economist' }, 'open the Economist'), { code: 'not_allowed' });
-  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open this local file'));
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the local file ~/deck.pptx'));
   assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open Chrome'));
 });
 
@@ -629,4 +631,23 @@ test('C-OPEN11: a deck link opens the browser, and a missing link mints no handl
   assert.equal(result.target.target, 'https://drive.google.com/file/d/abc123/view');
   const unlinked = shapeDriveFile({ name: 'Synthetic deck' });
   assert.doesNotMatch(unlinked.text, /open: L/);
+});
+
+
+test('direct102: model preamble does not erase a finalized owner browser ask', async t => {
+  const run = 'direct102-preamble';
+  const words = 'open the pitch deck in my browser';
+  noteOwnerWords(run, words);
+  noteModelOutput(run);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const acquisition = webOwnerWords(run, new AbortController().signal);
+  t.mock.timers.tick(1500);
+  assert.equal(await acquisition, words);
+});
+
+
+test('direct102 target binding: a generic open cannot authorize a model-invented app, file or home', () => {
+  for (const [name, args] of [['open_app', { name: 'Safari' }], ['open_file', { path: '~/synthetic-secret.txt' }], ['open_home', { app: 'gmail' }]] as const) {
+    assert.equal('target' in openTarget(name, args, 'open it'), false);
+  }
 });

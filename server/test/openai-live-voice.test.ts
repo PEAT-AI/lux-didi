@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../live/types.js';
 import { hostConversationScenarios, assertHostConversationReply, assertFreshProgressPhrases } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
@@ -461,8 +462,8 @@ describe('openai gpt-live adapter', () => {
 
   test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
     assert.match(FRESH_OPENING, /twelve words at most/);
-    assert.match(FRESH_OPENING, /^Internal startup direction, not words to speak:/);
-    assert.doesNotMatch(FRESH_OPENING, /\b(start the call|give me|say |tell him|speak |after that line, wait)\b/i, 'no imperative that can be mistaken for the spoken opener');
+    assert.match(FRESH_OPENING, /^Speak one original opening line now/);
+    assert.doesNotMatch(FRESH_OPENING, /\b(?:say|speak|tell him)\s+["“]/i, 'never quote a fixed speakable instruction as the opener');
     assert.match(FRESH_OPENING, /No greeting formula/);
     assert.match(FRESH_OPENING, /offer of help/);
     assert.match(FRESH_OPENING, /tool call precedes it/);
@@ -2289,4 +2290,69 @@ test('C-AUDIO10: overflowing speech never retains silence heartbeats ahead of sp
   const drained = micAudio(socket).slice(before).map(encoded => Buffer.from(encoded, 'base64'));
   assert.ok(drained.length > 0, 'retained speech actually drains onto the wire');
   assert.ok(drained.every(pcm => pcm.readInt16LE(0) !== 0), 'all older silence is gone before speech is discarded');
+});
+
+test('direct102 fresh opening demands speech itself, not an acknowledgment of startup directions', () => {
+  assert.match(FRESH_OPENING, /Speak one original opening line now/);
+  assert.match(FRESH_OPENING, /Do not acknowledge/);
+  assert.doesNotMatch(FRESH_OPENING, /Internal startup direction/);
+});
+
+for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_result']) {
+  test(`C-STEADY104: blocked research ${reason} answers once without offering tools`, async t => {
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    const before = f.frames.filter(frame => frame['type'] === 'response.create').length;
+    session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { status: 'blocked', reason } }] });
+    await until(() => f.frames.filter(frame => frame['type'] === 'response.create').length > before);
+    const creates = f.frames.filter(frame => frame['type'] === 'response.create').slice(before);
+    assert.equal(creates.length, 1);
+    assert.deepEqual(creates[0]!['response'], { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' });
+  });
+}
+
+test('C-STEADY104: commentary cannot reject a delegation awaiting function output', async t => {
+  const { f, session, captured } = await ready(t);
+  f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
+  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
+  f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
+  await until(() => captured.events.some(event => event.type === 'toolCall'));
+  assert.equal(session.sendCommentary!({ text: 'Still looking...' }), false);
+  assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false);
+  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
+  session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { findings: ['synthetic result'] } }] });
+  await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
+});
+
+test('C-STEADY104: a fake provider rejecting commentary delegation_id does not end its response', async t => {
+  const logged = hostReceipts(t);
+  const { f, session, captured } = await ready(t);
+  f.send({ type: 'session.delegation.created', delegation: { id: 'steady-reject', response_id: 'resp_reject', offset_ms: 0 } });
+  f.send({ type: 'response.event', delegation_id: 'steady-reject', event: { type: 'response.created', response: { id: 'resp_reject' } } });
+  await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
+  const start = f.frames.length;
+  assert.equal(session.sendCommentary!({ text: 'Synthetic progress.' }), true);
+  await until(() => f.frames.length > start);
+  const append = f.frames.find(frame => frame['type'] === 'session.commentary.append')!;
+  f.send({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'delegation_id', client_event_id: append['event_id'] } });
+  await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
+  const before = captured.events.filter(event => event.type === 'audio').length;
+  sendAudio(f, 12_000);
+  await until(() => captured.events.filter(event => event.type === 'audio').length > before);
+  assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
+});
+
+test('alarm sessions seed no fresh-opening direction', async t => {
+  const f = await fixture(t);
+  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+    .open(request({ system: { text: `Synthetic normal persona\n${ALARM_MODE_MARKER} call the bank`, dataClass: 'ordinary' }, opening: 'model_first' }), control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const start = f.frames[0] as unknown as Start;
+  assert.ok(!JSON.stringify(start.session['input'] ?? []).includes(FRESH_OPENING));
+  assert.match(JSON.stringify(start.session), /call the bank/);
 });

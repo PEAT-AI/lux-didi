@@ -128,3 +128,18 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
         completionHandler([.banner, .list])
     }
 }
+
+/// The live-call poll consumes cached permission; only explicit lifecycle events query the OS.
+@MainActor final class NativeNotificationCapabilityState {
+    enum Event { case launch, didBecomeActive, permissionChanged, poll }
+    private let source: () async -> NotificationCapability
+    private(set) var value: NotificationCapability = .unknown
+
+    init(source: @escaping () async -> NotificationCapability) { self.source = source }
+
+    func refresh(for event: Event) async -> NotificationCapability {
+        guard event != .poll else { return value }
+        value = await source()
+        return value
+    }
+}

@@ -295,3 +295,143 @@ final class DockMenu: NSObject {
         return menu
     }
 }
+
+/// Keep side effects out of an unchanged polling result. The setter runs only on a transition.
+enum StatusQuiet {
+    static func publish<Value: Equatable>(current: Value, next: Value, set: (Value) -> Void) {
+        guard current != next else { return }
+        set(next)
+    }
+}
+
+/// Platform-free menu status diff, so polling can be tested without an NSStatusItem.
+struct QuietStatusItem {
+    private var imageKey: String?
+    mutating func update(symbol: String, text: String, title: String,
+                         currentTitle: String, currentToolTip: String?,
+                         image: (String) -> Void, setTitle: (String) -> Void,
+                         toolTip: (String?) -> Void) {
+        let key = symbol + ":" + text
+        StatusQuiet.publish(current: imageKey, next: Optional(key)) { _ in image(key) }
+        imageKey = key
+        StatusQuiet.publish(current: currentTitle, next: title, set: setTitle)
+        StatusQuiet.publish(current: currentToolTip, next: Optional(text), set: toolTip)
+    }
+}
+
+/// Count delivery separately from opening, without logging menu contents or activating the app.
+struct StatusMenuTracking {
+    private(set) var requests = 0
+    private(set) var opens = 0
+    mutating func requested(log: (String, Int, Int) -> Void) {
+        requests += 1
+        log("menu_open_requested", requests, opens)
+    }
+    mutating func opened(log: (String, Int, Int) -> Void) {
+        opens += 1
+        log("menu_opened", requests, opens)
+    }
+}
+
+@MainActor final class NonModalAlertResponse {
+    private var completion: ((Bool) -> Void)?
+    init(_ completion: @escaping (Bool) -> Void) { self.completion = completion }
+    func answer(_ accepted: Bool) {
+        let callback = completion
+        completion = nil
+        callback?(accepted)
+    }
+}
+
+/// Sheets are window-modal only. Without a parent, keep the normal alert window and buttons,
+/// but do not enter an application-modal run loop that disables status menus on other Spaces.
+@MainActor final class StatusSafeAlert: NSObject, NSWindowDelegate {
+    private static var live: [UUID: StatusSafeAlert] = [:]
+    private let id = UUID()
+    private let alert: NSAlert
+    private let response: NonModalAlertResponse
+
+    private init(alert: NSAlert, completion: @escaping (Bool) -> Void) {
+        self.alert = alert
+        response = NonModalAlertResponse(completion)
+    }
+    static func present(_ alert: NSAlert, parent: NSWindow?, completion: @escaping (Bool) -> Void = { _ in }) {
+        let session = StatusSafeAlert(alert: alert, completion: completion)
+        live[session.id] = session
+        if let parent, parent.isVisible, parent.attachedSheet == nil {
+            alert.beginSheetModal(for: parent) { reply in session.finish(reply == .alertFirstButtonReturn) }
+        } else {
+            for (index, button) in alert.buttons.enumerated() {
+                button.tag = index
+                button.target = session
+                button.action = #selector(chose(_:))
+            }
+            if alert.buttons.count > 1 { alert.buttons[1].keyEquivalent = "\u{1b}" }
+            alert.window.delegate = session
+            alert.window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            alert.window.makeKeyAndOrderFront(nil)
+        }
+    }
+    @objc private func chose(_ button: NSButton) {
+        alert.window.orderOut(nil)
+        finish(button.tag == 0)
+    }
+    func windowWillClose(_ notification: Notification) { finish(false) }
+    private func finish(_ accepted: Bool) {
+        response.answer(accepted)
+        Self.live[id] = nil
+    }
+}
+
+/// The watchdog must remain runnable even if the application's MainActor is blocked.
+enum NativeQuitStage: String, Sendable {
+    case awaitingMainActor, audio, logout, webSession, host, applicationExit, secondQuit
+}
+
+final class NativeQuitDeadline: @unchecked Sendable {
+    static let shared = NativeQuitDeadline()
+    private var childPID: Int32?
+    var ownedChildPID: Int32? { lock.lock(); defer { lock.unlock() }; return childPID }
+    func setOwnedChildPID(_ pid: Int32) { lock.lock(); defer { lock.unlock() }; childPID = pid }
+    func clearOwnedChildPID(_ pid: Int32) { lock.lock(); defer { lock.unlock() }; if childPID == pid { childPID = nil } }
+    private enum State { case idle, running, exiting, forced }
+    private let lock = NSLock()
+    private var state: State = .idle
+    private var currentStage: NativeQuitStage = .awaitingMainActor
+
+    /// Returns true only for the first request. A second request forces exit immediately.
+    func request(schedule: (Double, @escaping @Sendable () -> Void) -> Void,
+                 forced: @escaping @Sendable (NativeQuitStage) -> Void) -> Bool {
+        lock.lock()
+        guard state == .idle else {
+            let forceAgain = state == .running || state == .exiting
+            if forceAgain { state = .forced }
+            lock.unlock()
+            if forceAgain { forced(.secondQuit) }
+            return false
+        }
+        state = .running
+        lock.unlock()
+        schedule(2.5) { [self] in
+            lock.lock()
+            guard state == .running || state == .exiting else { lock.unlock(); return }
+            state = .forced
+            let stage = currentStage
+            lock.unlock()
+            forced(stage)
+        }
+        return true
+    }
+    func stage(_ stage: NativeQuitStage) {
+        lock.lock(); defer { lock.unlock() }
+        if state == .running { currentStage = stage }
+    }
+    func complete() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard state == .running else { return false }
+        // Keep the watchdog armed through AppKit/applicationWillTerminate cleanup.
+        state = .exiting
+        currentStage = .applicationExit
+        return true
+    }
+}

@@ -391,7 +391,7 @@ const NAME_CANDIDATE = /\b([A-Za-z][A-Za-z'\u2019-]*)\b/gu;
 /** Typography, not a name: the first word of the text or of a sentence. */
 const SENTENCE_START = /(?:^|[.!?]\s+)$/u;
 /** An ask that refers to a past conversation may use her memory even when it names someone. */
-const PAST_CONVERSATION = /\b(?:last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
+const PAST_CONVERSATION = /\b(?:yesterday|story|transcript|you said|you told me|last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
 
 export function pastConversationAsk(question: string): boolean { return PAST_CONVERSATION.test(question); }
 
@@ -1847,7 +1847,12 @@ function noteChatReads(run: RunState, subs: readonly IntentSubCall[], results: r
     if (read !== undefined && clarify === undefined && notFound === undefined) add(`I read ${read}.`);
     if (missing !== undefined) add(`Say once: ${missing}.`);
     if (clarify !== undefined) { add(`Ask him: ${clarify}`); run.chatUnresolved = 'needs_clarification'; }
-    if (notFound !== undefined) { add(notFound); run.chatUnresolved ??= 'name_not_found'; }
+    if (notFound !== undefined) {
+      add(notFound);
+      const channelMissing = sub.args['intent'] === 'channel';
+      run.chatUnresolved ??= channelMissing ? 'channel_not_found' : 'name_not_found';
+      if (channelMissing) run.unavailableReasons.set('chat', 'channel_not_found');
+    }
     const matched = Number(lead('matched') ?? Number.NaN);
     const returned = (result.text.match(/^\*\*.+\*\*$/gmu) ?? []).length;
     const offset = typeof sub.args['offset'] === 'number' ? sub.args['offset'] : 0;
@@ -2067,7 +2072,7 @@ export interface RunState {
   deliveredFindings: Set<string>;
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
-  historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
+  historyBindings: ToolResultBinding[]; historyTokens: Set<string>; historyMore: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
   /** E6 (#609): the message date a read may not go behind, for an ask that named only hours. */
@@ -2138,7 +2143,7 @@ export interface RunState {
   /** C-CHAT: what each chat read said it read, a capability it lacks, or the question it asks back. Said once. */
   chatNotes: string[];
   /** C-CHAT: a chat read asked which person, channel or group was meant, or knew nobody by that name. */
-  chatUnresolved?: 'needs_clarification' | 'name_not_found';
+  chatUnresolved?: 'needs_clarification' | 'name_not_found' | 'channel_not_found';
   /** C-CHAT: the next page of the last chat read that matched more than it returned. */
   chatPage?: { sub: IntentSubCall; next: number; total: number };
   /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */
@@ -2158,7 +2163,7 @@ export interface RunState {
 function invalidateEvidence(run: RunState): void {
   run.bodies.clear(); run.bodyCursors.clear();
   run.mail.clear(); run.mailDelivered.clear(); run.mailCursors.clear();
-  run.calendar.clear(); run.calendarDelivered.clear(); run.historyBindings = []; run.historyTokens.clear();
+  run.calendar.clear(); run.calendarDelivered.clear(); run.historyBindings = []; run.historyTokens.clear(); run.historyMore.clear();
   for (const [key, entry] of run.ledger) if (entry.source === 'calendar' || entry.source === 'mail') run.ledger.delete(key);
 }
 
@@ -2185,7 +2190,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
-      historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
+      historyBindings: [], historyTokens: new Set(), historyMore: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
       calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
@@ -2212,7 +2217,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, ops: 0, progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       mail: new Map([...existing.mail].map(([key, read]) => [key, { ...read, messages: new Map(read.messages), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), mailDelivered: new Set(existing.mailDelivered), mailCursors: new Map([...existing.mailCursors].map(([key, cursor]) => [key, { ...cursor, ids: [...cursor.ids] }])),
-      historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
+      historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens), historyMore: new Set(existing.historyMore),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
@@ -2393,6 +2398,8 @@ export function bindResearchQuery(query: string, allowed: string): { query: stri
 }
 
 export interface ResearchDeps {
+  /** Exact host-held registration for the accepted run, never diagnostic logging fields. */
+  inputSchema?: ((tool: string) => JsonObject | undefined) | undefined;
   /** Recent conversational words only, never injected directories or profile context. */
   queryContext?: (() => string) | undefined;
   timeZone?: string;
@@ -3983,10 +3990,12 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
 function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
-  const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
+  const live = currentSessionId ? new Set([currentSessionId]) : liveSessionIds(hits, question, history);
   const kept = hits.filter(hit => {
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
-    if (asked) return true;
+    const sessionId = hit['sessionId'];
+    if (typeof sessionId === 'string' && (sessionId === currentSessionId || live.has(sessionId))) return false;
+    if (asked || (pastConversationAsk(question) && typeof sessionId === 'string')) return true;
     // A remembered note is memory even when it was written in this call; the recording of the
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;
@@ -3996,7 +4005,9 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
-  return rankMemoryEvidence(kept, tokenize(question));
+  return pastConversationAsk(question)
+    ? [...kept.filter(hit => hit['sourceKind'] === 'live'), ...rankMemoryEvidence(kept.filter(hit => hit['sourceKind'] !== 'live'), tokenize(question))]
+    : rankMemoryEvidence(kept, tokenize(question));
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
@@ -4145,12 +4156,6 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
-  }
-  // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
-  // it refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
-  if (requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '')) {
-    const at = groups.findIndex(group => group.source === 'memory');
-    if (at >= 0) groups.splice(at, 1);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
@@ -4320,7 +4325,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // #653: a closed run has no read in flight, so no source is named as still reading once it ended.
     const closed = run.ended || run.stopped || run.cancelled;
     const stillReading = closed ? [] : configured.filter(source => run.pending.has(source));
-    const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
+    const complete = status === 'answered' && !trimmed && run.historyMore.size === 0 && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
     // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
     // whole record. A source this run never reached and a page it dropped both count as unread.
     // #3: a read that found nothing was still made, so it never rides the "did not search" note.
@@ -4340,7 +4345,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
     // R4: this note is composed when the run has stopped waiting, so a source still in `pending` did not return in
     // time; only the first answer point, which answers while the readers keep going, says "still searching".
-    let settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
+    let settledNote = run.historyMore.size > 0 ? RESEARCH.moreAvailableNote : complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.hardStopNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         // #634: an unread source is named once, in the coverage header, never again in the note.
         : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
@@ -4352,7 +4357,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat || run.historyMore.size > 0, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -4658,7 +4663,27 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
+  if (!inputSchema) return args;
+  const properties = inputSchema(INTERNAL.calendarList)?.['properties'];
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
+  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject;
+}
+
+function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedReadUnfiltered>[1] & { inputSchema?: ResearchDeps['inputSchema'] }): ReturnType<typeof routedReadUnfiltered> {
+  const read = routedReadUnfiltered(lookup, context);
+  if (!context.inputSchema) return read; // Offline legacy callers have no host registration port.
+  const subs: IntentSubCall[] = [];
+  for (const sub of read.subs) {
+    if (sub.name !== INTERNAL.calendarList) { subs.push(sub); continue; }
+    const args = registeredCalendarArguments(sub.args, context.inputSchema);
+    if (!args) return { ...read, subs: [], unresolved: true, reason: 'calendar_schema_unavailable' };
+    subs.push({ ...sub, args });
+  }
+  return { ...read, subs };
+}
+
+function routedReadUnfiltered(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
@@ -5103,7 +5128,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let scopeSlot: number | undefined;
     reads.forEach((read, n) => {
       slots.push(calls.length);
-      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } });
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt }, deps.inputSchema) ?? {} });
       // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
       // did not read and the batch is the read, its list, then any further window.
       if (n === 0 && listScope) {
@@ -5231,9 +5256,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
     const reference = args.cursor ?? args.recordRef;
-    if (reference && !run.historyTokens.has(reference)) {
-      run.unavailableReasons.set('memory', 'history_reference_unavailable'); done.push(settle(plan, 'unavailable')); continue;
-    }
+    // The canonical history reader validates call-scoped refs, including refs from older research runs.
+    // Never narrow that authority to this research run's transient token set.
+    void reference;
     if (!evidenceAllowed(deps, run, context.signal)) { done.push(settle(plan, 'unavailable')); continue; }
     // RUN-R7: the memory read is cut on the run's clock, released when the read settles.
     const cut = cutAfter(RESEARCH.sourceDeadline.memory, deps.schedule);
@@ -5252,14 +5277,29 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
         run.unavailableReasons.set('memory', String(page['status'] ?? 'history_unavailable'));
         done.push({ ...settle(plan, 'unavailable'), historyPage: page }); continue;
       }
-      if (typeof page['nextCursor'] === 'string') run.historyTokens.add(page['nextCursor']);
+      // F6: authority to reopen a ref is not evidence that any text remains unread.
+      if (reference) run.historyMore.delete(`cursor:${reference}`);
+      if (typeof page['nextCursor'] === 'string') {
+        run.historyTokens.add(page['nextCursor']); run.historyMore.add(`cursor:${page['nextCursor']}`);
+      }
       // #575: her own spoken turn from this call or the last one confirms a past answer instead of being
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
       const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
       const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid, deps.liveSessionId);
       const kept = { ...page, hits };
-      for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
+      const sourceKey = (value: JsonObject): string => `${value['sourceKind'] ?? ''}:${value['sourceId'] ?? value['recordRef'] ?? ''}`;
+      for (const hit of hits) {
+        if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
+        const key = `record:${sourceKey(hit)}`;
+        const truncated = hit['truncated'] === true || (typeof hit['totalCharacters'] === 'number' && typeof hit['snippet'] === 'string' && hit['totalCharacters'] > hit['snippet'].length);
+        if (truncated) run.historyMore.add(key); else run.historyMore.delete(key);
+      }
+      if (typeof page['text'] === 'string') {
+        const key = `record:${sourceKey(page)}`;
+        if (page['complete'] === false || typeof page['nextCursor'] === 'string') run.historyMore.add(key);
+        else run.historyMore.delete(key);
+      }
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
       // #615: a page trimmed to the rows this call may read never reports the rows it dropped as matches.
       const total = hits.length === raw.length ? Number(page['totalMatches'] ?? lines.length) : hits.length;
@@ -5478,7 +5518,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
-  const readContext = { question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };
@@ -5842,6 +5882,8 @@ const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTIN
  * model's own direction is judged: a continue's question and topic never reach a source (#565).
  */
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
+  // An explicit local record handle is navigation, not a new topic.
+  if (Array.isArray(call.lookups) && call.lookups.some(lookup => isRecord(lookup) && isRecord(lookup['history']) && (lookup['history']['recordRef'] || lookup['history']['cursor']))) return true;
   const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).
@@ -6229,7 +6271,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = normalizeLookups(call.lookups).map(lookup => entity.heard === undefined || entity.name === undefined
     ? lookup : { ...lookup, query: lookup.query.split(entity.heard).join(entity.name) });
-  if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
+  if (call.action === 'continue' && run.historyMore.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   // #657 item 1: a status or test-all ask names every source, so the host reads the first batch within
   // the limit and leaves the rest for the next call, instead of refusing the whole ask.
   if (statusAsk(question)) {

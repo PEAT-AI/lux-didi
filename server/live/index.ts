@@ -1,3 +1,5 @@
+import { canonicalJSON, sha256 } from '../tools/canonical.js';
+import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -9,7 +11,7 @@ import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { freezeNote } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -75,9 +77,11 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
-const ALARM_MODE_MARKER = '[alarm mode]';
+import { ALARM_MODE_MARKER } from './types.js';
 export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
-  return `${ALARM_MODE_MARKER} Wake ${JSON.stringify(input.ownerDisplayName)} for the alarm at ${JSON.stringify(input.scheduledTime)}. Address them by name and briefly invite a spoken answer. Continue brief wake-up reminders until they answer. You are Naya. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  const reminder = input.label?.trim();
+  const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -687,7 +691,6 @@ interface ActiveSession {
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
-  noteSettleTimer?: ReturnType<JobTimer> | undefined;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
   /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
@@ -1325,12 +1328,7 @@ export class LiveSessionOwner {
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
-  readonly #noteSessions = new Set<string>();
   /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
-  readonly #noteRequests = new Map<string, NoteRequestGate>();
-  readonly #noteOnset = new Map<string, number>();
-  readonly #noteSpeech = new Map<string, { stageId: string; text: string; matched: boolean; drainedAt?: number }>();
-  readonly #noteReadback = new Map<string, { readonly stageId: string; readonly key: string }>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1351,6 +1349,76 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; announcedAt: number; timer?: { cancel(): void } }>>();
+
+  /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
+  announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
+    const handle = [...this.#active.values()].find(value => !value.terminal && value.ready);
+    if (!handle || !setup.alarmId) return undefined;
+    const alarms = this.#alarmSessions.get(handle.liveSessionId) ?? new Map();
+    alarms.get(setup.alarmId)?.timer?.cancel();
+    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
+    this.#alarmSessions.set(handle.liveSessionId, alarms);
+    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    this.#armAlarm(handle);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
+    return this.get(handle.liveSessionId);
+  }
+
+  #ringingAlarms(handle: ActiveSession) {
+    const alarms = this.#alarmSessions.get(handle.liveSessionId);
+    if (!alarms) return [];
+    for (const [id, alarm] of alarms) {
+      const ringing = this.#store.transaction(tx => tx.get("SELECT id FROM alarms WHERE id=? AND state='ringing' AND ring_deadline_utc>?", [id, this.#now()]));
+      if (!ringing) { alarm.timer?.cancel(); alarms.delete(id); }
+    }
+    return [...alarms.values()];
+  }
+
+  #armAlarm(handle: ActiveSession): void {
+    const now = this.#now();
+    for (const alarm of this.#ringingAlarms(handle)) {
+      if (alarm.timer) continue;
+      alarm.timer = this.#schedule(() => {
+        delete alarm.timer;
+        if (handle.terminal || !this.#ringingAlarms(handle).includes(alarm)) return;
+        // Audio only advances lastAudibleAt. The existing timer checks the remaining silence once.
+        if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
+          alarm.lastPromptAt = this.#now();
+          if (handle.ready) {
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
+          }
+        }
+        this.#armAlarm(handle);
+      }, Math.max(1, Math.min((alarm.setup.ringDeadlineUtc ?? now + 30_000) - now, Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) + 30_000 - now)));
+    }
+  }
+
+  #ackAlarm(handle: ActiveSession, words: string): void {
+    const alarms = this.#ringingAlarms(handle);
+    if (!alarms.length) return;
+    // The most recently announced alarm owns this confirmation, not every ringing occurrence.
+    const alarm = alarms.reduce((latest, candidate) => candidate.announcedAt > latest.announcedAt ? candidate : latest);
+    // Gemini can finalize accumulated deltas with an empty frame, or the host can seal them at model start.
+    // Never borrow speech from before the announcement or from an earlier finalized utterance.
+    const utterance = this.#store.transaction(tx => {
+      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id DESC", [handle.liveSessionId, alarm.afterJournalId]);
+      const parts: string[] = [];
+      for (const [i, row] of rows.entries()) {
+        if (i > 0 && Number(row.finished) === 1) break;
+        parts.unshift(String(row.text ?? ''));
+      }
+      return parts.join('');
+    });
+    const confirms = (value: string) => /\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(value.replace(/[^\p{L}\p{N}'’]+/gu, ' '));
+    if (!confirms(words) && !confirms(utterance)) return;
+    if (this.#tools?.acknowledgeAlarm) this.#tools.acknowledgeAlarm(alarm.setup.alarmId!);
+    else this.#store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [alarm.setup.alarmId!]));
+    alarm.timer?.cancel();
+    this.#alarmSessions.get(handle.liveSessionId)?.delete(alarm.setup.alarmId!);
+    try { handle.session.sendText({ text: hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.') }); } catch { /* The acknowledged alarm remains stopped if transport is unavailable. */ }
+  }
+
   #revision = 1;
   #invalidated = false;
   #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
@@ -1601,7 +1669,7 @@ export class LiveSessionOwner {
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Briefly mention the missed alarm times: ' + missedAlarms.map(alarm => new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))).join(', ') + '.' : '';
       for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: input.alarm ? alarmSessionInstructions(input.alarm) : composed.text + missedNote, dataClasses: input.alarm ? ['ordinary'] : classes.filter(value => selectedClasses.has(value)), memory: input.alarm ? { status: 'empty', selectedIds: [], omitted: [] } : memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
@@ -1618,6 +1686,7 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
+    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
     this.#armExpiry();
     return snapshot;
   }
@@ -1909,6 +1978,7 @@ export class LiveSessionOwner {
       ...(silentStart ? { openingText: LIVE_DROPPED_LINE_MARK } : {}),
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
+    const alarmIdleMs = Math.max(this.#profile.limits.idleMs, ...[...(this.#alarmSessions.get(liveSessionId)?.values() ?? [])].map(alarm => (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now()));
     const sessionMs = Math.min(this.#profile.limits.sessionMs, this.#profile.limits.callMaxMs);
     const deadlineMs = Date.now() + sessionMs;
     const deadlineAt = this.#now() + sessionMs;
@@ -1920,7 +1990,7 @@ export class LiveSessionOwner {
     const openedAt = this.#now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits, trace: this.#tracePort(liveSessionId, connection) });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: { ...this.#profile.limits, idleMs: alarmIdleMs }, trace: this.#tracePort(liveSessionId, connection) });
       hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
         seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {
@@ -1973,7 +2043,7 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
-    this.#noteRequests.set(liveSessionId, new NoteRequestGate());
+    this.#armAlarm(handle);
     handle.openedAt = openedAt;
     this.#noteState(handle, 'created');
     void handle.done.promise.catch(() => {});
@@ -2010,148 +2080,35 @@ export class LiveSessionOwner {
 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
 
-  /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
-  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
-    const gate = this.#noteRequests.get(liveSessionId);
-    const request = gate?.claim();
-    if (!request) return { staged: false, code: 'authorization_missing', guidance: 'It was not saved: a fresh owner save request is required.' };
-    const result = stageComposedNote(tx, liveSessionId, args,
-      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true, heldEvidence: gate?.heldEvidence ?? new Set() }, this.#now(), this.#composedNotes(), request, gate?.externalContextPresent === true);
-    if (result['staged'] === true) {
-      this.#noteSessions.add(liveSessionId);
-      this.#noteReadback.delete(liveSessionId);
-      this.#noteOnset.delete(liveSessionId);
-      this.#noteSpeech.set(liveSessionId, { stageId: String(result['stageId']), text: '', matched: false });
-    }
-    return result;
+  /** A direct owner save freezes and authorizes one remote write, without a confirmation stage. */
+  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject | (() => Promise<JsonObject>) {
+    void handle;
+    const requests = this.#tools?.owner.ownerRequests;
+    const target = sha256(canonicalJSON(args));
+    const request = requests?.authorize(liveSessionId, 'lux_note', target);
+    if (!request || request.code === 'no_owner_request' || request.code === 'request_expired' || request.code === 'grant_spent') return requestRefusal(request?.code ?? 'no_owner_request');
+    if (request.code === 'idempotent') return request.receipt as JsonObject;
+    const candidate = freezeNote({ title: args.title, body: args.body });
+    if (candidate.state !== 'frozen') return { saved: false, code: candidate.code, say: 'The note was not saved because its payload is invalid.' };
+    const sources = requests!.sources(liveSessionId);
+    const external = requests!.externalContentPresent(liveSessionId);
+    const provenance = `Provenance: request ${request.id}; source counts ${JSON.stringify(sources)}; ${external ? 'contains external content' : 'owner conversation'}.`;
+    const body = `${args.body.trim()}\n\n${provenance}`;
+    const frozen = freezeNote({ title: args.title, body, externalContextPresent: true });
+    if (frozen.state !== 'frozen') return { saved: false, code: frozen.code };
+    const claim = authorizeComposedWrite(tx, { liveSessionId, stageId: request.id, content: body, title: args.title, now: this.#now(), externalContextPresent: external, payloadSha: frozen.payloadSha });
+    return async () => {
+      let receipt: VaultReceipt;
+      try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
+      catch { receipt = { saved: false, code: 'outcome_unknown' }; }
+      const response: JsonObject = receipt.saved && receipt.insightId
+        ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved: ${args.title} (${receipt.insightId}).` }
+        : { saved: false, code: receipt.code ?? 'write_failed', say: 'The note was not saved.' };
+      if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response, request.id);
+      hostLogEvent({ event: 'lux_note_audit', ...requests!.audit(liveSessionId, 'lux_note'), refusalCode: response.saved ? 'none' : response.code });
+      return response;
+    };
   }
-
-  /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
-  #notePlayback(handle: ActiveSession, receipt: NativePlaybackReceipt): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!note) return;
-    // W6-R2 B2: the read-back is one segment; its own drain arms, its own cut kills, and a segment
-    // that began before the stage does neither.
-    const key = `${receipt.sourceInstanceId}:${receipt.segmentSeq}`;
-    const read = noteSegmentSignal(note, this.#noteReadback.get(handle.liveSessionId), { receipt: receipt.receipt as PlaybackSignalKind, key, wallMs: receipt.wallMs });
-    if (read.binding === undefined) this.#noteReadback.delete(handle.liveSessionId);
-    else this.#noteReadback.set(handle.liveSessionId, read.binding);
-    if (read.note.state === 'armed' && note.state === 'staged') {
-      const speech = this.#noteSpeech.get(handle.liveSessionId);
-      if (!speech || speech.stageId !== note.stageId) return;
-      speech.drainedAt = receipt.wallMs;
-      if (!speech.matched) return;
-    }
-    if (read.note === note) return;
-    this.#store.transaction(tx => saveNoteState(tx, read.note));
-    hostLogEvent({ event: 'lux_note_readback', state: read.note.state, code: read.note.code ?? receipt.receipt });
-  }
-
-  #noteNotSaved(handle: ActiveSession, code: string): void {
-    if (this.#settled(handle)) return;
-    try { handle.session.sendText({ text: hostNote(`The note was not saved (${code}). Say plainly that it was not saved.`) }); } catch { /* closed transport */ }
-  }
-
-  #noteOutput(handle: ActiveSession, kind: string, text: string): void {
-    const speech = this.#noteSpeech.get(handle.liveSessionId);
-    if (!speech) return;
-    const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!note || note.stageId !== speech.stageId || note.state !== 'staged') return;
-    if (kind === 'outputTranscription') {
-      speech.text += this.#profile.provider === 'openai' ? text : ` ${text}`;
-      return;
-    }
-    if (!speech.text.trim()) return;
-    speech.matched = readbackMatches(noteReadbackText(note), speech.text);
-    if (!speech.matched) {
-      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'invalidated', code: 'readback_mismatch' }));
-      this.#noteSpeech.delete(handle.liveSessionId);
-      this.#noteNotSaved(handle, 'readback_mismatch');
-    } else if (speech.drainedAt !== undefined) {
-      const armedAt = speech.drainedAt;
-      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'armed', armedAt }));
-    }
-  }
-
-  /** W6 item 6: the next finalized owner turn decides, and the settle window runs on its own timer. */
-  #noteOwnerTurn(handle: ActiveSession, text: string): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open) return;
-    const onsetAt = this.#noteOnset.get(handle.liveSessionId) ?? handle.inputAt ?? this.#now();
-    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, onsetAt);
-    if (open.state === 'armed' && noteKey(text) === 'read it all' && onsetAt >= (open.armedAt ?? Infinity)) {
-      const next = { ...open, state: 'staged' as const, fullReadback: true, confirmationText: '' };
-      this.#store.transaction(tx => saveNoteState(tx, next));
-      this.#noteReadback.delete(handle.liveSessionId);
-      this.#noteSpeech.set(handle.liveSessionId, { stageId: open.stageId, text: '', matched: false });
-      this.#noteOnset.delete(handle.liveSessionId);
-      return;
-    }
-    const next = noteOwnerUtterance(open, { text, now: this.#now(), onsetAt });
-    if (next === open) return;
-    this.#store.transaction(tx => saveNoteState(tx, next));
-    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    if (next.state !== 'settling') { this.#noteOnset.delete(handle.liveSessionId); this.#noteReadback.delete(handle.liveSessionId); this.#noteNotSaved(handle, next.code ?? 'not_affirmative'); return; }
-    handle.noteSettleTimer?.cancel();
-    handle.noteSettleTimer = this.#schedule(() => { void this.#noteSettle(handle); }, Math.max(0, (next.settleAt ?? 0) - this.#now()));
-    handle.noteSettleTimer.unref();
-  }
-
-  /** W6 item 6: any owner fragment inside the settle window cancels, so a VAD split never commits. */
-  #noteFragment(handle: ActiveSession): void {
-    if (!this.#noteSessions.has(handle.liveSessionId)) return;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open) return;
-    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, handle.inputAt ?? this.#now());
-    if (open.state !== 'settling') return;
-    const next = noteOwnerFragment(open, this.#now());
-    if (next === open) return;
-    handle.noteSettleTimer?.cancel(); handle.noteSettleTimer = undefined;
-    this.#store.transaction(tx => saveNoteState(tx, next));
-    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    this.#noteReadback.delete(handle.liveSessionId);
-  }
-
-  /** W6 item 7: the dispatcher claims the frozen payload and dispatches it once through the vault writer. */
-  async #noteSettle(handle: ActiveSession): Promise<void> {
-    handle.noteSettleTimer = undefined;
-    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open || open.state !== 'settling') return;
-    const settled = noteSettle(open, this.#now());
-    if (settled.state !== 'committed') {
-      if (settled !== open) { this.#noteOnset.delete(handle.liveSessionId); this.#store.transaction(tx => saveNoteState(tx, settled)); this.#noteNotSaved(handle, settled.code ?? 'not_affirmative'); }
-      return;
-    }
-    // The digest frozen at stage time is the only payload that may ever be sent.
-    const frozen = freezeNote({ title: settled.title, body: settled.body, externalContextPresent: settled.externalContextPresent === true });
-    if (frozen.state !== 'frozen' || frozen.payloadSha !== settled.payloadSha) {
-      const invalid = { ...settled, state: 'invalidated' as const, code: 'payload_changed' };
-      this.#store.transaction(tx => saveNoteState(tx, invalid));
-      hostLogEvent({ event: 'lux_note_saved', saved: false, code: 'payload_changed' });
-      return;
-    }
-    this.#store.transaction(tx => saveNoteState(tx, settled));
-    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: handle.liveSessionId, stageId: settled.stageId, content: settled.body, title: settled.title, now: this.#now(), externalContextPresent: settled.externalContextPresent === true, payloadSha: settled.payloadSha }));
-    let receipt: VaultReceipt;
-    try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
-    catch { receipt = { saved: false, code: 'outcome_unknown' }; }
-    this.#store.transaction(tx => markCommitted(tx, settled.stageId, receipt.insightId));
-    this.#noteReadback.delete(handle.liveSessionId);
-    this.#noteOnset.delete(handle.liveSessionId);
-    hostLogEvent({ event: 'lux_note_saved', saved: receipt.saved, code: receipt.code ?? 'inserted' });
-    if (this.#settled(handle)) return;
-    const line = receipt.saved
-      ? `The vault returned insight ${receipt.insightId}. Say: Saved ${JSON.stringify(settled.title)} in Lux.`
-      : `The vault did not confirm the save (${receipt.code ?? 'unknown'}). Say that plainly; do not claim success or retry it.`;
-    try { handle.session.sendText({ text: hostNote(line) }); } catch { /* a closed transport settles on its own */ }
-  }
-
-  /**
-   * W6 item 12: the session-end flush of remember_note facts and preferences. One row per note, the
-   * same vault client, no spoken confirmation, and a log event that carries counts only.
-   */
 
   /**
    * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
@@ -2163,7 +2120,6 @@ export class LiveSessionOwner {
       const receipt = parsePlaybackReceipt(frame);
       const attribution = this.#playbackAttribution(handle, receipt);
       recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, attribution);
-      this.#notePlayback(handle, receipt);
       // C-LOGS11: the native audibility receipt is the only proof the owner could hear her, so the first one
       // of a turn closes that turn's owner-facing latency. A turn with no recorded final says so, never zero.
       const turnId = attribution.turnId;
@@ -2298,6 +2254,7 @@ export class LiveSessionOwner {
 
   #armIdle(handle: ActiveSession, remainingMs: number, resetBy: IdleResetCause): void {
     if (this.#settled(handle)) return;
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) remainingMs = Math.max(remainingMs, (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now());
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
     // #592 / C-LIVE N-2: one record per change of cause, so the log testifies what restarted the clock without one
@@ -3235,8 +3192,9 @@ export class LiveSessionOwner {
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
-    // An alarm occurrence has one provider attempt. Local ringing is independent of recovery.
-    if (handle.request.system.text.startsWith(ALARM_MODE_MARKER)) return false;
+    const ringing = this.#ringingAlarms(handle);
+    if (ringing.some(alarm => alarm.rebuilds >= 1)) return false;
+    for (const alarm of ringing) alarm.rebuilds += 1;
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
@@ -3739,6 +3697,7 @@ export class LiveSessionOwner {
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
         // nothing else; it neither re-arms the deadline nor answers the obligation.
         const audible = event.type === 'audio' && event.audible !== false;
+        if (audible) for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.lastAudibleAt = this.#now();
         // The answer's own audible audio is the one thing that clears the owed reply; tool text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
         if (audible || event.type === 'turnComplete') {
@@ -3872,6 +3831,7 @@ export class LiveSessionOwner {
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
+          // Owner authority survives a model interruption.
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
           this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
@@ -3882,6 +3842,7 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
+          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId);
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
           this.#logVoiceProfile(handle, generation);
@@ -4073,6 +4034,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      this.#ackAlarm(handle, '');
       // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
       // #720: it is also the owner's last word of the turn so far, so the dead-air anchor moves to it.
       handle.inputFinalAt = this.#now();
@@ -4170,6 +4132,7 @@ export class LiveSessionOwner {
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
+      const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
       const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
@@ -4198,6 +4161,7 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : closed ?? (record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused');
+        if (ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId ?? '');
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
@@ -4210,6 +4174,7 @@ export class LiveSessionOwner {
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
+      inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),
@@ -4223,7 +4188,12 @@ export class LiveSessionOwner {
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
-      ...(this.#researchWeb === undefined ? {} : { web: this.#researchWeb }),
+      ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
+        const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        const result = await this.#researchWeb!.search(request);
+        if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
+        return result;
+      } } }),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -4517,6 +4487,7 @@ export class LiveSessionOwner {
   }
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
+    let ownerRequestId: string | undefined;
     handle.thinking = true;
     // #1022 F5/F3: the per-turn latency loops delete this clock, so the arrival time is read once, here.
     const arrivedAt = new Map(event.calls.flatMap(call => { const at = handle.callStartedAt.get(call.id); return at === undefined ? [] : [[call.id, at] as const]; }));
@@ -4559,7 +4530,7 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      if (dispatchGate.state === 'allowed' && event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalRead();
+      ownerRequestId = this.#tools.owner.ownerRequests.currentId(handle.liveSessionId);
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(call.id), tool: call.name });
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -4807,8 +4778,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
               ...(settled.refusalCode === undefined ? {} : { refusalCode: settled.refusalCode }) });
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
-          if (event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalResult(event.calls.filter(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name)).map(call => `tool:${call.id}`));
-          exposeToolResults(responses);
+          const shown = exposeToolResults(responses);
+          if (ownerRequestId) this.#tools?.owner.ownerRequests.shown(handle.liveSessionId, ownerRequestId, shown);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
@@ -4851,11 +4822,12 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
-    let pendingOwnerText: string | undefined;
-    const pendingOwnerFragment = event.type === 'inputTranscription' && event.finished !== true && event.finalOrigin !== 'typed' && (text ?? '').length > 0;
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
-      if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);
+      if (event.type === 'inputTranscription' && !event.finished && text) {
+        noteOwnerPartial(handle.liveSessionId, text);
+        if (transcription?.finalOrigin !== 'typed') this.#tools?.owner.ownerRequests.partial(handle.liveSessionId);
+      }
       const mono = hostMonotonicMs();
       tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
         [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,
@@ -4881,23 +4853,14 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
+        queueMicrotask(() => this.#ackAlarm(handle, text ?? ''));
+        if (ownerTurn) this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
 
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }
       return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
-    if (!transaction && kind === 'inputTranscription') {
-      if (pendingOwnerFragment) this.#noteFragment(handle);
-      if (pendingOwnerText !== undefined) {
-        const block = this.#store.transaction(tx => Number(tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [handle.liveSessionId])?.['id'] ?? 0));
-        this.#noteRequests.get(handle.liveSessionId)?.observeOwner(block, Number(journalSequence), pendingOwnerText);
-        this.#noteOwnerTurn(handle, pendingOwnerText);
-      }
-    }
-    if (!transaction && (kind === 'outputTranscription' || kind === 'turnComplete')) this.#noteOutput(handle, kind, text ?? '');
     if (!transaction) handle.pendingDiagnosticLoss = false;
     handle.journalEvents = events;
     handle.journalBytes = total;
@@ -4907,15 +4870,11 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
   #settled(handle: ActiveSession): boolean { return handle.terminal || handle.invalidated; }
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
-    this.#noteRequests.get(handle.liveSessionId)?.disconnect();
-    this.#noteRequests.delete(handle.liveSessionId);
-    this.#noteSpeech.delete(handle.liveSessionId);
-    this.#noteOnset.delete(handle.liveSessionId);
-    this.#noteSessions.delete(handle.liveSessionId);
-    this.#noteReadback.delete(handle.liveSessionId);
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();
+    this.#alarmSessions.delete(handle.liveSessionId);
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     const attempt = (action: () => void): void => {
@@ -4941,7 +4900,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         });
       });
       attempt(() => this.#observeState(handle, 'ended', 'settle'));
-      if (this.#tools && handle.request.system.text.startsWith(ALARM_MODE_MARKER)
+      if (this.#tools && handle.request.system.text.includes(ALARM_MODE_MARKER)
         && ['failed', 'deadline', 'not_started', 'outcome_unknown'].includes(outcome.state)) {
         attempt(() => {
           const alarm = this.#store.transaction(tx => tx.get("SELECT a.id,a.fire_at_utc FROM alarms a JOIN alarm_session_attempts s ON s.alarm_id=a.id WHERE s.live_session_id=? AND a.state='ringing'", [handle.liveSessionId]));
@@ -4983,6 +4942,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 
   #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number, final = false): void {
     if (event.type !== 'inputTranscription') return;
+    if (this.#alarmSessions.get(handle.liveSessionId)?.size && /\bstop\b/i.test(event.text)) return;
     if (handle.muted || handle.terminal || generation !== handle.generation || event.finalOrigin === 'typed') return;
     const now = this.#now();
     if (handle.stopGeneration !== generation || handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) {

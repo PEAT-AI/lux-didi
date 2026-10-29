@@ -33,5 +33,5 @@ grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-domain: zero selected t
 # Only the four cases that use the synthetic DomainPort fixture changed for
 # required-method compatibility. The package-install test does not use it.
 http_pattern='^(one-time pairing, HttpOnly Strict cookies, CSRF denial, session reload and logout|canonical duplicate request replay, conflicting keys, rollback and stale epoch|body boundary refuses unknown fields, identities, wrong types, malformed JSON and oversized payloads|HTTP request keys and browser session survive service and database restart)$'
-node_test_files --test-reporter=tap --test-timeout=15000 --test-name-pattern "$http_pattern" dist/test/http.test.js | tee "$http_log"
+node_test_files --test-reporter=tap --test-timeout=15000 --test-name-pattern="$http_pattern" dist/test/http.test.js | tee "$http_log"
 grep -Eq '^# pass 4$' "$http_log" || { echo 'check-domain: expected four affected HTTP fixture tests' >&2; exit 1; }

@@ -1,3 +1,4 @@
+import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
@@ -97,7 +98,7 @@ export class Store {
       this.#db = new DatabaseSync(join(directory, 'state.sqlite'), { timeout: 0, enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false });
       this.#db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL');
       const denied = new Set<number>([constants.SQLITE_TRANSACTION, constants.SQLITE_SAVEPOINT, constants.SQLITE_PRAGMA, constants.SQLITE_ATTACH, constants.SQLITE_DETACH]);
-      this.#db.setAuthorizer((action, _arg1, arg2) => !this.#allowControl && (denied.has(action) || (action === constants.SQLITE_FUNCTION && arg2 === 'load_extension')) ? constants.SQLITE_DENY : constants.SQLITE_OK);
+      this.#db.setAuthorizer((action, arg1, arg2) => !this.#allowControl && ((denied.has(action) && !(action === constants.SQLITE_PRAGMA && arg1 === 'data_version' && arg2 === null)) || (action === constants.SQLITE_FUNCTION && arg2 === 'load_extension')) ? constants.SQLITE_DENY : constants.SQLITE_OK);
       this.#db.exec('BEGIN IMMEDIATE');
       try {
         for (const sql of runtimeSchema) this.#db.exec(sql);
@@ -110,6 +111,8 @@ export class Store {
           run: (sql, params = []) => Number(this.#db!.prepare(sql).run(...params).changes),
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
+        const memoryTx = new Tx(sql => this.#db!.prepare(sql));
+        try { backfillHistoryTurns(memoryTx); } finally { memoryTx.expire(); }
         pruneTraceContent(traceExec, Date.now());
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an

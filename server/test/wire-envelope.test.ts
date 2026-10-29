@@ -52,7 +52,7 @@ test('a host note reaches the wire marked, and client audio is the only unmarked
   assert.equal(f.frames.length, 3, 'the adapter adds no user-role frame of its own');
 });
 
-test('a failed Lux save is a marked host note on the provider wire', async t => {
+test('a generic failed-write host note stays marked on the provider wire', async t => {
   const { f, session } = await ready(t);
   const code = 'payload_changed';
   const text = hostNote(`The note was not saved (${code}). Say plainly that it was not saved.`);
@@ -74,18 +74,16 @@ test('the envelope check has teeth: an unmarked host line is caught', () => {
  * test that covers it. `host` rows are host-originated guidance, `owner` rows are the owner's own words.
  */
 const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 'owner'; covers: readonly { file: string; title: string }[] }[] = [
-  {
-    expression: 'hostNote(`The note was not saved (${code', count: 1, channel: 'host',
-    covers: [{ file: 'wire-envelope.test.ts', title: 'a failed Lux save is a marked host note on the provider wire' }],
-  },
+  { expression: "hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.')", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it" }] },
+  { expression: "hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`)", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm session speaks its reminder, repeats after silence and acknowledges only its alarm" }] },
+  { expression: "hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.')", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm session speaks its reminder, repeats after silence and acknowledges only its alarm" }] },
   {
     expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],
   },
   {
-    expression: 'hostNote(line)', count: 2, channel: 'host',
+    expression: 'hostNote(line)', count: 1, channel: 'host',
     covers: [
-      { file: 'live-memory-note.test.ts', title: 'a mismatch says the note was not saved and asks for one sentence' },
       { file: 'live-session.test.ts', title: 'R6: a source that settles after the first answer is appended once, and said once on a quiet turn' },
     ],
   },

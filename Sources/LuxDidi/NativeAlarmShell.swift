@@ -9,6 +9,7 @@ import UserNotifications
     private let authority: (origin: URL, request: NativeLiveRequestBuilder)
     private let ring: ConnectingRing
     private let onDue: (String) -> Void
+    private let isCallLive: () -> Bool
     private let onCaption: (String?) -> Void
     private var task: Task<Void, Never>?
     private var stopped = false
@@ -33,8 +34,9 @@ import UserNotifications
     })
 
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), ring: ConnectingRing,
+         isCallLive: @escaping () -> Bool = { false },
          onDue: @escaping (String) -> Void, onCaption: @escaping (String?) -> Void) {
-        self.authority = authority; self.ring = ring; self.onDue = onDue; self.onCaption = onCaption
+        self.authority = authority; self.ring = ring; self.isCallLive = isCallLive; self.onDue = onDue; self.onCaption = onCaption
     }
     func start() {
         guard task == nil, !stopped else { return }
@@ -102,7 +104,9 @@ import UserNotifications
         }
         if frame.type == "alarm_due", let alarm = frame.alarm, let deadline = alarm.ringDeadlineUtc,
            deadline > Int(Date().timeIntervalSince1970 * 1000) {
-            let started = ring.startAlarm(deadlineMs: deadline)
+            let started: Bool
+            if Self.shouldChime(callLive: isCallLive()) { started = ring.startAlarm(deadlineMs: deadline) }
+            else { ring.stopAlarm(); started = false }
             if attempted.insert(alarm.id).inserted {
                 if started { post("ring-started", body: ["id": alarm.id]) }
                 onDue(alarm.id)
@@ -111,7 +115,7 @@ import UserNotifications
     }
     private func report() { post("shell", body: ["assertion": alarms.isEmpty || policy.assertionHeld, "notifications": notificationsAllowed]) }
     func noteLiveSession(_ id: String) {
-        // W11-R5: this reserves the occurrence and records live_session_no_channel; no injected text.
+        // Route the occurrence into the live call without a competing chime.
         post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()])
     }
     private func post(_ route: String, body: [String: Any]) {
@@ -120,9 +124,16 @@ import UserNotifications
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Task { _ = try? await session.data(for: request) }
     }
+    static func shouldChime(callLive: Bool) -> Bool { !callLive }
+    static func notificationContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Alarm"; content.body = "Your alarm is due."
+        content.sound = .default
+        return content
+    }
     private func register(_ alarm: ShellAlarm) {
         guard notificationsAllowed else { return }
-        let content = UNMutableNotificationContent(); content.title = "Alarm"; content.body = "Your alarm is due."
+        let content = Self.notificationContent()
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         var date = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: Date(timeIntervalSince1970: Double(alarm.fireAtUtc) / 1000))
         date.timeZone = calendar.timeZone

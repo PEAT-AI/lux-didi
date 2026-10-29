@@ -739,3 +739,23 @@ test('C-CAL8: a schedule ask speaks the calendar first, and the knowledge about 
   assert.equal(findings[0]?.['source'], 'calendar', `the calendar leads a schedule ask: ${JSON.stringify(findings.map(finding => finding['source']))}`);
   assert.match(String(findings[0]?.['text']), /Synthetic 14\b/, 'and its first finding carries the meetings still ahead');
 });
+
+for (const keys of [['calendarId', 'timeMin', 'timeMax'], ['calendarId', 'maxResults']] as const) {
+  test(`direct102 calendar builder uses the runtime registration keys: ${keys.join(',')}`, async () => {
+    const h = fixture([]);
+    const properties = Object.fromEntries(keys.map(key => [key, { type: key === 'maxResults' ? 'number' : 'string' }]));
+    Object.assign(h.deps, { inputSchema: (name: string) => name === 'calendar_list_events' ? { type: 'object', properties, additionalProperties: false } : undefined });
+    const received: Record<string, unknown>[] = [];
+    h.deps.execute = async subs => subs.map(call => {
+      if (call.name === 'calendar_list_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 };
+      received.push(call.args);
+      const accepted = Object.keys(call.args).every(key => keys.includes(key as never));
+      const text = accepted ? '- Synthetic pitch review [synthetic-event] 2026-10-19T14:00:00Z' : 'tool_arguments_rejected';
+      return { key: call.key, name: call.name, ok: accepted, text, originalCharacters: text.length, omittedCharacters: 0 };
+    });
+    const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+    assert.ok(received.length > 0);
+    for (const args of received) assert.deepEqual(Object.keys(args).sort(), [...keys].sort());
+    assert.match(JSON.stringify(reply), /Synthetic pitch review/);
+  });
+}

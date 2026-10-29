@@ -3,6 +3,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {Store} from '../dist/runtime/store.js';
 import {domainMigrations} from '../dist/domain/schema.js';
 import {liveMigrations} from '../dist/live/schema.js';
+import {backfillHistoryTurns} from '../dist/domain/history-turns.js';
 import {createHistoryReader,historyEvidenceCurrent} from '../dist/domain/history-reader.js';
 import {recordHistorySession,forgetHistorySessions} from '../dist/domain/history-lifecycle.js';
 import {createSession,appendEntry,deleteEntry} from '../dist/domain/memory.js';
@@ -15,7 +16,7 @@ const reader=createHistoryReader(()=>now);const read=(args,s=scope)=>store.trans
 function live(id,text,cls='ordinary',eligible=true,at=old){store.transaction(tx=>{
  tx.run(`INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'terminal',1,1,1,70,1,'ended',?,?,?,?)`,[id,store.assistantId,store.authorityEpoch,id,'f','c','a','p','p',JSON.stringify({state:'completed'}),at,at,at]);
  tx.run(`INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,payload_bytes,arrived_at) VALUES(?,1,'inputTranscription',?,1,?,?)`,[id,text,text.length,at]);
- if(eligible)recordHistorySession(tx,id,store.assistantId,[cls],[],at);
+ if(eligible){recordHistorySession(tx,id,store.assistantId,[cls],[],at);backfillHistoryTurns(tx);}
 });}
 function entry(id,text,ec='ordinary',pc='ordinary',imported=false){store.transaction(tx=>{
  createSession(tx,{title:'Synthetic',startedAt:now,timeZone:'UTC'},clock,id+'-session');
@@ -31,7 +32,7 @@ try{
  for(let i=0;i<60;i++)entry('new-'+i,'New unrelated groceries '+i);
  entry('private-parent','Mira parent decision.','ordinary','private');entry('unknown','Mira unknown.',null);entry('import','Mira imported derived note.','ordinary','ordinary',true);
  const ordinary={...scope,allowedClasses:['ordinary']};const found=read({query:'Cobalt'},ordinary);
- assert.equal(found.response.hits.length,1);assert.equal(found.response.hits[0].date,new Date(old).toISOString());assert.equal(found.response.coverage.legacyRawUnavailable,true);
+ assert.equal(found.response.hits.length,1);assert.equal(found.response.hits[0].date,new Date(old).toISOString());assert.equal(found.response.coverage.legacyRawUnavailable,false);
  const detail=read({recordRef:found.response.hits[0].recordRef},ordinary);assert.match(detail.response.text,/violet flags/);assert.equal(detail.response.derivation,'automatic_transcription');
  assert.equal(read({query:'unmatched-wombat'}).response.hits.length,0);
  assert.equal(read({query:'Mira'},ordinary).response.hits.length,2);assert.equal(read({query:'Mira'}).response.hits.length,5);

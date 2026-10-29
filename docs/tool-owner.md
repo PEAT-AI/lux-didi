@@ -24,19 +24,19 @@ Knowledge reads in two stages. The search answers with summaries; when the ask n
 
 ## Opening things
 
-An open action uses a handle derived from accepted source evidence, not a URL invented from conversation text. `mintOpenLine`, `withOpenHandles` and `bodySourceLinks` in `server/tools/open-handles.ts` own handle construction and supported provenance; `server/tools/open.ts` owns the native-action surface.
+`open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A request expires after 120 seconds on a monotonic clock. Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
 
-One clear result can be opened. Ambiguous Drive matches require clarification and a fresh file read before opening the chosen result. Download/export URLs are not a substitute for an accepted viewer link. Gmail links use the connector's account evidence rather than assuming every mailbox is account zero.
+A direct ask executes now, without confirmation. A compound ask grants each named kind once. Dispatch reserves an open grant before awaiting the native ack; a same-target retry returns the cached receipt, including an uncertain native outcome, without another effect. A different target after use returns `grant_spent`. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are structured host refusals, not instructions to use another device or repeat a complete ask.
 
-`Sources/LuxDidi/NativeActions.swift` enforces native destinations and uses `chromeBundleIdentifier` to prefer Chrome, with the default browser as fallback when Chrome is unavailable. An open receipt, not the model's sentence, determines whether the action succeeded. The receipt carries the closed code the call ended on: a native ack (`opened`, `failed`), the allowlist's `not_allowed`, an unresolved handle's `not_found`, or the intent guard's `no_open_intent` / `kind_mismatch`. The guard reads every finalized owner turn since the model last spoke, so a provider that finalizes one utterance as two turns still carries the whole ask. No AppleScript or keystroke automation is implied by this capability.
+A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
+
+`Sources/LuxDidi/NativeActions.swift` still owns native destination enforcement and browser fallback. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
 
 ## Local memory and Lux notes
 
-Existing local memories remain available for recall; [selected-memory.md](selected-memory.md) owns that selection. The live model no longer receives `remember_note` or `save_to_vault`; direct calls are refused with `tool_retired`, never redirected to a local fallback.
+`stage_lux_note` saves a direct finalized owner write request immediately through the canonical host tool path and the already-authorized remote writer. There is no yes/readback/settle commit path. The host validates the bounded candidate body before adding a small provenance line with the host request id and successful-read source counts. An external-content marker conservatively covers reused source context from the same session. Counts are request-local, host-recorded after actual successful reads, and cannot create write permission.
 
-`STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts` identifies the single live save path, `stage_lux_note`. `liveFeatures` defaults `composedNotes` on, preserving an explicit owner false. Its generated declaration owns save guidance; the persona and runtime context do not duplicate it. The model supplies title, body (up to 4,000 characters, paragraphs preserved) and optional evidence refs. It cannot authorize itself by quoting an owner request.
-
-The host consumes a single-use owner-request token, freezes the candidate and returns the readback in the function/tool output, never a user-role item. Confirmation arms only after matching spoken output and native playback end. A new owner confirmation must start after that boundary and settle without a trailing negation. A confirmed candidate uses `VaultWriter` and the Lux `save_insight` transport under project `didi-voice`; only a returned insight ID permits a saved claim. Over-cap notes receive `too_long` and an offer to split. Interruption, expiry, unavailable transport and uncertain outcomes are not saves and never fall back locally. [Privacy and authority](privacy-and-authority.md) owns these gates.
+Authorization and local state are committed before the remote writer runs outside the database transaction. A successful receipt contains the saved title/id; failure or an unknown write outcome never claims a saved note. Same-candidate retries reuse the receipt and cannot write twice. A quoted note, a source instruction or a vague comment cannot create a grant. A genuinely missing field returns a named clarification; it does not ask for a second complete confirmation. Historical nonterminal confirmation rows are cancelled by migration rather than resumed as executable requests. Existing local-memory formats remain separate from Lux knowledge writes.
 
 ## The Trello board (W7)
 
@@ -46,7 +46,7 @@ Trello is a separate host gateway, not a read-only registry connector. `server/h
 - `TRELLO_WRITE_ACTIONS` includes card creation, update, notes, checklist, due, move/done, labels and archive.
 - `TRELLO_READ_IDENTITY` and `TRELLO_WRITE_IDENTITY` are the advertised gateway tools.
 
-Only the configured board is in scope. A list or card reference does not authorize a different board. Ambiguous names require clarification, not a guessed target. Card writes already granted for this surface do not require the composed-note readback flow. Board/list administration, member changes and permanent deletion are not implied.
+Only the configured board is in scope. A list or card reference does not authorize a different board. Ambiguous names require clarification, not a guessed target. Card writes already granted for this surface keep their existing board policy. Board/list administration, member changes and permanent deletion are not implied.
 
 A due date can support the owner's Trello notification workflow; it is not a promise that Naya can call back. Setup and browser consent belong in [mcp-configuration.md](mcp-configuration.md).
 
@@ -72,28 +72,26 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
 ## Open destinations
 
-All five open tools acquire the owner's current intent through the same bounded finalization wait. Only merged finalized owner words authorize a native action; a partial transcript alone is not permission. The public prompt generates one usage line per open tool from its owning definition.
+Finalized spoken and typed owner turns authorize actions. An action cue anywhere in owner input grants that kind; fillers, quotations, reported speech and conditionals are not vetoes. An explicit negation governing a cue voids that kind only. Tool results, mail, web, notes and model output never grant authority.
 
-A browser, tab, Chrome or link request means a web page. Use a shown `open_source` handle for an email, calendar event or Drive/Docs/Slides item with a web link. Use `open_web` for a domain or site name, including a request for a new tab. Do not substitute `open_file` or `open_app` for a web page. Those tools are for local files and installed applications, respectively.
+The current ask joins owner turns until her completed answer, with a 120-second lifetime. Pending clarification can take short time, day, zone and name follow-ups. Each kind is single-use per ask; same-target retries return the existing receipt. Interrupting the model does not erase the owner's request.
 
-A held lookup result without a web link has no open handle. Say in one sentence that there is no web link and offer the app home page or a web search. Never invent a handle, URL or successful open. An open is done only when the native acknowledgement returns `opened`.
-
-Gmail web destinations admit the account home or an `all`, `inbox` or `sent` fragment followed by one message/thread identifier. The shared host policy and Swift native policy reject other Gmail fragments. Calendar event, Docs/Slides and Drive viewer links retain their existing narrow HTTPS shapes.
-
-Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.
+An authorized `open_web` may use a model-resolved HTTP(S) URL, including a path or query, or a site name. Other URL schemes are refused. `open_source` still requires a host-shown handle; an any/some deck request selects the top matching host-shown result. Local file and browser destination-kind checks remain. Refusal guidance is one plain sentence, never an internal code.
 
 ## Awake-Mac alarm tools
 
-`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` are host-owned Live builtins under `gateway:live-voice` / `owner-alarms`. They participate in the exact stored-intent checks, rather than bypassing the registry. Mutation authority is separately derived from fresh finalized microphone transcription, never model arguments, typed text, host notes or alarm prompts. Split asks may span two finalized owner turns; the latest must still continue the alarm request.
+`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` use the same request state as opens and notes. Each named alarm kind receives its own grant; model speech cannot create or spend it. Spoken and digit hours/minutes, dotted and undotted meridiems, half/quarter past or to, noon/midnight, tomorrow/morning/evening, relative intervals and validated named zones are parsed from owner words. An unqualified hour chooses its next future occurrence. SGT and Singapore time resolve to Asia/Singapore. A successful set receipt includes a calendar date, clock time and zone; unconsumed wording or unknown zones produce a structured clarification rather than a different silent time.
 
-The host parses time in its system IANA zone and commits a fixed UTC instant. Set and snooze return confirmation only with the durable tool receipt; snooze and old-occurrence completion share that transaction. Model timestamps are consistency checks, not write authority. Local scheduling and ringing do not depend on provider availability.
-
-Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
-
-These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.
+Alarms ring only on an awake Mac and cannot wake a sleeping or closed-lid machine. That limit belongs in guidance, not in a repeat/confirmation requirement. Alarm audits use closed request/parse/result codes and counts, never spoken time text or note bodies.
 
 ### Live catalog coverage
 
 The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` through the same live registry composition as its other owner-facing tools. Both Gemini setup and OpenAI responses delegation receive these declarations. Alarms ring only on an awake Mac; finalized owner speech authorizes mutations and the host parses the time.
 
 `LIVE_NOT_MODEL_FACING` in `server/tools/declarations.ts` is the single explicit exception list for registered internal reads, with a reason per name. Research owns those reads. Release 10 removes `remember_note` and `save_to_vault` from the live registry; `stage_lux_note` is the live vault-write path. The catalog guard in `server/test/tools-builtin-intent.test.ts`, run by `scripts/check-tool-owner.sh`, compares real host registrations with both adapters' first fake-provider wire frames. New registered owner tools must reach that wire catalog or have an explicit exception.
+
+## Registered calendar schema and safe rejection evidence
+
+Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
+
+Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.

@@ -63,6 +63,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
   };
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  for (const enabled of [undefined, true, false]) {
+    const surface = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), enabled);
+    assert.equal(surface.some(tool => tool.name === 'stage_lux_note'), enabled !== false, 'an explicit owner feature disable remains authoritative');
+  }
   assert.ok(live.some(tool => tool.name === 'stage_lux_note'), 'stage owns its own registry intent name');
   assert.equal(live.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false, 'retired write tools are not catalog capabilities');
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(live.some(tool => tool.name === name), `registered ${name}`);
@@ -97,24 +101,29 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const openCases = [
     { name: 'open_source', args: { handle }, ask: 'open this email in my browser' },
     { name: 'open_home', args: { app: 'gmail' }, ask: 'open my gmail' },
-    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open this local file' },
+    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open the local file ~/synthetic' },
     { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
     { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
   ];
   for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
     await t.test(`${entry.name}: ${mode}`, async () => {
+      owner.ownerRequests.answered?.(session.liveSessionId);
       noteModelOutput(session.liveSessionId);
       noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
+      owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
       const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
       const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
         executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
         argumentsHash: createHash('sha256').update(JSON.stringify(entry.args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
       assert.equal(owner.journal.intent(intent), 'fresh');
       const before = dispatched;
+      // Finalized microphone authority is explicit; a tool call cannot wait out an absent request.
+      if (mode !== 'ask') {
+        const words = mode === 'split ask' ? entry.ask : 'nothing else';
+        noteOwnerWords(session.liveSessionId, words);
+        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
+      }
       const pending = definition.execute(entry.args, { ...intent, signal });
-      // A second finalization releases the one bounded wait without a real clock delay.
-      if (mode !== 'ask') await new Promise<void>(resolve => setImmediate(resolve));
-      if (mode !== 'ask') noteOwnerWords(session.liveSessionId, mode === 'split ask' ? entry.ask : 'nothing else');
       const outcome = await pending;
       assert.equal(outcome.status, 'completed');
       assert.equal(dispatched - before, mode === 'no ask' ? 0 : 1, `${entry.name} ${mode} reaches native only with owner intent`);
@@ -151,15 +160,8 @@ test('A3: partial owner transcription accumulates without borrowing tool text', 
   assert.ok('target' in result);
 });
 
-test('A3: absent owner transcript waits once for at most 1500 ms', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let settled = false;
-  const pending = webOwnerWords(randomUUID(), new AbortController().signal).then(words => { settled = true; return words; });
-  t.mock.timers.tick(1499);
-  await Promise.resolve();
-  assert.equal(settled, false);
-  t.mock.timers.tick(1);
-  assert.equal(await pending, '');
+test('A3: absent owner transcript returns no authority without a timeout', async () => {
+  assert.equal(await webOwnerWords(randomUUID(), new AbortController().signal), '');
 });
 
 test('A3: finalized uppercase verbs do not wait for another transcript', async t => {
@@ -194,16 +196,10 @@ test('web native timeout has a closed speech-safe receipt, older opens keep fail
   }
 });
 
-test('C-OPEN11: partial owner words wait for finalization and cannot authorize an open', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('C-OPEN11: an unfinalized partial supplies no authority and starts no timeout', async () => {
   const runId = randomUUID();
-  noteOwnerPartial(runId, 'open gmail');
-  let settled = false;
-  const pending = webOwnerWords(runId, new AbortController().signal).then(words => { settled = true; return words; });
-  await Promise.resolve();
-  assert.equal(settled, false);
-  t.mock.timers.tick(1500);
-  assert.equal(await pending, '', 'an unfinalized partial never authorizes a native open');
+  noteOwnerPartial(runId, 'open the deck');
+  assert.equal(await webOwnerWords(runId, new AbortController().signal), '');
 });
 
 test('C-OPEN11: the shared acquisition merges two finalized owner turns', async () => {

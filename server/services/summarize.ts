@@ -1,3 +1,4 @@
+import { persistHistoryTurns } from '../domain/history-turns.js';
 import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -74,7 +75,7 @@ The transcript is automatic speech recognition of an owner who speaks English as
 numbers may be misheard. If a name looks garbled, describe the person or thing by role instead of guessing a
 spelling. Do not repeat content that only came from the earlier summaries listed below unless the owner
 discussed it again in this conversation. Leave out small talk, greetings, tests of the app and anything about
-how the app or the assistant works. Set skip to true when nothing worth remembering happened.`;
+how the app or the assistant works. Set skip to true only for calls consisting entirely of small talk or app tests. A substantive story, decision or discussion must be summarised, even if no fact or open loop needs saving.`;
 }
 
 export interface DistillationTurn { readonly speaker: 'owner' | 'assistant'; readonly text: string }
@@ -112,7 +113,7 @@ export function capDistillationInput(text: string): { text: string; truncated: b
   if (text.length <= DISTILLATION_INPUT_MAX_CHARS) return { text, truncated: false };
   const head = text.slice(0, DISTILLATION_INPUT_HEAD_CHARS);
   const tail = text.slice(text.length - DISTILLATION_INPUT_TAIL_CHARS);
-  return { text: `${head}\n[... transcript shortened ...]\n${tail}`, truncated: true };
+  return { text: `${head}\n[... middle of conversation omitted; opening 4000 and ending 20000 characters retained ...]\n${tail}`, truncated: true };
 }
 
 function localDate(ms: number, timeZone: string): string {
@@ -363,8 +364,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         result = await callModel(input.text, source.dataClass, controller.signal);
-      } catch {
-        lastError = 'model_error';
+      } catch (error) {
+        // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
+        lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';
       }
       if (result && !RETRYABLE.has(result.status)) {
         const parsed = parseDistillationResult(result.text);
@@ -384,6 +386,10 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
         return;
       }
       lastError = result ? failureCode(result) : lastError;
+      // #603: a missing or refused credential is not transient inside one call. Retrying waits the backoff and
+      // spends the attempt budget on the same refusal, so this failure closes the row at once and leaves its
+      // retry count for the next host start, which is when a credential is up (RETRYABLE_FAILURE_CODES).
+      if (lastError === 'credential_unavailable') break;
       if (retryCount - firstRetry >= SUMMARY_MAX_RETRIES) break;
       await pause(options.delay, SUMMARY_RETRY_BACKOFF_MS[Math.min(retryCount - firstRetry, SUMMARY_RETRY_BACKOFF_MS.length - 1)] ?? 0);
       retryCount += 1;
@@ -443,6 +449,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   return {
     schedule(liveSessionId: string): void {
+      options.store.transaction(tx => persistHistoryTurns(tx, liveSessionId));
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },
     reconcile: (phase?: SummaryPhase): Promise<void> => reconcilePending(phase),

@@ -1,6 +1,7 @@
+import type { OwnerRequestPort } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
+import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, stripOpenLines, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
 import { pickSiteDomain, publicQueryOf, type WebSearchPort } from './web-search.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
@@ -17,10 +18,10 @@ export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
-  not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
-  not_allowed: 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
-  no_open_intent: 'I did not hear an open request in his words. Say plainly that I did not hear one and that nothing is open; when he asks again, call open again with the same handle, never invent a reason.',
-  kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',
+  not_found: 'The host could not resolve that shown item.',
+  not_allowed: 'I cannot open that target.',
+  no_open_intent: 'I did not hear an open request, so nothing is open.',
+  kind_mismatch: 'That item is not the kind authorized by this request.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string; origin?: string }
@@ -28,13 +29,13 @@ export interface NativeActionResult { type: 'native_action_result'; id: string; 
 
 export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. If a held result has no web link, say so and offer the home page or a web search in one sentence.';
 
-const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
+const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything. If refused, say only the plain sentence in say, never internal codes or retry diagnostics.';
 
 export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
-  { name: 'open_source', guidance: 'shown handle', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
-  { name: 'open_home', guidance: 'app home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', guidance: 'local path', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', guidance: 'app name', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
+  { name: 'open_source', guidance: 'shown handle', description: `Call it when he asks; the host reads his words. Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
+  { name: 'open_home', guidance: 'app home', description: `Call it when he asks; the host reads his words. Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
+  { name: 'open_file', guidance: 'local path', description: `Call it when he asks; the host reads his words. Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
+  { name: 'open_app', guidance: 'app name', description: `Call it when he asks; the host reads his words. Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
@@ -87,20 +88,9 @@ export function openDestinationClass(tool: OpenFamilyTool): OpenDestinationClass
   return 'handle';
 }
 
-/**
- * C-POLISH10: the one audit line an open call writes. It counts the target's words and says whether his own words
- * bound it, which destination class it resolved to, and the closed code it ended in: never the words, the handle or
- * the URL, because an open target is the owner's speech.
- */
-export function openAudit(input: { tool: string; kind: OpenAuditKind; target?: string | undefined; ownerWords?: string | undefined; destination: OpenDestinationClass; code: OpenReceiptCode }): void {
-  const target = input.target ?? '';
-  hostLogEvent({
-    event: 'open_audit', tool: input.tool, kind: input.kind,
-    words: target === '' ? 0 : webWords(target).length,
-    bound: target !== '' && input.ownerWords !== undefined && webBinding(target, input.ownerWords) ? 'yes' : 'no',
-    destination: input.destination,
-    refusal: input.code === 'opened' ? 'none' : input.code,
-  });
+/** Request audit metadata only: never target text, handles, URLs or owner words. */
+export function openAudit(input: ReturnType<OwnerRequestPort['audit']> & { refusalCode: string }): void {
+  hostLogEvent({ event: 'open_audit', ...input });
 }
 
 /** What a home app is called in plain words, so the open result can name it back to the owner. */
@@ -151,7 +141,6 @@ const INTENT_TURNS = 3;
 const INTENT_CHARS = 400;
 interface IntentWindow { turns: string[]; modelSpoke: boolean; partial?: string }
 const ownerTurn = new Map<string, IntentWindow>();
-const ownerFinalized = new Map<string, Set<() => void>>();
 export function noteOwnerPartial(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   window.partial = `${window.partial ?? ''}${text}`.slice(-INTENT_CHARS);
@@ -161,7 +150,6 @@ export function noteOwnerWords(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   const turns = window.modelSpoke ? [] : window.turns;
   ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
-  for (const resolve of ownerFinalized.get(runId) ?? []) resolve();
 }
 /** The model produced output: the next finalized owner turn opens a fresh intent window. */
 export function noteModelOutput(runId: string): void {
@@ -180,25 +168,8 @@ export function ownerTurnWords(runId: string): string {
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
 export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
-  // All five open tools share this acquisition. Partial words tell us finalization is pending,
-  // but only finalized owner words authorize a native action.
-  const finalized = () => ownerTurn.get(runId)?.modelSpoke ? '' : ownerWords(runId);
-  if ((!ownerTurn.get(runId)?.partial && (OPEN_INTENT.test(finalized()) || WEB_INTENT.test(finalized()))) || signal.aborted) return finalized();
-  await new Promise<void>(resolve => {
-    const finish = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      listeners.delete(finish);
-      if (!listeners.size) ownerFinalized.delete(runId);
-      resolve();
-    };
-    const listeners = ownerFinalized.get(runId) ?? new Set<() => void>();
-    listeners.add(finish);
-    ownerFinalized.set(runId, listeners);
-    const timer = setTimeout(finish, 1500);
-    signal.addEventListener('abort', finish, { once: true });
-  });
-  return finalized();
+  void signal;
+  return ownerWords(runId);
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
@@ -265,6 +236,11 @@ const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
 ];
 
 /** A handle resolves to a kind the ask named: a mail thread is never opened as the deck he asked for. */
+export function anyOpenKinds(words: string): readonly OpenKind[] {
+  if (!/\b(?:any|some|one of)\b/i.test(words)) return [];
+  return [...new Set(ASK_KINDS.filter(entry => entry.words.test(words.toLowerCase())).flatMap(entry => entry.kinds))];
+}
+
 function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | 'not_allowed' | undefined {
   if (!OPEN_INTENT.test(words)) return 'no_open_intent';
   // A web request must never degrade into a local default-app action. A site name
@@ -272,6 +248,7 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
   const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
   if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
   if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
+  if (toolName === 'open_file' && !/\b(?:local|file|folder|path)\b|~\/|\/Users\//i.test(words)) return 'not_allowed';
   if (toolName !== 'open_source') return undefined;
   const named = ASK_KINDS.filter(entry => entry.words.test(words));
   return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
@@ -281,6 +258,11 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
 export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
   const resolved = resolveOpenTarget(toolName, args);
   if ('code' in resolved) return resolved;
+  if (toolName === 'open_app' && !webBinding(args['name']!.replace(/\.app$/i, ''), words)) return { code: 'not_allowed' };
+  if (toolName === 'open_home') {
+    const homes: Record<string, RegExp> = { gmail: /\b(?:gmail|mail|email|inbox)\b/i, calendar: /\b(?:calendar|schedule)\b/i, mattermost: /\b(?:mattermost|chat)\b/i };
+    if (!homes[args['app']!]?.test(words)) return { code: 'not_allowed' };
+  }
   const refusal = openRefusal(toolName, words, resolved.target.kind);
   return refusal === undefined ? resolved : { code: refusal };
 }
@@ -368,8 +350,25 @@ export class NativeActionBus {
  * research replies and direct tool replies alike, after every trim. A handle opens only when this text
  * carries its `open:` line.
  */
-export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): void {
-  for (const result of results) exposeHandles(JSON.stringify(result.response ?? {}));
+export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): { handle: string; kind: string }[] {
+  const shown: { handle: string; kind: string }[] = [];
+  const scan = (value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const line of value.split('\n')) {
+        const match = /^open: (L[0-9]{1,4}) = /.exec(line);
+        if (!match || stripOpenLines(line) !== line) continue;
+        const resolved = resolveHandle(match[1]!);
+        if (resolved) shown.push({ handle: match[1]!, kind: resolved.kind });
+      }
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) scan(child);
+    }
+  };
+  for (const result of results) {
+    exposeHandles(JSON.stringify(result.response ?? {}));
+    scan(result.response);
+  }
+  return shown;
 }
 
 /** The Mattermost origin a frame carries, and only for a destination that is a Mattermost viewer link. */
@@ -396,7 +395,7 @@ export const OPEN_WEB_PARAMETERS: Record<string, unknown> = {
   required: ['kind', 'target'],
   additionalProperties: false,
 };
-export const OPEN_WEB_DESCRIPTION = `Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, and never pass a URL, a host, a path or a query string. For a document or file he names by title, look it up and open it with open_source instead.`;
+export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, use a resolved http(s) URL or site when that answers his request. For a document or file he names by title, look it up and open it with open_source instead.`;
 export function validateOpenWeb(args: unknown): args is { kind: WebKind; target: string } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const record = args as Record<string, unknown>;
@@ -418,7 +417,7 @@ export function webWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** Every word of the target is a word he said, so no retrieved text and no model sentence binds one. */
+/** Handle-tool target binding only, not open_web: each target word must occur in the owner words. */
 export function webBinding(target: string, ownerWords: string): boolean {
   const said = new Set(webWords(ownerWords));
   const wanted = webWords(target);
@@ -437,23 +436,23 @@ export function openWebFailure(code: string): { code: string; fixNotForSpeech: s
 
 export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
   no_open_intent: {
-    fixNotForSpeech: 'I did not hear an open request in his words. Do not call open_web on a name he did not ask to open; if he asks again, call it again with the words he says.',
+    fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I did not hear an open request, so nothing is open.',
   },
   not_owner_words: {
-    fixNotForSpeech: 'The target did not come from his words this turn. Do not take a host, a place or a query from a result, a mail, a page or an earlier turn; ask him to name it, then call open_web with his own words.',
+    fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I did not hear you name that, so nothing is open.',
   },
   not_found: {
-    fixNotForSpeech: 'No site matched that name, so nothing opened. Say that plainly and ask him to name the site; never open one he did not name.',
+    fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I could not find that site, so nothing is open.',
   },
   ambiguous: {
-    fixNotForSpeech: 'More than one site matched that name. Say which names I found and ask which one he means; never open one he did not choose.',
+    fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I found more than one match and did not open any of them.',
   },
   not_allowed: {
-    fixNotForSpeech: 'That is not a destination I open. Say plainly that I cannot open it and that nothing is open.',
+    fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'That is not something I can open, so nothing is open.',
   },
 };
@@ -473,7 +472,13 @@ export interface WebOpenTarget { action: NativeAction; target: string; detail: s
  */
 export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (!WEB_INTENT.test(words)) return { code: 'no_open_intent' };
-  if (!webBinding(args.target, words)) return { code: 'not_owner_words' };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
+  if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`);
+      return { target: { action: 'open_url', target: url.href, detail: 'web', kind: 'web', title: url.hostname } };
+    } catch { return { code: 'not_allowed' }; }
+  }
   const direct = webDestination(args.kind, args.target);
   if (direct !== undefined) return { target: { action: 'open_url', target: direct.url, detail: 'web', kind: 'web', title: direct.domain } };
   if (args.kind !== 'site') return { code: 'not_allowed' };
@@ -484,9 +489,15 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, wo
   const outcome = await port.search({ query, signal });
   if (!outcome.ok) return { code: 'not_found' };
   const pick = pickSiteDomain(args.target, outcome.evidence.sources);
-  // None and several are different answers: nothing matched, or several did and he must choose.
-  if ('candidates' in pick) return pick.candidates.length === 0 ? { code: 'not_found' } : { code: 'ambiguous', candidates: pick.candidates };
-  const root = webDestination('site', pick.domain);
+  let domain: string | undefined = 'domain' in pick ? pick.domain : undefined;
+  if ('candidates' in pick) {
+    for (const source of outcome.evidence.sources) {
+      const candidate = registrableDomain(new URL(source.url).hostname);
+      if (candidate && pick.candidates.includes(candidate)) { domain = candidate; break; }
+    }
+  }
+  if (!domain) return { code: 'not_found' };
+  const root = webDestination('site', domain);
   return root === undefined ? { code: 'not_allowed' } : { target: { action: 'open_url', target: root.url, detail: 'web', kind: 'web', title: root.domain } };
 }
 

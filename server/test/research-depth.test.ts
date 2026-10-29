@@ -139,8 +139,8 @@ test('ALLOC 1 Clifton regression: one hit holding three requested people deliver
   for (const person of ['Ana', 'Ben', 'Cara']) {
     assert.match(evidence, new RegExp(`\\b${person} Clifton\\b`, 'u'), `${person} is delivered even beside memory`);
   }
-  assert.equal(evidenceOf(reply as Record<string, unknown>, 'memory'), '',
-    'memory the ask did not refer to gets no allocation beside a named person');
+  assert.equal(evidenceOf(reply as Record<string, unknown>, 'memory'), `memory: 5 of 5 shown\n${fragments.join('\n')}`,
+    'C-RECALL104 M1: a capitalised name never deletes the memory findings');
 });
 
 test('ALLOC 2: an ask that names no person may use her memory', async () => {

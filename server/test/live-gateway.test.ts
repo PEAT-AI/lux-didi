@@ -1107,7 +1107,7 @@ for (const openCase of [
 });
 
 for (const scenario of [
-  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'nothing is open' },
+  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'There is no current owner request authorizing that action.' },
   { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
@@ -1158,7 +1158,7 @@ for (const scenario of [
   if ('none' in scenario) {
     await waitFor(() => h.f.frames.some(frame => 'toolResponse' in (frame as Record<string, unknown>)), 1800);
     const response = JSON.stringify(h.f.frames.filter(frame => 'toolResponse' in (frame as Record<string, unknown>)).at(-1));
-    assert.match(response, /no_open_intent/);
+    assert.match(response, /no_owner_request/);
     assert.match(response, /"say"/);
     assert.ok(response.includes(scenario.say));
     assert.equal(frames.some(frame => frame.text && JSON.parse(frame.text).type === 'native_action'), false);

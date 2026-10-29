@@ -2,10 +2,10 @@
 // didi-timeline: read the trace tables in state.sqlite and the day's logs and print one joinable timeline.
 // Read-only canonical SQLite timeline. See docs/diagnostic-store.md.
 const { DatabaseSync } = require('node:sqlite');
-const { existsSync, readdirSync, readFileSync } = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const { existsSync, readdirSync, readFileSync, statSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
-const { fileURLToPath } = require('node:url');
 
 const usage = `didi-timeline call <liveSessionId|latest> [--content] [--json] [--audit]
 didi-timeline sessions --since <date> --audit-summary [--json]
@@ -88,9 +88,46 @@ function logInputs() {
   return inputs;
 }
 
+// #699: server/dist is a build artifact, never the checkout's authority. A dist left over from an older
+// source tree answered the read with yesterday's shape, so the newest source decides: when dist is missing
+// or older, the documented build runs first, and its own failure stops the read instead of hiding behind it.
+const SERVER = join(__dirname, '..', 'server');
+
+function newestMtime(directory, accept, skip) {
+  let newest = Number.NEGATIVE_INFINITY;
+  let entries = [];
+  try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return newest; }
+  for (const entry of entries) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (skip.has(entry.name) || entry.name.startsWith('.')) continue;
+      newest = Math.max(newest, newestMtime(full, accept, skip));
+    } else if (entry.isFile() && accept(entry.name)) {
+      try { newest = Math.max(newest, statSync(full).mtimeMs); } catch { /* a file that vanished is not a source */ }
+    }
+  }
+  return newest;
+}
+
+function ensureBuilt() {
+  const built = join(SERVER, 'dist', 'trace', 'timeline.js');
+  const source = newestMtime(SERVER, name => /\.(ts|json)$/.test(name), new Set(['node_modules', 'dist']));
+  const build = existsSync(built) ? newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules'])) : Number.NEGATIVE_INFINITY;
+  if (existsSync(built) && build >= source) return;
+  process.stderr.write('didi-timeline: server/dist is missing or older than its source; running: npm --prefix server run build\n');
+  const run = spawnSync('npm', ['--prefix', SERVER, 'run', 'build'], { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
+  if (run.error || run.status !== 0) {
+    const detail = (run.error !== undefined && run.error !== null ? run.error.message : (run.stderr ?? '')).trim();
+    if (detail !== '') process.stderr.write(`${detail}\n`);
+    process.stderr.write(`didi-timeline: the build failed (${run.status === null ? 'not started' : `exit ${run.status}`}); the timeline would read a stale dist\n`);
+    process.exit(run.status === null || run.status === 0 ? 1 : run.status);
+  }
+  if (!existsSync(built)) fail('the build did not emit server/dist/trace/timeline.js; run: npm --prefix server run build');
+}
+
 async function traceModule() {
+  ensureBuilt();
   const built = new URL('../server/dist/trace/timeline.js', `file://${__filename}`);
-  if (!existsSync(fileURLToPath(built))) fail('the trace module is not built; run: npm --prefix server run build');
   return import(built.href);
 }
 

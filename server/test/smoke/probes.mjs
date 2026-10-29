@@ -21,12 +21,24 @@ import { spawnSupervised, waitForReady, stopSupervised, READY_TIMEOUT_MS } from 
 const root = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
 const WebSocket = WS;
 
+// #690: the catalogue the code registers, not a remembered one. Each Mongoose endpoint and Mattermost
+// child is its own connection (server/config/mcp.ts, docs/connectors.md), so an id that no longer exists
+// shows up as a skipped probe instead of silently proving nothing. A tool name outside the connector's own
+// read envelope (server/connectors/google.ts, mattermost.ts, mongoose.ts) is refused there.
+// A read whose arguments need the catalogue owner (the people child's person read) gets the mcp.json document.
 const CONNECTOR_READS = {
   'lux-knowledge': { tool: 'search_knowledge', args: { query: 'Lux Didi' } },
   gmail: { tool: 'gmail_get_profile', args: {} },
   calendar: { tool: 'calendar_list_calendars', args: {} },
-  mongoose: { tool: 'list_companies', args: {} },
+  drive: { tool: 'drive_search_files', args: { query: 'Lux Didi' } },
+  'mongoose-knowledge': { tool: 'list_companies', args: {} },
+  'mongoose-data': { tool: 'list_explores', args: {} },
+  'mongoose-crm': { tool: 'list_inbound_leads', args: {} },
   mattermost: { tool: 'mattermost_whoami', args: {} },
+  'mattermost-people': {
+    tool: 'mattermost_resolve_person',
+    args: doc => (typeof doc.ownerChatUsername === 'string' && doc.ownerChatUsername.length > 0 ? { name: doc.ownerChatUsername } : null),
+  },
 };
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
@@ -213,9 +225,11 @@ function liveHeaders(token, epoch) {
   return { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': epoch, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() };
 }
 
-async function mcpCall(endpoint, configDir) {
+async function mcpCall(endpoint, configDir, doc) {
   const read = CONNECTOR_READS[endpoint.id];
   if (!read) return { state: 'skipped', stage: 'catalog', ms: 0 };
+  const args = typeof read.args === 'function' ? read.args(doc) : read.args;
+  if (args === null) return { state: 'skipped', stage: 'catalog', ms: 0 };
   const started = now();
   let token = null;
   if (endpoint.credentialRef) {
@@ -240,7 +254,7 @@ async function mcpCall(endpoint, configDir) {
     const tools = await client.listTools();
     const names = (tools.tools ?? []).map(tool => tool.name);
     if (!names.includes(read.tool)) return { state: 'down', stage: 'tools', ms: now() - started, detail: `tool ${read.tool} not listed` };
-    const result = await client.callTool({ name: read.tool, arguments: read.args });
+    const result = await client.callTool({ name: read.tool, arguments: args });
     const content = Array.isArray(result.content) ? result.content : [];
     const bytes = content.reduce((total, part) => total + (typeof part.text === 'string' ? part.text.length : 0), 0);
     if (result.isError) return { state: 'down', stage: 'read', ms: now() - started, detail: 'tool returned an error' };
@@ -286,7 +300,7 @@ async function probeConnectors({ configDir }) {
   let failed = 0;
   let skipped = 0;
   for (const endpoint of endpoints) {
-    const result = await mcpCall(endpoint, configDir);
+    const result = await mcpCall(endpoint, configDir, doc);
     if (result.state === 'up') {
       const identity = IDENTITY_ENDPOINTS.has(endpoint.id) ? ` identity=${identityToken(identityValues(endpoint.id, result.decoded), expected)}` : '';
       if (identity === ' identity=mismatch') failed += 1;

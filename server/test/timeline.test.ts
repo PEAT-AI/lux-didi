@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { record } from '../trace/record.js';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
@@ -188,6 +188,49 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.equal(older.liveSessionId, fixture.otherSessionId);
   assert.equal(older.durationMs, 0);
   assert.equal(older.terminal, null);
+});
+
+test('#699: a stale server/dist is rebuilt before the read, and a failed build stops the CLI (#752)', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-build-')));
+  try {
+    const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
+    const timelineModule = new URL('../trace/timeline.js', import.meta.url).href;
+    const tree = join(root, 'checkout');
+    const dist = join(tree, 'server', 'dist', 'trace');
+    mkdirSync(join(tree, 'scripts'), { recursive: true });
+    mkdirSync(dist, { recursive: true });
+    copyFileSync(script, join(tree, 'scripts', 'didi-timeline'));
+    chmodSync(join(tree, 'scripts', 'didi-timeline'), 0o755);
+    writeFileSync(join(tree, 'server', 'package.json'), '{ "name": "synthetic-server", "private": true }\n');
+    writeFileSync(join(tree, 'server', 'settings.ts'), 'export const settings = 1;\n');
+    // The built module is the real one, so a skipped rebuild still answers and the assertion cannot pass by crashing.
+    writeFileSync(join(dist, 'timeline.js'), `export * from ${JSON.stringify(timelineModule)};\n`);
+    const older = new Date(Date.now() - 3600000);
+    const newer = new Date();
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const calls = join(root, 'npm-calls');
+    const npm = join(bin, 'npm');
+    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(calls)}\nprintf 'tsc: synthetic compile error\\n' >&2\nexit 7\n`);
+    chmodSync(npm, 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
+    const cli = join(tree, 'scripts', 'didi-timeline');
+    const dataDir = join(root, 'data');
+    // A checkout that fetched a newer source over an older build.
+    utimesSync(join(dist, 'timeline.js'), older, older);
+    for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), newer, newer);
+    const failed = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
+    assert.equal(failed.status, 7, 'the build exit status is the CLI status');
+    assert.match(failed.stderr, /tsc: synthetic compile error/, "the build's own error is shown");
+    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build'], 'the documented build ran');
+    // A fresh dist is authority: no build runs and the real module answers.
+    rmSync(calls, { force: true });
+    for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
+    utimesSync(join(dist, 'timeline.js'), newer, newer);
+    const fresh = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
+    assert.equal(existsSync(calls), false, 'a fresh dist needs no build');
+    assert.equal(fresh.status, 0, fresh.stderr);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('the CLI discovers host.log, its rotated file and audio.log, and nothing else (L3-F3, #1026)', () => {
@@ -465,4 +508,20 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('C-STEADY104: count-only audit detects unfulfilled spoken lookup claims', () => {
+  withStore(store => {
+    for (const [index, text] of ["One second, I'm looking this up", 'Let me check', 'One second, checking', 'I checked it already'].entries()) {
+      const id = `claim-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    const read = store.transaction(tx => buildTimeline(tx, SESSION));
+    assert.equal(buildCallAudit(read, scanLogs([])).aggregates.claimsWithoutCall, 3);
+    assert.equal(read.transcript, undefined, 'audit exports counts, not transcript content');
+    assert.ok(read.turns.every(track => track.utterances === undefined));
+    call(store, SESSION, 'claim-1', 'fulfilling-call', 'research', 'completed', 10, T0 + 1002);
+    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 2);
+  });
 });

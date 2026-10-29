@@ -1,3 +1,4 @@
+import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
@@ -22,8 +23,8 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, AlarmOwnerGate, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_BROWSER_GUIDANCE, OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit, openDestinationClass, ownerTurnWords, type OpenAuditKind, type OpenFamilyTool } from './open.js';
+import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -159,12 +160,10 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
+  const ownerRequests = new OwnerRequests();
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
-  const alarmGate = new AlarmOwnerGate();
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
-  // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
-  const persistenceFailures = new Set<string>();
   const historyReader = createHistoryReader();
   const retained = new Map<string, { runId: string; executionId: string; resultSha256: string; evidence: HostEvidenceRef }>();
   const bodyPages = new Map<string, ReceivedBodyPage>();
@@ -325,30 +324,28 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
     const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
     let maxResultBytes = 0;
-    try {
-      const commit = (tx: Transaction) => {
-        const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
-        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
-        maxResultBytes = bound.policy.bounds.maxResultBytes;
-        if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
-        classSet(dataClasses); exact(response, [], Object.keys(response));
-        if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
-        if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
-        if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
-        if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
-        const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
-        if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
-        return persistTerminal(tx, call, 'completed', value);
-      };
-      const result = transaction ? commit(transaction) : store.transaction(commit);
-      if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
-      if (cursor && hostEvidence?.kind === 'remote-body') {
-        const parent = { executionId: call.executionId, name: call.toolName, ...(call.callId ? { callId: call.callId } : {}), result };
-        const end = receivedBodyEnd(hostEvidence.body, 0, maxResultBytes);
-        bodyPages.set(cursor, { runId: call.runId, maxResultBytes, rootCursor: cursor, parent, offset: 0, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < hostEvidence.body.length ? { nextCursor: randomUUID() } : {}) });
-      }
-      return result;
-    } catch (error) { persistenceFailures.add(call.executionId); throw error; }
+    const commit = (tx: Transaction) => {
+      const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
+      const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
+      maxResultBytes = bound.policy.bounds.maxResultBytes;
+      if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
+      classSet(dataClasses); exact(response, [], Object.keys(response));
+      if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
+      if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
+      if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
+      if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
+      const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+      if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
+      return persistTerminal(tx, call, 'completed', value);
+    };
+    const result = transaction ? commit(transaction) : store.transaction(commit);
+    if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
+    if (cursor && hostEvidence?.kind === 'remote-body') {
+      const parent = { executionId: call.executionId, name: call.toolName, ...(call.callId ? { callId: call.callId } : {}), result };
+      const end = receivedBodyEnd(hostEvidence.body, 0, maxResultBytes);
+      bodyPages.set(cursor, { runId: call.runId, maxResultBytes, rootCursor: cursor, parent, offset: 0, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < hostEvidence.body.length ? { nextCursor: randomUUID() } : {}) });
+    }
+    return result;
   };
   const journal: ToolsOwner['journal'] = {
     intent(input, capture) {
@@ -375,7 +372,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     },
     fail(input, status, reason) {
       const call = callDTO(input);
-      if (persistenceFailures.has(call.executionId)) throw Error('result_persistence_failed');
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
@@ -488,9 +484,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     },
   });
   const owner: ToolsOwner & LiveRunConnections = {
-    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
+    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
     observeAlarmOwner: (session, journalId, words, at) => {
-      alarmGate.observeOwnerFinal(session, journalId, words, at);
+      ownerRequests.observe(session, journalId, words);
+      void at;
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
@@ -640,6 +637,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (composedNotes !== false) definitions.push({ ...STAGE_NOTE_IDENTITY, description: STAGE_NOTE_GUIDANCE, effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
         async execute(args, context) {
           if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
           // The booked call this execute may complete, re-read inside whichever transaction uses it.
@@ -654,13 +652,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return call as ToolCallIntent;
           };
           try {
-            const result = store.transaction(tx => {
+            const preparation = store.transaction(tx => {
               const call = booked(tx);
               const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }), ['ordinary'], tx);
+              assertLiveIdentity(tx, call); target(snapshot, call, tx);
+              if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+              return { staged: stageNote ? stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }) : { saved: false, code: 'not_enabled' } };
             });
+            const staged = preparation.staged;
+            // Remote writes start only after the synchronous authorization transaction commits.
+            const response = typeof staged === 'function' ? await staged() : staged;
+            const result = store.transaction(tx => complete(booked(tx), response as JsonObject, ['ordinary'], tx));
             return { status: 'completed', result };
           } catch {
             // A stage that throws is a named refusal the model can speak, never an unknown write outcome.
@@ -696,15 +698,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
-        description: `${name}: host-owned awake-Mac alarm. Mutations require the owner's fresh finalized spoken request; time is parsed from those words. Never claim a closed lid or sleeping Mac will ring.`,
+        description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
         parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional consistency check only, UTC milliseconds.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const input = args as AlarmArguments;
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           let consumed: string | undefined;
+          let actionReceipt: JsonObject | undefined;
+          const requestTarget = JSON.stringify(input);
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
@@ -716,18 +721,24 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const finish = (response: JsonObject) => complete(call as ToolCallIntent, response, ['ordinary'], tx);
-            if (name === 'list_alarms') return finish({ alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) });
+            const finish = (response: JsonObject) => { actionReceipt = response; return complete(call as ToolCallIntent, response, ['ordinary'], tx); };
+            const ask = ownerRequests.authorize(runId, name, requestTarget);
+            hostLogEvent({ event: 'alarm_audit', ...ownerRequests.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
+            if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
+            if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
+            if (name === 'list_alarms') {
+              const result: JsonObject = { alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) };
+              ownerRequests.commit(runId, name, requestTarget, result);
+              return finish(result);
+            }
             const now = options.alarms?.now() ?? Date.now();
-            const ask = alarmGate.authorize(runId, name, now);
-            if (!ask) return finish({ status: 'refused', reason: 'owner_alarm_intent_required' });
             if (name === 'cancel_alarm') {
               if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? ask.words.replace(/\bfor\b/i, 'in') : ask.words, now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
-            if (parsed.status !== 'ready') return finish(parsed);
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
+            if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {
               const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;
@@ -735,7 +746,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               alarmTz = String(old.tz);
               tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, parsed.label, ask.journalId]);
             if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
@@ -743,7 +754,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {
-            alarmGate.consume(runId, consumed);
+            ownerRequests.commit(runId, name, requestTarget, actionReceipt);
             if (name !== 'cancel_alarm') {
               const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [context.executionId]));
               const actualMs = options.alarms?.now() ?? Date.now();
@@ -763,24 +774,43 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         parameters: openParameters(openTool), validate: args => validateOpen(args, openTool),
         async execute(args, context) {
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = openTarget(openTool.name, args, await webOwnerWords(context.runId, context.signal));
+          const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
+          const anyKinds = openTool.name === 'open_source' ? anyOpenKinds(words) : [];
+          const top = anyKinds.length ? ownerRequests.topShown(runId, anyKinds) : undefined;
+          const effectiveArgs = top ? { ...args, handle: top } : args;
+          const requestTarget = JSON.stringify(effectiveArgs);
+          let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
+          let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
           const refused = 'target' in resolved ? undefined : resolved.code;
-          const dispatched = 'target' in resolved ? resolved.target : undefined;
+          let dispatched = 'target' in resolved ? resolved.target : undefined;
+          if (dispatched && authorization.code === 'allowed') {
+            authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
+            eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+            if (!eligible) dispatched = undefined;
+          }
           // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
           // model is told the reason the call was refused.
-          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
+            : !eligible ? requestRefusal(authorization.code)
+            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
+            : { code, say: 'The host could not confirm that the target opened.' };
+          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
           // refused handle is traceable without ever logging the handle or his words.
-          openAudit({
-            tool: openTool.name, kind: openTool.name.slice('open_'.length) as OpenAuditKind,
-            target: String(args[openTool.parameter] ?? ''), ownerWords: ownerWords(context.runId), destination: openDestinationClass(openTool.name as OpenFamilyTool), code,
-          });
+
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
-          if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
+          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
+          if (code === 'opened' && dispatched) {
+            noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
+          }
           if (context.signal.aborted) return { status: 'failed' as const };
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
@@ -791,8 +821,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
-            return complete(call as ToolCallIntent, refused !== undefined ? { code: refused, guidance: refused === 'not_allowed' && (openTool.name === 'open_file' || openTool.name === 'open_app') ? OPEN_BROWSER_GUIDANCE : OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, payload, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },
@@ -804,27 +833,38 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         parameters: OPEN_WEB_PARAMETERS, validate: validateOpenWeb,
         async execute(args, context) {
           if (context.runId !== runId || !validateOpenWeb(args) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = await resolveWebOpen(args, await webOwnerWords(context.runId, context.signal), context.signal);
-          const dispatched = 'target' in resolved ? resolved.target : undefined;
+          const requestTarget = JSON.stringify(args);
+          let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
+          let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          const resolved = authorization.code === 'allowed' ? await resolveWebOpen(args, authorization.words ?? '', context.signal) : { code: 'no_open_intent' as const };
+          let dispatched = 'target' in resolved ? resolved.target : undefined;
+          if (dispatched && authorization.code === 'allowed') {
+            authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
+            eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+            if (!eligible) dispatched = undefined;
+          }
           const refused = 'target' in resolved ? undefined : resolved.code;
-          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
+          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, 'web');
           // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
           // bound it and the class it resolved to, never the words or the address.
-          openAudit({
-            tool: OPEN_WEB_NAME, kind: args.kind, target: args.target, ownerWords: ownerTurnWords(context.runId),
-            destination: args.kind === 'maps' ? 'maps' : args.kind === 'search' ? 'search' : 'site-root', code,
-          });
-          if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
+
+          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
+          if (code === 'opened' && dispatched) {
+            noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
+          }
           // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
           // case carries the domains so she asks which one he means.
-          const found = 'target' in resolved ? undefined : resolved.candidates;
-          const payload: JsonObject = code === 'opened' && dispatched
-            ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
-            : { ...openWebFailure(refused ?? code), ...(found === undefined ? {} : { candidates: found }) };
+          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
+            : !eligible ? requestRefusal(authorization.code)
+            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
+            : { code, say: 'The host could not confirm that the target opened.' };
+          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
@@ -892,7 +932,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             exactIntent(tx, expected);
             const accepted = validateCallRun(tx, call).acceptance;
             const conversation = chatRun(tx, call.runId);
-            const read = historyReader.read(tx, { ownerId, runId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
+            const read = historyReader.read(tx, { ownerId, runId: call.runId, currentSessionId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
               routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
             const response = redactSecretsWithCount(read.response).value;
             return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });

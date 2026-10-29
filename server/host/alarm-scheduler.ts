@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AlarmLogEvent } from './events.js';
+import { alarmSchedulerStarted } from './events.js';
+import type { AlarmLogEvent, AlarmSchedulerEvent } from './events.js';
 import type { StorePort, SQLRow, Transaction } from '../contracts/storage.js';
 
 export type AlarmState = 'pending' | 'ringing' | 'done' | 'cancelled' | 'missed';
@@ -26,7 +27,7 @@ export class AlarmScheduler {
   private timer: unknown;
   private stopped = false;
   private delivered = new Set<string>();
-  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void; log?(event: AlarmLogEvent): void }) {}
+  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void; log?(event: AlarmLogEvent | AlarmSchedulerEvent): void }) {}
   private record(alarm: Alarm, event: AlarmLogEvent['event'], reason: AlarmLogEvent['reason']): void {
     try { this.options.log?.({ event, reason, alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: this.options.clock.now() }); }
     catch { /* Diagnostic storage must never become the ringing reliability path. */ }
@@ -47,7 +48,7 @@ export class AlarmScheduler {
     return row;
   }
   cancel(id: string): boolean {
-    const changed = this.options.store.transaction(tx => tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('pending','ringing')", [id]));
+    const changed = this.options.store.transaction(tx => tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?))", [id, this.options.clock.now()]));
     this.recheck('mutation');
     return changed === 1;
   }
@@ -100,6 +101,11 @@ export class AlarmScheduler {
       catch { this.record(alarm, 'alarm_degraded', 'shell_unreachable'); }
     }
     const rows = this.list();
+    // #751: one start line with the pending count, so a restart that dropped the schedule is visible in the log.
+    if (reason === 'start') {
+      try { this.options.log?.(alarmSchedulerStarted(rows.filter(row => row.state === 'pending').length)); }
+      catch { /* Diagnostic storage must never become the ringing reliability path. */ }
+    }
     this.options.changed?.(rows);
     const active = rows.filter(row => row.state === 'pending' || row.state === 'ringing');
     if (active.length) {
@@ -149,7 +155,7 @@ export class AlarmShellBridge {
 export class AlarmSessionCoordinator {
   constructor(private readonly options: {
     store: StorePort; hasLiveSession(): boolean;
-    open(setup: { ownerDisplayName: string; scheduledTime: string }, idempotencyKey: string): string;
+    open(setup: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string): string;
     degraded(id: string, reason: 'live_session_no_channel' | 'provider_unavailable'): void;
   }) {}
   attempt(id: string, ownerDisplayName: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
@@ -159,15 +165,12 @@ export class AlarmSessionCoordinator {
       return read(row);
     });
     if (!alarm) return { status: 'attempted' };
-    if (this.options.hasLiveSession()) {
-      this.options.degraded(id, 'live_session_no_channel');
-      return { status: 'live' };
-    }
+    const alreadyLive = this.options.hasLiveSession();
     try {
       const scheduledTime = new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit' }).format(alarm.fireAtUtc);
-      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime }, `alarm:${id}`);
+      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc! }, `alarm:${id}`);
       this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
-      return { status: 'created', liveSessionId };
+      return { status: alreadyLive ? 'live' : 'created', liveSessionId };
     } catch {
       this.options.degraded(id, 'provider_unavailable');
       return { status: 'unavailable' };

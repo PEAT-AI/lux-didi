@@ -1,3 +1,4 @@
+import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
@@ -71,7 +72,7 @@ export function openAiInstructions(persona: string): string {
   return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
 /** Release 4: Naya opens every new call, seeded history or not, with one short dry and edgy line in her own voice. */
-export const FRESH_OPENING = 'Internal startup direction, not words to speak: the opening is one original line, twelve words at most, dry, a little edgy and specific to the moment. Its subject comes from an opening option or earlier conversation, in new words, never the closing lines or stopping, ending or listening. No greeting formula, offer of help, question list or tool call precedes it. Silence follows until the owner speaks; owner speech arriving first takes priority.';
+export const FRESH_OPENING = 'Speak one original opening line now. Do not acknowledge these directions. The line is twelve words at most, dry, a little edgy and specific to the moment. Its subject comes from an opening option or earlier conversation, in new words, never the closing lines or stopping, ending or listening. No greeting formula, offer of help, question list or tool call precedes it. Silence follows until the owner speaks; owner speech arriving first takes priority.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
@@ -366,7 +367,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private seed(history: readonly { role: 'user' | 'model'; text: string }[], request: LiveVoiceRequest): { items: JsonObject[]; characters: number } {
     const items: JsonObject[] = [];
     let characters = 0;
-    const freshOpening = request.openingText === undefined && request.opening === 'model_first';
+    const freshOpening = request.openingText === undefined && request.opening === 'model_first' && !request.system.text.includes(ALARM_MODE_MARKER);
     // C-RECOVERY (a): the seed plus every line appended after it stays inside both provider ceilings. The oldest
     // turns go first and the newest turn is condensed, so a 300-fragment call opens instead of being refused.
     const appendedChars = request.openingText !== undefined ? request.openingText.length : freshOpening ? FRESH_OPENING.length : 0;
@@ -504,6 +505,8 @@ class Session implements LiveVoiceSession {
   private continuationCalls = 0;
   /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
   private batchAnswers = 0;
+  private answerNow = false;
+  private lastAnswerNow = false;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
   /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
@@ -1400,6 +1403,10 @@ class Session implements LiveVoiceSession {
     // first is a protocol fault, the second a duplicate completion the adapter ignores (3r A, B).
     const fresh = input.responses.filter(response => !this.outputSent.has(response.id));
     if (fresh.some(response => !this.pendingCalls.some(call => call.id === response.id && call.name === response.name))) fail('protocol_error');
+    for (const { name, response } of fresh) {
+      if (name === 'research' && response['status'] === 'blocked'
+        && ['turn_spent', 'answer_already_given', 'no_turn_since_result'].includes(String(response['reason']))) this.answerNow = true;
+    }
     for (const { id, response } of fresh) {
       if (this.answeredCalls.has(id)) fail('protocol_error');
       this.answeredCalls.set(id, response);
@@ -1480,11 +1487,15 @@ class Session implements LiveVoiceSession {
       else if (this.delegatedOutstanding) this.continuationReceipt('deferred', 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }
-    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
+    const answerNow = attempt ? this.lastAnswerNow : this.answerNow;
+    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont'),
+      ...(answerNow ? { response: { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' } } : {}) }))) {
       this.continuationOwed = true;
       this.continuationReceipt('failed');
       return this.continuationOutcome = 'failed';
     }
+    this.lastAnswerNow = answerNow;
+    this.answerNow = false;
     this.continuationReceipt('sent');
     this.continuationOwed = false;
     this.continuationRejected = false;
@@ -1805,6 +1816,9 @@ class Session implements LiveVoiceSession {
    *  (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10), so the
    *  frame carries the delegation in flight; with no delegation open nothing is sent at all. */
   sendCommentary(input: { text: string }): boolean {
+    // Progress is optional. The provider rejects a delegation that still owes a function output,
+    // and that rejection can silence its voice path. Never risk a lookup's answer for a progress line.
+    if (this.pendingCalls.length > 0) return false;
     return this.append('session.commentary.append', 'cmt', input);
   }
 

@@ -78,6 +78,7 @@ export function openInDefaultBrowser(url: string): Promise<void> {
   });
 }
 export interface LiveToolsComposition {
+  acknowledgeAlarm?(id: string): void;
   recover?(): Promise<void>;
   owner: ToolsOwner;
   connectionIds(): string[];
@@ -640,7 +641,7 @@ export async function startHost(config: HostConfig) {
       clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
     }, emit: alarm => alarmShell.publish(alarm), changed: rows => alarmShell.state(rows), log: event => log.event(event) });
     const trello = createTrelloBoard({ configDir: providerConfigDir, log: event => log.event(event) });
-    const mcp = await composeMcpRuntime({ alarms: { now: config.now ?? Date.now, recheck: () => alarms.recheck('mutation'), ownerSpeech: () => { for (const alarm of alarms.list()) if (alarm.state === 'ringing') alarms.acknowledge(alarm.id); }, health: () => alarmShell.health() }, store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
+    const mcp = await composeMcpRuntime({ alarms: { now: config.now ?? Date.now, recheck: () => alarms.recheck('mutation'), health: () => alarmShell.health() }, store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestNow = config.now ?? Date.now;
@@ -672,6 +673,7 @@ export async function startHost(config: HostConfig) {
       now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
+      acknowledgeAlarm: id => { alarms.acknowledge(id); },
       connectionIds: () => mcp.connectionIds(),
       recover: () => mcp.recover(),
       status: () => mcp.status(),

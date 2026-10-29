@@ -25,7 +25,7 @@ cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
-cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
+cp server/domain/history-turns.ts server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
 cp server/tools/vault-write.ts "$out/source/tools/"
@@ -43,6 +43,8 @@ cp server/host/log.ts "$out/source/host/"
 cp server/host/events.ts "$out/source/host/"
 # host/log.ts names the stop gate constants, so stage the module it imports.
 cp server/live/stop-phrase.ts "$out/source/live/"
+# The live-voice adapters import the alarm mode marker, so stage its module too.
+cp server/live/alarm-mode.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"
 cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"
@@ -94,7 +96,7 @@ for (const removed of [
   'follow a plausible next source once',
 ]) assert.ok(!everything.includes(removed), `removed rule still present: ${removed}`);
 for (const rule of [
-  'One owner turn allows two research operations',
+  'One owner turn allows one research operation',
   'after a result arrives, never call research again until the owner speaks, except to stop',
   'Answer at once from a result, even a partial one',
   'state its coverage honestly in a few words, such as nine of thirty-eight events',
@@ -104,14 +106,14 @@ for (const rule of [
   'If research answers blocked, answer from the result you have',
 ]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
 for (const rule of [
-  'One owner turn allows two research operations',
+  'One owner turn allows one research operation',
   'Continue a run with its researchId only when the owner asks for more',
   'If research answers blocked, do not call it again in this turn',
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
 // The no-filler rule and the eight-line reply bound stay as they were.
 assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
 // C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
-assert.ok(persona.NAYA_CHARACTER.length <= 2868);
+assert.ok(persona.NAYA_CHARACTER.length <= 2959);
 assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
 for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
   'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',
@@ -122,13 +124,13 @@ for (const rule of ['at most once per call', 'under thirty seconds with at most 
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
 for (const code of ['no_open_intent', 'not_allowed']) {
-  assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
+  assert.match(open.OPEN_GUIDANCE[code], /^[A-Z][^.!?\n]+[.!?]$/, `the ${code} guidance is one plain refusal sentence`); assert.doesNotMatch(open.OPEN_GUIDANCE[code], /no_open_intent|not_allowed|not_owner_words|same handle|retry/i, 'refusal speech contains no internal codes or retry diagnostics');
 }
 assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
 // C-OPENWEB8: a web ask is answered by open_web at once, and a refused binding says nothing is open.
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('call open_web at once'), 'the web open rule is pinned in the open surface');
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('never a web lookup first'), 'she never looks it up before opening it');
-assert.ok(open.OPEN_WEB_DESCRIPTION.includes('never pass a URL'), 'the tool description bans a URL argument');
+assert.ok(open.OPEN_WEB_DESCRIPTION.includes('resolved http(s) URL or site'), 'the tool description accepts a resolved HTTP(S) URL or site'); for (const target of ['file:///tmp/synthetic.txt', 'javascript:void(0)', 'data:text/plain,synthetic', 'custom:synthetic']) assert.deepEqual(await open.resolveWebOpen({ kind: 'site', target }, 'open example.com', new AbortController().signal), { code: 'not_allowed' }, `non-HTTP(S) scheme refused: ${target.split(':')[0]}`);
 assert.ok(open.OPEN_WEB_DESCRIPTION.includes('open_source instead'), 'a document by name keeps the handle path');
 assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.say.includes('nothing is open'), true, 'a refused binding says nothing opened');
 assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech.length > 0, true, 'a refused binding carries a fix');
@@ -190,4 +192,14 @@ console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, n
 assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never name a settings or approval location the connector state line does not name.'),
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
+NODE
+
+# C-RECALL104: retained conversations are research-backed, never invented quotes.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
+assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through research'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
+assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE

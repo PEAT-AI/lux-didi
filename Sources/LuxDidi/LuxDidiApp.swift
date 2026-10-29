@@ -1,4 +1,6 @@
 import AppKit
+import Darwin
+import OSLog
 import Combine
 import SwiftUI
 import Carbon
@@ -82,6 +84,7 @@ import WebKit
         alarmShell?.stop(); alarmShell = nil
         guard let client else { return }
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
+            isCallLive: { [weak self] in self?.live?.isCapturing == true },
             onDue: { [weak self] id in
                 guard let self else { return }
                 if self.live?.isCapturing == true { self.alarmShell?.noteLiveSession(id) }
@@ -159,7 +162,14 @@ import WebKit
             client = CompanionClient(descriptor: descriptor, credential: { try descriptor.credential() })
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
-    func refresh() async { voice.refresh(); notificationStatus = await notifications.capability() }
+    func refresh() async { voice.refresh() }
+    private lazy var notificationCapability = NativeNotificationCapabilityState(source: { [notifications] in
+        await notifications.capability()
+    })
+    func refreshNotificationCapability(for event: NativeNotificationCapabilityState.Event) async {
+        let next = await notificationCapability.refresh(for: event)
+        StatusQuiet.publish(current: notificationStatus, next: next) { notificationStatus = $0 }
+    }
     func reconnect() async {
         guard !connecting else { return }
         connecting = true; defer { connecting = false }
@@ -266,14 +276,14 @@ import WebKit
     func refreshLiveCalls() async {
         guard !checkingLiveCalls, let client else { return }
         checkingLiveCalls = true; defer { checkingLiveCalls = false }
+        await refreshNotificationCapability(for: .poll)
         do {
             let http = NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder())
             let jobs = try await http.pendingCalls().filter(\.isReady)
             liveCallDelivery.reconcile(jobs.map(\.id))
-            pendingLiveCalls = jobs.filter { liveCallDelivery.canPickUp($0.id) }
-            liveCallsError = nil
+            StatusQuiet.publish(current: pendingLiveCalls, next: jobs.filter { liveCallDelivery.canPickUp($0.id) }) { pendingLiveCalls = $0 }
+            StatusQuiet.publish(current: liveCallsError, next: nil) { liveCallsError = $0 }
             live?.offerPendingCall(pendingLiveCalls.first)
-            notificationStatus = await notifications.capability()
             for job in pendingLiveCalls {
                 guard liveCallDelivery.beginAttempt(job.id, permitted: notificationStatus.canSchedule) else { continue }
                 let result = await notifications.submitLiveCall(jobID: job.id)
@@ -281,14 +291,14 @@ import WebKit
             }
         } catch {
             liveCallDelivery.reconcile(nil)
-            pendingLiveCalls = []
+            StatusQuiet.publish(current: pendingLiveCalls, next: []) { pendingLiveCalls = $0 }
             live?.offerPendingCall(nil)
-            liveCallsError = "Callbacks offline. Pending calls will return when the local service reconnects."
+            StatusQuiet.publish(current: liveCallsError, next: "Callbacks offline. Pending calls will return when the local service reconnects.") { liveCallsError = $0 }
         }
     }
     func requestNotificationPermission() async {
         _ = await notifications.requestPermission()
-        notificationStatus = await notifications.capability()
+        await refreshNotificationCapability(for: .permissionChanged)
         await refreshLiveCalls()
     }
     func pickUpLiveCall(_ jobID: String? = nil) {
@@ -302,8 +312,8 @@ import WebKit
                 let pickedUp = try await NativeLiveCallPickup.perform(validate: {
                     let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
                     self.liveCallDelivery.reconcile(jobs.map(\.id))
-                    self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
-                    self.liveCallsError = nil
+                    StatusQuiet.publish(current: self.pendingLiveCalls, next: jobs.filter { self.liveCallDelivery.canPickUp($0.id) }) { self.pendingLiveCalls = $0 }
+                    StatusQuiet.publish(current: self.liveCallsError, next: nil) { self.liveCallsError = $0 }
                     self.live?.offerPendingCall(self.pendingLiveCalls.first)
                     return self.liveCallDelivery.canPickUp(selected)
                 }, stop: {
@@ -319,9 +329,9 @@ import WebKit
                 }
             } catch {
                 self.liveCallDelivery.reconcile(nil)
-                self.pendingLiveCalls = []
+                StatusQuiet.publish(current: self.pendingLiveCalls, next: []) { self.pendingLiveCalls = $0 }
                 self.live?.offerPendingCall(nil)
-                self.liveCallsError = "Callbacks offline. Your current conversation was not changed."
+                StatusQuiet.publish(current: self.liveCallsError, next: "Callbacks offline. Your current conversation was not changed.") { self.liveCallsError = $0 }
                 self.error = self.liveCallsError
             }
         }
@@ -542,11 +552,18 @@ import WebKit
         await live?.stop(reason: .logout); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
-    func shutdown() async {
+    func shutdown(stage: (NativeQuitStage) -> Void = { _ in }) async {
+        stage(.audio)
         stopVoiceForQuit()
-        await client?.revokePageSession(); shell?.clear()
+        // Start host EOF/drain independently of page logout, which may never answer.
+        let stopHost = Task { await supervisor?.stop(reason: .shutdown) }
+        stage(.logout)
+        await client?.revokePageSession()
+        stage(.webSession)
+        shell?.clear()
         liveAuthorityOwner.clear()
-        await supervisor?.stop(reason: .shutdown)
+        stage(.host)
+        await stopHost.value
     }
 
     /// Quit ends the call with its own reason: capture stops at once, the journal names app_quit, and the
@@ -676,6 +693,9 @@ struct RootView: View {
     private var singleKeyGrantTimer: Timer?
     private var singleKeyGrantMonitor: NSObjectProtocol?
     private var keyboardMonitor: Any?
+    private var statusClickMonitor: Any?
+    private var menuTracking = StatusMenuTracking()
+    private let menuLogger = Logger(subsystem: "LuxDidi", category: "menu")
     private var terminationMonitor: NSObjectProtocol?
     /// 338: the wake observer, paired with the sleep one above so the warm context is refreshed
     /// exactly when the Mac comes back and no session is running.
@@ -684,7 +704,7 @@ struct RootView: View {
     private var loginLaunch = false
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
-    private var quitting = false
+    private let quitDeadline = NativeQuitDeadline.shared
     /// The one owner of the visible surface (#311). Every entry point (Dock
     /// click, hotkey, orb click, mode button, close) reports through it, so no
     /// sequence leaves two surfaces on screen.
@@ -737,6 +757,10 @@ struct RootView: View {
         if #available(macOS 13.0, *), loginAvailability == nil {
             loginAvailability = LoginAvailability(registration: SystemLoginRegistration())
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { await model.refreshNotificationCapability(for: .didBecomeActive) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -797,6 +821,17 @@ struct RootView: View {
         // menu after the default target pass. A menu item never opens a live microphone.
         menu.addItem(miniOrbMenu.item())
         statusItem.menu = menu
+        statusClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                if let self, let button = self.statusItem.button, event.window === button.window,
+                   button.bounds.contains(button.convert(event.locationInWindow, from: nil)) {
+                    self.menuTracking.requested { event, requests, opens in
+                        self.menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
+                    }
+                }
+            }
+            return event
+        }
         hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
         model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · Naya window" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
@@ -888,6 +923,7 @@ struct RootView: View {
         Task {
             if launchKind.presentsOrbAtLaunch { _ = coordinator.presentMini(trigger: .other) }
             if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
+            await model.refreshNotificationCapability(for: .launch)
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -909,7 +945,9 @@ struct RootView: View {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             NSWorkspace.shared.open(directory)
         } catch {
-            let alert = NSAlert(); alert.messageText = "Logs are unavailable."; alert.runModal()
+            let alert = NSAlert(); alert.messageText = "Logs are unavailable."
+            alert.addButton(withTitle: "OK")
+            StatusSafeAlert.present(alert, parent: window)
         }
     }
 
@@ -1015,14 +1053,26 @@ struct RootView: View {
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
+    private var statusImages: [String: NSImage] = [:]
+    private var quietStatusItem = QuietStatusItem()
     private func updateLiveStatus(state: NativeLiveConversation.State? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
         let liveState = state ?? model.live?.state ?? .idle
         let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
-        statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
-        statusItem.button?.title = AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall)
-        statusItem.button?.toolTip = presentation.text
-        statusItem.button?.setAccessibilityLabel(presentation.text)
+        if let button = statusItem.button {
+            quietStatusItem.update(symbol: presentation.symbol, text: presentation.text,
+                title: AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall),
+                currentTitle: button.title, currentToolTip: button.toolTip,
+                image: { key in
+                    if statusImages[key] == nil {
+                        statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+                    }
+                    button.image = statusImages[key]
+                }, setTitle: { button.title = $0 }, toolTip: {
+                    button.toolTip = $0
+                    button.setAccessibilityLabel($0)
+                })
+        }
         liveMenuItem?.title = presentation.text
         muteMenuItem?.title = model.live?.isMuted == true ? "Unmute" : "Mute"
     }
@@ -1031,10 +1081,11 @@ struct RootView: View {
         loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
-        // #3p, #1021: the notice is only there while the key has no tap, and a grant picked
-        // in System Settings while the app runs brings the tap up on this very look.
-        refreshAccessibilityNotice()
-        recheckSingleKeyGrant()
+        // Never query TCC, install event taps or run modal work inside menu tracking.
+        // Activation and the existing grant timer refresh the cached grant notice instead.
+        menuTracking.opened { event, requests, opens in
+            menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
+        }
     }
     /// #3p, R2: the notice's button. The owner's one explicit click asks for the Input
     /// Monitoring grant, which puts Naya in that list by itself, and opens the pane so the
@@ -1063,11 +1114,11 @@ struct RootView: View {
         guard plan.onActivation, let interval = plan.pollInterval else { stopSingleKeyGrantWatch(); return }
         guard singleKeyGrantTimer == nil else { return }
         singleKeyGrantTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.recheckSingleKeyGrant() }
+            Task { @MainActor in self?.scheduleSingleKeyGrantRecheck() }
         }
         singleKeyGrantMonitor = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.recheckSingleKeyGrant() }
+            Task { @MainActor in self?.scheduleSingleKeyGrantRecheck() }
         }
     }
     private func stopSingleKeyGrantWatch() {
@@ -1078,6 +1129,17 @@ struct RootView: View {
     }
     /// The tap goes in the moment the grant is there, one receipt says so, and the line that
     /// said the key was off goes with it.
+    private var singleKeyRecheckScheduled = false
+    private func scheduleSingleKeyGrantRecheck() {
+        guard !singleKeyRecheckScheduled else { return }
+        singleKeyRecheckScheduled = true
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.singleKeyRecheckScheduled = false
+                self?.recheckSingleKeyGrant()
+            }
+        }
+    }
     private func recheckSingleKeyGrant() {
         let wasTapped = singleKey.tapCreated
         singleKey.start()
@@ -1103,12 +1165,26 @@ struct RootView: View {
 
     /// #620: the owner opened the full window. The grant alert is asked exactly where it was asked
     /// before (once per app version, interactive launches only) and the sheet appears once.
+    private func showSingleKeyGrantExplanation() {
+        let alert = NSAlert()
+        alert.messageText = "A Right Command tap mutes Naya"
+        alert.informativeText = SingleKeyTrigger.explanation
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Not now")
+        StatusSafeAlert.present(alert, parent: window) { [weak self] accepted in
+            guard accepted else { return }
+            SingleKeyTrigger.requestListenEventAccess()
+            self?.scheduleSingleKeyGrantRecheck()
+        }
+    }
+
     private func showDeferredPrompts() {
         recordPrompts(deferredPrompts.ownerOpenedWindow { prompt in
             switch prompt {
             case .grantAlert:
                 guard launchKind == .interactive else { return false }
-                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion,
+                    prompt: { [weak self] in self?.showSingleKeyGrantExplanation() })
                 return true
             case .gettingStarted:
                 guard window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) else { return false }
@@ -1203,7 +1279,7 @@ struct RootView: View {
         let enabled = !SingleKeyTrigger.isEnabled
         SingleKeyTrigger.isEnabled = enabled
         if enabled {
-            if !SingleKeyTrigger.isGranted { SingleKeyTrigger.requestGrantNow() }
+            if !SingleKeyTrigger.isGranted { showSingleKeyGrantExplanation() }
             singleKey.start()
         } else {
             singleKey.stop()
@@ -1473,18 +1549,25 @@ struct RootView: View {
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if cleanQuit { return .terminateNow }
-        if !quitting {
-            quitting = true
-            model.stopVoiceForQuit()
-            // terminateLater enters a nested AppKit loop. A caller inside an
-            // async MainActor job can hold that executor and starve cleanup.
-            // Return first, then reissue clean termination after bounded logout.
+        let logger = Logger(subsystem: "LuxDidi", category: "quit")
+        let first = quitDeadline.request(schedule: { seconds, fire in
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds, execute: fire)
+        }, forced: { stage in
+            NativeHostProcessRegistry.shared.forceStop(pid: NativeQuitDeadline.shared.ownedChildPID)
+            logger.error("quit_forced stage=\(stage.rawValue, privacy: .public)")
+            // No MainActor hop or AppKit callback: even a wedged executor cannot hold Quit.
+            // The owned host has received bounded TERM/KILL; the OS releases native audio.
+            Darwin._exit(EXIT_SUCCESS)
+        })
+        if first {
             Task {
-                await model.shutdown()
+                await model.shutdown(stage: { quitDeadline.stage($0) })
+                guard quitDeadline.complete() else { return }
                 cleanQuit = true
                 sender.terminate(nil)
             }
         }
+        // terminateLater would enter an AppKit nested loop and can starve actor cleanup.
         return .terminateCancel
     }
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }
@@ -1493,6 +1576,7 @@ struct RootView: View {
         liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
+        if let statusClickMonitor { NSEvent.removeMonitor(statusClickMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
         if let wakeMonitor { NSWorkspace.shared.notificationCenter.removeObserver(wakeMonitor) }
     }

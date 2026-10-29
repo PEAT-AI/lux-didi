@@ -25,7 +25,7 @@ async function harness() {
     { id: 'google', connector: 'google', file: 'google-mcp-child.mjs', mode: 'ok' },
     { id: 'knowledge', connector: 'lux-knowledge', file: 'stdio-store-knowledge-child.mjs', mode: 'ok' },
   ].map(entry => ({ ...entry, transport: 'stdio', command: process.execPath, args: [join(here, 'fixtures', entry.file), entry.mode], env: { HOME: home, PATH: '/usr/bin', LOGNAME: '', USER: '', SHELL: '', TERM: '', DIDI_FAKE_MATTERMOST_NOW: String(clock), DIDI_FAKE_MATTERMOST_LOAD: '20' }, account: 'local', resource: entry.id }));
-  for (const entry of endpoints) { registry.register(entry); registry.enable(entry.id); registry.allowEgress(entry.id); }
+  for (const entry of endpoints) { registry.register({ id: entry.id, transport: entry.transport, command: entry.command, args: entry.args, env: entry.env, account: entry.account, resource: entry.resource }); registry.enable(entry.id); registry.allowEgress(entry.id); }
   const adapter = createMcpAdapter({ registry, store: resultStore, budgets: { timeoutMs: 4000 } });
   let intercept = async (_request, result) => result;
   const port = { ...adapter, call: async (...args) => intercept(args[0], await adapter.call(...args)) };

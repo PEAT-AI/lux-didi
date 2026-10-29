@@ -858,6 +858,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live = { ...acceptance, acceptedRunHash: accepted.sha256 };
   const host = { ...live, grants: [...f.names, MATTERMOST_CHAT_TOOL].map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
+  const definitions = owner.definitions('chat-sequence');
   const sequence = [
     { intent: 'channel', channel: 'Builders', query: 'pilot' },
     { intent: 'person', person: 'Ada', query: 'pilot' },
@@ -868,7 +869,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   for (const [step, args] of sequence.entries()) {
     await t.test(`original-sequence-${step}`, async () => {
     const batch = await runToolCalls(owner, [{ id: `chat-${step}`, name: MATTERMOST_CHAT_TOOL, args: { ...args, from_date: fixtureDaysAgo(7) } }], {
-      registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
+      registry: definitions, host: host as never, authority: { isCurrent: async () => true } as never,
       control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
     });
     assert.equal(batch.error, undefined, `step ${step}: ${JSON.stringify(batch.tools)}`);
@@ -895,7 +896,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     await t.test(replay.id, async () => {
     for (const [index, words] of replay.finals.entries()) owner.observeAlarmOwner('chat-sequence', `${replay.id}-final-${index}`, words, FIXTURE_NOW);
     const batch = await runToolCalls(owner, [{ id: replay.id, name: MATTERMOST_CHAT_TOOL, args: { ...replay.args, from_date: fixtureDaysAgo(7) } }], {
-      registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
+      registry: definitions, host: host as never, authority: { isCurrent: async () => true } as never,
       control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: step++, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
     });
     assert.equal(batch.error, undefined, replay.id);

@@ -323,3 +323,54 @@ test('a note refused in an earlier call is not re-offered at the next call start
   assert.equal(texts.includes(REFUSED_LOOP), false, 'the refused note is never offered again');
   assert.equal(texts.includes(FRESH_LOOP), true, 'an ordinary open loop still is');
 });
+
+// C-SAVES: only synthetic owner speech can support a paraphrase.
+const saveParaphrases = [
+  ['Remember I prefer short replies.', 'The owner prefers brief replies.'],
+  ['Remember I like quiet mornings.', 'The owner enjoys quiet mornings.'],
+  ['Remember my appointment is on Friday.', 'My appointment is Friday.'],
+  ['Remember I need to buy milk.', 'Buy milk.'],
+  ['Remember I prefer email over calls.', 'The owner prefers email rather than calls.'],
+  ['Remember I work from home.', 'The owner works from home.'],
+  ['Remember I like walking in the evening.', 'The owner enjoys evening walks.'],
+  ['Remember I want a small desk.', 'The owner wants a little desk.'],
+  ['Remember I prefer fast responses.', 'The owner prefers quick responses.'],
+  ['Remember I dislike loud music.', 'The owner does not like loud music.'],
+];
+for (const [owner, note] of saveParaphrases) test(`meaning saves: ${note}`, t => {
+  const store = liveSession(t, [{ text: owner! }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, note!).remembered, true);
+});
+for (const [owner, note] of [
+  ['Remember my meeting is Friday.', 'My meeting is Friday in Paris.'],
+  ['Remember I like quiet mornings.', 'I do not like quiet mornings.'],
+  ['Remember I do not want coffee.', 'I want coffee.'],
+  ['Remember I have 2 cats.', 'I have 3 cats.'],
+  ['Remember my desk is blue.', 'My desk is blue and expensive.'],
+]) test(`meaning refuses: ${note}`, t => {
+  const store = liveSession(t, [{ text: owner! }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, note!).remembered, false);
+});
+test('meaning uses the corrected list across three finals', t => {
+  const store = liveSession(t, [{ text: 'Remember the shopping list: milk and bread.' },
+    { text: 'Actually replace bread with rice.' }, { text: 'And add apples.' }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'Shopping list: milk, rice, apples.').remembered, true);
+  assert.equal(remember(store, 'Shopping list: milk, bread, apples.').remembered, false);
+});
+test('meaning never stores an unresolved pronoun', t => {
+  const store = liveSession(t, [{ text: 'Remember to call them.' }]);
+  t.after(() => store.close());
+  const result = remember(store, 'Call them.');
+  assert.equal(result.remembered, false);
+  assert.match(String(result.guidance), /who|what/i);
+});
+test('meaning excludes the previous ask and tool-only content', t => {
+  const store = liveSession(t, [{ text: 'Remember my blue desk.' },
+    { kind: 'outputTranscription', text: 'Saved.' }, { text: 'Remember my green chair.' }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'My blue desk.').remembered, false);
+  assert.equal(remember(store, 'My green chair in Paris.').remembered, false);
+});

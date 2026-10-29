@@ -111,7 +111,9 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
-    const clampedEnvelope = envelopeOf(completed(outOfBudget));
+    const clampedList = completed(outOfBudget);
+    payloadPorts.set(clampedList, adapter);
+    const clampedEnvelope = envelopeOf(clampedList);
     assert.equal((clampedEnvelope['received'] as Record<string, unknown>)['maxResults'], 25);
 
     const read = completed(await gmail.gmailRead({ id: 'm1', format: 'full' }));

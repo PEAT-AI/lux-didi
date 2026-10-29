@@ -656,14 +656,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return call as ToolCallIntent;
           };
           try {
-            let staged: ReturnType<NonNullable<typeof stageNote>> = { saved: false, code: 'not_enabled' };
-            store.transaction(tx => {
+            const preparation = store.transaction(tx => {
               const call = booked(tx);
               const snapshot = validateCallRun(tx, call);
               assertLiveIdentity(tx, call); target(snapshot, call, tx);
               if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              if (stageNote) staged = stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] });
+              return { staged: stageNote ? stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }) : { saved: false, code: 'not_enabled' } };
             });
+            const staged = preparation.staged;
             // Remote writes start only after the synchronous authorization transaction commits.
             const response = typeof staged === 'function' ? await staged() : staged;
             const result = store.transaction(tx => complete(booked(tx), response as JsonObject, ['ordinary'], tx));

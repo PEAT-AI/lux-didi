@@ -5,6 +5,7 @@ import { luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService } from '../http/live-upgrade.js';
 import type { LiveContext, LiveSessionSnapshot } from './types.js';
+import type { LiveVoiceSession } from '../adapters/live-voice/types.js';
 
 /** Canary evidence is deliberately independent of journal outcome labels. */
 export interface CanaryAsk {
@@ -75,17 +76,61 @@ export function validateCanaryAsks(value: unknown): CanaryAsk[] {
   return value as CanaryAsk[];
 }
 
+interface CanaryState {
+  id: string; deadline: number; emitted: Set<string>; acknowledged: Set<string>;
+  calls: Map<string, RawCall>; turns: number; completed: number; streaming: boolean;
+  pending: Set<string>; step: number; completedStep: number; lastResultStep: number;
+}
+
 /** Only the authenticated canary opener calls open. Frame properties cannot grant authority. */
 export class CanarySessions {
   readonly #now: () => number;
-  #active: { id: string; deadline: number; emitted: Set<string>; acknowledged: Set<string> } | undefined;
+  #active: CanaryState | undefined;
   constructor(now: () => number = Date.now) { this.#now = now; }
   open(id: string): void {
     if (this.#active) throw new Error('canary_already_live');
-    this.#active = { id, deadline: this.#now() + 350_000, emitted: new Set(), acknowledged: new Set() };
+    this.#active = { id, deadline: this.#now() + 350_000, emitted: new Set(), acknowledged: new Set(), calls: new Map(), turns: 0, completed: 0, streaming: false, pending: new Set(), step: 0, completedStep: 0, lastResultStep: 0 };
   }
   close(id: string): void { if (this.#active?.id === id) this.#active = undefined; }
   isCanary(id: string): boolean { return this.#active?.id === id; }
+  progress(id: string): { calls: RawCall[]; turns: number; completed: number; streaming: boolean; pending: number; completedStep: number; lastResultStep: number } | undefined {
+    const state = this.#active;
+    return state?.id === id ? { calls: [...state.calls.values()], turns: state.turns, completed: state.completed, streaming: state.streaming, pending: state.pending.size, completedStep: state.completedStep, lastResultStep: state.lastResultStep } : undefined;
+  }
+  /** A canary-only boundary tap. Ordinary sessions keep their exact original object/iterator. */
+  wrapSession(id: string, session: LiveVoiceSession): LiveVoiceSession {
+    const state = this.#active;
+    if (!state || state.id !== id) return session;
+    const owner = this;
+    return new Proxy(session, { get(target, property) {
+      if (property === 'events') return { async *[Symbol.asyncIterator]() {
+        for await (const event of target.events) {
+          if (owner.#active === state) {
+            state.step++;
+            if (event.type === 'modelTurnStarted') { state.turns++; state.streaming = true; }
+            if (event.type === 'toolCall') for (const call of event.calls) state.pending.add(call.id);
+            if (event.type === 'toolCallCancellation') for (const id of event.ids) state.pending.delete(id);
+            if (event.type === 'turnComplete') {
+              state.completed++; state.streaming = false; state.completedStep = state.step;
+            }
+          }
+          yield event;
+        }
+      } };
+      if (property === 'sendToolResponse') return (input: Parameters<LiveVoiceSession['sendToolResponse']>[0]) => {
+        if (owner.#active === state) for (const reply of input.responses) {
+          state.lastResultStep = ++state.step;
+          state.calls.set(reply.id, { key: `reply:${reply.id}`, tool: reply.name, result: JSON.parse(JSON.stringify(reply.response)) as Record<string, unknown>, ms: owner.#now() });
+        }
+        const outcome = target.sendToolResponse(input);
+        if (owner.#active === state && outcome !== 'failed') for (const reply of input.responses) state.pending.delete(reply.id);
+        return outcome;
+      };
+      // Native adapters use private fields. Bind every ordinary method to the real receiver.
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  }
   nativeAckCount(id: string): number { return this.#active?.id === id ? this.#active.acknowledged.size : 0; }
   acknowledgeNative(id: string, frame: unknown): void {
     if (this.#active?.id !== id || !record(frame) || typeof frame['id'] !== 'string') return;
@@ -117,6 +162,7 @@ export async function runCanaryAsks(asks: CanaryAsk[], port: CanaryPort, signal:
   validateCanaryAsks(asks);
   const lines: string[] = [];
   let passed = 0;
+  let providerTurns = 0;
   try {
     for (const ask of asks) {
       let observation: CanaryObservation = { tool: ask.expect.tool, result: {}, ms: 0, timedOut: true };
@@ -136,8 +182,7 @@ export async function runCanaryAsks(asks: CanaryAsk[], port: CanaryPort, signal:
       if (verdict.ok) passed++;
       lines.push(`CANARY ${verdict.ok ? 'PASS' : 'FAIL'} id=${ask.id} tool=${observation.tool} code=${verdict.code.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100)} ms=${Math.max(0, Math.round(observation.ms))}`);
     }
-  } finally { port.close(); }
-  const providerTurns = port.providerTurns();
+  } finally { providerTurns = port.providerTurns(); port.close(); }
   lines.push(`CANARY SUMMARY pass=${passed} fail=${asks.length - passed} asks=${asks.length} providerTurns=${providerTurns}`);
   return { lines, passed, failed: asks.length - passed, providerTurns };
 }
@@ -170,7 +215,7 @@ type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms:
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
   #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean } | undefined;
-  constructor(private readonly store: Store, private readonly live: LiveService) {}
+  constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }) {}
   shutdown(): void {
     if (!this.#session) return;
     const { id, timer, abort } = this.#session;
@@ -195,12 +240,7 @@ export class InstalledCanary {
   }
   #calls(id: string): RawCall[] {
     return this.store.transaction(tx => {
-      const calls: RawCall[] = [];
-      for (const row of tx.all('SELECT c.call_key,c.name,c.intent_at,r.text FROM trace_call c JOIN trace_call_result r USING(call_key) WHERE c.live_session_id=? ORDER BY c.intent_at,c.call_key', [id])) {
-        let result: unknown;
-        try { result = JSON.parse(String(row.text)); } catch { result = { error: 'invalid_tool_reply' }; }
-        calls.push({ key: `trace:${String(row.call_key)}`, tool: String(row.name), result: record(result) ? result : { error: 'invalid_tool_reply' }, ms: Number(row.intent_at) });
-      }
+      const calls: RawCall[] = [...(canarySessions.progress(id)?.calls ?? [])];
       // Source calls inside research have their own canonical reply; ignore the stored state.
       for (const row of tx.all('SELECT execution_id,intent_json,result_json FROM tool_calls WHERE run_id=? AND result_json IS NOT NULL ORDER BY rowid', [id])) {
         const intent: unknown = JSON.parse(String(row.intent_json));
@@ -216,16 +256,18 @@ export class InstalledCanary {
     session.running = true;
     const readyDeadline = Date.now() + 10_000;
     while (!session.abort.signal.aborted && this.live.snapshot(id).lifecycle !== 'active' && !this.live.snapshot(id).terminal && Date.now() < readyDeadline) {
-      try { await pause(50, undefined, { signal: session.abort.signal }); } catch { break; }
+      try { await this.wait(session.abort.signal); } catch { break; }
     }
     let prior = new Set<string>();
     let started = 0;
     let ackBefore = 0;
+    let completedBefore = 0;
     const cleaned = new Set<string>();
     const port: CanaryPort = {
       inject: finals => {
         if (this.live.snapshot(id).lifecycle !== 'active') throw new Error('provider_unavailable');
         prior = new Set(this.#calls(id).map(row => row.key)); started = Date.now(); ackBefore = canarySessions.nativeAckCount(id);
+        completedBefore = canarySessions.progress(id)?.completed ?? 0;
         for (const text of finals) this.live.text(text);
       },
       observe: async (_ask, signal) => {
@@ -233,13 +275,10 @@ export class InstalledCanary {
         let calls: RawCall[] = [];
         while (!signal.aborted && Date.now() < deadline) {
           calls = this.#calls(id).filter(row => !prior.has(row.key));
-          const state = this.store.transaction(tx => ({
-            response: tx.get('SELECT status,terminal_at FROM trace_response WHERE live_session_id=? AND created_at>=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [id, started]),
-            pending: tx.get('SELECT call_key FROM trace_call WHERE live_session_id=? AND intent_at>=? AND output_written_at IS NULL LIMIT 1', [id, started]),
-          }));
-          if (state.response?.status === 'completed' && !state.pending && Date.now() - Number(state.response.terminal_at) >= 300) return calls.map(row => ({ ...row, ms: Date.now() - started }));
+          const progress = canarySessions.progress(id);
+          if (progress && progress.completed > completedBefore && !progress.streaming && progress.pending === 0 && progress.completedStep > progress.lastResultStep) return calls.map(row => ({ ...row, ms: Date.now() - started }));
           if (this.live.snapshot(id).terminal) break;
-          try { await pause(50, undefined, { signal }); } catch { break; }
+          try { await this.wait(signal); } catch { break; }
         }
         return (calls.length ? calls : [{ tool: 'none', result: {}, ms: 0 }]).map(row => ({ ...row, ms: Date.now() - started, timedOut: true }));
       },
@@ -270,7 +309,7 @@ export class InstalledCanary {
         if (ask.expect.sideEffect === 'open') effect = { kind: 'open', observed: canarySessions.nativeAckCount(id) > ackBefore, cleaned: true };
         return effect;
       },
-      providerTurns: () => this.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_response WHERE live_session_id=?', [id])?.n ?? 0)),
+      providerTurns: () => canarySessions.progress(id)?.turns ?? 0,
       close: () => { clearTimeout(session.timer); session.abort.abort(); this.live.revoke(id); canarySessions.close(id); this.#session = undefined; },
     };
     return runCanaryAsks(session.asks, port, session.abort.signal);

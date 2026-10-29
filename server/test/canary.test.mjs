@@ -142,34 +142,35 @@ test('synthetic ask example stays inside the public format and paid count cap', 
   const example = JSON.parse(await readFile(new URL('../../scripts/fixtures/canary-asks.example.json', import.meta.url), 'utf8'));
   assert.equal(validateCanaryAsks(example).length, 13);
 });
-test('host opener owns its flag and raw result observation ignores stored completed state', async () => {
-  let injected = false;
+test('host opener observes raw Gemini replies without OpenAI trace tables or stored outcomes', async () => {
   const finals = [];
   const id = '11111111-1111-4111-8111-111111111111';
+  let tapped;
+  const raw = {
+    events: { async *[Symbol.asyncIterator]() {
+      yield { type: 'modelTurnStarted' }; yield { type: 'turnComplete' };
+    } },
+    sendToolResponse: () => 'sent',
+  };
   const live = {
     create: () => ({ liveSessionId: id }),
     snapshot: () => ({ lifecycle: 'active', terminal: null }),
-    text: text => { injected = true; finals.push(text); },
+    text: text => {
+      finals.push(text);
+      tapped.sendToolResponse({ responses: [{ id: 'call-1', name: 'search', response: { code: 'not_granted', items: ['synthetic'] } }] });
+      void (async () => { for await (const _event of tapped.events) { /* consume real tap */ } })();
+    },
     revoke: () => {},
   };
-  const store = { transaction: callback => callback({
-    get: sql => {
-      if (sql.includes('COUNT(*)')) return { n: 3 };
-      if (sql.includes('SELECT status,terminal_at')) return { status: 'completed', terminal_at: 0 };
-      return undefined;
-    },
-    all: sql => {
-      if (injected && sql.includes('FROM trace_call c')) return [{ call_key: 'synthetic', name: 'search', intent_at: Date.now(), text: JSON.stringify({ code: 'not_granted', items: ['synthetic'] }) }];
-      return [];
-    },
-  }) };
-  const host = new InstalledCanary(store, live);
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => {});
   host.open([ask], { clientId: 'owner' });
+  tapped = canarySessions.wrapSession(id, raw);
   assert.equal(canarySessions.isCanary(id), true);
   await assert.rejects(() => host.run(id, 'other-client'), /invalid_canary_session/);
   const report = await host.run(id, 'owner');
   assert.equal(report.failed, 1);
-  assert.equal(report.providerTurns, 3);
+  assert.equal(report.providerTurns, 1);
   assert.match(report.lines[0], /code=not_granted/);
   assert.deepEqual(finals, ask.finals);
   assert.equal(canarySessions.isCanary(id), false);
@@ -231,7 +232,7 @@ test('Gemini-shaped session without OpenAI trace receipts exposes raw replies an
       yield { type: 'turnComplete' };
     } },
     sendText(input) { assert.equal(this.brand, 'real-session'); sent.push(input); },
-    sendToolResponse(input) { assert.equal(this.brand, 'real-session'); sent.push(input); return { accepted: true }; },
+    sendToolResponse(input) { assert.equal(this.brand, 'real-session'); sent.push(input); return 'sent'; },
   };
   assert.equal(sessions.wrapSession('ordinary', raw), raw, 'ordinary provider sessions retain object identity');
   const tapped = sessions.wrapSession('gemini-canary', raw);
@@ -252,4 +253,15 @@ test('Gemini-shaped session without OpenAI trace receipts exposes raw replies an
   assert.equal(assertCanaryResult(ask, progress.calls[0]).code, 'not_granted');
   assert.deepEqual(sent[0], { text: 'synthetic owner final' });
   sessions.close('gemini-canary');
+});
+
+test('raw side-effect reply is retained for cleanup even if provider send throws', () => {
+  const sessions = new CanarySessions(); sessions.open('send-failure');
+  const raw = { events: { async *[Symbol.asyncIterator]() {} }, sendToolResponse: () => { throw new Error('transport_failed'); } };
+  const tapped = sessions.wrapSession('send-failure', raw);
+  const reply = { saved: true, insightId: '123', title: 'Synthetic canary note' };
+  assert.throws(() => tapped.sendToolResponse({ responses: [{ id: 'save-1', name: 'stage_lux_note', response: reply }] }), /transport_failed/);
+  assert.deepEqual(sessions.progress('send-failure').calls[0].result, reply);
+  assert.equal(sessions.progress('send-failure').completed, 0);
+  sessions.close('send-failure');
 });

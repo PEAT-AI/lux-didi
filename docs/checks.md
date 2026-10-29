@@ -205,11 +205,14 @@ or microphone input. Providers that produce audio on text turns keep that normal
 path; the native transport decodes and discards that audio rather than playing it.
 
 The host runs at most 15 asks in one session, waits for each provider response and tool
-work to settle, and reads raw own tool replies rather than stored outcome labels. Each
+work to settle, and taps raw own tool replies at the canary-only provider-session boundary rather than
+stored outcome labels. Normal sessions keep their exact original object and event iterator. Each
 ask has a 25-second turn bound. A request-wide 350-second deadline revokes the session;
 cleanup has an 8-second bound, and the script has a hard six-minute outer deadline.
 It prints only `CANARY PASS|FAIL id=<id> tool=<tool> code=<code> ms=<ms>` plus a summary
-with `providerTurns=<count>` measured from provider response records. A native/transport
+with `providerTurns=<count>` measured from standardized `modelTurnStarted` events,
+including the opener and recovery generations. This works for both Gemini and OpenAI;
+it does not assume that Gemini emits OpenAI trace-response receipts. A native/transport
 failure before the host can return its count explicitly reports `providerTurns=unknown`
 and fails; it is not reported as zero paid usage or a pass. Any failed ask exits 1.
 

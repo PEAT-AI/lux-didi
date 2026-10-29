@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { Client } from '@modelcontextprotocol/client';
 import { Store } from '../runtime/store.js';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -49,6 +50,13 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const registry = new McpRegistry(); const p = options.policy ?? policy();
   const sourceTools = options.sourceTools ?? tools;
   const rpcErrors: unknown[] = [];
+  if (options.sourceTools) {
+    const callTool = Client.prototype.callTool;
+    t.mock.method(Client.prototype, 'callTool', async function(this: Client, ...args: Parameters<Client['callTool']>) {
+      try { return await callTool.apply(this, args); }
+      catch (error) { rpcErrors.push({ clientError: String(error) }); throw error; }
+    });
+  }
   const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });

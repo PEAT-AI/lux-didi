@@ -121,8 +121,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(owner.journal.intent(intent), 'fresh');
       const before = dispatched;
       // Finalized microphone authority is explicit; a tool call cannot wait out an absent request.
-      if (mode !== 'ask') {
-        const words = mode === 'split ask' ? entry.ask : 'nothing else';
+      if (mode === 'split ask') {
+        const words = entry.ask;
         noteOwnerWords(session.liveSessionId, words);
         owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
       }
@@ -201,7 +201,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
       if (tool === 'open_source') args.handle = handle;
       const definition = definitions.find(entry => entry.name === tool)!;
-      const intent: ToolCallIntent = { ...authority, executionId: randomUUID(), callId: randomUUID(), toolName: tool,
+      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: tool,
         argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
         accountId: definition.accountId, resourceId: definition.resourceId };
       assert.equal(owner.journal.intent(intent), 'fresh');

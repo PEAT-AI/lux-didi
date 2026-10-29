@@ -102,8 +102,11 @@ const CHAT_FILLER = new Set([
   'this', 'last', 'past', 'week', 'month', 'today', 'yesterday', 'topics', 'topic', 'stuff', 'things', 'update', 'updates',
 ]);
 
+const NAME_HEAD = new Set(['what', 'who', 'when', 'did', 'have', 'with']);
+
 function cleanName(raw: string): string | undefined {
   const parts = raw.trim().replace(/[.,!?;:'’]+$/u, '').split(/\s+/u).filter(Boolean);
+  while (parts.length > 0 && NAME_HEAD.has(parts[0]!.toLowerCase())) parts.shift();
   while (parts.length > 0 && NAME_TAIL.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();
   if (parts.length === 0) return undefined;
   const name = parts.join(' ');

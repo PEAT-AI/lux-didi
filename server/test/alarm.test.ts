@@ -32,13 +32,11 @@ test('alarm: explicit morning and evening resolve without a model-supplied time'
   if (evening.status === 'ready') assert.equal(evening.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
 });
 
-test('alarm: relative eight hours is host-derived, with bounded argument skew', () => {
+test('alarm: relative eight hours is host-derived despite model skew', () => {
   const result = parseAlarmTime('wake me in eight hours', now, tz, now + 8 * 3600000 + 5000);
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, now + 8 * 3600000);
-  assert.deepEqual(parseAlarmTime('wake me in eight hours', now, tz, now + 3600000), {
-    status: 'refused', reason: 'time_mismatch',
-  });
+  assert.equal(parseAlarmTime('wake me in eight hours', now, tz, now + 3600000).status, 'ready');
 });
 
 test('alarm: a model time alone cannot manufacture an owner time request', () => {

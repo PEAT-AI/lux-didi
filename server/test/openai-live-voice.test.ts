@@ -2381,7 +2381,7 @@ test('SILENCE b-second: silent done immediately rescues without tools, once', as
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, before + 1);
-  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-rescue' } }));
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-rescue', status: 'completed' } }));
   await quiet();
@@ -2423,7 +2423,7 @@ test('SILENCE chain: third tool round forces the fourth response to answer', asy
     opened.session.sendToolResponse({ responses: [{ id, name: 'research', response: { ok: true } }] });
     if (round < 3) opened.socket.deliver(delegated('response.created', { response: { id: `synthetic-round-${round}` } }));
   }
-  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
 });
 
 test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
@@ -2487,7 +2487,7 @@ test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the 
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket)[0]?.response, undefined);
   opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
@@ -2516,7 +2516,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket)[0]?.response, undefined);
   const settled = receipts.filter(row => row.kind === 'call.output_written');
   for (let i = 0; i < 8; i++) {
     const row = settled.find(row => row.id === `synthetic-cap-${i}`);

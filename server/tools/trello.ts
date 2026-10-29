@@ -97,13 +97,13 @@ const READ_USED: Readonly<Record<TrelloReadView, readonly string[]>> = {
 };
 /** Canonical voice argument admission for reads and writes. Unknown keys remain visible to
  * validation. Never mutate the provider payload, which is also used for rejection diagnostics.
- * Only view/action are required by the flat declarations; a missing operation-specific value
- * is still rejected by its validator rather than resolving a one-character placeholder.
+ * Required operation values keep their validation, including genuine one-character names.
+ * Missing required values are rejected by the validator, never silently filled in.
  */
-function normalizeTrelloArguments(args: Args, discriminator: 'view' | 'action', used: readonly string[], declared: Record<string, unknown>): Args {
+function normalizeTrelloArguments(args: Args, required: readonly string[], used: readonly string[], declared: Record<string, unknown>): Args {
   const shaped: Args = { ...args };
   for (const key of Object.keys(shaped)) {
-    if (key === discriminator || !Object.hasOwn(declared, key)) continue;
+    if (required.includes(key) || !Object.hasOwn(declared, key)) continue;
     const value = shaped[key];
     if (!used.includes(key) || value === null || typeof value === 'string' && value.trim().length <= 1) delete shaped[key];
   }
@@ -113,7 +113,7 @@ function normalizeTrelloArguments(args: Args, discriminator: 'view' | 'action', 
 /** The same copy for a validated read, so a key the chosen view does not use never reaches the board client. */
 export function normalizeTrelloRead(args: Args): Args {
   if (typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return args;
-  return normalizeTrelloArguments(args, 'view', READ_USED[args.view as TrelloReadView], TRELLO_READ_PARAMETERS.properties);
+  return normalizeTrelloArguments(args, READ_USED[args.view as TrelloReadView].filter(key => key !== 'offset' && key !== 'limit'), READ_USED[args.view as TrelloReadView], TRELLO_READ_PARAMETERS.properties);
 }
 
 /** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
@@ -163,7 +163,7 @@ export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: s
   }
   const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
   const used = ['action', ...shape.required, ...shape.optional];
-  const kept = normalizeTrelloArguments(args, 'action', used, TRELLO_WRITE_PARAMETERS.properties);
+  const kept = normalizeTrelloArguments(args, ['action', ...shape.required], used, TRELLO_WRITE_PARAMETERS.properties);
   const normalized = Object.keys(args).filter(key => TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) && !Object.hasOwn(kept, key));
   return { args: kept, normalized };
 }

@@ -138,7 +138,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const cases = [
     { kind: 'site', target: 'plantix dot net', words: ['but can you open', 'plantix dot net in my browser'], url: 'https://plantix.net/' },
     { kind: 'maps', target: 'Odemira', words: ['open the map of Odemira'], url: 'https://www.google.com/maps/search/?api=1&query=Odemira' },
-    { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip%20irrigation' },
+    { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip+irrigation' },
   ];
   let openStep = 100;
   for (const entry of cases) {

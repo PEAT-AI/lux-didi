@@ -1053,7 +1053,7 @@ const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensi
 // speech is 64 rows: the window is ten minutes, capped so one session cannot grow it without bound.
 const MEMORY_WINDOW_MS = 10 * 60 * 1000;
 const MEMORY_WINDOW_ROWS = 2_000;
-// A paraphrase is still the owner's memory when this share of the note's content words is spoken.
+// Every normalized content term needs owner support; partial lexical overlap permits invention.
 const MEMORY_SUPPORT_RATIO = 1;
 const MEMORY_STOP_WORDS = new Set(['i', 'my', 'me', 'a', 'an', 'to', 'on', 'is', 'of', 'rather', 'the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
   'had', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'about', 'into', 'than', 'then', 'they', 'them', 'there',
@@ -1093,9 +1093,6 @@ function feel(text: string): 'affirm' | 'deny' | undefined {
   if (words.some(word => MEMORY_AFFIRM.has(word))) return 'affirm';
   return undefined;
 }
-// Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
-// stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
-// clarification; a wider span is a different topic.
 
 // A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
 const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
@@ -1144,9 +1141,12 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     pending += String(row.text ?? ''); pendingSeq = Number(row.journal_id);
     if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: stripNonLexicalTags(pending) }); pending = ''; }
   }
-  // The model's tool call is the intent: the latest partial turn is owner speech too, because the
-  // provider may never set the finished flag before the call arrives.
-  // Only finalized owner turns authorize a durable memory.
+  // Only an explicit owner confirmation can authorize the immediately preceding answer.
+  // Tool-result rows never enter either source, and partial owner speech never grants authority.
+  if (turns.some(turn => /^(?:yes[, ]+)?(?:please )?(?:remember|save|keep) (?:that|this)(?:[.!]|$)/i.test(turn.text.trim()))) {
+    const answer = finishedUtterance(tx, liveSessionId, 'outputTranscription');
+    if (answer) turns.unshift({ seq: turns[0]!.seq, text: answer });
+  }
   // The window's own support, for a refusal that has no ask to report: how much of the note any turn
   // in the window carries at all.
   const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text).map(memoryWord)));
@@ -1185,7 +1185,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   };
   const pointer = normalized(noteText);
   if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
-  if (/\b(?:them|it|they|this|that)\b/i.test(noteText) && !words.length || /\b(?:them|it)\b/i.test(noteText)) {
+  if ((/\b(?:them|it|they|this|that)\b/i.test(noteText) && !words.length) || /\b(?:them|it)\b/i.test(noteText)) {
     return receipt({ remembered: false, code: 'note_referent_missing', guidance: 'Who or what should I name in the note?' });
   }
   if (!ask) {

@@ -347,3 +347,36 @@ for (const phase of ['initialize_http', 'initialize_transport', 'initialized_not
 test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () => {
   assert.equal(safeEvent({ event: 'vault_transport', phase: 'arbitrary model text' }), undefined);
 });
+
+test('startup claims an authorized operation by its execution identity exactly once', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  speak(h, 'restart', `save this to lux: ${NOTE}`);
+  const calls: string[] = [];
+  const options = { store: h.store, now: () => NOW, log: () => {},
+    transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };
+  const restarted = new VaultWriter(options);
+  await restarted.recovery;
+  await new VaultWriter(options).recovery;
+  assert.deepEqual(calls, [NOTE]);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM vault_writes WHERE utterance_id=?', ['restart']))?.state, 'confirmed');
+});
+
+test('unavailable retries once with backoff and then confirms without a duplicate', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  let calls = 0;
+  const delays: number[] = [];
+  const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
+    backoff: async ms => { delays.push(ms); },
+    transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
+  writer.observe = writer.observe.bind(writer);
+  h.store.transaction(tx => writer.observe(tx, SESSION, 'retry', `save this to lux: ${NOTE}`));
+  const claim = writer.claim(SESSION, NOTE);
+  assert.equal(claim.state, 'dispatch');
+  if (claim.state !== 'dispatch') return;
+  const result = await writer.dispatch(claim);
+  assert.equal(result.saved, true);
+  assert.match(String(result.guidance), /retried.*lux/i);
+  assert.deepEqual(delays, [250]);
+  assert.equal(calls, 2);
+  assert.equal(writer.claim(SESSION, NOTE).state, 'settled');
+});

@@ -191,12 +191,13 @@ test('a note that negates what the owner affirmed is refused', async t => {
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
-test('a note stitched from two non-adjacent turns is refused', async t => {
-  // One ask spans adjacent turns, never a turn and another one three turns later.
+test('a note stitched across a completed answer is refused', async t => {
+  // A completed answer closes the ask; later owner speech cannot revive it.
   const store = liveSession(t, [
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'i will be out of the house most of the day', finished: true },
     { text: 'the bins go out on thursday evening', finished: true },
+    { kind: 'outputTranscription', text: 'Understood.', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
   assert.deepEqual(refusal(await remember(store, 'plumber tuesday; ladder and wrench ready')),

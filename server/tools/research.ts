@@ -3907,7 +3907,7 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     // pipe segment is the calendar it came from, never a title.
     const body = event.line.replace(/^- /u, '').replace(/ \[id [^\]\s]+\]$/u, '');
     const header = body.split('\n')[0]!;
-    const attendees = body.match(/(?:^|\n| \| )\s*(attendees: [^\n;]+)/u)?.[1];
+    const people = [...body.matchAll(/(?:^|\n| \| )\s*((?:attendees|organizer): [^\n;]+)/gu)].map(match => match[1]);
     const pipeAt = header.indexOf(' | ');
     const fields = (pipeAt < 0 ? header : header.slice(0, pipeAt)).split(', ');
     const head = fields[0] ?? '';
@@ -3925,7 +3925,7 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     if (dateOnly && singleDay !== undefined && calendarStamp(event.start, true) !== singleDay) continue;
     const entries = days.get(day) ?? [];
     const summary = [time, rest].filter(part => part.length > 0).join(' ');
-    entries.push(attendees === undefined ? summary : `${summary} | ${attendees}`);
+    entries.push([summary, ...people].join(' | '));
     days.set(day, entries);
   }
   return [...days].map(([day, entries]) => ({ day, entries }));
@@ -5137,7 +5137,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let scopeSlot: number | undefined;
     reads.forEach((read, n) => {
       slots.push(calls.length);
-      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) }, deps.inputSchema) ?? {} });
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), maxMs: Math.max(1, sourceDeadlineAt - now()) }, deps.inputSchema) ?? {} });
       // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
       // did not read and the batch is the read, its list, then any further window.
       if (n === 0 && listScope) {

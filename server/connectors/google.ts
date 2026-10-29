@@ -76,7 +76,7 @@ export interface DriveGetInput { file_id: string }
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
-  calendarId?: string; calendarIds?: readonly string[]; q?: string; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
+  calendarId?: string; calendarIds?: readonly string[]; q?: string; maxMs?: number; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
   /** The caller's remaining source budget as an absolute epoch ms; the fan-out never plans past it. */
   deadlineAt?: number;
 }
@@ -446,7 +446,11 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       bounded.args['timeMin'] = window.timeMin;
       bounded.args['timeMax'] = window.timeMax;
       // The fan-out plans inside the caller's remaining source budget when it names one (#473).
-      const deadlineAt = typeof input.deadlineAt === 'number' && Number.isFinite(input.deadlineAt) ? input.deadlineAt : undefined;
+      if (input.maxMs !== undefined) {
+        if (!Number.isSafeInteger(input.maxMs) || input.maxMs < 1) return { state: 'refused', reason: 'invalid-max-ms' };
+        bounded.args['maxMs'] = input.maxMs;
+      }
+      const deadlineAt = Math.min(input.deadlineAt ?? Number.POSITIVE_INFINITY, input.maxMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + input.maxMs);
       // No calendarId (or an explicit list) means every selected calendar, merged into one result.
       if (input.calendarIds !== undefined) {
         const ids = input.calendarIds;

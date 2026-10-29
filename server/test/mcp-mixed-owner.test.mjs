@@ -76,7 +76,7 @@ test('40 mixed owner reads in one fake minute, then one more of every kind', asy
     const kinds = [
       ['person', 'mattermost_chat', { intent: 'person', person: 'Ada' }],
       ['overview', 'mattermost_chat', { intent: 'overview', person: 'Ada' }],
-      ['attention', 'mattermost_attention_digest', {}],
+      ['attention', 'mattermost_attention', {}],
       ['calendar', 'calendar_list_events', { calendarId: 'primary', timeMin: new Date(start).toISOString(), timeMax: new Date(start + 86400000).toISOString() }],
       ['search', 'drive_search_files', { query: 'synthetic' }],
       ['knowledge', 'search_knowledge', { query: 'synthetic' }],

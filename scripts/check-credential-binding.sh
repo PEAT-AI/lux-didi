@@ -16,27 +16,26 @@ fi
 node -e 'if (Number(process.versions.node.split(".")[0]) < 26) { console.error("CREDENTIAL BINDING CHECK BLOCKED: installed Node >=26 required"); process.exit(2); }'
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-credential-binding.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/adapters" "$out/source/live" "$out/source/contracts" "$out/source/test"
-cp -R "$root/server/config" "$root/server/prompt" "$out/source/"
-cp -R "$root/server/tools" "$root/server/connectors" "$root/server/people" "$out/source/"
-cp -R "$root/server/adapters/model" "$root/server/adapters/live-voice" "$root/server/adapters/mcp" "$root/server/adapters/lux-write" "$out/source/adapters/"
-cp -R "$root/server/live/." "$out/source/live/"
-cp -R "$root/server/contracts/." "$out/source/contracts/"
-# The selected tests side-effect import live-remember/live-declarations and host/log,
-# whose transitive modules these directories carry, so the isolated tsc can resolve them.
-cp -R "$root/server/chat" "$root/server/domain" "$root/server/host" "$root/server/http" "$root/server/runtime" "$root/server/memory" "$out/source/"
-# runtime/store.ts applies the trace store migrations and prunes its content, so this tree needs trace too.
-cp -R "$root/server/trace" "$out/source/"
-for name in credential-binding provider-config model live-voice prompt live-remember live-declarations mongoose-auth; do
-  cp "$root/server/test/$name.test.ts" "$out/source/test/"
-done
-cp "$root/server/test/live-voice-fixture.ts" "$out/source/test/"
+# #624: the staged tree is the repository's own tracked server sources, taken from git rather than a
+# hand-written directory list, so a new module or directory reaches this check without an edit here. The
+# tsc entry points below stay explicit, because they are the selected tests, not the whole suite.
+git -C "$root" ls-files -z -- server > "$out/files.z" || { echo 'CREDENTIAL BINDING CHECK FAIL: git ls-files server' >&2; exit 1; }
+while IFS= read -r -d '' file; do
+  case "$file" in server/node_modules/*|server/dist/*) continue ;; esac
+  mkdir -p "$out/source/$(dirname "${file#server/}")"
+  cp "$root/$file" "$out/source/${file#server/}"
+done < "$out/files.z"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
+entry=("$out"/source/config/*.ts)
+for name in credential-binding provider-config model live-voice prompt live-remember live-declarations mongoose-auth; do
+  entry+=("$out/source/test/$name.test.ts")
+done
+entry+=("$out/source/test/live-voice-fixture.ts")
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck \
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out"/source/config/*.ts "$out"/source/test/*.ts
+  "${entry[@]}"
 for name in credential-binding provider-config model live-voice prompt mongoose-auth; do
   node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/$name.test.js" | tee "$out/$name.log"
   grep -Eq '^# tests [1-9][0-9]*$' "$out/$name.log" || { echo "Zero selected $name tests" >&2; exit 1; }

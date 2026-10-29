@@ -179,6 +179,14 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal((await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
+  // #751: one start line per host start, and it carries the pending count only, never a label or a time.
+  const started = log.filter(row => row.event === 'alarm_scheduler_started');
+  assert.equal(started.length, 1, 'one alarm_scheduler_started line at start');
+  assert.equal(typeof started[0].pending, 'number', 'the line names the pending count');
+  // The envelope fields are the log's own; nothing about one alarm may join them.
+  for (const field of ['alarmId', 'label', 'scheduledMs', 'actualMs', 'reason', 'fireAtUtc', 'time']) {
+    assert.equal(started[0][field], undefined, `${field} stays out of the start line`);
+  }
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'provider_unavailable'));
   for (const row of log.filter(row => row.event.startsWith('alarm_'))) assert.doesNotMatch(JSON.stringify(row), /wake me|Synthetic Owner|snooze my/);

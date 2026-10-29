@@ -196,6 +196,36 @@ test('a summary that fails for a transient reason is retried with backoff, then 
   } finally { h.cleanup(); }
 });
 
+test('#603: a summary is not retried when the failure is a missing or refused credential', async () => {
+  const h = summarizerFixture();
+  try {
+    // A port that returns the failure and one that throws it are the same event at this layer.
+    const ports: [string, () => ModelPort][] = [
+      ['s-credential-status', () => new ScriptedModel([modelResult('error', '', 'credential_unavailable')])],
+      ['s-credential-thrown', () => ({ generate: () => Promise.reject(new Error('credential_unavailable')) })],
+    ];
+    for (const [id, make] of ports) {
+      seedConversation(h.store, id);
+      const waits: number[] = [];
+      const inner = make();
+      let calls = 0;
+      // An unexpected extra attempt is counted, so the assertion cannot pass by the model never being asked.
+      const model: ModelPort = { generate: (request, control) => { calls += 1; return inner.generate(request, control); } };
+      const events: SummarizerLogEvent[] = [];
+      await worker(h.store, model, waits, event => { events.push(event); }).distill(id);
+      const row = storedRow(h.store, id)!;
+      assert.equal(calls, 1, `${id}: a credential failure is not transient inside one call`);
+      assert.deepEqual(waits, [], `${id}: no backoff is waited out`);
+      assert.equal(row.status, 'failed');
+      assert.equal(row.errorCode, 'credential_unavailable');
+      assert.equal(row.retryCount, 0, `${id}: the budget is untouched, so a later host start may retry it`);
+      const failed = events.find(event => event.event === 'conversation_summary_failed');
+      assert.equal(failed?.errorCode, 'credential_unavailable');
+      assert.equal(failed?.retryCount, 0);
+    }
+  } finally { h.cleanup(); }
+});
+
 test('a summary writes a pending row before the model call and replaces it with the outcome', async () => {
   const h = summarizerFixture();
   try {

@@ -139,7 +139,7 @@ export class OwnerRequests implements OwnerRequestPort {
     const request = this.requests.get(session);
     const grant = request?.grants.get(kind);
     return { ownerFinals: request?.finals ?? 0, requestAgeMs: request ? Math.max(0, Math.round(this.clock() - request.start)) : 0,
-      grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined ? 'spent' : 'available' };
+      grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined || [...(grant.targets?.values() ?? [])].some(target => target.target !== undefined) ? 'spent' : 'available' };
   }
   release(session: string): void {
     this.requests.delete(session); this.seenFinal.delete(session); this.pendingFinal.delete(session); this.external.delete(session);

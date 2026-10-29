@@ -722,3 +722,53 @@ test('C-TRELLO9: inner log reasons are closed codes, not arbitrary server messag
     assert.equal(safeEvent({ ...event, reason }), undefined);
   }
 });
+
+test('C-TRELLO: every view accepts full voice payloads without optional filler narrowing the read', async () => {
+  const required: Record<string, Record<string, string>> = {
+    overview: {}, recent: {}, list: { list: 'Short Term Backlog' },
+    search: { query: 'plumber' }, due: { window: 'week' }, card: { card: 'Call the plumber' },
+  };
+  for (const filler of [null, '', ' ', 'x']) {
+    for (const view of TRELLO_READ_VIEWS) {
+      const args = { ...Object.fromEntries(Object.keys(TRELLO_READ_PARAMETERS.properties).map(key => [key, filler])), view, ...required[view] };
+      assert.equal(validateTrelloRead(args), true, `${view}: ${String(filler)}`);
+      const result = await board.read(session(), args);
+      assert.equal(result.ok, true, `${view}: ${JSON.stringify(result)}`);
+      if (view === 'list') assert.equal(result.list, 'Short Term Backlog');
+    }
+  }
+});
+
+test('C-TRELLO: optional write filler is absent, receipts name card and list, retries land once', async () => {
+  for (const [index, filler] of [null, '', ' ', 'x'].entries()) {
+    const full = Object.fromEntries(Object.keys(TRELLO_WRITE_PARAMETERS.properties).map(key => [key, filler]));
+    const name = `Synthetic voice filler ${index}`;
+    const run = session();
+    const create = { ...full, action: 'create', name, list: 'Ideas' };
+    assert.equal(validateTrelloWrite(create), true);
+    const before = writes().length;
+    const receipt = await board.write(run, create, 'add a card to ideas');
+    assert.deepEqual([receipt.ok, receipt.name, receipt.list], [true, name, 'Ideas']);
+    await board.write(run, create, 'add a card to ideas');
+    assert.equal(writes().length, before + 1);
+    const move = { ...full, action: 'move', card: name, list: 'Short Term Backlog' };
+    assert.equal(validateTrelloWrite(move), true);
+    const moved = await board.write(run, move, 'move it to short term backlog');
+    assert.deepEqual([moved.ok, moved.name, moved.list], [true, name, 'Short Term Backlog']);
+    await board.write(run, move, 'move it to short term backlog');
+    assert.equal(writes().length, before + 2);
+  }
+});
+
+test('C-TRELLO: normalization preserves required validation and explicit-ask write authority', async () => {
+  for (const missing of [undefined, null, '', ' ']) {
+    assert.equal(validateTrelloRead({ view: 'list', list: missing, query: null, limit: null }), false);
+    assert.equal(validateTrelloRead({ view: 'search', query: missing, card: 'x', limit: null }), false);
+    assert.equal(validateTrelloWrite({ action: 'create', list: 'Ideas', name: missing, due: null }), false);
+    assert.equal(validateTrelloWrite({ action: 'move', card: 'Call the plumber', list: missing }), false);
+  }
+  const before = writes().length;
+  const refused = await board.write(session(), { action: 'create', list: 'Ideas', name: 'Synthetic unasked write', due: null }, 'what is in my short-term backlog');
+  assert.equal(refused.ok, false);
+  assert.equal(writes().length, before);
+});

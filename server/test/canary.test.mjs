@@ -123,7 +123,7 @@ for (const [label, options, expected, code] of [
   try {
     const data = join(home, 'synthetic-data');
     await mkdir(join(data, 'logs'), { recursive: true });
-    await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_started' }) + '\n' : ''));
+    await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_provider_open', liveSessionId: 'real' }) + '\n' : ''));
     if (options.asks) { await mkdir(join(home, '.lux/didi-canary'), { recursive: true }); await writeFile(join(home, '.lux/didi-canary/asks.json'), options.asks); }
     const cli = spawnSync('bash', ['scripts/check-installed-canary.sh', join(home, 'Synthetic.app')], { cwd: new URL('../../', import.meta.url), env: { ...process.env, HOME: home, LUX_DIDI_DATA_DIR: data }, encoding: 'utf8', timeout: 5_000 });
     assert.equal(cli.status, expected, cli.stderr);
@@ -133,7 +133,10 @@ for (const [label, options, expected, code] of [
 });
 test('live log resets only on host restart or a terminal receipt', () => {
   const lines = events => events.map(event => JSON.stringify(event)).join('\n');
-  assert.equal(liveCallInLog(lines([{ event: 'live_started' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_started' }])), false);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }, { event: 'live_terminal', liveSessionId: 'b' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }, { event: 'live_session_diagnostics', liveSessionId: 'a', terminalCode: 'revoked' }])), false);
   assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'live_terminal' }])), false);
   assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'host_started' }])), false);
   assert.throws(() => liveCallInLog('malformed'), /invalid_host_log/);

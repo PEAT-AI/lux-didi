@@ -221,8 +221,6 @@ function claimedNoun(kind: OpenKind): string {
 /** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */export interface OpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
-/** #573: the words that make an open call the answer to his ask; a name alone is not one. */
-const OPEN_INTENT = /(?:\b(?:open|opened|opening|show|shows|launch|start|display)\w*\b|\b(?:oeffne|öffne|zeig|zeige)\w*\b|\b(?:pull|bring)\s+(?:it\s+|that\s+|them\s+|this\s+)?up\b)/iu;
 /** The kind words a turn can name, so an item of another kind is never opened as if it matched. */
 const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
   // C-OPEN 2: an Office deck stored in Drive opens in the Drive viewer, so a deck is either kind.
@@ -241,30 +239,9 @@ export function anyOpenKinds(words: string): readonly OpenKind[] {
   return [...new Set(ASK_KINDS.filter(entry => entry.words.test(words.toLowerCase())).flatMap(entry => entry.kinds))];
 }
 
-function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | 'not_allowed' | undefined {
-  if (!OPEN_INTENT.test(words)) return 'no_open_intent';
-  // A web request must never degrade into a local default-app action. A site name
-  // introduced as 'the ...' is ambiguous, not evidence of an installed application.
-  const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
-  if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
-  if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
-  if (toolName === 'open_file' && !/\b(?:local|file|folder|path)\b|~\/|\/Users\//i.test(words)) return 'not_allowed';
-  if (toolName !== 'open_source') return undefined;
-  const named = ASK_KINDS.filter(entry => entry.words.test(words));
-  return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
-}
-
-/** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
-export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
-  const resolved = resolveOpenTarget(toolName, args);
-  if ('code' in resolved) return resolved;
-  if (toolName === 'open_app' && !webBinding(args['name']!.replace(/\.app$/i, ''), words)) return { code: 'not_allowed' };
-  if (toolName === 'open_home') {
-    const homes: Record<string, RegExp> = { gmail: /\b(?:gmail|mail|email|inbox)\b/i, calendar: /\b(?:calendar|schedule)\b/i, mattermost: /\b(?:mattermost|chat)\b/i };
-    if (!homes[args['app']!]?.test(words)) return { code: 'not_allowed' };
-  }
-  const refusal = openRefusal(toolName, words, resolved.target.kind);
-  return refusal === undefined ? resolved : { code: refusal };
+/** Admission belongs to OwnerRequests; resolution validates destinations, not wording. */
+export function openTarget(toolName: string, args: Record<string, string>, _words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
+  return resolveOpenTarget(toolName, args);
 }
 
 function resolveOpenTarget(toolName: string, args: Record<string, string>): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' } {
@@ -406,7 +383,6 @@ export function validateOpenWeb(args: unknown): args is { kind: WebKind; target:
 }
 
 /** The closed open verbs; a name alone, or a question about a site, is never an open request. */
-const WEB_INTENT = /(?:^|[^\p{L}\p{N}])(?:navigate\s+to|search\s+for|google|look\s+up|directions\s+to|map\s+of|open\s+up|oeffne|öffne|öffnen|zeig|zeige|zeigen|mach\b.{0,80}\bauf|suche?\s+nach|geh\s+auf|open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/iu;
 
 /** His words, normalised: lowercase, punctuation stripped, a spoken "dot" read as one. */
 export function webWords(text: string): string[] {
@@ -470,8 +446,7 @@ export interface WebOpenTarget { action: NativeAction; target: string; detail: s
  * What open_web means: his words bind the target, the host builds the address, and a site he named but
  * did not spell out is found through the existing web search. Nothing here reads an argument as a URL.
  */
-export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
-  if (!WEB_INTENT.test(words)) return { code: 'no_open_intent' };
+export async function resolveWebOpen(args: { kind: WebKind; target: string }, _words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
   if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
     try {

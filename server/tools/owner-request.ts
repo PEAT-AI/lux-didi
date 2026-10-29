@@ -31,7 +31,7 @@ export class OwnerRequests implements OwnerRequestPort {
     });
   }
   constructor(private readonly clock: () => number = () => performance.now(), private readonly wallClock: () => number = Date.now) {}
-  observe(session: string, journalId: string, words: string): void {
+  observe(session: string, journalId: string, words: string, observedAt = this.wallClock()): void {
     this.seenFinal.add(session); this.pendingFinal.delete(session);
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
@@ -49,7 +49,7 @@ export class OwnerRequests implements OwnerRequestPort {
       return;
     }
     // Retain even a cue-free first fragment: the next final may finish the request.
-    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt: this.wallClock(), finals: 1, journalId, grants, sources: {}, shown: [] });
+    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt, finals: 1, journalId, grants, sources: {}, shown: [] });
   }
 
   answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }

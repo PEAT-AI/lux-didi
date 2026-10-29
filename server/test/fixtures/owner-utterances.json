@@ -1777,8 +1777,9 @@
       "kind": "site",
       "target": "javascript:alert(1)"
     },
-    "code": "not_allowed",
-    "fire_at_utc": null
+    "code": "target_not_authorized",
+    "fire_at_utc": null,
+    "resolve_code": "not_allowed"
   },
   {
     "id": "good-scheme",

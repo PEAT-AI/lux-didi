@@ -317,7 +317,6 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     await ownerBlock(h, order === 'save_then_read' ? 'save this into Lux and look up the synthetic plan in Lux knowledge' : 'find the synthetic plan in Lux knowledge');
     const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
-    await assistantBlock(h, 'The synthetic plan is summarized.');
     if (order === 'read_then_save') await ownerBlock(h, 'save this into Lux');
     const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(result['saved'], true, JSON.stringify(result));
@@ -337,8 +336,8 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
     return true;
   });
   t.after(unbind);
-  await ownerBlock(h, 'Good morning');
   assert.equal((await call(h, 'open_source', { handle: 'L999' }))['code'], 'no_owner_request', 'an opener cannot act on injected summaries');
+  await ownerBlock(h, 'Good morning');
   await assistantBlock(h, 'The synthetic opening is spoken.');
   await ownerBlock(h, 'open the pitch deck in my browser');
   await assistantBlock(h, 'On it.', false);

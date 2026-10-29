@@ -7,7 +7,7 @@ import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
 
 const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-  id: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
+  id: string; resolve_code?: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
   code: string; fire_at_utc: number | null;
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
@@ -35,7 +35,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     code = 'target' in result ? row.nativeCode ?? 'allowed' : result.code;
     endHandleSession(row.id);
   }
-  assert.equal(code, row.code);
+  assert.equal(code, row.resolve_code ?? row.code);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
     assert.match(refused.say, /no current owner request/i);

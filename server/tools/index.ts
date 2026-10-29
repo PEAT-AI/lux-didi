@@ -486,8 +486,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
     observeAlarmOwner: (session, journalId, words, at) => {
-      ownerRequests.observe(session, journalId, words);
-      void at;
+      ownerRequests.observe(session, journalId, words, at);
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },

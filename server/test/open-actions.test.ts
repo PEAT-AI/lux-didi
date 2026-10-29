@@ -614,11 +614,11 @@ test('C-OPEN11: Gmail accepts message and thread fragments, not arbitrary fragme
   }
 });
 
-test('C-OPEN11: browser asks cannot be executed as a local file or app', () => {
-  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'), { code: 'not_allowed' });
-  assert.deepEqual(openTarget('open_app', { name: 'Economist' }, 'open the Economist'), { code: 'not_allowed' });
+test('direct owner: the selected tool determines the native action, not noun grammar', () => {
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'));
+  assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'));
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'));
+  assert.ok('target' in openTarget('open_app', { name: 'Economist' }, 'open the Economist'));
   assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open the local file ~/deck.pptx'));
   assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open Chrome'));
 });
@@ -648,8 +648,8 @@ test('direct102: model preamble does not erase a finalized owner browser ask', a
 });
 
 
-test('direct102 target binding: a generic open cannot authorize a model-invented app, file or home', () => {
+test('direct owner: a generic ask permits the model-selected app file or home', () => {
   for (const [name, args] of [['open_app', { name: 'Safari' }], ['open_file', { path: '~/synthetic-secret.txt' }], ['open_home', { app: 'gmail' }]] as const) {
-    assert.equal('target' in openTarget(name, args, 'open it'), false);
+    assert.equal('target' in openTarget(name, args, 'open it'), true);
   }
 });

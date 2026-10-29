@@ -80,7 +80,7 @@ export interface OwnerRequestPort {
   partial(session: string): void;
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;
-  observe(session: string, journalId: string, words: string): void;
+  observe(session: string, journalId: string, words: string, observedAt?: number): void;
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
   claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization;
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;

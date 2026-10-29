@@ -303,3 +303,18 @@ enum StatusQuiet {
         set(next)
     }
 }
+
+/// Platform-free menu status diff, so polling can be tested without an NSStatusItem.
+struct QuietStatusItem {
+    private var imageKey: String?
+    mutating func update(symbol: String, text: String, title: String,
+                         currentTitle: String, currentToolTip: String?,
+                         image: (String) -> Void, setTitle: (String) -> Void,
+                         toolTip: (String?) -> Void) {
+        let key = symbol + ":" + text
+        StatusQuiet.publish(current: imageKey, next: Optional(key)) { _ in image(key) }
+        imageKey = key
+        StatusQuiet.publish(current: currentTitle, next: title, set: setTitle)
+        StatusQuiet.publish(current: currentToolTip, next: Optional(text), set: toolTip)
+    }
+}

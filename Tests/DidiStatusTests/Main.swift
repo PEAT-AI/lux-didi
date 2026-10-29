@@ -1,21 +1,58 @@
 import Foundation
 
+/// Fake sinks only: no application, notification center, status item or window is created.
 @main struct StatusQuietTests {
     static func main() {
-        var calls = 0
-        var value = "idle"
-        for _ in 0..<20 {
-            StatusQuiet.publish(current: value, next: "idle") { value = $0; calls += 1 }
+        var jobs: [NativePendingLiveJob] = []
+        var error: String?
+        var publishes = 0
+        let ready = NativePendingLiveJob(id: "fake-call", state: "completed", markdown: "ready")
+        func poll(_ next: [NativePendingLiveJob], _ nextError: String?) {
+            StatusQuiet.publish(current: jobs, next: next) { jobs = $0; publishes += 1 }
+            StatusQuiet.publish(current: error, next: nextError) { error = $0; publishes += 1 }
         }
-        precondition(calls == 0, "identical ticks must not write")
-        StatusQuiet.publish(current: value, next: "active") { value = $0; calls += 1 }
-        precondition(calls == 1 && value == "active")
+        poll([ready], nil)
+        precondition(publishes == 1)
+        for _ in 0..<20 { poll([ready], nil) }
+        precondition(publishes == 1, "identical results must not publish")
+        poll([NativePendingLiveJob(id: ready.id, state: ready.state, markdown: "changed")], nil)
+        precondition(publishes == 2, "compare all call fields, not just IDs")
+        poll([], "offline")
+        precondition(publishes == 4)
+        for _ in 0..<20 { poll([], "offline") }
+        precondition(publishes == 4, "identical errors must not publish")
+        poll([], nil)
+        precondition(publishes == 5, "recovery must publish")
+
+        var item = QuietStatusItem()
+        var title = ""
+        var tip: String?
+        var imageWrites = 0, titleWrites = 0, tipWrites = 0
+        func render(_ symbol: String = "mic", _ text: String = "Ready", _ nextTitle: String = "Didi") {
+            item.update(symbol: symbol, text: text, title: nextTitle,
+                        currentTitle: title, currentToolTip: tip,
+                        image: { _ in imageWrites += 1 },
+                        setTitle: { title = $0; titleWrites += 1 },
+                        toolTip: { tip = $0; tipWrites += 1 })
+        }
+        render()
+        precondition(imageWrites == 1 && titleWrites == 1 && tipWrites == 1)
+        for _ in 0..<20 { render() }
+        precondition(imageWrites == 1 && titleWrites == 1 && tipWrites == 1,
+                     "identical ticks must not touch the status button")
+        render("mic", "Ready", "Callback")
+        precondition(imageWrites == 1 && titleWrites == 2 && tipWrites == 1)
+        render("mic.fill", "Ready", "Callback")
+        precondition(imageWrites == 2 && titleWrites == 2 && tipWrites == 1)
+        render("mic.fill", "Listening", "Callback")
+        precondition(imageWrites == 3 && titleWrites == 2 && tipWrites == 2)
+
         var ignores = false
         var orbWrites = 0
         for next in [false, false, true, true, false, false] {
             StatusQuiet.publish(current: ignores, next: next) { ignores = $0; orbWrites += 1 }
         }
         precondition(orbWrites == 2)
-        print("STATUS-QUIET PASS headless=true")
+        print("STATUS-QUIET PASS identicalTicks=20 fieldChanges=true errors=true orb=true headless=true")
     }
 }

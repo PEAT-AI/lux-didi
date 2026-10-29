@@ -1021,26 +1021,24 @@ struct RootView: View {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
     private var statusImages: [String: NSImage] = [:]
-    private var statusImageKey: String?
+    private var quietStatusItem = QuietStatusItem()
     private func updateLiveStatus(state: NativeLiveConversation.State? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
         let liveState = state ?? model.live?.state ?? .idle
         let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         if let button = statusItem.button {
-            let imageKey = presentation.symbol + ":" + presentation.text
-            StatusQuiet.publish(current: statusImageKey, next: Optional(imageKey)) { _ in
-                let key = imageKey
-                if statusImages[key] == nil {
-                    statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
-                }
-                button.image = statusImages[key]
-                statusImageKey = key
-            }
-            StatusQuiet.publish(current: button.title, next: AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall)) { button.title = $0 }
-            StatusQuiet.publish(current: button.toolTip, next: presentation.text) {
-                button.toolTip = $0
-                button.setAccessibilityLabel($0)
-            }
+            quietStatusItem.update(symbol: presentation.symbol, text: presentation.text,
+                title: AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall),
+                currentTitle: button.title, currentToolTip: button.toolTip,
+                image: { key in
+                    if statusImages[key] == nil {
+                        statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+                    }
+                    button.image = statusImages[key]
+                }, setTitle: { button.title = $0 }, toolTip: {
+                    button.toolTip = $0
+                    button.setAccessibilityLabel($0)
+                })
         }
         liveMenuItem?.title = presentation.text
         muteMenuItem?.title = model.live?.isMuted == true ? "Unmute" : "Mute"

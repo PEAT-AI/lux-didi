@@ -17,5 +17,18 @@ if compile "$work/base-test" "$work/base"/Sources/LuxDidi/*.swift >"$work/base.l
 fi
 grep -q "cannot find 'StatusQuiet' in scope" "$work/base.log"
 echo 'STATUS-QUIET BASE RED: missing change-only publishing boundary'
+python3 - <<'PYTEST'
+from pathlib import Path
+app = Path("Sources/LuxDidi/LuxDidiApp.swift").read_text()
+poll = app.split("    func refreshLiveCalls() async {", 1)[1].split("    func requestNotificationPermission", 1)[0]
+assert "notifications.capability()" not in poll, "poll must use cached notification capability"
+assert "notificationStatus.canSchedule" in poll, "delivery must still honor cached capability"
+assert "func applicationDidBecomeActive" in app
+assert app.count("await model.refreshNotificationCapability()") == 2, "launch and activation only"
+assert "quietStatusItem.update(" in app
+orb = Path("Sources/LuxDidi/NativeMiniOrb.swift").read_text()
+assert "StatusQuiet.publish(current: ignoresMouseEvents, next: next)" in orb
+print("STATUS-QUIET WIRING PASS capabilityQueriesPerTick=0 launchAndActivation=true")
+PYTEST
 compile "$work/head-test" Sources/LuxDidi/*.swift
 "$work/head-test"

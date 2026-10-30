@@ -799,8 +799,9 @@ test('W1030: each recorded write family discovers, preflights and probes with go
     registry.suspend(id);
     const withoutProbe = await adapter.discover(id);
     if (withoutProbe.state !== 'discovered') throw new Error('not rediscovered');
-    registry.approve({ endpointId: id, schemaDigest: withoutProbe.schemaDigest, generation: 1, account: ACCOUNT, resource: RESOURCE, toolNames: recorded.filter(name => name !== 'google_identity'), effect: 'read' });
-    const refused = await reader.googleIdentity();
+    registry.approve({ endpointId: id, schemaDigest: withoutProbe.schemaDigest, generation: 2, account: ACCOUNT, resource: RESOURCE, toolNames: recorded.filter(name => name !== 'google_identity'), effect: 'read' });
+    const narrowed = createGoogleReader({ port: adapter, registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: withoutProbe.schemaDigest, generation: 2, family: didiFamily } });
+    const refused = await narrowed.googleIdentity();
     assert.notEqual(refused.state, 'completed', `${family} probe is refused when the recording lacks it`);
     assert.deepEqual(callsOf(pidFile), ['google_identity'], `${family} never calls a write tool when the probe is missing`);
   }

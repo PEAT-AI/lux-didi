@@ -134,6 +134,10 @@ test('F7: the name query drops recency, sharing, connectives and roster names, a
     assert.ok(first.includes(retried), 'the retry word came from the name');
     assert.deepEqual(retry.args['mime_types'], searches[0]!.args['mime_types'], 'the kind filter is kept on the retry');
     assert.ok(reply, 'the read still answers');
+    // F13: a Drive source that was searched is never listed as unchecked.
+    const coverage = String((reply as Record<string, unknown>)['coverage'] ?? '');
+    assert.match(coverage, /drive/u, `coverage names drive: ${coverage}`);
+    assert.doesNotMatch(coverage, new RegExp(`drive[^;]*unchecked`, 'u'), `coverage never calls a searched drive unchecked: ${coverage}`);
   }
   installPeople(null);
   endHandleSession('drive-f7');

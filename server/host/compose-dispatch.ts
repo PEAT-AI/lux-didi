@@ -161,7 +161,8 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
       const channel = entry as Record<string, unknown>;
       const id = channel['id'];
       if (typeof id !== 'string' || id === '') return [];
-      const names = [channel['name'], channel['display_name']].filter((name): name is string => typeof name === 'string' && name.trim() !== '');
+      // The display name first, so the question he is asked names the channel the way he sees it.
+      const names = [channel['display_name'], channel['name']].filter((name): name is string => typeof name === 'string' && name.trim() !== '');
       return [{ id, names }];
     });
   };

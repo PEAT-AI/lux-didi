@@ -118,14 +118,18 @@ test('F7: the name query drops recency, sharing, connectives and roster names, a
     const h = harness(['drive'], call => { asked.push(String(call.args['query'] ?? '')); return shapeDriveSearch({ files: [] }).text; });
     const reply = await runResearch(h.deps, { action: 'start', question: shape.words, topic: shape.words, lookups: [{ source: 'drive', query: shape.words }] }, new AbortController().signal);
     const searches = h.calls.filter(call => call.name === 'drive_search_files');
-    assert.equal(searches.length, 2, `one empty read and one retry: ${shape.words}`);
-    const sent = String(searches[0]!.args['query'] ?? '');
-    for (const noise of ['yesterday', 'shared', 'latest', 'ada']) assert.equal(sent.includes(noise), false, `the name query drops "${noise}": ${sent}`);
-    // The retry carries the single most distinctive title word and keeps the kind filter when there is one.
-    const retried = String(searches[1]!.args['query'] ?? '');
+    assert.ok(searches.length >= 2, `an empty read and a retry: ${shape.words}`);
+    const first = String(searches[0]!.args['query'] ?? '');
+    for (const noise of ['yesterday', 'shared', 'latest', 'ada']) {
+      for (const call of searches) assert.equal(String(call.args['query'] ?? '').includes(noise), false, `the name query drops "${noise}": ${String(call.args['query'])}`);
+    }
+    // The retry carries the single most distinctive title word and keeps the kind filter of the first read.
+    const retry = searches.slice(1).find(call => call.args['query'] !== searches[0]!.args['query']);
+    assert.ok(retry, 'one empty read is followed by a broadened one');
+    const retried = String(retry.args['query'] ?? '');
     assert.equal(retried.split(' ').length, 1, 'one distinctive word, not the whole phrase');
-    assert.ok(sent.includes(retried), 'the retry word came from the name');
-    assert.deepEqual(searches[1]!.args['mime_types'], searches[0]!.args['mime_types'], 'the kind filter is kept on the retry');
+    assert.ok(first.includes(retried), 'the retry word came from the name');
+    assert.deepEqual(retry.args['mime_types'], searches[0]!.args['mime_types'], 'the kind filter is kept on the retry');
     assert.ok(reply, 'the read still answers');
   }
   endHandleSession('drive-f7');

@@ -10,7 +10,9 @@
     "build": "tsc -p tsconfig.json && mkdir -p dist/test/fixtures && cp test/fixtures/*.mjs dist/test/fixtures/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "test": "node --test --test-timeout=15000 dist/test/runtime.test.js dist/test/http.test.js"
+    "test": "node --test --test-timeout=15000 dist/test/runtime.test.js dist/test/http.test.js",
+    "eval": "node dist/eval/cli.js",
+    "eval:check": "bash ../scripts/check-evals.sh"
   },
   "devDependencies": {
     "@modelcontextprotocol/server": "2.3.1",

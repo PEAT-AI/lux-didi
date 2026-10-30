@@ -1220,10 +1220,13 @@ test('F4 Gemini: the research cap never refuses a non-research tool', async t =>
   await session.ready;
   socket.deliver({ toolCall: { functionCalls: Array.from({ length: 7 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
   await new Promise<void>(resolve => setImmediate(resolve));
+  const admittedCalls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(admittedCalls.length, 6, 'the cap admits six research calls');
+  session.sendToolResponse({ responses: admittedCalls.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
   socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-retry-call', name: 'mattermost_chat', args: {} }] } });
   await new Promise<void>(resolve => setImmediate(resolve));
-  const admitted = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []).map(call => call.id);
-  assert.ok(admitted.includes('synthetic-retry-call'), 'the corrected retry is admitted');
+  const admittedIds = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []).map(call => call.id);
+  assert.ok(admittedIds.includes('synthetic-retry-call'), 'the corrected retry is admitted');
   const responses = socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
   assert.equal(JSON.stringify(responses).includes('"synthetic-retry-call"') && JSON.stringify(responses.at(-1)).includes('research_cap_reached'), false,
     'and it is never answered with the research cap code');

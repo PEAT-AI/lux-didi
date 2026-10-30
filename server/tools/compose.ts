@@ -1,6 +1,7 @@
 import { parseAlarmTime } from './alarm.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
+import { googleConsentLine } from './google.js';
 
 /**
  * The write surface Naya may reach by voice: drafts that only the owner can send, and calendar
@@ -211,7 +212,7 @@ export function createdEventResult(event: { eventId: string; htmlLink?: string; 
 }
 /** A missing token or an unconsented family is one closed answer plus the one command to run. */
 export function notAuthorizedResult(family: string, command: string): JsonObject {
-  return { status: CONNECTOR_NOT_AUTHORIZED, family, code: CONNECTOR_NOT_AUTHORIZED, say: `I do not have ${family} write access yet. Ask him to run ${command} and I will do it.` };
+  return { status: CONNECTOR_NOT_AUTHORIZED, family, code: CONNECTOR_NOT_AUTHORIZED, say: `I do not have ${family} write access yet. ${command}, then I can do it.` };
 }
 export const COMPOSE_GUIDANCE = 'Naya drafts email and Mattermost messages and puts owner-only blocks on the calendar. She never sends and never invites.';
 
@@ -247,6 +248,21 @@ export const COMPOSE_TOOLS: Readonly<Record<ComposeName, ComposeTool>> = {
 };
 
 /** The target the grant and its claim are bound to, derived from his words and the turn. */
+/** Exact id match over this run's own receipts: the block a create_event call actually made. */
+export function createdEventIds(rows: readonly { intent_json?: unknown; result_json?: unknown }[]): string[] {
+  const ids: string[] = [];
+  for (const row of rows) {
+    if (typeof row.intent_json !== 'string' || !row.intent_json.includes('"toolName":"create_event"')) continue;
+    if (typeof row.result_json !== 'string') continue;
+    try {
+      const parsed = JSON.parse(row.result_json) as { response?: { event_id?: unknown }, event_id?: unknown };
+      const id = parsed.response?.event_id ?? parsed.event_id;
+      if (typeof id === 'string' && id.length > 0) ids.push(id);
+    } catch { /* a row without parseable JSON names no event */ }
+  }
+  return ids;
+}
+
 export function composeTarget(name: ComposeName, args: JsonObject, turn: string): string {
   const text = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (name === 'draft_email') return `mail:${text(args['to'])}`;
@@ -299,14 +315,14 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
 
 /** The family each write needs, and the one line he must act on when it is not consented. */
 export const COMPOSE_FAMILY: Readonly<Record<ComposeName, string>> = {
-  draft_email: 'the Google compose family', draft_chat: 'the Mattermost drafts family',
-  create_event: 'the Google calendar_write family', delete_event: 'the Google calendar_write family',
+  draft_email: 'the gmail_draft family', draft_chat: 'the Mattermost drafts family',
+  create_event: 'the calendar_write family', delete_event: 'the calendar_write family',
 };
 export const COMPOSE_CONSENT: Readonly<Record<ComposeName, string>> = {
-  draft_email: 'lux-google-mcp authorize --family compose',
-  draft_chat: 'mattermost_login',
-  create_event: 'lux-google-mcp authorize --family calendar_write',
-  delete_event: 'lux-google-mcp authorize --family calendar_write',
+  draft_email: googleConsentLine('gmail_draft'),
+  draft_chat: 'auth needed: run mattermost_login once',
+  create_event: googleConsentLine('calendar_write'),
+  delete_event: googleConsentLine('calendar_write'),
 };
 /** The closed answer for a family this host cannot reach yet, with the one action to take. */
 export const notAuthorizedFor = (name: ComposeName): ComposeOutcome => ({ state: 'not_authorized', family: COMPOSE_FAMILY[name], command: COMPOSE_CONSENT[name] });

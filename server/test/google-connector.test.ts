@@ -20,10 +20,11 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
+import { composeResult, notAuthorizedFor } from '../tools/compose.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
-import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
+import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleConsentLine, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
 
@@ -1224,4 +1225,46 @@ test('W1030: the recorded tools/list lists the write families with no send and n
     assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${name} is in the closed write envelope`);
     assert.equal((GOOGLE_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
   }
+});
+
+// W1030/WT-R5: the consent probe of a write family is a read, and a missing token names its own family.
+test('W1030: a write family probes with the read-only google_identity and never with a write', () => {
+  const descriptor = connectorDescriptor('google')!;
+  const surface = (toolNames: string[]) => {
+    const probe = descriptor.identity!({ toolNames } as never) as { tool: string; args: Record<string, unknown> } | undefined;
+    assert.ok(probe, 'the family declares a probe');
+    return probe;
+  };
+  const compose = surface(['gmail_create_draft']);
+  assert.equal(compose.tool, 'google_identity', 'compose probes with google_identity');
+  assert.deepEqual(compose.args, { family: 'gmail_draft' }, 'Didi compose is the helper gmail_draft family');
+  const calendarWrite = surface(['calendar_create_event']);
+  assert.equal(calendarWrite.tool, 'google_identity');
+  assert.deepEqual(calendarWrite.args, { family: 'calendar_write' });
+  const reads = [surface(['gmail_get_profile']), surface(['calendar_list_events']), surface(['drive_search_files'])];
+  for (const probe of [compose, calendarWrite, ...reads]) {
+    for (const write of ['gmail_create_draft', 'calendar_create_event', 'calendar_delete_event']) {
+      assert.notEqual(probe.tool, write, `no family probes with ${write}`);
+    }
+  }
+  // Both write families carry the probe in their catalog, so preflight can grant the read it needs.
+  assert.ok(GOOGLE_FAMILIES.compose.includes('google_identity'));
+  assert.ok(GOOGLE_FAMILIES.calendar_write.includes('google_identity'));
+  assert.ok(GOOGLE_WRITE_TOOLS.includes('google_identity'));
+  assert.equal((GOOGLE_TOOLS as readonly string[]).includes('google_identity'), false, 'the read envelope is unchanged');
+});
+
+test('W1030: a missing compose or calendar_write token answers with its own family consent line', () => {
+  assert.match(googleConsentLine('gmail_draft'), /^auth needed: run .* --family gmail_draft /);
+  assert.match(googleConsentLine('calendar_write'), /^auth needed: run .* --family calendar_write /);
+  const draft = notAuthorizedFor('draft_email');
+  assert.equal(draft.state, 'not_authorized');
+  const draftResult = composeResult(draft);
+  assert.match(String(draftResult['say']), /gmail_draft/);
+  assert.match(String(draftResult['say']), /auth needed: run .* --family gmail_draft/);
+  const event = composeResult(notAuthorizedFor('create_event'));
+  assert.match(String(event['say']), /calendar_write/);
+  assert.match(String(event['say']), /auth needed: run .* --family calendar_write/);
+  const chat = composeResult(notAuthorizedFor('draft_chat'));
+  assert.match(String(chat['say']), /mattermost_login/);
 });

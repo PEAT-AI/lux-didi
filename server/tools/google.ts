@@ -203,6 +203,14 @@ const SAFE_BINDING = /^[A-Za-z0-9._@+/-]{1,512}$/;
  * the owner can run it once without looking anything up. A word that is not a plain path or address is
  * left out, so the line never becomes a second command.
  */
+/**
+ * W1030: the one consent sentence the write families reuse, in the repo's own read-family wording with
+ * the helper's authorize command for that family. It names no new CLI of its own.
+ */
+export function googleConsentLine(family: string): string {
+  return `auth needed: run ${authorizeCommandFor(family)} to sign in again`;
+}
+
 function authorizeCommandFor(family: string, endpoint?: ConnectionEndpoint): string {
   const command = `lux-google-mcp authorize --family ${family}`;
   if (endpoint === undefined || !('transport' in endpoint)) return command;

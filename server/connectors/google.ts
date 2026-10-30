@@ -14,7 +14,7 @@ export const GOOGLE_READ_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 
 /** The read envelope an approved read grant may name; the write families are never part of it. */
 export const GOOGLE_TOOLS = GOOGLE_READ_TOOLS;
 /** W1030: the write calls, each on its own family, endpoint and token (C-GWRITE). */
-export const GOOGLE_WRITE_TOOLS = ['gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
+export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
 export type GoogleTool = (typeof GOOGLE_READ_TOOLS)[number] | (typeof GOOGLE_WRITE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
@@ -26,10 +26,14 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
   // W1030: two write families, each with its own endpoint and its own token and consent (C-GWRITE).
   // Nothing here can send mail or invite anyone: the compose family writes one unsent draft, and the
   // calendar_write family writes or removes an attendee-free event the helper itself created.
-  compose: ['gmail_create_draft'],
-  calendar_write: ['calendar_create_event', 'calendar_delete_event'],
+  // GW-R4: each write family carries the read-only google_identity probe, so a consent check can never
+  // write. Didi's compose label is the helper's gmail_draft family.
+  compose: ['google_identity', 'gmail_create_draft'],
+  calendar_write: ['google_identity', 'calendar_create_event', 'calendar_delete_event'],
 };
 export type GoogleFamily = 'gmail' | 'calendar' | 'drive' | 'compose' | 'calendar_write';
+/** Didi's family labels against the helper's own names (GW-R4: compose is gmail_draft in the helper). */
+export const GOOGLE_HELPER_FAMILY: Readonly<Record<GoogleFamily, string>> = { gmail: 'gmail', calendar: 'calendar', drive: 'drive', compose: 'gmail_draft', calendar_write: 'calendar_write' };
 
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 10, maxListResults: 50, readBodyChars: 4000 } as const;
@@ -130,6 +134,8 @@ export interface GoogleReader {
   gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveSearch(input: DriveSearchInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveGet(input: DriveGetInput, signal?: AbortSignal): Promise<GoogleResult>;
+  /** GW-R4: the read-only consent probe, `google_identity {email, family, scopes}`. It never writes. */
+  googleIdentity(signal?: AbortSignal): Promise<GoogleResult>;
   gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult>;
   calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult>;
   calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult>;
@@ -411,6 +417,11 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   }
 
   return {
+    async googleIdentity(signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('google_identity');
+      if (denied) return { state: 'refused', reason: denied };
+      return dispatch('google_identity', { family: GOOGLE_HELPER_FAMILY[settings.family] }, signal);
+    },
     async gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_create_draft');
       if (denied) return { state: 'refused', reason: denied };

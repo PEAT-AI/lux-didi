@@ -5,7 +5,7 @@ import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import { GOOGLE_FAMILIES, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
+import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
@@ -347,6 +347,7 @@ const googleDescriptor: ConnectorDescriptor = {
         if (tool === 'drive_search_files') return await reader.driveSearch(args as unknown as DriveSearchInput, signal);
         if (tool === 'drive_get_file') return await reader.driveGet(args as unknown as DriveGetInput, signal);
         // W1030: the two write families, each its own endpoint and token; nothing here can send or invite.
+        if (tool === 'google_identity') return await reader.googleIdentity(signal);
         if (tool === 'gmail_create_draft') return await reader.gmailCreateDraft(args as unknown as GmailDraftInput, signal);
         if (tool === 'calendar_create_event') return await reader.calendarCreateEvent(args as unknown as GcalCreateEventInput, signal);
         if (tool === 'calendar_delete_event') return await reader.calendarDeleteEvent(args as unknown as GcalDeleteEventInput, signal);
@@ -369,8 +370,10 @@ const googleDescriptor: ConnectorDescriptor = {
     // W1030: a write family carries its own token and its own consent, so it proves itself with its own
     // cheapest strict call instead of the gmail or calendar read one. The helper pins the account with
     // LUX_GOOGLE_MCP_ACCOUNT for every child, so the probe is the token's own consent and nothing else.
-    if (family === 'compose') return { tool: 'gmail_create_draft', args: { to: ['owner@example.invalid'], subject: 'consent', body: 'consent' }, values: gmailIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
-    if (family === 'calendar_write') return { tool: 'calendar_create_event', args: { summary: 'consent', start: '1970-01-01T00:00:00Z', end: '1970-01-01T00:15:00Z', time_zone: 'UTC', client_request_id: 'consent' }, values: calendarIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
+    // GW-R4: a consent check never writes, so both write families prove themselves with the helper's
+    // read-only `google_identity {email, family, scopes}` and never with a draft or an event call.
+    if (family === 'compose') return { tool: 'google_identity', args: { family: GOOGLE_HELPER_FAMILY.compose }, values: gmailIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
+    if (family === 'calendar_write') return { tool: 'google_identity', args: { family: GOOGLE_HELPER_FAMILY.calendar_write }, values: calendarIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
     return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };

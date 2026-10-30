@@ -945,6 +945,7 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
   assert.equal(invented.status, 'completed', invented.reason);
   assert.match(String(invented.result_json), /event_not_created_here/);
+  assert.match(String(invented.result_json), /in this session/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
@@ -956,6 +957,23 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
   assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
+
+test('W1030 delete_event: a block the owner names is removed only when this session calendar read returned it', async t => {
+  const port = composePort();
+  const readBack: ComposeDispatch = { ...port, findNamedEvent: async input => input.words.includes('standup') ? { state: 'found', eventId: 'event-read-7' } : { state: 'none' } };
+  const f = await fixture(t, { compose: readBack, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'cancel my standup', 1_000);
+  const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
+  assert.equal(removed.status, 'completed');
+  assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
+  f.owner.ownerRequests.answered?.('run');
+  f.owner.observeAlarmOwner('run', 'j2', 'cancel that meeting', 2_000);
+  const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
+  assert.equal(none.status, 'completed');
+  assert.match(String(none.result_json), /event_not_created_here/);
+  assert.match(String(none.result_json), /in this session/);
+  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 1, 'nothing is removed without a read');
+});
 });
 
 test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot write twice', async t => {

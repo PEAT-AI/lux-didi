@@ -60,7 +60,17 @@ export interface ComposeDispatch {
   draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome>;
   createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome>;
   deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  /**
+   * W1030: the second delete arm. A calendar read this session returned decides which block he means,
+   * by exact id; the helper itself refuses an event it did not create.
+   */
+  findNamedEvent?(input: { words: string; clientRequestId: string }): Promise<NamedEventOutcome>;
 }
+
+export type NamedEventOutcome =
+  | { state: 'found'; eventId: string }
+  | { state: 'ambiguous'; candidates: string[] }
+  | { state: 'none' };
 
 export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };

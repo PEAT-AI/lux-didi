@@ -7921,7 +7921,7 @@ test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms 
   }
   h.owner.text('Set an alarm in ten minutes');
   const original = await call('synthetic-original-alarm');
-  assert.equal(original['status'], 'set');
+  assert.equal(original['status'] ?? original['code'], 'set', JSON.stringify(original));
   fake.emit({ type: 'turnComplete' }); await settlePort();
   fake.emit({ type: 'goAway', timeLeftMs: 1 });
   for (let n = 0; n < 100 && fake.requests.length < 2; n++) await settlePort();

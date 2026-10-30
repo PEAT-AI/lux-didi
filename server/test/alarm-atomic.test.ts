@@ -65,7 +65,10 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
   await service.shutdown(); store.close();
   const recovered = new Store(directory, migrations);
   try {
-    assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
+    // The reopened store still holds exactly the one-shot occurrence and the one series occurrence.
+    assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms WHERE id=?', [intent.executionId])?.n), 1);
+    assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1);
+    assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences')?.n), 1);
     assert.equal(recovered.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [intent.executionId])?.state), 'completed');
   } finally { recovered.close(); }
 });

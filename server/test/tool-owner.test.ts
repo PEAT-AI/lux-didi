@@ -923,10 +923,11 @@ test('W1030 create_event: the window comes from his words, a colleague stays a d
   const end = Number(line.split(':')[2]);
   assert.equal(end - start, 3_600_000, 'one hour from his words');
   assert.match(line, /Zara/);
-  assert.match(line, /no invitations were sent/i);
+  assert.match(line, /not invited|no invitations were sent/i);
   const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
   assert.match(stored, /"attendees":0/);
   assert.match(stored, /"invitations":"none"/);
+  assert.match(stored, /No invitations were sent/);
 });
 
 test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {

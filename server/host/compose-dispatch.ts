@@ -66,6 +66,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
    * The refusals that mean "this family is not consented", never "that argument was unusable". Only these
    * earn the owner-facing authorize line; every other refusal keeps its own closed code.
    */
+  let probe = '';
   const CONSENT_REFUSALS: ReadonlySet<string> = new Set([
     'not-configured', 'grant-absent', 'grant-stale', 'schema-drift', 'grant-not-read', 'source-unavailable',
     'tool-not-granted', 'required-definition-absent', 'ineligible-tool-granted',
@@ -149,11 +150,11 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
   /** The Mattermost channels the owner's own channel read returns, as ids with their spoken names. */
   const channels = async (): Promise<{ id: string; names: string[] }[]> => {
     const result = await call('mattermost', 'mattermost_list_channels', {});
-    if (result.state !== 'completed') return [];
+    if (result.state !== 'completed') { probe = `call-${result.state}-${result.state === 'refused' ? result.reason : result.reason}`; return []; }
     const payload = readMattermostPayload(port, result);
-    if (!payload.ok) return [];
+    if (!payload.ok) { probe = `payload-${payload.reason}`; return []; }
     let envelope: unknown;
-    try { envelope = JSON.parse(payload.text); } catch { return []; }
+    try { envelope = JSON.parse(payload.text); } catch { probe = 'parse-failed'; return []; }
     const list = envelope !== null && typeof envelope === 'object' && !Array.isArray(envelope) ? (envelope as Record<string, unknown>)['channels'] : undefined;
     if (!Array.isArray(list)) return [];
     return list.flatMap(entry => {
@@ -212,7 +213,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
       let channelId = input.channel;
       if (channelId !== undefined) {
         const resolution = await resolveChannel(channelId);
-        if (resolution.state === 'none') return { state: 'recipient', code: 'recipient_unknown', candidates: [channelId] };
+        if (resolution.state === 'none') return { state: 'recipient', code: 'recipient_unknown', candidates: [channelId, probe] };
         if (resolution.state === 'ambiguous') return { state: 'recipient', code: 'recipient_ambiguous', candidates: resolution.candidates };
         channelId = resolution.channelId;
       }

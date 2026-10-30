@@ -7423,7 +7423,7 @@ export class ResearchScheduler {
       if (call.researchId !== undefined) {
         const answered = this.#answered.get(call.researchId);
         if (answered !== undefined && answered.reachable === reachable && this.#deps.now() - answered.at <= RESEARCH.coalesceWindowMs) {
-          this.#deps.logJoined?.(call.researchId, 'repeat_id');
+          this.#deps.logJoined?.(call.researchId, 'recent');
           return Promise.resolve(answered.reply);
         }
       }

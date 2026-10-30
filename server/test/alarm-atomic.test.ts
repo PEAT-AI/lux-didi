@@ -65,20 +65,22 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
   // C-RECUR M2: the owner's words pick the scope, never the id the model passed.
   const seriesId = store.transaction(tx => String(tx.get('SELECT id FROM alarm_series')?.id));
   const pendingOccurrence = () => store.transaction(tx => String(tx.get("SELECT o.alarm_id FROM alarm_occurrences o JOIN alarms a ON a.id=o.alarm_id WHERE a.state='pending' LIMIT 1")?.alarm_id));
-  const cancelIntent = (cancelArgs: Record<string, string>) => ({ ...intent, executionId: randomUUID(), callId: randomUUID(),
-    argumentsHash: createHash('sha256').update(JSON.stringify(cancelArgs)).digest('hex') } as ToolCallIntent);
+  const cancelTool = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' })).find(candidate => candidate.name === 'cancel_alarm')!;
+  const cancelIntent = (cancelArgs: Record<string, string>): ToolCallIntent => ({ runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch,
+    revision: authority.revision, toolName: cancelTool.name, executionId: randomUUID(), callId: randomUUID(),
+    argumentsHash: createHash('sha256').update(JSON.stringify(cancelArgs)).digest('hex'), accountId: cancelTool.accountId, resourceId: cancelTool.resourceId });
   const skipArgs = { id: seriesId };
   const skipIntent = cancelIntent(skipArgs);
   owner.observeAlarmOwner(session.liveSessionId, 'synthetic-skip-journal', 'skip this Saturday', Date.now());
   assert.equal(owner.journal.intent(skipIntent), 'fresh');
-  await assert.rejects(tool.execute(skipArgs, { ...skipIntent, signal }), /synthetic_crash_after_commit/);
+  await assert.rejects(cancelTool.execute(skipArgs, { ...skipIntent, signal }), /synthetic_crash_after_commit/);
   assert.equal(store.transaction(tx => tx.get('SELECT state FROM alarm_series WHERE id=?', [seriesId])?.state), 'active', 'a series id with occurrence words never cancels the series');
   assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM alarms WHERE state='pending'")?.n), 1, 'skipping one Saturday materialises the next occurrence');
   const stopArgs = { id: pendingOccurrence() };
   const stopIntent = cancelIntent(stopArgs);
   owner.observeAlarmOwner(session.liveSessionId, 'synthetic-stop-journal', 'stop the Saturday cardio reminders', Date.now());
   assert.equal(owner.journal.intent(stopIntent), 'fresh');
-  await assert.rejects(tool.execute(stopArgs, { ...stopIntent, signal }), /synthetic_crash_after_commit/);
+  await assert.rejects(cancelTool.execute(stopArgs, { ...stopIntent, signal }), /synthetic_crash_after_commit/);
   assert.equal(store.transaction(tx => tx.get('SELECT state FROM alarm_series WHERE id=?', [seriesId])?.state), 'cancelled', 'the series wording cancels the series');
   assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM alarms WHERE state IN ('pending','ringing')")?.n), 0);
   await service.shutdown(); store.close();

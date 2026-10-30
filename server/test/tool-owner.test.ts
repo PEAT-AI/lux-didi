@@ -849,17 +849,20 @@ function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
 const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
   ...f.intent(executionId, name, args), accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
 });
+const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
+const liveExecute = (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>) =>
+  liveTools(f).find(definition => definition.name === call.toolName)!.execute(args, { ...call, signal: f.signal });
 
 test('W1030 draft_email: a split two-turn ask writes one unsent draft and its replay returns the receipt', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port });
-  assert.ok(f.definitions().some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
+  assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
   f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
   f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
   const call = composeCall(f, 'run:1:0', 'draft_email', args);
   f.owner.journal.intent(call);
-  const outcome = await f.execute(call, args);
+  const outcome = await liveExecute(f, call, args);
   assert.equal(outcome.status, 'completed');
   assert.equal(port.log.length, 1, 'one remote draft call');
   const first = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json;
@@ -868,7 +871,7 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft and its re
   assert.match(String(first), /"sent":false/);
   const replay = composeCall(f, 'run:1:1', 'draft_email', args);
   f.owner.journal.intent(replay);
-  assert.equal((await f.execute(replay, args)).status, 'completed');
+  assert.equal((await liveExecute(f, replay, args)).status, 'completed');
   assert.equal(port.log.length, 1, 'the replay writes nothing');
 });
 
@@ -880,7 +883,7 @@ test('W1030 recipient: two spoken matches ask, and the model address never reach
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const call = composeCall(f, 'run:1:0', 'draft_email', args);
   f.owner.journal.intent(call);
-  assert.equal((await f.execute(call, args)).status, 'completed');
+  assert.equal((await liveExecute(f, call, args)).status, 'completed');
   const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
   assert.match(stored, /recipient_ambiguous/);
   assert.match(stored, /Priya Raman, Priya Shah/);
@@ -894,13 +897,13 @@ test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft t
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
   const dm = composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' });
   f.owner.journal.intent(dm);
-  assert.equal((await f.execute(dm, { person: 'Sam', message: 'On my way.' })).status, 'completed');
+  assert.equal((await liveExecute(f, dm, { person: 'Sam', message: 'On my way.' })).status, 'completed');
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
   const thread = composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' });
   f.owner.journal.intent(thread);
-  assert.equal((await f.execute(thread, { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
+  assert.equal((await liveExecute(f, thread, { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
-  const definitions = f.definitions().map(definition => definition.name);
+  const definitions = liveTools(f).map(definition => definition.name);
   assert.equal(definitions.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
 });
 
@@ -911,7 +914,7 @@ test('W1030 create_event: the window comes from his words, a colleague stays a d
   const args = { summary: 'gym' };
   const call = composeCall(f, 'run:1:0', 'create_event', args);
   f.owner.journal.intent(call);
-  const outcome = await f.execute(call, args);
+  const outcome = await liveExecute(f, call, args);
   assert.equal(outcome.status, 'completed');
   const line = port.log[0] ?? '';
   const start = Number(line.split(':')[1]);
@@ -931,13 +934,13 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const call = composeCall(f, 'run:1:0', 'draft_email', args);
   f.owner.journal.intent(call);
-  assert.equal((await f.execute(call, args)).status, 'completed');
+  assert.equal((await liveExecute(f, call, args)).status, 'completed');
   assert.equal(port.log.length, 1);
   const rebuilt = f.reopen();
   rebuilt.observeAlarmOwner('run', 'j9', 'draft an email to Priya', 3_000);
   const after = { ...call, executionId: 'run:1:1' };
   rebuilt.journal.intent(after);
-  const refused = await rebuilt.definitions('run').find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
+  const refused = await rebuilt.liveDefinitions('run', () => ({ code: 'remembered' })).find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
 });
@@ -948,7 +951,7 @@ test('W1030 connector_not_authorized: a family this host cannot reach names the 
   const args = { summary: 'block' };
   const call = composeCall(f, 'run:1:0', 'create_event', args);
   f.owner.journal.intent(call);
-  assert.equal((await f.execute(call, args)).status, 'completed');
+  assert.equal((await liveExecute(f, call, args)).status, 'completed');
   const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
   assert.match(stored, /connector_not_authorized/);
   assert.match(stored, /calendar_write/);

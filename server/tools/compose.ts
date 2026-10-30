@@ -142,11 +142,14 @@ function hourMinute(text: string): { hour: number; minute: number } | undefined 
   return { hour: settled, minute };
 }
 
+const NOT_A_NAME = new Set(['on', 'at', 'for', 'in', 'and', 'from', 'tomorrow', 'today', 'tonight', 'next', 'this', 'the', 'a', 'an', 'my', 'our', 'about', ...WEEKDAYS]);
+
 /** People he named alongside the event; they are described, never invited. */
 export function namedOthers(words: string, ownerName?: string): string[] {
   const match = /\b(?:with|and|together with)\s+([\p{L}][\p{L}'.-]*(?:\s+[\p{L}][\p{L}'.-]*)?)/u.exec(words);
   if (!match) return [];
-  const name = match[1]!.trim();
+  const tokens = match[1]!.trim().split(/\s+/).filter(token => !NOT_A_NAME.has(token.toLowerCase()));
+  const name = tokens.join(' ');
   if (ownerName !== undefined && name.toLowerCase() === ownerName.toLowerCase()) return [];
   return name.length > 0 ? [name] : [];
 }

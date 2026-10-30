@@ -436,6 +436,11 @@ export function withoutOwner(text: string, owner: string, display = ''): string 
 }
 
 /** One child post as a chat read carries it, attachment text after the message. */
+/** W2B/F5c: the rows whose own name or display name is exactly the spoken key, and nothing else. */
+function strongChannelMatches(rows: readonly MattermostChannel[], key: string): MattermostChannel[] {
+  return rows.filter(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
+}
+
 function chatPost(raw: Record<string, unknown>, owner?: string): ChatReadPost {
   const permalink = firstText(raw, ['url', 'permalink']);
   const rootId = firstText(raw, ['rootId', 'root_id']);
@@ -975,8 +980,46 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (order !== 'oldest' && order !== 'newest') return { state: 'refused', reason: 'invalid-order' };
     // F5c: one thread, whole and in time order, through the child's own thread read.
     if (input.intent === 'thread') {
-      const root = input.post_id === undefined ? undefined : boundedText(input.post_id);
-      if (root === undefined) return { state: 'refused', reason: 'thread-needs-post-id' };
+      // F5c: a thread is named either by the root post id an earlier result carried, or by the topic and the
+      // conversation the owner named: the newest post about that topic there decides which thread he means.
+      let root = input.post_id === undefined ? undefined : boundedText(input.post_id);
+      if (root === undefined) {
+        if (asked === '') return { state: 'refused', reason: 'thread-needs-post-id-or-topic' };
+        let conversation: string | undefined;
+        let read2: string;
+        if (input.person !== undefined) {
+          const spokenPerson = boundedText(input.person);
+          if (spokenPerson === undefined) return { state: 'refused', reason: 'invalid-person' };
+          const person = await findPerson(spokenPerson, capture, signal);
+          if (person.kind === 'failed') return person.result;
+          if (person.kind !== 'person' || person.dmChannelId === undefined) {
+            return finish({ ...base, read: `a person called ${spokenPerson}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }) });
+          }
+          conversation = person.dmChannelId;
+          read2 = `the thread with ${person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`} about ${asked}`;
+        } else if (input.channel !== undefined) {
+          const spokenChannel = boundedText(input.channel);
+          if (spokenChannel === undefined) return { state: 'refused', reason: 'invalid-channel' };
+          const key = nameKey(spokenChannel);
+          if (key === '') return { state: 'refused', reason: 'invalid-channel' };
+          const channels = await loadChannels(signal, capture);
+          if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+          const strong = strongChannelMatches(channels.filter(channel => channel.type !== 'D' && channel.type !== 'G'), key);
+          const only = strong.length === 1 ? strong[0]! : undefined;
+          if (only === undefined || only.id === undefined) {
+            return finish({ ...base, read: `a channel called ${spokenChannel}`, clarify: `Which channel do you mean: ${spokenList(strong.slice(0, MATTERMOST_CHAT.candidates).map(channelLabel))}?` });
+          }
+          conversation = only.id;
+          read2 = `the thread in the channel ${channelLabel(only)} about ${asked}`;
+        } else {
+          return { state: 'refused', reason: 'thread-needs-conversation' };
+        }
+        const found = await postsRead(who.owner.username, { query: asked, channel: conversation, ...dates }, limit, 0, capture, signal, 'newest');
+        if (!found.ok) return found.result;
+        const newest = found.posts[0];
+        if (newest === undefined) return finish({ ...base, read: read2, notFound: `I found no post about ${asked} in that conversation.` });
+        root = newest.rootId === undefined || newest.rootId === '' ? newest.id : newest.rootId;
+      }
       const thread = await read('mattermost_get_thread', { post_id: root }, signal);
       if (!thread.ok) return thread.result;
       capture(thread.evidence);
@@ -1062,7 +1105,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           return wanted.every(word => own.some(part => part.startsWith(word)));
         });
       }
-      const strong = rows.filter(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
+      const strong = strongChannelMatches(rows, key);
       const target = strong.length === 1 ? strong[0]! : undefined;
       if (target === undefined || target.id === undefined) {
         // A successful discovery with no match is an empty read the model can speak, not a failed handler.

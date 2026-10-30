@@ -425,7 +425,7 @@ function composedDeclaration(tool: ConnectorComposedTool): ConnectorToolDeclarat
  */
 const CHAT_GUIDANCE = 'Omit keys you do not use: send only the keys this intent reads. A person read takes intent, person, sides and the two dates;' 
   + ' an overview or group read takes intent, person or people, sides and the dates; a channel read takes intent, channel and the dates;'
-  + ' a thread read takes intent and post_id from an earlier result. Never send people or channel on a person read. Send query only to filter by a topic'
+  + ' a thread read takes intent and either post_id from an earlier result or query plus person or channel, one of the two. Never send people or channel on a person read. Send query only to filter by a topic'
   + ' the owner named in this ask, never a recency word and never a leftover from an earlier ask. Send order oldest only when the owner asks for the'
   + ' conversation in order. Never send an empty string: leave the key out instead.';
 export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly ConnectorComposedTool[]>> = {
@@ -446,7 +446,7 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
     parameters: {
       required: ['intent'],
       properties: {
-        intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group', 'thread'] },
+        intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group', 'thread'], description: 'thread reads one whole thread in time order: by post_id, or by query with the person or channel it is in.' },
         person: { type: 'string', minLength: 1, maxLength: 80, description: 'The person as the owner said it: a first name, a full name or a username.' },
         people: { type: 'array', minItems: 2, maxItems: MATTERMOST_CHAT.maxPeople, items: { type: 'string', minLength: 1, maxLength: 80 } },
         channel: { type: 'string', minLength: 1, maxLength: 80, description: 'The channel name as the owner said it.' },
@@ -454,7 +454,7 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
         from_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'First local day of the window; the last 30 days by default.' },
         to_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
         sides: { type: 'string', enum: ['theirs', 'both'] },
-        post_id: { type: 'string', minLength: 1, maxLength: 80, description: 'Thread reads only: the root post id of a thread an earlier result returned.' },
+        post_id: { type: 'string', minLength: 1, maxLength: 80, description: 'Thread reads only: the root post id of a thread an earlier result returned. Omit it when naming a topic and a conversation instead.' },
         order: { type: 'string', enum: ['newest', 'oldest'], description: 'Time order: newest first by default, oldest for "in order".' },
         offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset },
         limit: { type: 'integer', minimum: 1, maximum: 50 },
@@ -499,7 +499,13 @@ function chatRejection(args: Record<string, unknown>): string | undefined {
   if (intent === 'person' && args['channel'] !== undefined) return 'channel:not_for_person';
   if (intent === 'channel' && args['person'] !== undefined) return 'person:not_for_channel';
   if (intent === 'channel' && args['people'] !== undefined) return 'people:not_for_channel';
-  if (intent === 'thread' && args['post_id'] === undefined) return 'post_id:required';
+  // F5c: a thread is one root post id, or a topic inside a conversation the owner named.
+  if (intent === 'thread' && args['post_id'] === undefined) {
+    if (args['query'] === undefined) return 'post_id:required';
+    if (args['person'] === undefined && args['channel'] === undefined) return 'thread:needs_conversation';
+    if (args['person'] !== undefined && args['channel'] !== undefined) return 'thread:one_conversation';
+  }
+  if (intent !== 'thread' && args['post_id'] !== undefined) return 'post_id:not_for_intent';
   return undefined;
 }
 function chatReadArgs(args: Record<string, unknown>): boolean {

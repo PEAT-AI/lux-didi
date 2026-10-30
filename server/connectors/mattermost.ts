@@ -26,8 +26,12 @@ export const MATTERMOST_PERSON_TOOLS = ['mattermost_resolve_person', 'mattermost
 /**
  * CA-R2: the topic reads a newer child publishes. They join the read envelope so an approval can grant them;
  * a child without them still serves every base read, and the topics mode says once which capability is missing.
+ * W1030: the draft family, beside the read family and never inside it. These two names write into the
+ * owner's own drafts or list them; the reader never posts, and no read map is widened to carry them.
  */
 export const MATTERMOST_TOPIC_TOOLS = ['mattermost_list_threads'] as const;
+export const MATTERMOST_DRAFT_TOOLS = ['mattermost_save_draft', 'mattermost_list_drafts'] as const;
+export type MattermostDraftTool = (typeof MATTERMOST_DRAFT_TOOLS)[number];
 /** Every name the connector may ever read: the base reads, the person reads and the topic reads. */
 export const MATTERMOST_READ_TOOLS = [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS] as const;
 export type MattermostTool = (typeof MATTERMOST_READ_TOOLS)[number];
@@ -75,7 +79,7 @@ export interface MattermostConfig {
 }
 
 /** A child tool read, or the connector's own synthesized digest over several reads. */
-export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTION_TOOL | typeof MATTERMOST_CHAT_TOOL;
+export type MattermostEvidenceTool = MattermostTool | MattermostDraftTool | typeof MATTERMOST_ATTENTION_TOOL | typeof MATTERMOST_CHAT_TOOL;
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence extends SourceDispatchEvidence {
@@ -160,7 +164,13 @@ export interface MattermostReader {
   listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult>;
   attention(input: AttentionInput, signal?: AbortSignal): Promise<MattermostResult>;
   chat(input: ChatReadInput, signal?: AbortSignal): Promise<MattermostResult>;
+  /** W1030: one unsent draft in his own reply box. There is no post method on this reader. */
+  saveDraft(input: MattermostDraftInput, signal?: AbortSignal): Promise<MattermostResult>;
+  listDrafts(signal?: AbortSignal): Promise<MattermostResult>;
 }
+
+/** W1030: a draft names a channel or a person, never both, and carries no send. */
+export interface MattermostDraftInput { channelId?: string; dmUsername?: string; rootId?: string; message: string }
 
 export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig }
 
@@ -398,6 +408,22 @@ function preflight(registry: McpRegistry, settings: Settings, tool: MattermostEv
   return undefined;
 }
 
+/** W1030: the draft family is granted by name on its own endpoint, outside the read envelope. */
+function draftPreflight(registry: McpRegistry, settings: Settings, tool: MattermostDraftTool): string | undefined {
+  let grant: ReadGrant | undefined;
+  try {
+    registry.endpoint(settings.endpointId);
+    grant = registry.currentGrant(settings.endpointId);
+  } catch { return 'source-unavailable'; }
+  if (!grant) return 'grant-absent';
+  if (grant.schemaDigest !== settings.schemaDigest) return 'schema-drift';
+  if (grant.generation !== settings.generation) return 'grant-stale';
+  const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
+  if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
+  if (!visible.includes(tool)) return 'required-definition-absent';
+  return undefined;
+}
+
 /** C-CHAT: a spoken or written name in one comparable form: case, accents, "&" and "and", plural words. */
 export function nameKey(text: string): string {
   return text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/&/gu, ' and ')
@@ -552,7 +578,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
 
   const schemaValidator = new AjvJsonSchemaValidator();
 
-  async function dispatch(tool: MattermostTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MattermostResult> {
+  async function dispatch(tool: MattermostTool | MattermostDraftTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MattermostResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -1313,5 +1339,23 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     },
     attention,
     chat,
+    // W1030: the draft family. A draft is written to his own reply box and never posted to a person.
+    async saveDraft(input: MattermostDraftInput, signal?: AbortSignal): Promise<MattermostResult> {
+      const denied = draftPreflight(registry, settings, 'mattermost_save_draft');
+      if (denied) return { state: 'refused', reason: denied };
+      const named = (input.channelId !== undefined ? 1 : 0) + (input.dmUsername !== undefined ? 1 : 0);
+      if (named !== 1) return { state: 'refused', reason: 'invalid-draft-target' };
+      if (input.message.length < 1 || input.message.length > 16_384) return { state: 'refused', reason: 'invalid-draft-message' };
+      const args: Record<string, unknown> = { message: input.message };
+      if (input.channelId !== undefined) args['channel_id'] = input.channelId;
+      else args['dm_username'] = input.dmUsername;
+      if (input.rootId !== undefined) args['root_id'] = input.rootId;
+      return dispatch('mattermost_save_draft', args, signal);
+    },
+    async listDrafts(signal?: AbortSignal): Promise<MattermostResult> {
+      const denied = draftPreflight(registry, settings, 'mattermost_list_drafts');
+      if (denied) return { state: 'refused', reason: denied };
+      return dispatch('mattermost_list_drafts', {}, signal);
+    },
   };
 }

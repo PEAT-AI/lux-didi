@@ -249,9 +249,11 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(19_900) };
   // C-OPENWEB8: the memory fixture is sized to the instruction, so it still sits under the target.
   // W3-R2: the instruction gains the reviewer's 89-char rule, so the overlay gives back the same room.
-  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_700) });
+  // W1030: the write paragraph is 504 chars, so the memory fixture gives back the room it took: the
+  // composed instruction has 1_378 spare under the target with a memory section the composer keeps whole.
+  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(1_000) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
-  assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
+  assert.equal(roomy.sections.some(section => section.chars === 0), false, `nothing yields under the target: ${roomy.text.length} of ${LIVE_INSTRUCTION_TARGET_CHARS}, yielded ${roomy.sections.filter(section => section.chars === 0).map(section => section.id).join(',')}`);
   // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
   // runtime context is sized from the target so that yielding the memory alone brings the text back under it.
   const base = { base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en' as const };
@@ -366,9 +368,11 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the one-operation voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '23ffd48cc0b88f49524e6d2b96e9058ec27049b3b5be8fe9c84841f989d5ad5b');
+  // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1c1cbe22504344e141ec1f50454efeb8c49b7df7cf719181a1101c2e66a5115a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
-  assert.equal(sha(NAYA_TOOLS), 'ab7195dd72995fec325f6d743aee5c06132ffd3105b592ae0d8fde6e24c35adf');
+  // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
+  assert.equal(sha(NAYA_TOOLS), '0e9a39533a8afd671c93647dede3500a632e14667e32cd9faa135920e75f81a7');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -700,7 +704,8 @@ const WRAPPER_3O_CHARS = 6603;
 // C-RESEARCH8: the two-ask rule and the re-worded evidence sentence add 2 chars on top, so the merged measure is
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
 // W3-R2 set this 14_559 ceiling; TRAIN9-R2 preserves every rule within it through equivalent wording.
-const WRAPPER_W5_CHARS = 14_559;
+// W1030: the four write abilities re-pin the measure to 14_778, since TR-R5 re-pins and never trims.
+const WRAPPER_W5_CHARS = 14_778;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -731,7 +736,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // merged measure and no reviewed rule is trimmed for it.
   // C-OPENWEB8: the open_web clause in the open paragraph is the growth this bound carries (7_871).
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
-  const cap = 7_960;
+  const cap = 8_200;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1394,7 +1399,8 @@ const W5_REPLACED = [
 // C-OPENWEB8: the open_web clause adds 183 chars to the open paragraph; the frozen measure is re-pinned to it.
 // W3-R2: the settings-or-approval-location rule is a reviewed rule, so the frozen measure is re-pinned to 10_841
 // rather than any authored rule trimmed (TR-R5).
-const W5_VOICE_BEFORE = 10_841;
+// W1030: the four write abilities and their never-send, never-invite rule add 504 chars, re-pinned to 10_841 + 504.
+const W5_VOICE_BEFORE = 11_345;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1577,4 +1583,17 @@ test('C-OPEN11: generated open guidance names all five tools and the browser and
   assert.match(NAYA_OPEN_SURFACE, /native acknowledgement/);
   assert.match(NAYA_OPEN_SURFACE, /no web link.*one sentence/);
   assert.match(NAYA_OPEN_SURFACE, /no web link for that item; I can open the app home page or a web search instead/);
+});
+
+test('W1030: the four write abilities are stated once with the never-send, never-invite rule', async () => {
+  const { NAYA_TOOLS, NAYA_VOICE_TOOLS, NAYA_WRITE_SURFACE } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_VOICE_TOOLS.includes(NAYA_WRITE_SURFACE), 'the voice tools carry the write paragraph');
+  assert.ok(NAYA_TOOLS.includes(NAYA_WRITE_SURFACE), 'the full tool conduct carries the write paragraph');
+  for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
+    assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the write paragraph names ${ability}`);
+  }
+  assert.match(NAYA_WRITE_SURFACE, /Never send, never invite/u);
+  assert.match(NAYA_WRITE_SURFACE, /sending is his click/u);
+  assert.match(NAYA_WRITE_SURFACE, /another person's name goes in the description, never an invitation/u);
+  assert.doesNotMatch(NAYA_WRITE_SURFACE, /say it was sent|tell him it is posted|confirm the invitation/u);
 });

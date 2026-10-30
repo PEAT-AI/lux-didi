@@ -10,8 +10,12 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
  * envelope is refused even when the remote lists it: the local read classification is the
  * authority, never the remote's readOnlyHint.
  */
-export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file'] as const;
-export type GoogleTool = (typeof GOOGLE_TOOLS)[number];
+export const GOOGLE_READ_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file'] as const;
+/** The read envelope an approved read grant may name; the write families are never part of it. */
+export const GOOGLE_TOOLS = GOOGLE_READ_TOOLS;
+/** W1030: the write calls, each on its own family, endpoint and token (C-GWRITE). */
+export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
+export type GoogleTool = (typeof GOOGLE_READ_TOOLS)[number] | (typeof GOOGLE_WRITE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
 export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[]>> = {
@@ -19,8 +23,17 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
   calendar: ['calendar_list_calendars', 'calendar_list_events'],
   // C-OPEN 2: read-only Drive metadata (lux-cli drive family, C-DRIVE.md), its own endpoint and token.
   drive: ['drive_search_files', 'drive_get_file'],
+  // W1030: two write families, each with its own endpoint and its own token and consent (C-GWRITE).
+  // Nothing here can send mail or invite anyone: the compose family writes one unsent draft, and the
+  // calendar_write family writes or removes an attendee-free event the helper itself created.
+  // GW-R4: each write family carries the read-only google_identity probe, so a consent check can never
+  // write. Didi's compose label is the helper's gmail_draft family.
+  compose: ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft'],
+  calendar_write: ['google_identity', 'calendar_create_event', 'calendar_delete_event'],
 };
-export type GoogleFamily = 'gmail' | 'calendar' | 'drive';
+export type GoogleFamily = 'gmail' | 'calendar' | 'drive' | 'compose' | 'calendar_write';
+/** Didi's family labels against the helper's own names (GW-R4: compose is gmail_draft in the helper). */
+export const GOOGLE_HELPER_FAMILY: Readonly<Record<GoogleFamily, string>> = { gmail: 'gmail', calendar: 'calendar', drive: 'drive', compose: 'gmail_draft', calendar_write: 'calendar_write' };
 
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 10, maxListResults: 50, readBodyChars: 4000 } as const;
@@ -73,6 +86,12 @@ export interface GcalCalendarsInput { maxResults?: number; pageToken?: string; r
 /** C-DRIVE drive_search_files: a name query, optional type filter and window, at most ten files. */
 export interface DriveSearchInput { query: string; mime_types?: readonly string[]; modified_after?: string; limit?: number }
 export interface DriveGetInput { file_id: string }
+/** W1030 gmail_create_draft (compose family): one unsent draft, resolved to addresses by the host. */
+export interface GmailDraftInput { to: readonly string[]; cc?: readonly string[]; subject: string; body: string; replyToMessageId?: string }
+/** W1030 calendar_create_event (calendar_write family): owner-only block, no attendees, no updates sent. */
+export interface GcalCreateEventInput { summary: string; start: string; end: string; timeZone: string; description?: string; location?: string; clientRequestId: string }
+/** W1030 calendar_delete_event: only an event the helper created, so the id must be one it returned. */
+export interface GcalDeleteEventInput { eventId: string }
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
@@ -115,11 +134,18 @@ export interface GoogleReader {
   gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveSearch(input: DriveSearchInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveGet(input: DriveGetInput, signal?: AbortSignal): Promise<GoogleResult>;
+  /** GW-R4: the read-only consent probe, `google_identity {email, family, scopes}`. It never writes. */
+  googleIdentity(signal?: AbortSignal): Promise<GoogleResult>;
+  gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult>;
+  calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult>;
+  calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult>;
 }
 
 export interface GoogleOptions { port: McpPort; registry: McpRegistry; config: GoogleConfig }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(GOOGLE_TOOLS);
+// W1030: the endpoint's published catalog may be a read family, a write family or both, so the known
+// set is the read envelope plus the write envelope; which names a grant may cover stays the policy's.
+const ELIGIBLE: ReadonlySet<string> = new Set<string>([...GOOGLE_TOOLS, ...GOOGLE_WRITE_TOOLS]);
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
@@ -166,7 +192,8 @@ interface Settings {
 
 /** A family the config names must be a real one; an unknown family is a config fault, never a silent default. */
 export function googleFamilyTools(family: unknown): { ok: true; family: GoogleFamily; tools: readonly GoogleTool[] } | { ok: false; reason: string } {
-  if (family !== 'gmail' && family !== 'calendar' && family !== 'drive') return { ok: false, reason: 'unknown-family' };
+  // W1030: the two write families are real families too, each with its own endpoint and token.
+  if (family !== 'gmail' && family !== 'calendar' && family !== 'drive' && family !== 'compose' && family !== 'calendar_write') return { ok: false, reason: 'unknown-family' };
   return { ok: true, family, tools: GOOGLE_FAMILIES[family] };
 }
 
@@ -393,6 +420,41 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   }
 
   return {
+    async googleIdentity(signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('google_identity');
+      if (denied) return { state: 'refused', reason: denied };
+      return dispatch('google_identity', { family: GOOGLE_HELPER_FAMILY[settings.family] }, signal);
+    },
+    async gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('gmail_create_draft');
+      if (denied) return { state: 'refused', reason: denied };
+      const addresses = [...input.to, ...(input.cc ?? [])];
+      if (addresses.length === 0 || addresses.some(address => typeof address !== 'string' || !address.includes('@') || address.length > 320)) return { state: 'refused', reason: 'invalid-recipient' };
+      if (input.subject.length < 1 || input.subject.length > 998 || input.body.length < 1 || input.body.length > 200_000) return { state: 'refused', reason: 'invalid-draft' };
+      const args: Record<string, unknown> = { to: [...input.to], subject: input.subject, body: input.body };
+      if (input.cc !== undefined) args['cc'] = [...input.cc];
+      if (input.replyToMessageId !== undefined) args['reply_to_message_id'] = input.replyToMessageId;
+      return dispatch('gmail_create_draft', args, signal);
+    },
+    async calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('calendar_create_event');
+      if (denied) return { state: 'refused', reason: denied };
+      if (input.summary.length < 1 || input.summary.length > 1024) return { state: 'refused', reason: 'invalid-event' };
+      if (Number.isNaN(Date.parse(input.start)) || Number.isNaN(Date.parse(input.end)) || Date.parse(input.end) <= Date.parse(input.start)) return { state: 'refused', reason: 'invalid-event' };
+      if (input.clientRequestId.length < 1 || input.clientRequestId.length > 200) return { state: 'refused', reason: 'invalid-request-id' };
+      // No attendees field is ever sent and no update notification is requested: the helper enforces both.
+      // The helper itself sends no attendee and no update notification, so none is named here (C-GWRITE).
+      return dispatch('calendar_create_event', {
+        summary: input.summary, start: input.start, end: input.end, time_zone: input.timeZone, client_request_id: input.clientRequestId,
+        ...(input.description !== undefined ? { description: input.description } : {}), ...(input.location !== undefined ? { location: input.location } : {}),
+      }, signal);
+    },
+    async calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('calendar_delete_event');
+      if (denied) return { state: 'refused', reason: denied };
+      if (input.eventId.length < 1 || input.eventId.length > 1024) return { state: 'refused', reason: 'invalid-event-id' };
+      return dispatch('calendar_delete_event', { event_id: input.eventId }, signal);
+    },
     async gmailProfile(signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_get_profile');
       if (denied) return { state: 'refused', reason: denied };

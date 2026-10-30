@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime } from '../tools/alarm.js';
 import { OwnerRequests } from '../tools/owner-request.js';
+import { COMPOSE_NAMES, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
 
 test('direct102 authority: finals alone grant compound effects, consumed once with idempotent retries', () => {
   let now = 10;
@@ -308,3 +309,136 @@ test('SA-R2: split finalized alarm ask retains timezone and is admitted once', (
   requests.commit('s', 'set_alarm', 'seven-sg', { status: 'set' }, ask.id);
   assert.equal(requests.authorize('s', 'set_alarm', 'another').code, 'grant_spent');
 });
+// W1030: the write tools carry their own intent per target, and a split ask must still admit them.
+const COMPOSE_ASK = 'draft an email to Priya about the invoice';
+
+test('W1030 write intent: a split ask grants on the turn that carries the intent', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'draft an email');
+  requests.observe('s', 'j2', 'to Priya about the invoice');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
+  const receipt = draftEmailResult({ draftId: 'd1', to: 'Priya', subject: 'the invoice' });
+  requests.commit('s', 'draft_email', 'Priya', receipt);
+  const replay = requests.authorize('s', 'draft_email', 'Priya');
+  assert.equal(replay.code, 'idempotent');
+  assert.deepEqual(replay.code === 'idempotent' ? replay.receipt : undefined, receipt);
+});
+
+test('W1030 write intent: the intent in the second turn still grants the first turn target', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'to Priya about the invoice');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
+  requests.observe('s', 'j2', 'write that as an email');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
+});
+
+test('W1030 write intent: STT noise around the words he said still grants', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'um, write an e-mail to Priya yeah');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
+  requests.observe('s', 'j2', 'put a gym block on my calendar saturday nine');
+  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'allowed');
+  requests.observe('s', 'j3', 'cancel that meeting');
+  assert.equal(requests.authorize('s', 'delete_event', 'that').code, 'allowed');
+});
+
+test('W1030 write intent: a turn without it is refused, and replayed history after a rebuild writes nothing', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'what is on my calendar tomorrow');
+  assert.deepEqual(composeGrantKinds('what is on my calendar tomorrow'), []);
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'no_owner_request');
+  const rebuilt = new OwnerRequests(() => 0);
+  rebuilt.observe('s', 'j9', 'and the weather');
+  assert.equal(rebuilt.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
+});
+
+test('W1030 write intent: a negated write clause spends no grant', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'do not send an email to Priya, just tell me her address');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
+});
+
+test('W1030 no send and no invite: the surface names drafts and owner-only blocks only', () => {
+  assert.equal(COMPOSE_NAMES.some(name => /send|post|invite/.test(name)), false);
+  const email = draftEmailResult({ draftId: 'd1', to: 'Priya', subject: 'invoice' });
+  assert.equal(email['sent'], false);
+  assert.match(String(email['say']), /in your drafts/);
+  assert.match(String(email['say']), /his click/);
+  assert.match(DRAFT_GUIDANCE, /never sends/);
+  const chat = draftChatResult({ channelId: 'c1', target: 'Priya' });
+  assert.equal(chat['posted'], false);
+  assert.match(String(chat['say']), /reply box/);
+});
+
+test('W1030 recipient: two candidates ask, no candidate asks, and his own address is never a recipient', () => {
+  const candidates: RecipientCandidate[] = [
+    { id: '1', name: 'Priya Raman', address: 'priya.raman@example.test' },
+    { id: '2', name: 'Priya Shah', address: 'priya.shah@example.test' },
+    { id: '3', name: 'Sam Okafor', address: 'rob@example.test' },
+  ];
+  const ambiguous = resolveRecipient('Priya', candidates);
+  assert.equal(ambiguous.status, 'recipient_ambiguous');
+  assert.deepEqual(ambiguous.candidates, ['Priya Raman', 'Priya Shah']);
+  const unknown = resolveRecipient('Nadia', candidates);
+  assert.equal(unknown.status, 'recipient_unknown');
+  assert.deepEqual(unknown.candidates, []);
+  assert.equal(resolveRecipient('Sam', candidates, 'rob@example.test').status, 'recipient_unknown');
+  const one = resolveRecipient('Sam Okafor', [{ id: '3', name: 'Sam Okafor', address: 'sam@example.test' }]);
+  assert.equal(one.status, 'ok');
+});
+
+test('W1030 event window: a named weekday settles the date in the host timezone', () => {
+  const now = Date.parse('2026-10-30T02:00:00Z');
+  const singapore = eventWindow('put a gym block on my calendar Saturday 9 gym one hour', now, 'Asia/Singapore');
+  assert.equal(singapore.status, 'ready');
+  if (singapore.status !== 'ready') return;
+  assert.equal(new Date(singapore.startUtc).toISOString(), '2026-10-31T01:00:00.000Z');
+  assert.equal(new Date(singapore.endUtc).toISOString(), '2026-10-31T02:00:00.000Z');
+  const kolkata = eventWindow('block saturday 9 for an hour', now, 'Asia/Kolkata');
+  assert.equal(kolkata.status, 'ready');
+  if (kolkata.status !== 'ready') return;
+  assert.equal(new Date(kolkata.startUtc).toISOString(), '2026-10-31T03:30:00.000Z');
+  assert.equal(kolkata.endUtc - kolkata.startUtc, 3600000);
+  assert.equal(eventWindow('book a slot', now, 'Asia/Kolkata').status, 'clarify');
+});
+
+test('W1030 event result: naming a colleague stays an owner-only block that invited nobody', () => {
+  const now = Date.parse('2026-10-30T02:00:00Z');
+  const window = eventWindow('block an hour with Zara on saturday 9', now, 'Asia/Singapore');
+  assert.equal(window.status, 'ready');
+  if (window.status !== 'ready') return;
+  assert.deepEqual(window.names, ['Zara']);
+  assert.deepEqual(namedOthers('block an hour with Zara'), ['Zara']);
+  const result = createdEventResult({ eventId: 'e1', window });
+  assert.equal(result['attendees'], 0);
+  assert.equal(result['invitations'], 'none');
+  assert.match(String(result['say']), /invited nobody/);
+  assert.match(String(result['say']), /No invitations were sent/);
+  const clash = createdEventResult({ eventId: 'e2', window, clash: 'your 9 o clock standup' });
+  assert.equal(clash['clash'], 'your 9 o clock standup');
+  assert.match(String(clash['say']), /clashes with/);
+});
+
+test('W1030 connector: an unconsented family answers one closed code and the one command', () => {
+  const result = notAuthorizedResult('calendar_write', 'naya connect calendar-write');
+  assert.equal(result['status'], 'connector_not_authorized');
+  assert.match(String(result['say']), /naya connect calendar-write/);
+  assert.equal(clientRequestId('ask-7'), 'compose:ask-7');
+});
+
+test('W1030 closed schemas: the write tools take no address, no epoch and no attendees from the model', () => {
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello' }), true);
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello', address: 'x@y.test' }), false);
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice' }), false);
+  assert.equal(validateDraftChat({ person: 'Priya', message: 'hello' }), true);
+  assert.equal(validateDraftChat({ person: 'Priya', channel: 'town-square', message: 'hello' }), false);
+  assert.equal(validateDraftChat({ message: 'hello' }), false);
+  assert.equal(validateCreateEvent({ summary: 'gym', duration_minutes: 60 }), true);
+  assert.equal(validateCreateEvent({ summary: 'gym', start: '2026-10-31T01:00:00Z' }), false);
+  assert.equal(validateCreateEvent({ summary: 'gym', attendees: ['z@example.test'] }), false);
+  assert.equal(validateDeleteEvent({ event_id: 'e1' }), true);
+  assert.equal(validateDeleteEvent({ event_id: 'e1', send_updates: 'all' }), false);
+  assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), true);
+});
+

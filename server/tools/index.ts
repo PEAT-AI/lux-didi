@@ -30,6 +30,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
+import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
@@ -250,6 +251,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
+    if (COMPOSE_NAMES.some(name => name === call.toolName) && call.accountId === COMPOSE_IDENTITY.accountId && call.resourceId === COMPOSE_IDENTITY.resourceId) {
+      // W1030: the write tools are gateway tools pinned to his own compose surface, never a chosen account.
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
     }
     if (call.toolName === VAULT_WRITE_IDENTITY.name && call.accountId === VAULT_WRITE_IDENTITY.accountId && call.resourceId === VAULT_WRITE_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
@@ -787,6 +793,81 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed' as const, result };
         },
       });
+      // W1030: the write surface he asked for by voice. Each call is bound to one owner turn and one
+      // target, keeps its outcome as the receipt, and replays that receipt instead of writing twice.
+      for (const name of COMPOSE_NAMES) {
+        const tool = COMPOSE_TOOLS[name];
+        definitions.push({
+          ...COMPOSE_IDENTITY, name, effect: 'write', description: tool.description, guidance: COMPOSE_GUIDANCE,
+          parameters: tool.parameters, validate: tool.validate,
+          async execute(args, context) {
+            if (context.runId !== runId || !tool.validate(args) || context.signal.aborted) return { status: 'failed' as const };
+            await ownerRequests.waitForFinal(runId, context.signal);
+            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+            const call = store.transaction(tx => {
+              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+              const stored = storedCall(tx, row);
+              exactIntent(tx, { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
+                toolName: name, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)),
+                ...(stored.callId !== undefined ? { callId: stored.callId } : {}) });
+              validateCallRun(tx, stored);
+              return stored as ToolCallIntent;
+            });
+            const finish = (response: JsonObject) => ({ status: 'completed' as const, result: store.transaction(tx => complete(call, response, ['ordinary'], tx)) });
+            // The target is derived from his words and this turn, so the peek only needs the turn: a spent
+            // grant still names its journal, and the authorize below decides whether this is its replay.
+            const peek = ownerRequests.authorize(runId, name, '');
+            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
+            if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
+            const target = composeTarget(name, args, clientRequestId(peek.journalId));
+            const ask = ownerRequests.authorize(runId, name, target);
+            if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
+            if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
+            const claimed = ownerRequests.claim(runId, name, target, ask.id);
+            if (claimed.code !== 'allowed') return finish(requestRefusal(claimed.code));
+            // W1030: a delete names either a block this session created (matched exactly against its own
+            // receipt) or one he named unambiguously and a calendar read in this session returned. A model
+            // id that matches neither is refused here and never reaches the helper.
+            let deleteId: string | undefined = typeof (args as JsonObject)['event_id'] === 'string' ? String((args as JsonObject)['event_id']) : undefined;
+            if (name === 'delete_event') {
+              const rows = store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId]));
+              const created = createdEventIds(rows);
+              const named = deleteId === undefined && options.compose?.findNamedEvent !== undefined
+                ? await options.compose.findNamedEvent({ words: ask.words ?? '', clientRequestId: clientRequestId(ask.journalId) })
+                : undefined;
+              if (deleteId === undefined || !created.includes(deleteId)) {
+                if (named?.state === 'found') deleteId = named.eventId;
+              }
+              if (deleteId === undefined) {
+                ownerRequests.failed(runId, name, target, ask.id);
+                const asked = named?.state === 'ambiguous' && named.candidates.length > 0
+                  ? `I have more than one block like that in this session: ${named.candidates.slice(0, 3).join(', ')}. Which one?`
+                  : 'I can only remove a block I made in this session. Tell me which one, or ask me to look at your calendar first.';
+                return finish({ status: 'refused', code: named?.state === 'ambiguous' ? 'event_ambiguous' : 'event_not_created_here', say: asked });
+              }
+              if (!created.includes(deleteId) && named?.state !== 'found') {
+                ownerRequests.failed(runId, name, target, ask.id);
+                return finish({ status: 'refused', code: 'event_not_created_here', say: 'I can only remove a block I made in this session, so I am not touching that event.' });
+              }
+            }
+            // A block the calendar read resolved is removed by the id that read returned, never by prose.
+            if (name === 'delete_event' && typeof deleteId === 'string') args = { event_id: deleteId };
+            const turn = clientRequestId(ask.journalId);
+            const outcome = options.compose === undefined
+              ? notAuthorizedFor(name)
+              : await runCompose(options.compose, name, args, { words: ask.words ?? '', clientRequestId: turn, now: options.alarms?.now() ?? Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+            // A lost remote answer spends the grant and claims nothing: he is told it is unknown, and a
+            // retry cannot write twice.
+            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: 'none' });
+            if (outcome.state === 'unknown') return { status: 'unknown' as const, code: dispatchedFailureCode('write_unknown') };
+            if (outcome.state === 'done') ownerRequests.commit(runId, name, target, composeResult(outcome));
+            else ownerRequests.failed(runId, name, target, ask.id);
+            return finish(composeResult(outcome));
+          },
+        });
+      }
       // Host-native open actions: the frame goes down the local Live socket and the ack is the result.
       for (const openTool of OPEN_TOOLS) definitions.push({
         name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,

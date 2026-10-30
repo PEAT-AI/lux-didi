@@ -62,6 +62,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
     set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
+    // W1030: the write tools, with the closed shapes their declarations accept.
+    draft_email: { to: 'Priya', subject: 'synthetic', body: 'synthetic' }, draft_chat: { person: 'Sam', message: 'synthetic' },
+    create_event: { summary: 'synthetic block' }, delete_event: { event_id: 'synthetic-event' },
   };
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   for (const enabled of [undefined, true, false]) {

@@ -181,3 +181,18 @@ test('C-LOGS11: a redaction case over every new field: content and open codes ar
   assert.deepEqual([records[2]!.finalToAudibleMs, records[2]!.missingReason], [2_320, null]);
   assert.deepEqual([records[3]!.outcome, records[3]!.refusalCode], ['refused', 'grant_not_permitted']);
 });
+
+// W1030/WT-R2: the write tools' grant and its spend reach the audit trail, not the floor.
+test('W1030: a compose_audit line for a draft or an event grant is written, and an unknown kind is not', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-compose-audit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const log = new HostLog(root);
+  for (const grantKind of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
+    log.event({ event: 'compose_audit', ownerFinals: 2, requestAgeMs: 1_000, grantKind, grantState: 'available', refusalCode: 'none' });
+  }
+  log.event({ event: 'compose_audit', ownerFinals: 1, requestAgeMs: 10, grantKind: 'not_a_kind', grantState: 'spent', refusalCode: 'none' });
+  const records = await lines(root);
+  const audited = records.filter(record => record['event'] === 'compose_audit');
+  assert.deepEqual(audited.map(record => record['grantKind']), ['draft_email', 'draft_chat', 'create_event', 'delete_event']);
+  assert.equal(audited.length, 4, 'an unknown kind is not audited as a write');
+});

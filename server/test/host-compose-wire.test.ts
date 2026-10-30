@@ -191,8 +191,8 @@ test('W1030: a connect with only the read families is the read surface it always
 const installRoster = (t: TestContext): void => {
   installPeople(parsePeople({ version: 1, people: [
     { id: 'p-sam', name: 'Sam Rivera', aliases: ['Sam'], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['sam@example.test'], mattermost: 'sam', note: '' },
-    { id: 'p-robin-park', name: 'Robin Park', aliases: [], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['robin.park@example.test'], mattermost: 'robinp', note: '' },
-    { id: 'p-robin-diaz', name: 'Robin Diaz', aliases: [], role: 'friend', circle: 'friend', project: '', tier: 1, email: ['robin.diaz@example.test'], mattermost: 'robind', note: '' },
+    { id: 'p-robin-park', name: 'Robin Park', aliases: ['Robin'], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['robin.park@example.test'], mattermost: 'robinp', note: '' },
+    { id: 'p-robin-diaz', name: 'Robin Diaz', aliases: ['Robin'], role: 'friend', circle: 'friend', project: '', tier: 1, email: ['robin.diaz@example.test'], mattermost: 'robind', note: '' },
   ] }));
   t.after(() => installPeople(null));
 };
@@ -229,7 +229,7 @@ test('W1030: two roster names that match stay a question with their names', asyn
 test('W1030: a spoken channel resolves to its id, and two matching channels stay a question', async t => {
   const h = await host(t, pid => configured(pid));
   const draft = await h.mcp.compose.draftChat({ channel: 'Town Square', message: 'Synthetic reply', clientRequestId: 'req-channel' });
-  assert.equal(draft.state, 'done');
+  assert.deepEqual(draft.state, 'done', `channel resolution outcome: ${JSON.stringify(draft)}`);
   const sent = callsOf(h.pid('mattermost')).find(call => call.tool === 'mattermost_save_draft');
   assert.deepEqual(sent!.args, { message: 'Synthetic reply', channel_id: 'chan-town' }, 'the child gets the channel id, never the spoken name');
   const ambiguous = await h.mcp.compose.draftChat({ channel: 'build', message: 'Synthetic reply', clientRequestId: 'req-channel-2' });

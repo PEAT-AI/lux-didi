@@ -6518,6 +6518,13 @@ test('C-CLAIMS9: "Let me look into that." with no call gets the correction insid
 
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.
+test('C-SAFETY: typed owner input admits research without spoken input', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'typed-owner-research');
+  h.owner.text('What is on my calendar today?');
+  await settleLiveTool(h, 'typed-owner-read', 'research', { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', sources: ['calendar'] }, { spoke: false });
+  assert.ok(h.calls.length > 0, 'the typed owner request reaches the synthetic calendar source');
+});
 test('#451: an opener research start before the owner speaks is answered at once and runs no source', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'opener-gate');

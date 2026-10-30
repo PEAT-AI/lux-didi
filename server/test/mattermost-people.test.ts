@@ -959,6 +959,12 @@ test('C-RESIDUE explicit DM scope precedes person overview', () => {
 
 test('F5b: order oldest is refused honestly when the child cannot walk from the oldest end', async t => {
   const f = await setup(t, 'people');
+  // An older child: its sort enum offers newest only, so an ascending walk is impossible and must be refused.
+  const visible = f.adapter.visibleTools.bind(f.adapter);
+  f.adapter.visibleTools = (id: string) => visible(id).map(tool => tool.name !== 'mattermost_search' ? tool : {
+    ...tool,
+    inputSchema: { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties ?? {}), sort: { type: 'string', enum: ['relevance', 'newest'] } } },
+  });
   const result = await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest' });
   assert.equal(result.state, 'refused');
   assert.equal((result as { reason: string }).reason, 'order-unsupported');
@@ -986,7 +992,7 @@ test('F5c: a thread read returns the whole thread in chronological order through
   assert.deepEqual(times, [...times].sort((left, right) => left - right), 'chronological, oldest first');
   const refused = await f.reader.chat({ intent: 'thread' });
   assert.equal(refused.state, 'refused');
-  assert.equal((refused as { reason: string }).reason, 'thread-needs-post-id');
+  assert.equal((refused as { reason: string }).reason, 'thread-needs-post-id-or-topic');
 });
 
 test('F5b: order oldest walks the conversation ascending when the child accepts it, page by page', async t => {

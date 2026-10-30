@@ -79,7 +79,8 @@ export function openersNote(openers: readonly string[], topics: readonly (string
 }
 
 import { ALARM_MODE_MARKER } from './types.js';
-export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
+import type { SeriesAlarmSetup } from './alarm-mode.js';
+export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
   const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
   const series = input.series?.trim();

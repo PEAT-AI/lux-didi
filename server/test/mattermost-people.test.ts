@@ -957,3 +957,47 @@ test('C-RESIDUE explicit DM scope precedes person overview', () => {
     assert.equal('sides' in intent && intent.sides, 'both');
   }
 });
+
+// ---- F5: order, the recent-unfiltered fallback, and one thread ------------------------------------------
+
+test('F5a: a 0-hit topic read falls back to the unfiltered recent read, newest first, never to relevance', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', query: 'zzsyntheticnotopic' }));
+  const calls = searches(f.calls());
+  assert.equal(calls.length, 2, 'one keyword read and one fallback, never a third');
+  assert.ok(calls.every(args => args['mode'] === 'keyword'), 'no hybrid relevance read');
+  assert.deepEqual(calls[1], { query: '', mode: 'keyword', limit: 8, sort: 'newest', channel: ADA_DM, from_date: daysAgo(30) });
+  assert.match(read.read, /fallback: recent_unfiltered/u, 'the result says which read it is');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.ok(times.every(time => Number.isFinite(time)), 'every post carries its time');
+  assert.deepEqual(times, [...times].sort((left, right) => right - left), 'the page is newest first, as the declaration promises');
+});
+
+test('F5b: order oldest is refused honestly when the child cannot walk from the oldest end', async t => {
+  const f = await setup(t, 'people');
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest' });
+  assert.equal(result.state, 'refused');
+  assert.equal((result as { reason: string }).reason, 'order-unsupported');
+  const newest = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'newest' }));
+  assert.equal(searches(f.calls()).at(-1)?.['sort'], 'newest');
+  assert.equal(newest.posts.length > 0, true);
+});
+
+test('F5b: an unknown order is refused before any read', async t => {
+  const f = await setup(t, 'people');
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', order: 'synthetic' as never });
+  assert.equal(result.state, 'refused');
+  assert.equal(searches(f.calls()).length, 0);
+});
+
+test('F5c: a thread read returns the whole thread in chronological order through the child thread read', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', post_id: 'post0000001' }));
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments), [{ post_id: 'post0000001' }]);
+  assert.equal(read.posts.length > 1, true, 'the root and its replies');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'chronological, oldest first');
+  const refused = await f.reader.chat({ intent: 'thread' });
+  assert.equal(refused.state, 'refused');
+  assert.equal((refused as { reason: string }).reason, 'thread-needs-post-id');
+});

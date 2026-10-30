@@ -662,6 +662,14 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const schema = definition?.inputSchema;
     return isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
   }
+  /** F5b: the sort values the child actually accepts, so an order is asked for only when it exists. */
+  function declaredSorts(): string[] {
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
+    const schema = definition?.inputSchema;
+    const sort = isRecord(schema) && isRecord(schema['properties']) ? schema['properties']['sort'] : undefined;
+    const values = isRecord(sort) ? sort['enum'] : undefined;
+    return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : [];
+  }
 
   /**
    * #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive
@@ -826,8 +834,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal, order: 'oldest' | 'newest' = 'newest'): Promise<{ ok: true; total?: number; posts: ChatReadPost[]; broadened?: string } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
-    // F5b: the order the caller asked for is the order the child is asked for, and a child that cannot
-    // walk from the oldest end says so instead of returning the newest page under an oldest label.
+    // F5b: the order the caller asked for is the order the child is asked for, and a child whose sort
+    // cannot walk from the oldest end says so instead of returning the newest page under an oldest label.
+    const sorts = declaredSorts();
+    if (sorts.length > 0 && !sorts.includes(order)) return { ok: false, result: { state: 'refused', reason: 'order-unsupported' } };
     if (declared.includes('sort')) args['sort'] = order;
     else if (order === 'oldest') return { ok: false, result: { state: 'refused', reason: 'order-unsupported' } };
     for (const key of ['channel', 'author', 'from_date', 'to_date'] as const) {

@@ -628,7 +628,11 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
     const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
-    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
+    // CB-R1(a): a finding with no source name must never read "findings from ;". Name the sources when the
+    // findings carry them, otherwise omit the clause and keep the count.
+    const head = count === 0 ? 'no findings'
+      : sources.length === 0 ? `${count} delivered items`
+      : `findings from ${sources.join(', ')}; ${count} delivered items`;
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;

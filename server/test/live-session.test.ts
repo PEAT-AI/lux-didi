@@ -6373,6 +6373,28 @@ test('C-TURN8: an owner-data read other than research is refused no_owner_input 
   h.owner.revoke(session.liveSessionId);
 });
 
+// F1: on 10-30 the model called mattermost_chat twice before the owner's first word, because the gate held
+// intent names (chat, mail, ...) and not the names of the tools it actually calls. Every connector family is
+// covered by its registry class now, and the same call is admitted once he has spoken.
+test('F1: no connector read of any family runs before the owner speaks', async t => {
+  const h = await harness(t, { tools: true, mattermost: true, calendar: true, mail: true, mongoose: true });
+  await attached(h, 'owner-data-gate');
+  for (const [id, name] of [['m1', 'mattermost_chat'], ['g1', 'gmail_search_messages'], ['c1', 'calendar_list_events'],
+    ['d1', 'drive_search_files'], ['k1', 'search_knowledge'], ['q1', 'ask_mongoose'], ['t1', 'trello_read']] as const) {
+    await settleLiveTool(h, id, name, {}, { spoke: false });
+    const response = JSON.parse(lastToolResponse(h)) as { name: string; response: Record<string, unknown> };
+    assert.equal(response.name, name);
+    assert.deepEqual({ error: response.response['error'], reason: response.response['reason'] },
+      { error: 'opener_not_fetched', reason: 'no_owner_input' }, `${name} is refused before his first word`);
+  }
+  assert.deepEqual(h.calls.map(call => call.name), [], 'no read reached a source');
+  await ownerSpoke(h);
+  await settleLiveTool(h, 'm2', 'mattermost_chat', {}, { spoke: false });
+  const admitted = JSON.parse(lastToolResponse(h)) as { name: string; response: Record<string, unknown> };
+  assert.equal(admitted.name, 'mattermost_chat');
+  assert.notEqual(admitted.response['error'], 'opener_not_fetched', 'his first turn opens the same call');
+});
+
 // C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
 // it reach the note or vault gates that name a different cause.
 test('C-TURN8: legacy save before owner speech is retired and writes nothing', async t => {

@@ -941,7 +941,7 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   assert.equal(port.log.length, 1);
   const rebuilt = f.reopen();
   rebuilt.observeAlarmOwner('run', 'j9', 'draft an email to Priya', 3_000);
-  const after = { ...call, executionId: 'run:1:1' };
+  const after = { ...call, executionId: 'run:1:1', callId: 'call-run:1:1' };
   rebuilt.journal.intent(after);
   const refused = await rebuilt.liveDefinitions('run', () => ({ code: 'remembered' })).find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
   assert.equal(refused.status, 'completed');

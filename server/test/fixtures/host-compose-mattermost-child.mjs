@@ -31,7 +31,15 @@ const TOOLS = [
 
 function envelopeFor(name, args) {
   if (name === 'mattermost_whoami') return { id: 'synthetic-user', username: 'owner', email: 'owner@example.test' };
-  if (name === 'mattermost_list_channels') return { count: 0, channels: [] };
+  // Three synthetic channels: two share the spoken stem 'build', so the host's own resolver has a real
+  // ambiguity to ask about, and one is an exact name the host must resolve to its id.
+  if (name === 'mattermost_list_channels') {
+    return { count: 3, channels: [
+      { id: 'chan-town', name: 'town-square', display_name: 'Town Square' },
+      { id: 'chan-build-logs', name: 'build-logs', display_name: 'Build Logs' },
+      { id: 'chan-build-alerts', name: 'build-alerts', display_name: 'Build Alerts' },
+    ] };
+  }
   return { draft: { channel_id: args.channel_id ?? null, dm_username: args.dm_username ?? null, root_id: args.root_id ?? null, message: args.message }, saved: true };
 }
 

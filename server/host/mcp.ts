@@ -699,7 +699,9 @@ export async function composeMcpRuntime(options: {
       // for the names the child published. These names ride in the grant so the compose port can reach
       // them, and they never become model-facing reads (see liveDefinitions' declaration table).
       const publishedNames = discovery.tools.map(tool => tool.name);
-      // A write name is granted exactly as a composite is: beside the read that proves it, never alone.
+      // W1030: the write names this child published, chosen by the connector's own write envelope. They do
+      // not need a read name beside them here, which is exactly how a write-only endpoint connects at all;
+      // the probe closure that stops a stored approval naming a write alone lives in validatePolicy.
       const writes = grantMode === 'owner-trusted-reads' ? writeGrantedNames(entry.connector, publishedNames).sort() : [];
       const composed = composedGrantedNames(entry.connector, names).sort();
       const granted = [...names, ...composed, ...writes].sort();

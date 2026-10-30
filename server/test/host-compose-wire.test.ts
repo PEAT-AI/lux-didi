@@ -10,6 +10,7 @@ import { composeMcpRuntime, type McpRuntimeComposition } from '../host/mcp.js';
 import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { COMPOSE_CONSENT } from '../tools/compose.js';
 import type { RunAcceptance } from '../tools/types.js';
+import { installPeople, parsePeople } from '../people/index.js';
 
 // W1030: every fixture, address and id below is synthetic. No real account, token or Mattermost
 // server is touched: the children are local stdio fakes that record what they were asked for.
@@ -184,4 +185,64 @@ test('W1030: a connect with only the read families is the read surface it always
   // The compose tools are offered and honest about the family this host does not have.
   const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
   assert.equal(draft.state, 'not_authorized');
+});
+
+/** A synthetic roster installed the way the host installs it: the shipped read path, no private file. */
+const installRoster = (t: TestContext): void => {
+  installPeople(parsePeople({ version: 1, people: [
+    { id: 'p-sam', name: 'Sam Rivera', aliases: ['Sam'], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['sam@example.test'], mattermost: 'sam', note: '' },
+    { id: 'p-robin-park', name: 'Robin Park', aliases: [], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['robin.park@example.test'], mattermost: 'robinp', note: '' },
+    { id: 'p-robin-diaz', name: 'Robin Diaz', aliases: [], role: 'friend', circle: 'friend', project: '', tier: 1, email: ['robin.diaz@example.test'], mattermost: 'robind', note: '' },
+  ] }));
+  t.after(() => installPeople(null));
+};
+
+test('W1030: a spoken name resolves through the host roster and the child gets that address', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Sam', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-spoken' });
+  assert.equal(draft.state, 'done');
+  const sent = callsOf(h.pid('gmail_draft')).find(call => call.tool === 'gmail_create_draft');
+  assert(sent, 'gmail_create_draft reached the child');
+  assert.deepEqual(sent!.args['to'], ['sam@example.test'], 'the child gets the resolved address, never the spoken name');
+});
+
+test('W1030: a spoken name no read resolves is a question, not a draft and not an authorize line', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Zephyr', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-unknown' });
+  assert.deepEqual(draft, { state: 'recipient', code: 'recipient_unknown', candidates: [] });
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'no draft is written for an unresolved name');
+});
+
+test('W1030: two roster names that match stay a question with their names', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Robin', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-ambiguous' });
+  assert.equal(draft.state, 'recipient');
+  if (draft.state !== 'recipient') throw new Error('not a recipient question');
+  assert.equal(draft.code, 'recipient_ambiguous');
+  assert.deepEqual([...draft.candidates].sort(), ['Robin Diaz', 'Robin Park']);
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'an ambiguous name writes nothing');
+});
+
+test('W1030: a spoken channel resolves to its id, and two matching channels stay a question', async t => {
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftChat({ channel: 'Town Square', message: 'Synthetic reply', clientRequestId: 'req-channel' });
+  assert.equal(draft.state, 'done');
+  const sent = callsOf(h.pid('mattermost')).find(call => call.tool === 'mattermost_save_draft');
+  assert.deepEqual(sent!.args, { message: 'Synthetic reply', channel_id: 'chan-town' }, 'the child gets the channel id, never the spoken name');
+  const ambiguous = await h.mcp.compose.draftChat({ channel: 'build', message: 'Synthetic reply', clientRequestId: 'req-channel-2' });
+  assert.equal(ambiguous.state, 'recipient');
+  if (ambiguous.state !== 'recipient') throw new Error('not a recipient question');
+  assert.equal(ambiguous.code, 'recipient_ambiguous');
+  assert.deepEqual([...ambiguous.candidates].sort(), ['Build Alerts', 'Build Logs']);
+  assert.equal(callsOf(h.pid('mattermost')).filter(call => call.tool === 'mattermost_save_draft').length, 1, 'only the resolved channel wrote');
+});
+
+test('W1030: an argument refusal keeps its own closed code and never the authorize line', async t => {
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 's'.repeat(1200), body: 'Synthetic body', clientRequestId: 'req-long' });
+  assert.deepEqual(draft, { state: 'failed', reason: 'invalid-draft' });
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'a refused argument writes nothing');
 });

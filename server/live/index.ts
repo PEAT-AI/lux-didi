@@ -4143,10 +4143,13 @@ export class LiveSessionOwner {
       const row = this.#store.transaction(tx => tx.get("SELECT * FROM tool_calls WHERE run_id=? AND call_id=? AND state!='intent'", [host.runId, call.id]));
       if (!row) { remaining.push(call); continue; }
       const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
-      if (stored.toolName !== call.name) { remaining.push(call); continue; }
-      const gate = await this.#tools.owner.resultGate.authorize({ ...host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
-        contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
-      const response: JsonObject = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
+      let response: JsonObject;
+      if (stored.toolName !== call.name) response = { status: 'refused', reason: 'replay_identity_mismatch' };
+      else {
+        const gate = await this.#tools.owner.resultGate.authorize({ ...host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
+          contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
+        response = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
+      }
       const responses = [{ id: call.id, name: call.name, response }];
       exposeToolResults(responses);
       handle.session.sendToolResponse({ responses });

@@ -94,15 +94,15 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     }, `${definition.name} must accept its stored intent`);
   }
   await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
-    const args = { fire_at_utc: Date.now() + 1000 };
+    const args = { fire_at_utc: alarmNow + 1000 };
     owner.ownerRequests.answered!(session.liveSessionId);
-    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', Date.now());
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
     const definition = live.find(tool => tool.name === 'set_alarm')!;
     const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
       argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
     owner.journal.intent(intent);
     {
-      const before = Date.now();
+      const before = alarmNow;
       assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
       const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
       assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');

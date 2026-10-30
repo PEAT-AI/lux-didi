@@ -5,6 +5,7 @@ import { connectorDescriptor } from '../connectors/index.js';
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import { createdEventResult, draftChatResult, draftEmailResult, notAuthorizedFor, type ComposeName } from '../tools/compose.js';
 import { decodeGoogleEnvelope, googleToolStatus, readGooglePayload } from '../tools/google.js';
+import { mattermostToolStatus } from '../tools/mattermost.js';
 import { validatePolicy } from '../tools/index.js';
 import type { ComposeDispatch, ComposeOutcome, ConnectionPolicy } from '../tools/types.js';
 import type { JsonObject } from '../adapters/model/types.js';
@@ -60,22 +61,23 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
   };
 
   /** One closed outcome for one failed connector answer, with the owner line for a missing consent. */
-  const failed = (name: ComposeName, result: ConnectorResult): ComposeOutcome => {
+  const failed = (name: ComposeName, connector: string, result: ConnectorResult): ComposeOutcome => {
     if (result.state === 'refused') return notAuthorizedFor(name);
     if (result.state === 'unknown') return { state: 'unknown', reason: result.reason };
-    // Beyond the two local states above, the result is the endpoint's own evidence.
-    const status = googleToolStatus(result as ConnectorEvidence);
-    // A pinned credential or identity row is the family telling the owner to sign in again, which is
-    // the same closed answer as a family that was never consented.
+    // Beyond the two local states above, the result is the endpoint's own evidence, classified by that
+    // connector's own vocabulary. A pinned credential, an absent scope or an expired sign-in is the
+    // family telling the owner to sign in again: the same closed answer as a family never consented.
+    const evidence = result as ConnectorEvidence;
+    const status = connector === 'mattermost' ? mattermostToolStatus(evidence) : googleToolStatus(evidence);
     if (status !== undefined && status.state === 'configured') return notAuthorizedFor(name);
-    return { state: 'failed', reason: status?.code ?? (result.state === 'protocol-error' ? 'protocol_error' : 'helper_error') };
+    return { state: 'failed', reason: result.state === 'protocol-error' ? 'protocol_error' : 'helper_error' };
   };
 
   const write = async (name: ComposeName, connector: string, tool: string, args: Record<string, unknown>, build: (result: ConnectorResult) => JsonObject): Promise<ComposeOutcome> => {
     try {
       const result = await call(connector, tool, args);
       if (result.state === 'completed') return { state: 'done', response: build(result) };
-      return failed(name, result);
+      return failed(name, connector, result);
     } catch { return { state: 'failed', reason: 'compose_unavailable' }; }
   };
 

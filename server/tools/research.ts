@@ -6304,9 +6304,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
-      if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      if (!dispatchSignal.aborted) results = [...await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat)];
       // F7: the same one-place rule for a Drive name search that matched nothing.
-      if (!dispatchSignal.aborted) results = await broadenedDriveRetry(executeSource, subs, results, progressSignal, run.broadenedDrive);
+      if (!dispatchSignal.aborted) results = [...await broadenedDriveRetry(executeSource, subs, results, progressSignal, run.broadenedDrive)];
       noteChatReads(run, subs, results);
       finish(results, current() ? undefined : 'cancelled');
     }

@@ -104,8 +104,10 @@ export function isOwnerMemorySession(kind: LiveSessionKind): boolean { return ki
 export function ownerMemorySessionSql(alias: string): string {
   return NON_OWNER_SESSION_KEY_PREFIXES.map(prefix => `${alias}.idempotency_key NOT LIKE '${prefix}%'`).join(' AND ');
 }
-/** Whether this session's rows may become owner memory. A session with no row keeps its previous behaviour. */
+/** Whether this session's rows may become owner memory. A store with no live sessions, or no row for this id,
+ *  keeps its previous behaviour. */
 export function ownerMemorySession(tx: Transaction, liveSessionId: string): boolean {
+  if (!tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'")) return true;
   const row = tx.get('SELECT idempotency_key FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   return row === undefined || isOwnerMemorySession(liveSessionKindOf(String(row['idempotency_key'])));
 }

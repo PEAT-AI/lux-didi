@@ -645,6 +645,7 @@ interface ActiveSession {
   stopAfterJournalId?: number;
   stopGeneration?: number;
   inputAt?: number;
+  typedOwnerTurn?: boolean;
   lookupBridgeForInput?: string;
   lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
@@ -2752,6 +2753,7 @@ export class LiveSessionOwner {
     }
     // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
     if (type === 'audio') this.#clearDebt(handle, 'audible');
+    if (type === 'turnComplete' && handle.typedOwnerTurn) this.#clearDebt(handle, 'turn_end');
     if (type === 'interrupted') { handle.responseInProgress = false; handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
     if (type === 'inputTranscription' && event.finished === true) {
       handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in');
@@ -3512,6 +3514,7 @@ export class LiveSessionOwner {
     handle.researchAdmission.ownerTurn();
     handle.inputFinalTimer?.cancel();
     handle.inputAt = this.#now();
+    handle.typedOwnerTurn = true;
     handle.inputFinal = true;
     handle.inputFinalAt = handle.inputAt;
     handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${text}`.slice(-12000);
@@ -3799,6 +3802,8 @@ export class LiveSessionOwner {
         }
         if (ownerTurnFinalized(handle, event)) handle.researchAdmission.ownerTurn();
         if (event.type === 'toolCall') {
+          await this.#replayRecordedCalls(handle, event);
+          if (!event.calls.length) continue;
           handle.toolCalls += event.calls.length;
           // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
           handle.hostStatusNote = false;
@@ -3966,6 +3971,7 @@ export class LiveSessionOwner {
           if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
+          handle.typedOwnerTurn = event.finalOrigin === 'typed';
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal && typeof event.text === 'string') handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${event.text}`.slice(-12000);
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
@@ -4127,6 +4133,24 @@ export class LiveSessionOwner {
   }
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
+  /** Replay is a delivery of the original durable receipt, never a new execution. */
+  async #replayRecordedCalls(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
+    if (!this.#tools) return;
+    const remaining: typeof event.calls = [];
+    for (const call of event.calls) {
+      const row = this.#store.transaction(tx => tx.get("SELECT * FROM tool_calls WHERE run_id=? AND call_id=? AND state!='intent'", [handle.host.runId, call.id]));
+      if (!row) { remaining.push(call); continue; }
+      const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
+      if (stored.toolName !== call.name) { remaining.push(call); continue; }
+      const gate = await this.#tools.owner.resultGate.authorize({ ...handle.host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
+        contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
+      const response: JsonObject = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
+      const responses = [{ id: call.id, name: call.name, response }];
+      exposeToolResults(responses);
+      handle.session.sendToolResponse({ responses });
+    }
+    event.calls.splice(0, event.calls.length, ...remaining);
+  }
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
     // #1022 F1: the gate answer belongs to the handle, so a batch never inherits a refused one from the batch
     // that built this session's scheduler.

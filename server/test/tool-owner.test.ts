@@ -967,9 +967,9 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
   assert.equal(first.status, 'unknown', 'a lost answer is not a success');
   const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
-  assert.notEqual(retry.status, 'completed');
   assert.equal(port.log.length, 1, 'the retry never reaches the helper twice');
-  assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/);
+  assert.match(String(retry.result_json), /grant_spent/, 'the spent grant answers the retry and is never re-spent');
+  assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
 });
 
 test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {

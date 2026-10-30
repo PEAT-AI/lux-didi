@@ -198,8 +198,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
 
   // F6b: a link that needs a Chrome that is not running is a closed refusal with the line she says, and the
   // host never gets a launch order for it.
+  noteOwnerWords(session.liveSessionId, 'open example.invalid in my browser');
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open example.invalid in my browser', Date.now());
   t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
-  const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'plantix dot net' } }], {
+  const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'example.invalid' } }], {
     registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
     authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0,
     seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
@@ -207,7 +209,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const noBrowserText = JSON.stringify(noBrowser.accepted);
   assert.match(noBrowserText, /browser_not_running/);
   assert.match(noBrowserText, /Chrome is not open, could you open it for me\?/u);
-  assert.doesNotMatch(noBrowserText, /opening plantix\.net/u, 'nothing opened, so nothing is announced as opening');
+  assert.doesNotMatch(noBrowserText, /opening example\.invalid/u, 'nothing opened, so nothing is announced as opening');
   // F13: an open that never reached the native side is a host refusal, not a native action line.
   const nativeLines = notFoundEvents.filter(event => event['event'] === 'native_action');
   assert.deepEqual(nativeLines, [], 'a request that never reached the native side writes no native_action line');

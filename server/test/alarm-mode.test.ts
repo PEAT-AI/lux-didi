@@ -52,3 +52,12 @@ test('alarm wake instruction says the reminder and requests an overview when ask
   const overview = { ...input, label: 'give me an overview' };
   assert.match(alarmSessionInstructions(overview), /calendar digest/);
 });
+
+test('alarm mode: a series occurrence carries its rule into the host note', () => {
+  const text = alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '10:00', label: 'do one hour of cardio', series: 'every Saturday at 10:00 Singapore time' });
+  assert.match(text, /every Saturday at 10:00 Singapore time/);
+  assert.match(text, /regular reminder/);
+  assert.match(text, /do one hour of cardio/);
+  assert.doesNotMatch(text, /already done/);
+  assert.doesNotMatch(alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '10:00', label: 'call the bank' }), /regular reminder/);
+});

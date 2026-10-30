@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseAlarmTime } from '../tools/alarm.js';
+import { parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
 
 // Synthetic words and a fixed instant only. These tests never use the system clock.
 const now = Date.parse('2026-10-28T13:00:00Z');
@@ -193,4 +193,92 @@ for (const time of [
   const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz);
   assert.equal(clean.status, 'ready');
   assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz), clean);
+});
+
+test('C-RECUR: every day resolves the owner 24-hour wall time and the following day', () => {
+  const t0 = Date.parse('2026-10-30T15:00:00+08:00');
+  const result = parseAlarmTime('Every day at 22:30 remind me to go to bed.', t0, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready' || !result.series) return;
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-30T22:30:00+08:00'));
+  assert.match(result.label, /go to bed/);
+  assert.equal(seriesNextFireAt(result.series, result.fireAtUtc), Date.parse('2026-10-31T22:30:00+08:00'));
+  assert.equal(seriesText(result.series), 'every day at 22:30 Singapore time');
+  assert.match(result.confirmation, /every day at 22:30 Singapore time/);
+});
+
+test('C-RECUR: every Saturday before and after ten, and the week after the fire', () => {
+  const before = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T09:00:00+08:00'), tz);
+  assert.equal(before.status, 'ready');
+  if (before.status !== 'ready' || !before.series) return;
+  assert.equal(before.fireAtUtc, Date.parse('2026-10-31T10:00:00+08:00'));
+  assert.match(before.label, /do one hour of cardio/);
+  assert.equal(seriesNextFireAt(before.series, before.fireAtUtc), Date.parse('2026-11-07T10:00:00+08:00'));
+  assert.equal(seriesText(before.series), 'every Saturday at 10:00 Singapore time');
+  const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz);
+  assert.equal(after.status, 'ready');
+  if (after.status === 'ready') assert.equal(after.fireAtUtc, Date.parse('2026-11-07T10:00:00+08:00'));
+});
+
+test('C-RECUR: weekdays skip the weekend, and a fired weekday occurrence moves to the next weekday', () => {
+  const friday = parseAlarmTime('Every weekday at nine am remind me to stretch.', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  assert.equal(friday.status, 'ready');
+  if (friday.status !== 'ready' || !friday.series) return;
+  assert.equal(friday.fireAtUtc, Date.parse('2026-11-02T09:00:00+08:00'));
+  assert.equal(seriesNextFireAt(friday.series, friday.fireAtUtc), Date.parse('2026-11-03T09:00:00+08:00'));
+  const spoken = parseAlarmTime('on weekdays at nine am remind me to stretch', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  assert.equal(spoken.status, 'ready');
+  if (spoken.status === 'ready') assert.equal(spoken.fireAtUtc, Date.parse('2026-11-02T09:00:00+08:00'));
+});
+
+test('C-RECUR: an evening half past ten and a weekly weekday set stay exact', () => {
+  const evening = parseAlarmTime('every day at half past ten in the evening remind me to wind down', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  assert.equal(evening.status, 'ready');
+  if (evening.status !== 'ready' || !evening.series) return;
+  assert.equal(evening.series.hour, 22);
+  assert.equal(evening.series.minute, 30);
+  assert.deepEqual(parseSeriesRule('every saturday and sunday at ten'), { kind: 'weekly', weekdays: [0, 6] });
+  const weekend = parseAlarmTime('every saturday and sunday at ten remind me to run', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  assert.equal(weekend.status, 'ready');
+  if (weekend.status === 'ready' && weekend.series) assert.equal(seriesText(weekend.series), 'every Sunday and Saturday at 10:00 Singapore time');
+});
+
+test('C-RECUR: a host time zone change never moves a series', () => {
+  const t0 = Date.parse('2026-10-30T15:00:00+08:00');
+  const parsed = parseAlarmTime('Every Saturday at ten remind me to do cardio.', t0, tz);
+  assert.equal(parsed.status, 'ready');
+  if (parsed.status !== 'ready' || !parsed.series) return;
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = 'America/New_York';
+    assert.equal(parsed.series.tz, 'Asia/Singapore');
+    assert.equal(seriesNextFireAt(parsed.series, t0), Date.parse('2026-10-31T10:00:00+08:00'));
+  } finally {
+    if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
+  }
+});
+
+test('C-RECUR: a model rule that the owner did not say is refused, and the owner\'s words win', () => {
+  const daily = { kind: 'daily' as const, weekdays: [] };
+  const weekly = { kind: 'weekly' as const, weekdays: [6] };
+  assert.equal(verifyAlarmRule({}, weekly), true);
+  assert.equal(verifyAlarmRule({ kind: 'weekly', weekdays: [6] }, weekly), true);
+  assert.equal(verifyAlarmRule({ kind: 'daily' }, weekly), false);
+  assert.equal(verifyAlarmRule({ kind: 'weekly', weekdays: [0] }, weekly), false);
+  assert.equal(verifyAlarmRule({ kind: 'daily' }, undefined), false);
+  assert.equal(verifyAlarmRule({ kind: 'daily' }, daily), true);
+});
+
+test('C-RECUR: cancel words choose one occurrence or the whole series', () => {
+  assert.equal(parseCancelScope('skip this Saturday'), 'occurrence');
+  assert.equal(parseCancelScope('cancel the alarm'), 'occurrence');
+  assert.equal(parseCancelScope('stop the Saturday cardio reminders'), 'series');
+  assert.equal(parseCancelScope('cancel the recurring reminder'), 'series');
+});
+
+test('C-RECUR: a non-recurring ask keeps its one-shot instant', () => {
+  const oneShot = parseAlarmTime('set an alarm at 8', now, tz);
+  assert.equal(oneShot.status, 'ready');
+  if (oneShot.status === 'ready') assert.equal(oneShot.series, undefined);
+  assert.equal(parseSeriesRule('set an alarm on Monday at ten'), undefined);
 });

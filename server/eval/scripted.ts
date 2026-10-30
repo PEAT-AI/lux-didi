@@ -30,7 +30,7 @@ export function scriptedProvider(): TurnProvider {
       const calls: PlannedCall[] = [];
       for (const expectation of evalCase.expected_tools) {
         // Only a capability the fake world can actually serve is called; a planned one is why the case is red.
-        if (!toolMap[expectation.tool] || !world.available(expectation.tool)) continue;
+        if (!toolMap.tools[expectation.tool] || !world.available(expectation.tool)) continue;
         calls.push({ tool: expectation.tool, args: expectation.args ?? {} });
       }
       return { calls, ...scriptedSpeech(evalCase, world) };

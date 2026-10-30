@@ -1,7 +1,7 @@
 import type { EvalCase, RecordedCall } from './types.js';
 import { requiredTokens } from './scripted.js';
 import type { FakeWorld, ToolMap } from './world.js';
-import { resolveTool } from './world.js';
+import { capabilityShipped, resolveTool } from './world.js';
 
 export interface ScoreInput {
   readonly case: EvalCase;
@@ -21,16 +21,22 @@ const array = (value: unknown): readonly unknown[] => (Array.isArray(value) ? va
 const record = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {});
 const present = (haystack: string, needle: string): boolean => haystack.toLowerCase().includes(needle.toLowerCase());
 
-/** Planned capabilities the case depends on, using the mapping table as the one source of truth. */
-export function missingCapabilities(input: { case: EvalCase; toolMap: ToolMap; implemented?: readonly string[] }): string[] {
-  const shipped = new Set(input.implemented ?? []);
-  const missing: string[] = [];
+/**
+ * The capabilities a case needs. Red is driven by the capability a tool names, not by the case's own
+ * `red_today` claim: a case that needs no absent capability runs for real and has to pass.
+ */
+export function requiredCapabilities(input: { case: EvalCase; toolMap: ToolMap }): string[] {
+  const needed = new Set<string>();
   for (const expectation of input.case.expected_tools) {
-    const entry = input.toolMap[expectation.tool];
-    if (!entry) { missing.push(`${expectation.tool}:unmapped`); continue; }
-    if (entry.status === 'planned' && !shipped.has(entry.didi) && !shipped.has(expectation.tool)) missing.push(expectation.tool);
+    const entry = input.toolMap.tools[expectation.tool];
+    if (entry) needed.add(entry.capability);
   }
-  return missing;
+  return [...needed].sort();
+}
+
+/** The case's required capabilities that are still planned. */
+export function missingCapabilities(input: { case: EvalCase; toolMap: ToolMap; implemented?: readonly string[] }): string[] {
+  return requiredCapabilities(input).filter(capability => !capabilityShipped(input.toolMap, capability, input.implemented ?? []));
 }
 
 function stateReasons(input: ScoreInput): string[] {
@@ -65,7 +71,7 @@ function stateReasons(input: ScoreInput): string[] {
     if (!match) reasons.push('state_post_missing');
   }
   if (expected.unchanged === true) {
-    const writes = input.calls.filter(call => input.toolMap[call.tool]?.kind === 'write');
+    const writes = input.calls.filter(call => input.toolMap.tools[call.tool]?.kind === 'write');
     if (writes.length > 0) reasons.push(`state_changed_when_unchanged:${writes.map(call => call.tool).join(',')}`);
   }
   for (const raw of array(expected.alarms)) {
@@ -106,8 +112,14 @@ function speechReasons(input: ScoreInput): string[] {
   const mustNot = evalCase.spoken_must_not.map(text);
   for (const phrase of mustNot) if (phrase && present(spoken, phrase)) reasons.push(`speech_forbidden:${phrase}`);
 
-  // A3: no invitations, ever. A claim is a failure even when a block was created.
-  if (/\binvit/i.test(spoken)) reasons.push('speech_claims_invitation');
+  // A3: never an invitation. The claim fails, the word does not: "no invites were sent" is the honest
+  // sentence the ruling requires, "I invited X" and "invitations were sent" are claims.
+  const invitationClaim = /(\binvited\b|\binvit(?:e|es)\b[^.]{0,40}\b(?:to|for)\b|\binvitation(?:s)?\b[^.]{0,20}\b(?:sent|issued|delivered|going out)\b|\binvites?\b[^.]{0,20}\b(?:sent|issued|delivered)\b)/i.exec(spoken);
+  if (invitationClaim) {
+    const before = spoken.slice(0, invitationClaim.index);
+    const negated = /(no|not|never|without|zero)\s+(\w+\s+){0,2}$/i.test(before);
+    if (!negated) reasons.push('speech_claims_invitation');
+  }
   if (/\b(sent|sending|send)\b[^.]{0,40}\b(e-?mail|mail|message|note)\b/i.test(spoken) && /\bsent\b/i.test(spoken)) reasons.push('speech_claims_send');
 
   let cursor = 0;
@@ -145,17 +157,11 @@ function alarmState(input: ScoreInput, alias: string): { status: string; fireAtU
 
 export function scoreCase(input: ScoreInput): ScoreResult {
   const missing = missingCapabilities(input);
-  const shipped = new Set(input.implemented ?? []);
-  // A red case stays EXPECTED_RED until a capability it names is declared shipped: then it runs for real,
-  // and a case that still fails is a hard failure, never a red one.
-  const flipped = input.case.expected_tools.some(expectation => {
-    const entry = input.toolMap[expectation.tool];
-    return entry !== undefined && (shipped.has(entry.didi) || shipped.has(expectation.tool));
-  });
-  if (input.case.red_today && !flipped) {
-    return { outcome: 'EXPECTED_RED', reasons: [], redReason: input.case.red_reason ?? `planned tools absent: ${missing.join(',')}` };
+  // A case is red while a capability it needs is planned. Once every capability it names is shipped it runs
+  // for real, so a case that still fails is a hard failure and never hides behind its red label.
+  if (missing.length > 0) {
+    return { outcome: 'EXPECTED_RED', reasons: [], redReason: input.case.red_reason ?? `planned capabilities absent: ${missing.join(',')}` };
   }
-  if (missing.length > 0) return { outcome: 'FAIL', reasons: missing.map(tool => `capability_missing:${tool}`) };
 
   const reasons: string[] = [];
   const expected = input.case.expected_tools;
@@ -172,7 +178,7 @@ export function scoreCase(input: ScoreInput): ScoreResult {
     if (index >= 0) cursor = index;
   }
   for (const call of input.calls) {
-    const entry = input.toolMap[call.tool];
+    const entry = input.toolMap.tools[call.tool];
     if (!entry) reasons.push(`tool_unmapped_call:${call.tool}`);
     else if (entry.kind === 'write' && !expected.some(expectation => expectation.tool === call.tool)) reasons.push(`write_not_expected:${call.tool}`);
   }
@@ -185,7 +191,7 @@ export function scoreCase(input: ScoreInput): ScoreResult {
     if (atFire.output_sink !== undefined && atFire.output_sink !== 'recording-only') reasons.push('at_fire_sink_unexpected');
   }
   for (const expectation of expected) {
-    if (!input.toolMap[expectation.tool]) reasons.push(`tool_unmapped:${expectation.tool}`);
+    if (!input.toolMap.tools[expectation.tool]) reasons.push(`tool_unmapped:${expectation.tool}`);
     else resolveTool(input.toolMap, expectation.tool);
   }
   return { outcome: reasons.length === 0 ? 'PASS' : 'FAIL', reasons };

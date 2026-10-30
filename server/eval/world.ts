@@ -1,8 +1,13 @@
 import type { AlarmWorld } from './alarms.js';
 import type { Contact, DriveFile, EvalCase, Meeting, RecordedCall, SeededState, ToolExpectation } from './types.js';
 
-export interface ToolMapEntry { didi: string; kind: 'read' | 'write'; status: 'implemented' | 'planned'; connector: string; note?: string }
-export type ToolMap = Readonly<Record<string, ToolMapEntry>>;
+export interface ToolMapEntry { didi: string; kind: 'read' | 'write'; capability: string; connector: string; note?: string }
+export interface CapabilityEntry { status: 'implemented' | 'planned'; didi: string }
+/** The mapping table: every abstract tool, and the capability whose existence decides whether it can run. */
+export interface ToolMap {
+  readonly capabilities: Readonly<Record<string, CapabilityEntry>>;
+  readonly tools: Readonly<Record<string, ToolMapEntry>>;
+}
 
 export interface CallResult { ok: boolean; data: Record<string, unknown>; reason?: string }
 
@@ -46,9 +51,16 @@ const list = <T>(value: unknown): readonly T[] => (Array.isArray(value) ? (value
 
 /** Abstract tool name to the real (or planned) Didi tool, without trusting the case to name it correctly. */
 export function resolveTool(toolMap: ToolMap, tool: string): ToolMapEntry {
-  const entry = toolMap[tool];
+  const entry = toolMap.tools[tool];
   if (!entry) throw new Error(`eval_tool_unmapped: ${tool}`);
   return entry;
+}
+
+/** Is the capability behind a tool shipped? The `implemented` option arms a red case's flip in a test. */
+export function capabilityShipped(toolMap: ToolMap, capability: string, implemented: readonly string[] = []): boolean {
+  const entry = toolMap.capabilities[capability];
+  if (!entry) return false;
+  return entry.status === 'implemented' || implemented.includes(capability) || implemented.includes(entry.didi);
 }
 
 function localIso(t0: string, time: string, offset: string): string {
@@ -83,11 +95,10 @@ export function fakeWorld(options: WorldOptions): FakeWorld {
     alarmIdByAlias.set(seeded.id, alarm.id);
   }
 
-  const implemented = new Set(options.implemented ?? []);
   const available = (tool: string): boolean => {
-    const entry = toolMap[tool];
+    const entry = toolMap.tools[tool];
     if (!entry) return false;
-    return entry.status === 'implemented' || implemented.has(entry.didi) || implemented.has(tool);
+    return capabilityShipped(toolMap, entry.capability, options.implemented ?? []);
   };
 
   const record = (tool: string, entry: ToolMapEntry, args: Record<string, unknown>): void => {

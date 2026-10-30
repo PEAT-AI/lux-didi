@@ -39,7 +39,10 @@ export async function runCase(evalCase: EvalCase, options: { toolMap: ToolMap; p
   const startUtc = Date.parse(evalCase.setup.clock_T0);
   const sinkText: string[] = [];
   const done = (outcome: Outcome, reasons: readonly string[], redReason: string | undefined, calls: readonly { didi: string }[]): CaseRun => ({
-    outcome: { id: evalCase.id, category: evalCase.category, outcome, reasons, ...(redReason ? { redReason } : {}), toolCalls: calls.map(call => call.didi), spoken: sinkText.join(' ') },
+    outcome: {
+      id: evalCase.id, category: evalCase.category, outcome, reasons, ...(redReason ? { redReason } : {}),
+      toolCalls: calls.map(call => call.didi), spoken: sinkText.join(' '), spokenSinks: sink.entries.map(entry => entry.outputSink),
+    },
     seconds: Number(process.hrtime.bigint() - started) / 1e9,
   });
   if (!Number.isFinite(startUtc)) return done('FAIL', ['setup_clock_invalid'], undefined, []);
@@ -111,16 +114,18 @@ export async function runSuite(options: RunOptions): Promise<SuiteSummary> {
   let pass = 0;
   let fail = 0;
   let expectedRed = 0;
+  const spokenSinks: string[] = [];
   for (const evalCase of selected) {
     const { outcome } = await runCase(evalCase, { toolMap, provider, ...(options.implemented ? { implemented: options.implemented } : {}) });
     const bucket = byCategory[evalCase.category] ?? { PASS: 0, FAIL: 0, EXPECTED_RED: 0 };
     bucket[outcome.outcome]++;
     byCategory[evalCase.category] = bucket;
+    spokenSinks.push(...outcome.spokenSinks);
     if (outcome.outcome === 'PASS') pass++;
     else if (outcome.outcome === 'EXPECTED_RED') expectedRed++;
     else { fail++; failures.push(outcome); }
   }
-  return { total: selected.length, pass, fail, expectedRed, byCategory, failures };
+  return { total: selected.length, pass, fail, expectedRed, byCategory, failures, spokenSinks };
 }
 
 export function formatSummary(summary: SuiteSummary): string {

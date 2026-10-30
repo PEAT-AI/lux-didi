@@ -69,6 +69,8 @@ export interface CaseOutcome {
   redReason?: string;
   toolCalls: readonly string[];
   spoken: string;
+  /** Where each spoken frame was routed. A scripted run must never name anything but `recording-only`. */
+  spokenSinks: readonly string[];
 }
 
 export interface SuiteSummary {
@@ -78,4 +80,6 @@ export interface SuiteSummary {
   expectedRed: number;
   byCategory: Record<string, { PASS: number; FAIL: number; EXPECTED_RED: number }>;
   failures: readonly CaseOutcome[];
+  /** Every spoken frame's sink across the run, so an audio leak would show up as a non-recording value. */
+  spokenSinks: readonly string[];
 }

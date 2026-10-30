@@ -18,17 +18,20 @@ Didi tool behind it.
 | Tool catalogue | `server/eval/tool-map.json` plus the connector modules' own read lists | Every tool a case names resolves to a real Didi tool or is honestly marked planned. |
 | Fake world (`server/eval/world.ts`) | fake, stateful, recording | Gmail, Calendar, Drive, Mattermost, lux knowledge and meeting stubs, Mongoose, Trello and web research answer from the case's `setup.seeded_state`, hold drafts, events, cards and memory, and record every call with its arguments and its virtual time. An unmapped or unfaked connector call fails the case loudly. |
 | Alarm, wake and reminder cases (`server/eval/alarms.ts`) | real scheduler over a real store | `AlarmScheduler` from `server/host/alarm-scheduler.ts` runs unmodified against a real `Store` with its real migrations; only the `AlarmClock` is the virtual one from `server/eval/clock.ts`. So a wake case exercises the production alarm row, state machine and recheck, and the clock is the one thing that differs. |
-| Recording sink (`server/eval/sink.ts`) | fake live voice port | The repo's `fakeLiveVoicePort` fixture records the spoken text. `outputSink` is `recording-only` and `audible` is literally false: a wake fires into a list of strings, never into a speaker. |
-| Guards (`installEvalGuards`) | fakes refused | Sockets, DNS, `fetch` and every child process launch throw `eval_guard` inside a run. An unfaked connector cannot reach the network, and no audio player can be spawned. The harness also counts real timers: zero are armed. |
+| Recording sink (`server/eval/sink.ts`) | fake live voice port | The repo's `fakeLiveVoicePort` fixture records the spoken text. Every spoken frame carries `outputSink: recording-only`, a wake fires into a list of strings, never into a speaker, and the self-test asserts that every frame of a whole run is `recording-only`. |
+| Guards (`installEvalGuards`) | fakes refused | The global `WebSocket` both realtime adapters open, `net.Socket.prototype.connect`, `net.createConnection`, DNS, `fetch` and every child process launch throw `eval_guard` inside a run. So an unfaked connector cannot reach the network, no realtime session can open, and no audio player can be spawned; the self-test probes the WebSocket refusal and asserts that no case opens one. The harness also counts real timers: zero are armed. |
 | Scripted provider (`server/eval/scripted.ts`) | fake, free | Replays the case's required calls and composes an answer out of the facts the fake world actually holds. It proves the harness, the gates and the scorer, and says nothing about model quality. |
 | Live provider (`server/eval/live.ts`) | real realtime adapter | The owner's configured model answers the same asks as text turns, with tool calls executed against the same fake world. Expensive, so never automated. |
 | Scorer (`server/eval/scorer.ts`) | deterministic | Required tools as a set, in the dependency order the case states, extra reads allowed, any write the case did not ask for a failure, `expected_state` checked against the fake store, and the spoken text checked against both. |
 
 The scorer's rules, in the order it applies them:
 
-1. **Capability.** A case whose required tool is still `planned` in the mapping table reports `EXPECTED_RED`
-   with its reason. The moment that capability is declared shipped the case runs for real, and a case that
-   still fails is a hard `FAIL`, never red.
+1. **Capability.** The mapping table names, for every tool, the capability behind it (`capabilities` in
+   `tool-map.json`), and a case is `EXPECTED_RED` only while one of the capabilities it needs is `planned`:
+   the red label follows the capability, never the case's own `red_today` claim. A case whose capabilities
+   all exist runs for real and has to pass, so the four cases that assert a clarifying or refusing answer
+   over an empty store (`email-09`, `email-10`, `mattermost-07`, `mattermost-08`) are exercised today. Once a
+   planned capability ships, its cases run for real too, and a case that still fails is a hard `FAIL`.
 2. **Required set.** Every expected tool appears at least `count` times (default one). `count: 0` asserts the
    opposite: the tool is never called.
 3. **Dependency order.** Required tools appear in the order the case lists them. Extra reads may interleave
@@ -96,8 +99,9 @@ live run never touches the owner's Gmail, Calendar, Mattermost or disk.
 5. Add it to the category file and run `bash scripts/run-local-evals.sh --id <id>`. It must pass scripted
    before it means anything live.
 
-Red cases are cases whose tools do not exist yet. They are honest only while `tool-map.json` still marks the
-tool `planned`; flipping that status is what turns the case into a hard requirement.
+Red cases are cases whose capability does not exist yet. They are honest only while `tool-map.json` still
+marks that capability `planned`; flipping its status to `implemented` is what turns the case into a hard
+requirement. A case that needs no absent capability is never red, whatever its own `red_today` field says.
 
 ## What is not covered yet
 

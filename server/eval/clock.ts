@@ -46,8 +46,6 @@ export interface GuardReport {
   blocked(): number;
   /** Real timers armed during eval mode. A non-zero count means wall time leaked into a case. */
   realTimers(): number;
-  /** Text the eval path tried to route to an audio device. Always zero: there is no device. */
-  audioOutputs(): number;
 }
 
 const require = createRequire(import.meta.url);
@@ -70,6 +68,13 @@ export function installEvalGuards(): GuardReport {
     blocked++;
     throw new Error(`eval_guard: ${what}`);
   };
+  // Both realtime adapters open their session with the global WebSocket, so this is the transport that
+  // matters: refusing it is what keeps eval mode away from the model and away from the audio device.
+  const globalSocket = globalThis as { WebSocket?: unknown };
+  const refusedSocket = class {
+    constructor() { refuse(BLOCKED[0][1]); }
+  };
+  globalSocket.WebSocket = refusedSocket;
   const net = require('node:net') as { Socket: { prototype: { connect: unknown } }; createConnection: unknown; connect?: unknown };
   net.Socket.prototype.connect = function connect() { return refuse(BLOCKED[0][1]); };
   (net as { createConnection: unknown }).createConnection = () => refuse(BLOCKED[0][1]);
@@ -88,11 +93,7 @@ export function installEvalGuards(): GuardReport {
     realTimers++;
     return realSetTimeout(fn as never, ms, ...(rest as never[]));
   }) as typeof setTimeout;
-  report = { blocked: () => blocked, realTimers: () => realTimers, audioOutputs: () => 0 };
+  report = { blocked: () => blocked, realTimers: () => realTimers };
   return report;
 }
 
-/** The one audio route an eval run could take: opening the real device-backed adapter. It never happens. */
-let realAdapterOpens = 0;
-export function noteRealAdapterOpen(): void { realAdapterOpens++; }
-export function realAdapterOpenCount(): number { return realAdapterOpens; }

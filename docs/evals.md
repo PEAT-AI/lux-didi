@@ -56,7 +56,9 @@ bash scripts/run-local-evals.sh --id calendar-01
 ```
 
 The summary is one line of totals plus one line per category with `PASS`, `FAIL` and `EXPECTED_RED` counts.
-A failure names the case and every reason it failed for. The command exits non-zero when anything failed.
+A failure names the case and every reason it failed for. The command exits non-zero when anything failed,
+`4` when the filter matched no case at all (a typo is not a green suite), and `--live` without `--yes` exits
+`2` before spending anything.
 
 Live, real model, real money:
 

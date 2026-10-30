@@ -50,7 +50,12 @@ async function main() {
     assert.ok(guards.blocked() >= 1);
   });
 
+  const blockedBefore = guards.blocked();
   const suite = await runSuite({ casesDir, toolMapPath, provider: scriptedProvider() });
+  const blockedDuringSuite = guards.blocked() - blockedBefore;
+  await check('no case in a scripted run attempts a network call', async () => {
+    assert.equal(blockedDuringSuite, 0, 'a case tried to reach the network');
+  });
   await check('scripted mode: every non-red case passes', () => {
     assert.equal(suite.fail, 0, formatSummary(suite));
     assert.equal(suite.pass + suite.expectedRed, suite.total);

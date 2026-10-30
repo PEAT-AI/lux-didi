@@ -53,6 +53,13 @@ async function main() {
   const { casesDir, toolMapPath } = roots(args);
   const base: RunOptions = { casesDir, toolMapPath, ...(args.category ? { category: args.category } : {}), ...(args.id ? { id: args.id } : {}) };
 
+  if (selectCases(base).length === 0) {
+    // A filter that matches nothing is a typo, not a green suite.
+    console.log(`no case matches ${args.id ?? args.category ?? '(no filter)'}`);
+    process.exitCode = 4;
+    return;
+  }
+
   if (!args.live) {
     const summary = await runSuite({ ...base, provider: scriptedProvider() });
     console.log(formatSummary(summary));

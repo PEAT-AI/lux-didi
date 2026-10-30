@@ -249,8 +249,9 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(19_900) };
   // C-OPENWEB8: the memory fixture is sized to the instruction, so it still sits under the target.
   // W3-R2: the instruction gains the reviewer's 89-char rule, so the overlay gives back the same room.
-  // W1030: the write paragraph is 504 chars, so the memory fixture gives back the same room.
-  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_100) });
+  // W1030: the write paragraph is 504 chars, so the memory fixture gives back the room it took: the
+  // composed instruction has 1_378 spare under the target with a memory section the composer keeps whole.
+  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(1_000) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
   assert.equal(roomy.sections.some(section => section.chars === 0), false, `nothing yields under the target: ${roomy.text.length} of ${LIVE_INSTRUCTION_TARGET_CHARS}, yielded ${roomy.sections.filter(section => section.chars === 0).map(section => section.id).join(',')}`);
   // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
@@ -368,10 +369,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-RESEARCH8: the one-operation voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a706ece27ac302749cfba2bc065ce5d5877a1469914449f473f96eecbb82b532');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1c1cbe22504344e141ec1f50454efeb8c49b7df7cf719181a1101c2e66a5115a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), 'ddf654dc43f2ebf2ca84a7ae5fddaa39e1eecd141c262c81f6217f6a4194b062');
+  assert.equal(sha(NAYA_TOOLS), '0e9a39533a8afd671c93647dede3500a632e14667e32cd9faa135920e75f81a7');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));

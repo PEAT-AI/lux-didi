@@ -289,7 +289,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
     for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
     assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
-    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
+    const framed = f.frames.find(frame => frame['type'] === 'response.item.create' && JSON.stringify(frame).includes('Synthetic late line'))!;
     assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
     const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
     assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');

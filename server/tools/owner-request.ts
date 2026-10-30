@@ -1,4 +1,5 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
+import { COMPOSE_GRANT_KINDS, composeGrantKinds, type ComposeGrantKind } from './compose.js';
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
   id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
@@ -37,6 +38,8 @@ export class OwnerRequests implements OwnerRequestPort {
     // Finalized owner input is authority for non-destructive tools, not a phrase grammar.
     for (const kind of ['open', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
     grants.set('lux_note', {});
+    // Each write tool carries its own intent: drafting, messaging, scheduling or cancelling.
+    for (const kind of composeGrantKinds(words)) grants.set(kind, {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
       const combined = (words.startsWith(previous.words) ? words : `${previous.words} ${words}`).replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
@@ -44,6 +47,8 @@ export class OwnerRequests implements OwnerRequestPort {
       previous.words = combined;
       previous.answered = false;
       previous.finals++; previous.journalId = journalId;
+      // A split ask grants on the combined turn: the intent and the target may arrive apart.
+      for (const kind of composeGrantKinds(combined)) grants.set(kind, {});
       for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
       delete previous.pending;
       return;
@@ -67,7 +72,9 @@ export class OwnerRequests implements OwnerRequestPort {
         : kind === 'cancel_alarm' ? /\b(?:cancel|stop)\b/i.test(clause)
         : kind === 'snooze_alarm' ? /\bsnooze\b/i.test(clause)
         : kind === 'list_alarms' ? /\b(?:list|show)\b.*\balarm/i.test(clause)
-        : kind === 'lux_note' ? /\b(?:save|remember|note|write|put)\b/i.test(clause) : false;
+        : kind === 'lux_note' ? /\b(?:save|remember|note|write|put)\b/i.test(clause)
+        : COMPOSE_GRANT_KINDS.includes(kind as ComposeGrantKind) ? /\b(?:draft|write|send|e-?mail|mail|message|reply|tell|schedule|block|add|put|book|cancel|delete|remove)\b/i.test(clause)
+        : false;
       if (negated) return { ...common, code: 'no_owner_request' };
     }
     const authority = request.grants.get(kind);

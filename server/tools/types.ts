@@ -69,7 +69,8 @@ export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused'
 /** W6: the host decides a composed-note stage; the tool only asks, and the frozen payload is the host's own. */
 export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue | (() => Promise<JsonValue>);
 
-export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note';
+export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note'
+  | 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event';
 export type RequestCode = 'allowed' | 'idempotent' | 'no_owner_request' | 'request_expired' | 'grant_spent';
 export type RequestAuthorization =
   | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string; observedAt?: number }

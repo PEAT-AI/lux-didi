@@ -280,9 +280,8 @@ describe('openai gpt-live adapter', () => {
     const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
     const before = creates();
     session.sendText({ text: '[host note, not the owner] Synthetic late line.' });
-    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
-    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
-    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
+    await quiet();
+    assert.equal(f.frames.filter(frame => frame['type'] === 'response.item.create').length, 0, 'typed finals stay coalescible until outputs are supplied');
 
     for (let wait = 0; wait < 20; wait += 1) await tick();
     assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
@@ -290,6 +289,8 @@ describe('openai gpt-live adapter', () => {
     await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
     for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
     assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
+    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
+    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
     const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
     assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');
     session.close();

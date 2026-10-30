@@ -8046,3 +8046,45 @@ test('CB-R1(b): a file-open ask triggers no calendar digest read', async t => {
   assert.deepEqual(h.calls.filter(call => call.name === 'calendar_list_events'), [], 'and no calendar read is dispatched');
   h.owner.revoke(session.liveSessionId);
 });
+
+// F2 widening (call 8be5d80f): every session of the day shared one conversation id, so a canary's typed asks
+// reached owner calls. A canary session now owns its conversation, and the seed reads owner sessions only.
+test('F2 widening: a canary turn never seeds an owner call, even inside one conversation id', async t => {
+  const h = await harness(t);
+  const turn = async (key: string, kind: 'owner' | 'canary', asked: string, answered: string) => {
+    const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary', sessionKind: kind }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await h.f.frame(1);
+    h.f.send({ setupComplete: {} });
+    await attachment.ready;
+    await h.f.frame(2);
+    h.f.send({ serverContent: { inputTranscription: { text: asked, finished: true } } });
+    h.f.send({ serverContent: { outputTranscription: { text: answered, finished: true } } });
+    await drain(h, session.liveSessionId, 2);
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+    return session.liveSessionId;
+  };
+  await turn('owner-before-canary', 'owner', 'TOKEN-OWNER-ASK what time is the budget meeting', 'TOKEN-OWNER-ANSWER at noon');
+  const canary = await turn('canary:typed-ask', 'canary', 'TOKEN-CANARY-ASK what time is the budget meeting', 'TOKEN-CANARY-ANSWER at noon');
+  // The shape of 2026-10-30: one conversation id for every session of the day.
+  const shared = h.store.transaction(tx => {
+    const owner = tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [h.store.assistantId]);
+    const conversationId = String(owner?.['conversation_id'] ?? 'shared-conversation');
+    tx.run('INSERT OR REPLACE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [canary, conversationId]);
+    return conversationId;
+  });
+  const next = h.owner.create({ idempotencyKey: 'owner-after-canary', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  await h.f.frame(2);
+  const history = JSON.stringify(h.requests.at(-1)!.history);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [canary]))!['conversation_id'], shared,
+    'the canary really was in the owner\'s conversation for this check');
+  assert.match(history, /TOKEN-OWNER-ASK/u, 'the owner\'s own earlier call still seeds the new one');
+  assert.equal(history.includes('TOKEN-CANARY'), false, 'no canary turn reaches an owner call');
+  h.owner.revoke(next.liveSessionId);
+  await attachment.done;
+});

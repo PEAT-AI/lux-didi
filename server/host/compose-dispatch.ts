@@ -76,7 +76,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
       const result = await call(connector, tool, args);
       if (result.state === 'completed') return { state: 'done', response: build(result) };
       return failed(name, result);
-    } catch { return { state: 'failed', reason: 'compose_unavailable' }; }
+    } catch (error) { return { state: 'failed', reason: `compose_unavailable:${String((error as Error)?.message)}` }; }
   };
 
   return {

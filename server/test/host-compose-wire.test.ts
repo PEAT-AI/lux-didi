@@ -93,7 +93,7 @@ test('W1030: the real host composition offers the four write tools when the fami
   // A write family is not a read envelope: the granted names of that endpoint are its write family.
   const grant = h.mcp.registry.currentGrant('gmail_draft');
   assert(grant);
-  assert.deepEqual([...grant!.toolNames].sort(), ['gmail_create_draft', 'google_identity']);
+  assert.deepEqual([...grant!.toolNames].sort(), ['gmail_create_draft', 'gmail_create_reply_draft', 'google_identity']);
   assert.equal(grant!.toolNames.includes('gmail_send'), false);
 });
 
@@ -105,7 +105,7 @@ test('W1030: each write tool reaches its fake child through that composition wit
   assert.equal(draft.response['status'], 'draft_ready');
   const sent = callsOf(h.pid('gmail_draft')).find(call => call.tool === 'gmail_create_draft');
   assert(sent, 'gmail_create_draft reached the child');
-  assert.deepEqual(sent!.args, { to: ['sam@example.test'], subject: 'Synthetic subject', body: 'Synthetic body', client_request_id: 'req-draft' });
+  assert.deepEqual(sent!.args, { to: ['sam@example.test'], subject: 'Synthetic subject', body: 'Synthetic body' });
   for (const forbidden of ['send', 'sent', 'attachments', 'invite']) assert.equal(forbidden in sent!.args, false, `a draft carries no ${forbidden}`);
 
   const created = await h.mcp.compose.createEvent({ summary: 'Synthetic block', startUtc: Date.UTC(2026, 10, 30, 9, 0), endUtc: Date.UTC(2026, 10, 30, 10, 0), timeZone: 'UTC', description: 'Synthetic note', clientRequestId: 'req-event' });

@@ -1,4 +1,4 @@
-import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames, connectionEnvelope, writeEnvelopeFor } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames, connectionEnvelope, writeGrantedNames } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
@@ -699,7 +699,8 @@ export async function composeMcpRuntime(options: {
       // for the names the child published. These names ride in the grant so the compose port can reach
       // them, and they never become model-facing reads (see liveDefinitions' declaration table).
       const publishedNames = discovery.tools.map(tool => tool.name);
-      const writes = grantMode === 'owner-trusted-reads' ? writeEnvelopeFor(entry.connector, publishedNames).sort() : [];
+      // A write name is granted exactly as a composite is: beside the read that proves it, never alone.
+      const writes = grantMode === 'owner-trusted-reads' ? writeGrantedNames(entry.connector, publishedNames).sort() : [];
       const composed = composedGrantedNames(entry.connector, names).sort();
       const granted = [...names, ...composed, ...writes].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.

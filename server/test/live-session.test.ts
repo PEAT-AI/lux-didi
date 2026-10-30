@@ -807,6 +807,7 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
     ...(openDelegation ? { tools: true, beforeTool: () => work } : {}) });
   const { attachment } = await attached(h);
   if (openDelegation) {
+    await ownerSpoke(h);
     h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
     while (!h.calls.length) await tick();
   }

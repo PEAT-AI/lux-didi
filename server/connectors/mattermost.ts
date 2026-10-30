@@ -1,6 +1,7 @@
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence, type SourceDispatchRef } from '../adapters/mcp/port.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
+import type { JsonObject } from '../adapters/model/types.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import { ambiguityQuestion, currentBinding } from '../people/index.js';
 
@@ -1040,7 +1041,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       capture(listed.evidence);
       const data = contentJson(listed.evidence.decodedResult);
       const rows = isRecord(data) && Array.isArray(data['threads']) ? data['threads'].filter(isRecord) : [];
-      return { ok: true, total: isRecord(data) && Number.isSafeInteger(data['total_threads']) ? data['total_threads'] as number : undefined, topics: rows.map(topicRow) };
+      const total = isRecord(data) && Number.isSafeInteger(data['total_threads']) ? data['total_threads'] as number : undefined;
+      return { ok: true, topics: rows.map(topicRow), ...(total === undefined ? {} : { total }) };
     };
 
     // CA-R2: the first step of the owner's ask: the topics of one conversation, with counts and dates.

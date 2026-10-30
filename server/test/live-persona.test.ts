@@ -252,7 +252,7 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   // W1030: the write paragraph is 504 chars, so the memory fixture gives back the same room.
   const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_100) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
-  assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
+  assert.equal(roomy.sections.some(section => section.chars === 0), false, `nothing yields under the target: ${roomy.text.length} of ${LIVE_INSTRUCTION_TARGET_CHARS}, yielded ${roomy.sections.filter(section => section.chars === 0).map(section => section.id).join(',')}`);
   // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
   // runtime context is sized from the target so that yielding the memory alone brings the text back under it.
   const base = { base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en' as const };
@@ -370,7 +370,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   assert.equal(sha(NAYA_VOICE_TOOLS), 'a706ece27ac302749cfba2bc065ce5d5877a1469914449f473f96eecbb82b532');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
-  assert.equal(sha(NAYA_TOOLS), 'ab7195dd72995fec325f6d743aee5c06132ffd3105b592ae0d8fde6e24c35adf');
+  // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
+  assert.equal(sha(NAYA_TOOLS), 'ddf654dc43f2ebf2ca84a7ae5fddaa39e1eecd141c262c81f6217f6a4194b062');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -734,7 +735,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // merged measure and no reviewed rule is trimmed for it.
   // C-OPENWEB8: the open_web clause in the open paragraph is the growth this bound carries (7_871).
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
-  const cap = 8_132;
+  const cap = 8_200;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.

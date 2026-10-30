@@ -7952,3 +7952,28 @@ test('C-SAFETY: rebuild expires an unspent alarm ask before seeded replay can ex
   assert.equal(response['reason'] ?? response['code'], 'no_owner_request');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
 });
+
+test('C-SAFETY review: changed-name replay is refused before normal execution after rebuild', async t => {
+  const fake = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, inputRates: [16000] });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, limits: openaiLimits });
+  const { session } = await openPort(h, 'changed-name-replay');
+  h.owner.text('Find the synthetic memo');
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'synthetic-shared-call', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] }));
+  for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 1);
+  const recorded = h.store.transaction(tx => tx.get('SELECT intent_json,state FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))!;
+  assert.equal(recorded.state, 'completed');
+  assert.equal(JSON.parse(String(recorded.intent_json)).toolName, 'search_knowledge');
+  fake.emit({ type: 'turnComplete' }); await settlePort();
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let n = 0; n < 100 && (fake.requests.length < 2 || !h.owner.providerReady(session.liveSessionId)); n++) await settlePort();
+  assert.equal(fake.requests.length, 2);
+  assert.ok(h.owner.providerReady(session.liveSessionId));
+  h.owner.text('Set an alarm in ten minutes');
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'synthetic-shared-call', name: 'set_alarm', args: {} }] }));
+  for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 2);
+  assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch' });
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a changed name cannot reuse the recorded id to create an alarm');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))?.n, 1, 'the original recorded identity stays immutable');
+});

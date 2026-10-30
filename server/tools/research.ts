@@ -7393,6 +7393,8 @@ export class ResearchScheduler {
   #active = new Map<string, ActiveRun>();
   /** E7: the live turn window: the run each coalesce key last answered, and when. */
   #recent = new Map<string, { id: string; at: number; reply: JsonObject; reachable: string }>();
+  /** F13: the answer this turn already gave, by the run id our own start minted, so an echoed id is one research. */
+  #answered = new Map<string, { at: number; reply: JsonObject; reachable: string }>();
   /**
    * #664: how many research calls each delegation has made in the turn window. A delegation is the owner's
    * one ask, which the scheduler sees as the same coalesce key: a keyword, a lookup batch or a reworded
@@ -7416,6 +7418,15 @@ export class ResearchScheduler {
         return inflight.entry.awaiter.promise;
       }
       // E7: the same question and sources, answered moments ago in this turn, is the same research.
+      // F13: a start that carries an id this turn already answered is the same research, whatever wording it
+      // arrives in: the first result stands and nothing is read a second time.
+      if (call.researchId !== undefined) {
+        const answered = this.#answered.get(call.researchId);
+        if (answered !== undefined && answered.reachable === reachable && this.#deps.now() - answered.at <= RESEARCH.coalesceWindowMs) {
+          this.#deps.logJoined?.(call.researchId, 'repeat_id');
+          return Promise.resolve(answered.reply);
+        }
+      }
       const recent = this.#recent.get(coalesceKey(call));
       // #664: a delegation reads at most three times. The fourth call was the backend re-asking one lookup
       // eight times in 14 s, so it is told to answer the owner with what it holds and it reads nothing.
@@ -7448,6 +7459,7 @@ export class ResearchScheduler {
       // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
       const id = newResearchId();
       for (const [key, entry] of this.#recent) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#recent.delete(key);
+      for (const [id, entry] of this.#answered) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#answered.delete(id);
       for (const [entry, spend] of this.#delegation) if (this.#deps.now() - spend.at > RESEARCH.coalesceWindowMs) this.#delegation.delete(entry);
       this.#delegation.set(key, { at, calls, id });
       this.#deps.logJoined?.(id, 'start');
@@ -7507,7 +7519,12 @@ export class ResearchScheduler {
     } };
     const settle = (): void => { if (this.#active.get(id) === entry) this.#active.delete(id); };
     runResearch(deps, call, signal).then(reply => {
-      if (call.action === 'start') this.#recent.set(coalesceKey(call), { id, at: this.#deps.now(), reply, reachable: reachable ?? reachableNow(this.#deps) });
+      if (call.action === 'start') {
+        const at = this.#deps.now();
+        const reach = reachable ?? reachableNow(this.#deps);
+        this.#recent.set(coalesceKey(call), { id, at, reply, reachable: reach });
+        this.#answered.set(id, { at, reply, reachable: reach });
+      }
       if (!entry.superseded) awaiter.resolve(reply);
       if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     }).catch(() => {

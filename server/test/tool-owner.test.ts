@@ -847,7 +847,7 @@ function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
 }
 
 const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
-  ...f.intent(executionId, name, args), accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
+  ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
 const liveExecute = (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>) =>

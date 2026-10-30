@@ -76,13 +76,13 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
       const result = await call(connector, tool, args);
       if (result.state === 'completed') return { state: 'done', response: build(result) };
       return failed(name, result);
-    } catch (error) { return { state: 'failed', reason: `compose_unavailable:${String((error as Error)?.stack).split('\n').slice(0,4).join('|')}` }; }
+    } catch { return { state: 'failed', reason: 'compose_unavailable' }; }
   };
 
   return {
     async draftEmail(input): Promise<ComposeOutcome> {
       return await write('draft_email', 'google', 'gmail_create_draft', {
-        to: [input.to], subject: input.subject, body: input.body, client_request_id: input.clientRequestId,
+        to: [input.to], subject: input.subject, body: input.body,
       }, result => {
         const draftId = writtenId(result, 'draft_id');
         return draftId === undefined ? { status: 'failed', code: 'draft_unconfirmed' } : draftEmailResult({ draftId, to: input.to, subject: input.subject });
@@ -90,9 +90,9 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
     },
 
     async draftChat(input): Promise<ComposeOutcome> {
-      const target = input.channel !== undefined ? { channel_id: input.channel } : input.person !== undefined ? { dm_username: input.person } : undefined;
+      const target = input.channel !== undefined ? { channelId: input.channel } : input.person !== undefined ? { dmUsername: input.person } : undefined;
       if (target === undefined) return { state: 'failed', reason: 'invalid-draft-target' };
-      const args: Record<string, unknown> = { message: input.message, ...target, ...(input.rootId !== undefined ? { root_id: input.rootId } : {}) };
+      const args: Record<string, unknown> = { message: input.message, ...target, ...(input.rootId !== undefined ? { rootId: input.rootId } : {}) };
       return await write('draft_chat', 'mattermost', 'mattermost_save_draft', args, () => draftChatResult({
         channelId: input.channel ?? input.person ?? '', target: input.person ?? input.channel ?? '', ...(input.rootId !== undefined ? { rootId: input.rootId } : {}),
       }));
@@ -101,7 +101,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
     async createEvent(input): Promise<ComposeOutcome> {
       return await write('create_event', 'google', 'calendar_create_event', {
         summary: input.summary, start: new Date(input.startUtc).toISOString(), end: new Date(input.endUtc).toISOString(),
-        time_zone: input.timeZone, description: input.description, client_request_id: input.clientRequestId,
+        timeZone: input.timeZone, description: input.description, clientRequestId: input.clientRequestId,
       }, result => createdEventResult({
         eventId: writtenId(result, 'event_id') ?? '', window: { status: 'ready', startUtc: input.startUtc, endUtc: input.endUtc, timeZone: input.timeZone, names: [] },
         ...(writtenId(result, 'html_link') !== undefined ? { htmlLink: writtenId(result, 'html_link')! } : {}),
@@ -109,7 +109,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
     },
 
     async deleteEvent(input): Promise<ComposeOutcome> {
-      return await write('delete_event', 'google', 'calendar_delete_event', { event_id: input.eventId }, () => ({
+      return await write('delete_event', 'google', 'calendar_delete_event', { eventId: input.eventId }, () => ({
         status: 'event_deleted', event_id: input.eventId,
         say: 'That block is off your calendar. I told nobody and invited nobody.',
       }));

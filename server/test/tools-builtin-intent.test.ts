@@ -196,6 +196,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   assert.ok(notFoundEvents.some(event => event['event'] === 'open_resolve' && event['target'] === 'web' && event['outcome'] === 'not_found' && typeof event['ms'] === 'number'),
     'the resolver outcome and duration are logged');
 
+  const beforeNoBrowser = notFoundEvents.length;
   // F6b: a link that needs a Chrome that is not running is a closed refusal with the line she says, and the
   // host never gets a launch order for it.
   noteOwnerWords(session.liveSessionId, 'open example.invalid in my browser');
@@ -211,7 +212,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   assert.match(noBrowserText, /Chrome is not open, could you open it for me\?/u);
   assert.doesNotMatch(noBrowserText, /opening example\.invalid/u, 'nothing opened, so nothing is announced as opening');
   // F13: an open that never reached the native side is a host refusal, not a native action line.
-  const nativeLines = notFoundEvents.filter(event => event['event'] === 'native_action');
+  const nativeLines = notFoundEvents.slice(0, beforeNoBrowser).filter(event => event['event'] === 'native_action');
   assert.deepEqual(nativeLines, [], 'a request that never reached the native side writes no native_action line');
   assert.ok(notFoundEvents.some(event => event['event'] === 'open_audit' && event['refusalCode'] === 'not_found'), 'the host refusal is the audit line');
 

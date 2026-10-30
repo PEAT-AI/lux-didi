@@ -851,73 +851,80 @@ const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string
   ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
-const liveExecute = (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>) =>
-  liveTools(f).find(definition => definition.name === call.toolName)!.execute(args, { ...call, signal: f.signal });
+/** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
+const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>) => {
+  const grant = { tool: call.toolName, effect: 'write' as const, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId };
+  if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
+  const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
+    registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },
+    step: 1, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'], authorize: true,
+  });
+  const record = batch.tools[0]!;
+  const result = batch.bindings[0]?.result;
+  const stored = result === undefined ? undefined : f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE owner_id=? AND result_id=?', ['owner', result.id]));
+  return { status: record.status === 'completed' ? 'completed' : record.reason === 'unknown' ? 'unknown' : 'refused', reason: record.reason, result_json: stored === undefined ? undefined : String(stored['result_json'] ?? '') };
+};
 
-test('W1030 draft_email: a split two-turn ask writes one unsent draft and its replay returns the receipt', async t => {
+test('W1030 draft_email: a split two-turn ask writes one unsent draft through the production call path', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
   f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
   f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
-  const call = composeCall(f, 'run:1:0', 'draft_email', args);
-  f.owner.journal.intent(call);
-  const outcome = await liveExecute(f, call, args);
-  assert.equal(outcome.status, 'completed');
+  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
+  assert.equal(first.status, 'completed');
   assert.equal(port.log.length, 1, 'one remote draft call');
-  const first = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json;
-  assert.match(String(first), /draft-1/);
-  assert.match(String(first), /never sends|his click/);
-  assert.match(String(first), /"sent":false/);
-  const replay = composeCall(f, 'run:1:1', 'draft_email', args);
-  f.owner.journal.intent(replay);
-  assert.equal((await liveExecute(f, replay, args)).status, 'completed');
+  assert.match(String(first.result_json), /draft-1/);
+  assert.match(String(first.result_json), /"sent":false/);
+  assert.match(String(first.result_json), /his click/);
+  const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args);
+  assert.equal(replay.status, 'completed');
   assert.equal(port.log.length, 1, 'the replay writes nothing');
+  assert.match(String(replay.result_json), /draft-1/, 'the replay returns the recorded receipt');
 });
 
-test('W1030 recipient: two spoken matches ask, and the model address never reaches the draft', async t => {
+test('W1030 recipient: two spoken matches ask, and no address is invented', async t => {
   const port = composePort();
   const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
   const f = await fixture(t, { compose: ambiguous, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const call = composeCall(f, 'run:1:0', 'draft_email', args);
-  f.owner.journal.intent(call);
-  assert.equal((await liveExecute(f, call, args)).status, 'completed');
-  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
-  assert.match(stored, /recipient_ambiguous/);
-  assert.match(stored, /Priya Raman, Priya Shah/);
-  assert.doesNotMatch(stored, /@example/, 'no address is invented');
+  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
+  assert.equal(outcome.status, 'completed');
+  assert.match(String(outcome.result_json), /recipient_ambiguous/);
+  assert.match(String(outcome.result_json), /Priya Raman, Priya Shah/);
+  assert.doesNotMatch(String(outcome.result_json), /@example/, 'no address is invented');
   assert.equal(port.log.length, 0, 'an ambiguous ask writes nothing');
 });
 
-test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft tool, never a post', async t => {
+test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a spoken send it sends nothing', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
-  const dm = composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' });
-  f.owner.journal.intent(dm);
-  assert.equal((await liveExecute(f, dm, { person: 'Sam', message: 'On my way.' })).status, 'completed');
-  // A finished ask is answered before the next turn: its grant is spent, never reused.
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' })).status, 'completed');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
-  const thread = composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' });
-  f.owner.journal.intent(thread);
-  assert.equal((await liveExecute(f, thread, { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
-  const definitions = liveTools(f).map(definition => definition.name);
-  assert.equal(definitions.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
+  const names = liveTools(f).map(definition => definition.name);
+  assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
+  // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
+  f.owner.ownerRequests.answered?.('run');
+  f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
+  const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' });
+  assert.equal(port.log.length, 2, 'saying send it writes nothing new');
+  assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
+  assert.match(String(sent.result_json), /no_owner_request|his click|reply box/);
 });
 
-test('W1030 create_event: the window comes from his words, a colleague stays a described name, a clash is reported', async t => {
+test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
   const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
+  const clashing: ComposeDispatch = { ...port, createEvent: async input => ({ state: 'done', clash: 'your 9 o clock standup', response: await port.createEvent(input).then(outcome => outcome.state === 'done' ? outcome.response : {}) }) };
+  const f = await fixture(t, { compose: clashing, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
   const args = { summary: 'gym' };
-  const call = composeCall(f, 'run:1:0', 'create_event', args);
-  f.owner.journal.intent(call);
-  const outcome = await liveExecute(f, call, args);
+  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
   assert.equal(outcome.status, 'completed');
   const line = port.log[0] ?? '';
   const start = Number(line.split(':')[1]);
@@ -925,10 +932,42 @@ test('W1030 create_event: the window comes from his words, a colleague stays a d
   assert.equal(end - start, 3_600_000, 'one hour from his words');
   assert.match(line, /Zara/);
   assert.match(line, /not invited|no invitations were sent/i);
-  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
-  assert.match(stored, /"attendees":0/);
-  assert.match(stored, /"invitations":"none"/);
-  assert.match(stored, /No invitations were sent/);
+  assert.match(String(outcome.result_json), /"attendees":0/);
+  assert.match(String(outcome.result_json), /"invitations":"none"/);
+  assert.match(String(outcome.result_json), /clashes with your 9 o clock standup/);
+});
+
+test('W1030 delete_event: an id this session never created is refused with a closed code, and a created one deletes', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'cancel that meeting', 1_000);
+  const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
+  assert.equal(invented.status, 'completed');
+  assert.match(String(invented.result_json), /event_not_created_here/);
+  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
+  f.owner.ownerRequests.answered?.('run');
+  f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar tomorrow 9 gym', 2_000);
+  const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' });
+  assert.equal(created.status, 'completed');
+  f.owner.ownerRequests.answered?.('run');
+  f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
+  const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' });
+  assert.equal(removed.status, 'completed');
+  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
+});
+
+test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot write twice', async t => {
+  const port = composePort();
+  const lost: ComposeDispatch = { ...port, draftEmail: async input => { port.log.push(`gmail_create_draft:${input.to}`); return { state: 'unknown', reason: 'timeout' }; } };
+  const f = await fixture(t, { compose: lost, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
+  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
+  assert.equal(first.status, 'unknown', 'a lost answer is not a success');
+  const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args);
+  assert.notEqual(retry.status, 'completed');
+  assert.equal(port.log.length, 1, 'the retry never reaches the helper twice');
+  assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/);
 });
 
 test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
@@ -936,31 +975,33 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const call = composeCall(f, 'run:1:0', 'draft_email', args);
-  f.owner.journal.intent(call);
-  assert.equal((await liveExecute(f, call, args)).status, 'completed');
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args)).status, 'completed');
   assert.equal(port.log.length, 1);
   const rebuilt = f.reopen();
-  // A rebuild replays history, not a fresh write intent: the words carry no draft, so nothing may be written.
   rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
-  const after = { ...call, executionId: 'run:1:1', callId: 'call-run:1:1' };
-  rebuilt.journal.intent(after);
-  const refused = await rebuilt.liveDefinitions('run', () => ({ code: 'remembered' })).find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
+  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args);
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:1']))?.result_json);
-  assert.match(stored, /no_owner_request/);
+  assert.match(String(refused.result_json), /no_owner_request/);
 });
 
-test('W1030 connector_not_authorized: a family this host cannot reach names the one action and writes nothing', async t => {
+test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
   const args = { summary: 'block' };
-  const call = composeCall(f, 'run:1:0', 'create_event', args);
-  f.owner.journal.intent(call);
-  assert.equal((await liveExecute(f, call, args)).status, 'completed');
-  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
-  assert.match(stored, /connector_not_authorized/);
-  assert.match(stored, /calendar_write/);
-  assert.match(stored, /Settings, Connectors/);
+  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
+  assert.equal(outcome.status, 'completed');
+  assert.match(String(outcome.result_json), /connector_not_authorized/);
+  assert.match(String(outcome.result_json), /calendar_write/);
+  assert.match(String(outcome.result_json), /authorize --family calendar_write/);
+});
+
+test('W1030 persona: every ability the capability line names is a live definition', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  const names = liveTools(f).map(definition => definition.name);
+  const { NAYA_WRITE_SURFACE } = await import('../prompt/live-persona.js');
+  for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
+    assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the persona names ${ability}`);
+    assert.ok(names.includes(ability), `${ability} is a live definition`);
+  }
 });

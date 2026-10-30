@@ -16,7 +16,7 @@ import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
-import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_DRAFT_TOOLS, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
@@ -720,4 +720,22 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
     assert.equal(h.report(moved)?.tools, 0);
     assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_envelope_widened'), false);
   } finally { await moved.close(); }
+});
+
+// W1030: the Mattermost draft family is recorded beside the read family and never inside it.
+test('W1030: the recorded Mattermost draft family matches the allowed draft names and no read map carries them', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
+  assert.deepEqual(recording.tools.map(tool => tool.name), [...MATTERMOST_DRAFT_TOOLS]);
+  for (const name of MATTERMOST_DRAFT_TOOLS) {
+    assert.equal((MATTERMOST_READ_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
+    assert.equal((MATTERMOST_TOOLS as readonly string[]).includes(name), false, `${name} is not a base read`);
+    assert.equal((MATTERMOST_PERSON_TOOLS as readonly string[]).includes(name), false, `${name} is not a person read`);
+  }
+  const draft = recording.tools[0]!;
+  assert.deepEqual(Object.keys(draft.inputSchema.properties).sort(), ['channel_id', 'dm_username', 'message', 'root_id']);
+  for (const forbidden of ['send', 'post', 'attachments', 'props']) {
+    assert.equal(forbidden in draft.inputSchema.properties, false, `the draft family has no ${forbidden} key`);
+  }
+  assert.deepEqual(connectorDescriptor('mattermost')!.writeEnvelope, [...MATTERMOST_DRAFT_TOOLS]);
+  assert.deepEqual(connectorDescriptor('mattermost')!.envelope, [...MATTERMOST_READ_TOOLS], 'the read envelope is unchanged');
 });

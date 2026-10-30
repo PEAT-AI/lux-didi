@@ -5,11 +5,11 @@ import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import { createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
+import { GOOGLE_FAMILIES, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
-import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput } from './mattermost.js';
+import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_DRAFT_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput, type MattermostDraftInput } from './mattermost.js';
 import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
@@ -261,6 +261,14 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
 };
 
 function googleFamily(toolNames: readonly string[]): GoogleFamily {
+  // W1030: the write families are classified before the read prefixes, so a compose endpoint probes and
+  // answers with the compose token and consent, never the gmail read one, and a calendar_write endpoint
+  // with its own.
+  if (toolNames.some(name => GOOGLE_WRITE_TOOLS.includes(name as never))) {
+    for (const family of ['compose', 'calendar_write'] as const) {
+      if (toolNames.some(name => GOOGLE_FAMILIES[family].includes(name as never))) return family;
+    }
+  }
   if (toolNames.some(name => name.startsWith('calendar_'))) return 'calendar';
   return toolNames.some(name => name.startsWith('gmail_')) ? 'gmail' : toolNames.some(name => name.startsWith('drive_')) ? 'drive' : 'gmail';
 }
@@ -293,7 +301,11 @@ function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint):
     const row = Object.hasOwn(GOOGLE_ERROR_TABLE, refused) ? GOOGLE_ERROR_TABLE[refused] : undefined;
     if (row !== undefined) {
       const named = `${endpoint?.id ?? ''} ${endpoint?.resource ?? ''}`.toLowerCase();
-      const family = /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
+      const tool = typeof (evidence as { tool?: unknown }).tool === 'string' ? String((evidence as { tool?: unknown }).tool) : '';
+      const family = tool === 'gmail_create_draft' ? 'compose'
+        : tool === 'calendar_create_event' || tool === 'calendar_delete_event' ? 'calendar_write'
+        : /compose/.test(named) ? 'compose' : /calendar-write|calendar_write/.test(named) ? 'calendar_write'
+        : /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
       return { state: row.pinned ? 'configured' : 'error', reason: googleOwnerLine(row, family, endpoint), code: refused };
     }
   }
@@ -354,6 +366,11 @@ const googleDescriptor: ConnectorDescriptor = {
     // otherwise), and the helper compares every refreshed id_token against it. The read below is the
     // strict consent half, and the helper's account_mismatch is its refusal.
     if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', proof: 'helper_pin', strict: true };
+    // W1030: a write family carries its own token and its own consent, so it proves itself with its own
+    // cheapest strict call instead of the gmail or calendar read one. The helper pins the account with
+    // LUX_GOOGLE_MCP_ACCOUNT for every child, so the probe is the token's own consent and nothing else.
+    if (family === 'compose') return { tool: 'gmail_create_draft', args: { to: ['owner@example.invalid'], subject: 'consent', body: 'consent' }, values: gmailIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
+    if (family === 'calendar_write') return { tool: 'calendar_create_event', args: { summary: 'consent', start: '1970-01-01T00:00:00Z', end: '1970-01-01T00:15:00Z', time_zone: 'UTC', client_request_id: 'consent' }, values: calendarIdentityValues, proves: 'consent', proof: 'helper_pin', strict: true };
     return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
@@ -530,6 +547,8 @@ function companyProjection(evidence: ConnectorEvidence, policy: ConnectionPolicy
 }
 const mattermostDescriptor: ConnectorDescriptor = {
   id: 'mattermost', envelope: MATTERMOST_READ_TOOLS,
+  // W1030: the draft family, its own names and its own grant, never inside the read envelope.
+  writeEnvelope: MATTERMOST_DRAFT_TOOLS,
   declarations(policy) {
     const text = Math.min(200, policy.bounds.maxQueryChars);
     const limit = Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit);
@@ -560,6 +579,9 @@ const mattermostDescriptor: ConnectorDescriptor = {
         case 'mattermost_attention': return reader.attention(args as { days?: number; limit?: number }, signal);
         case 'mattermost_chat': return reader.chat(args as unknown as ChatReadInput, signal);
         case 'mattermost_list_channels': return reader.listChannels(args, signal);
+        // W1030: the draft family, reached only by the host's compose port.
+        case 'mattermost_save_draft': return reader.saveDraft(args as unknown as MattermostDraftInput, signal);
+        case 'mattermost_list_drafts': return reader.listDrafts(signal);
         default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mattermost');
       }
     } };

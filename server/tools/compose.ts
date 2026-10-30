@@ -303,10 +303,10 @@ export const COMPOSE_FAMILY: Readonly<Record<ComposeName, string>> = {
   create_event: 'the Google calendar_write family', delete_event: 'the Google calendar_write family',
 };
 export const COMPOSE_CONSENT: Readonly<Record<ComposeName, string>> = {
-  draft_email: 'connect the Google compose family in Settings, Connectors',
-  draft_chat: 'connect the Mattermost drafts family in Settings, Connectors',
-  create_event: 'connect the Google calendar_write family in Settings, Connectors',
-  delete_event: 'connect the Google calendar_write family in Settings, Connectors',
+  draft_email: 'lux-google-mcp authorize --family compose',
+  draft_chat: 'mattermost_login',
+  create_event: 'lux-google-mcp authorize --family calendar_write',
+  delete_event: 'lux-google-mcp authorize --family calendar_write',
 };
 /** The closed answer for a family this host cannot reach yet, with the one action to take. */
 export const notAuthorizedFor = (name: ComposeName): ComposeOutcome => ({ state: 'not_authorized', family: COMPOSE_FAMILY[name], command: COMPOSE_CONSENT[name] });

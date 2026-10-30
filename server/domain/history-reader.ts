@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Transaction, SQLRow } from '../contracts/storage.js';
 import type { DataClass, JsonObject } from '../adapters/model/types.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
+import { ownerMemorySessionSql } from './history-lifecycle.js';
 import { fold, tokenize } from './util.js';
-import { ownerMemorySessionSql } from '../live/types.js';
 
 export interface HistoryScope {
   ownerId: string; runId: string; conversationId?: string; routeIdentity: string; authorityEpoch: string; revision: number;

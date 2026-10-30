@@ -4,7 +4,7 @@ import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
-import { recordHistorySession, historySessionEvidence, recordHistoryDependency } from '../domain/history-lifecycle.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -47,7 +47,6 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
 import { normalizeStopSpeech, stopNameId, stopPhrase, STOP_WORD_LIMIT } from './stop-phrase.js';
-import { isOwnerMemorySession, liveSessionKindOf, ownerMemorySessionSql, type LiveSessionKind } from './types.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,

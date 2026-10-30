@@ -4,8 +4,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService } from '../http/live-upgrade.js';
+import { CANARY_SESSION_KEY_PREFIX } from '../domain/history-lifecycle.js';
 import type { LiveContext, LiveSessionSnapshot } from './types.js';
-import { CANARY_SESSION_KEY_PREFIX } from './types.js';
 import type { LiveVoiceSession } from '../adapters/live-voice/types.js';
 
 /** Canary evidence is deliberately independent of journal outcome labels. */

@@ -255,6 +255,107 @@
           }
         }
       ]
+    },
+    "compose": {
+      "tools": [
+        {
+          "name": "gmail_create_draft",
+          "description": "Write one unsent draft into the account drafts. There is no send tool in this family: sending is the owner click.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "array",
+                "minItems": 1
+              },
+              "cc": {
+                "type": "array"
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reply_to_message_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "to",
+              "subject",
+              "body"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "calendar_write": {
+      "tools": [
+        {
+          "name": "calendar_create_event",
+          "description": "Create one event on the owner primary calendar as an owner-only block. The helper sends no attendee and no update notification.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start": {
+                "type": "string",
+                "minLength": 1
+              },
+              "end": {
+                "type": "string",
+                "minLength": 1
+              },
+              "time_zone": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              },
+              "client_request_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "summary",
+              "start",
+              "end",
+              "time_zone",
+              "client_request_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "calendar_delete_event",
+          "description": "Delete one event the helper itself created and that carries no attendee.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "event_id"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
     }
   }
 }

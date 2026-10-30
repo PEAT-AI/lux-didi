@@ -10,7 +10,7 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
  * envelope is refused even when the remote lists it: the local read classification is the
  * authority, never the remote's readOnlyHint.
  */
-export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file'] as const;
+export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file', 'gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
 export type GoogleTool = (typeof GOOGLE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
@@ -19,8 +19,13 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
   calendar: ['calendar_list_calendars', 'calendar_list_events'],
   // C-OPEN 2: read-only Drive metadata (lux-cli drive family, C-DRIVE.md), its own endpoint and token.
   drive: ['drive_search_files', 'drive_get_file'],
+  // W1030: two write families, each with its own endpoint and its own token and consent (C-GWRITE).
+  // Nothing here can send mail or invite anyone: the compose family writes one unsent draft, and the
+  // calendar_write family writes or removes an attendee-free event the helper itself created.
+  compose: ['gmail_create_draft'],
+  calendar_write: ['calendar_create_event', 'calendar_delete_event'],
 };
-export type GoogleFamily = 'gmail' | 'calendar' | 'drive';
+export type GoogleFamily = 'gmail' | 'calendar' | 'drive' | 'compose' | 'calendar_write';
 
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 10, maxListResults: 50, readBodyChars: 4000 } as const;
@@ -73,6 +78,12 @@ export interface GcalCalendarsInput { maxResults?: number; pageToken?: string; r
 /** C-DRIVE drive_search_files: a name query, optional type filter and window, at most ten files. */
 export interface DriveSearchInput { query: string; mime_types?: readonly string[]; modified_after?: string; limit?: number }
 export interface DriveGetInput { file_id: string }
+/** W1030 gmail_create_draft (compose family): one unsent draft, resolved to addresses by the host. */
+export interface GmailDraftInput { to: readonly string[]; cc?: readonly string[]; subject: string; body: string; replyToMessageId?: string }
+/** W1030 calendar_create_event (calendar_write family): owner-only block, no attendees, no updates sent. */
+export interface GcalCreateEventInput { summary: string; start: string; end: string; timeZone: string; description?: string; location?: string; clientRequestId: string }
+/** W1030 calendar_delete_event: only an event the helper created, so the id must be one it returned. */
+export interface GcalDeleteEventInput { eventId: string }
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
@@ -115,6 +126,9 @@ export interface GoogleReader {
   gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveSearch(input: DriveSearchInput, signal?: AbortSignal): Promise<GoogleResult>;
   driveGet(input: DriveGetInput, signal?: AbortSignal): Promise<GoogleResult>;
+  gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult>;
+  calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult>;
+  calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult>;
 }
 
 export interface GoogleOptions { port: McpPort; registry: McpRegistry; config: GoogleConfig }
@@ -393,6 +407,36 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   }
 
   return {
+    async gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('gmail_create_draft');
+      if (denied) return { state: 'refused', reason: denied };
+      const addresses = [...input.to, ...(input.cc ?? [])];
+      if (addresses.length === 0 || addresses.some(address => typeof address !== 'string' || !address.includes('@') || address.length > 320)) return { state: 'refused', reason: 'invalid-recipient' };
+      if (input.subject.length < 1 || input.subject.length > 998 || input.body.length < 1 || input.body.length > 200_000) return { state: 'refused', reason: 'invalid-draft' };
+      const args: Record<string, unknown> = { to: [...input.to], subject: input.subject, body: input.body };
+      if (input.cc !== undefined) args['cc'] = [...input.cc];
+      if (input.replyToMessageId !== undefined) args['reply_to_message_id'] = input.replyToMessageId;
+      return dispatch('gmail_create_draft', args, signal);
+    },
+    async calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('calendar_create_event');
+      if (denied) return { state: 'refused', reason: denied };
+      if (input.summary.length < 1 || input.summary.length > 1024) return { state: 'refused', reason: 'invalid-event' };
+      if (Number.isNaN(Date.parse(input.start)) || Number.isNaN(Date.parse(input.end)) || Date.parse(input.end) <= Date.parse(input.start)) return { state: 'refused', reason: 'invalid-event' };
+      if (input.clientRequestId.length < 1 || input.clientRequestId.length > 200) return { state: 'refused', reason: 'invalid-request-id' };
+      // No attendees field is ever sent and no update notification is requested: the helper enforces both.
+      // The helper itself sends no attendee and no update notification, so none is named here (C-GWRITE).
+      return dispatch('calendar_create_event', {
+        summary: input.summary, start: input.start, end: input.end, time_zone: input.timeZone, client_request_id: input.clientRequestId,
+        ...(input.description !== undefined ? { description: input.description } : {}), ...(input.location !== undefined ? { location: input.location } : {}),
+      }, signal);
+    },
+    async calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('calendar_delete_event');
+      if (denied) return { state: 'refused', reason: denied };
+      if (input.eventId.length < 1 || input.eventId.length > 1024) return { state: 'refused', reason: 'invalid-event-id' };
+      return dispatch('calendar_delete_event', { event_id: input.eventId }, signal);
+    },
     async gmailProfile(signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_get_profile');
       if (denied) return { state: 'refused', reason: denied };

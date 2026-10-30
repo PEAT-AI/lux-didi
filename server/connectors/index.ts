@@ -5,7 +5,7 @@ import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
+import { createGoogleReader, GOOGLE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
@@ -329,6 +329,10 @@ const googleDescriptor: ConnectorDescriptor = {
         if (tool === 'calendar_list_calendars') return await reader.gcalCalendars(args as GcalCalendarsInput, signal);
         if (tool === 'drive_search_files') return await reader.driveSearch(args as unknown as DriveSearchInput, signal);
         if (tool === 'drive_get_file') return await reader.driveGet(args as unknown as DriveGetInput, signal);
+        // W1030: the two write families, each its own endpoint and token; nothing here can send or invite.
+        if (tool === 'gmail_create_draft') return await reader.gmailCreateDraft(args as unknown as GmailDraftInput, signal);
+        if (tool === 'calendar_create_event') return await reader.calendarCreateEvent(args as unknown as GcalCreateEventInput, signal);
+        if (tool === 'calendar_delete_event') return await reader.calendarDeleteEvent(args as unknown as GcalDeleteEventInput, signal);
         return await reader.gcalList(args as GcalListInput, signal);
       },
     };

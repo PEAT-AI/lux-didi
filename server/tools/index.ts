@@ -817,13 +817,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
             const claimed = ownerRequests.claim(runId, name, target, ask.id);
             if (claimed.code !== 'allowed') return finish(requestRefusal(claimed.code));
-            const turn = clientRequestId(ask.journalId);
-            const outcome = options.compose === undefined
-              ? notAuthorizedFor(name)
-              : await runCompose(options.compose, name, args, { words: ask.words ?? '', clientRequestId: turn, now: options.alarms?.now() ?? Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-            // A lost remote answer spends the grant and claims nothing: he is told it is unknown, and a
-            // retry cannot write twice.
-            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: 'none' });
             // W1030: a delete may only name a block this session created, read back from its own receipt
             // journal. An id the model produced on its own is refused here, never sent to the helper.
             if (name === 'delete_event') {
@@ -835,6 +828,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return finish({ status: 'refused', code: 'event_not_created_here', say: 'I can only remove a block I made in this call, so I am not touching that event.' });
               }
             }
+            const turn = clientRequestId(ask.journalId);
+            const outcome = options.compose === undefined
+              ? notAuthorizedFor(name)
+              : await runCompose(options.compose, name, args, { words: ask.words ?? '', clientRequestId: turn, now: options.alarms?.now() ?? Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+            // A lost remote answer spends the grant and claims nothing: he is told it is unknown, and a
+            // retry cannot write twice.
+            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: 'none' });
             if (outcome.state === 'unknown') return { status: 'unknown' as const, code: dispatchedFailureCode('write_unknown') };
             if (outcome.state === 'done') ownerRequests.commit(runId, name, target, composeResult(outcome));
             else ownerRequests.failed(runId, name, target, ask.id);

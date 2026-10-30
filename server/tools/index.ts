@@ -969,6 +969,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           }
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
+            ...(declaration.rejection === undefined ? {} : { rejection: declaration.rejection }),
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) { return { status: 'unknown' }; }

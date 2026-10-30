@@ -105,6 +105,8 @@ export interface ToolDefinition extends FunctionDeclaration {
   validate(args: unknown): boolean;
   /** One-try guidance shown to the model when it sends an unusable argument shape. */
   guidance?: string;
+  /** F3: the closed `key:rule` token naming why an argument shape was refused, never a value. */
+  rejection?: (args: unknown) => string | undefined;
   effect: 'read' | 'write'; accountId: string; resourceId: string; endpointId?: string;
   execute(args: JsonObject, context: ExecutionContext): Promise<ToolOutcome>;
 }

@@ -782,7 +782,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // Closed shape: tool name and argument key:type paths only, never a value.
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
-    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)$/;
+    // F3: key:shape, where a shape is a type and, for a string or an array, its length. Never a value.
+    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)(_\d{1,7})?$/;
     if (!token(value.tool)) return;
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;

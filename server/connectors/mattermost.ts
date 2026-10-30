@@ -108,11 +108,15 @@ export interface AttentionItem {
 /** The digest the attention view renders: newest first, one line per item. */
 export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once. */ missing?: string }
 
-/** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group. */
-export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group';
+/** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group, one thread. */
+export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group' | 'thread';
 export interface ChatReadInput {
   intent: ChatReadIntent;
   person?: string; people?: string[]; channel?: string; query?: string;
+  /** F5c: the root post id of a thread an earlier result returned. */
+  post_id?: string;
+  /** F5b: the time order the caller asked for; the declaration promises newest first by default. */
+  order?: 'oldest' | 'newest';
   /** YYYY-MM-DD local days; a read without `from_date` covers the last `MATTERMOST_CHAT.days`. */
   from_date?: string; to_date?: string;
   /** person: only their posts, or both sides of the direct conversation. */
@@ -819,10 +823,13 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
-  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[]; broadened?: string } | { ok: false; result: MattermostResult }> {
+  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal, order: 'oldest' | 'newest' = 'newest'): Promise<{ ok: true; total?: number; posts: ChatReadPost[]; broadened?: string } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
-    if (declared.includes('sort')) args['sort'] = 'newest';
+    // F5b: the order the caller asked for is the order the child is asked for, and a child that cannot
+    // walk from the oldest end says so instead of returning the newest page under an oldest label.
+    if (declared.includes('sort')) args['sort'] = order;
+    else if (order === 'oldest') return { ok: false, result: { state: 'refused', reason: 'order-unsupported' } };
     for (const key of ['channel', 'author', 'from_date', 'to_date'] as const) {
       if (filters[key] === undefined) continue;
       // A filter this child cannot apply would widen the read past what the ask named: refuse it.
@@ -837,16 +844,19 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!result.ok) return result;
     capture(result.evidence);
     let broadened: string | undefined;
-    // Retry once, only for a real topic and only with a mode the child declares.
-    // Keep every scope filter and page boundary on the broader read.
-    if ((postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '' && declared.includes('mode')) {
-      result = await read('mattermost_search', { ...args, mode: 'hybrid', ...(declared.includes('rerank') ? { rerank: false } : {}) }, signal);
+    // F5a: no keyword hit is not permission to rank by relevance. The same conversation is read again
+    // unfiltered, newest first, and the result says which read it is.
+    if ((postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '') {
+      result = await read('mattermost_search', { ...args, query: '' }, signal);
       if (!result.ok) return result;
       capture(result.evidence);
-      broadened = 'hybrid search after no keyword matches';
+      broadened = 'fallback: recent_unfiltered';
     }
     const data = contentJson(result.evidence.decodedResult);
-    const posts = (postsIn(result.evidence.decodedResult) ?? []).map(post => chatPost(post, owner));
+    // F5a: the promise is an order, so the page is put in it whatever the child ranked.
+    const direction = order === 'oldest' ? 1 : -1;
+    const posts = (postsIn(result.evidence.decodedResult) ?? []).map(post => chatPost(post, owner))
+      .sort((left, right) => direction * (Date.parse(left.time) - Date.parse(right.time) || 0));
     const total = isRecord(data) && Number.isSafeInteger(data['total']) ? data['total'] as number : undefined;
     return { ok: true, ...(total === undefined ? {} : { total }), posts, ...(broadened === undefined ? {} : { broadened }) };
   }
@@ -949,6 +959,22 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       ...base, read: `${read}${span}${about}${posts.broadened === undefined ? '' : ` (${posts.broadened})`}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
     });
 
+    // F5b: the order is part of the ask, never a guess: the declaration promises newest first and
+    // `order: "oldest"` walks the same conversation from its first post.
+    const order = input.order ?? 'newest';
+    if (order !== 'oldest' && order !== 'newest') return { state: 'refused', reason: 'invalid-order' };
+    // F5c: one thread, whole and in time order, through the child's own thread read.
+    if (input.intent === 'thread') {
+      const root = input.post_id === undefined ? undefined : boundedText(input.post_id);
+      if (root === undefined) return { state: 'refused', reason: 'thread-needs-post-id' };
+      const thread = await read('mattermost_get_thread', { post_id: root }, signal);
+      if (!thread.ok) return thread;
+      capture(thread.evidence);
+      const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(post => chatPost(post, who.owner.username))
+        .sort((left, right) => Date.parse(left.time) - Date.parse(right.time) || 0);
+      return page('the thread', { posts });
+    }
+
     if (input.intent === 'person' || input.intent === 'overview') {
       const name = input.person === undefined ? undefined : boundedText(input.person);
       if (name === undefined) return { state: 'refused', reason: 'invalid-person' };
@@ -982,11 +1008,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         // R8-W9 (F1): you have no direct conversation with them, so the answer reads their mentions instead
         // and says both facts: whose mentions these are, and why they are what came back.
         const mentioned = [asked, `@${person.username}`].filter(part => part !== '').join(' ');
-        const anywhere = await postsRead(who.owner.username, { query: mentioned, ...dates }, limit, offset, capture, signal);
+        const anywhere = await postsRead(who.owner.username, { query: mentioned, ...dates }, limit, offset, capture, signal, order);
         if (!anywhere.ok) return anywhere.result;
         return page(`posts mentioning ${label} in every channel, because you have no direct messages with them,`, anywhere, missingOf(person.missing, overviewMissing).missing);
       }
-      const direct = await postsRead(who.owner.username, { query: asked, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal);
+      const direct = await postsRead(who.owner.username, { query: asked, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal, order);
       if (!direct.ok) return direct.result;
       return page(theirs ? `direct messages from ${label}` : `your direct messages with ${label}`, direct, missingOf(person.missing, overviewMissing).missing);
     }
@@ -1034,7 +1060,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
         return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
       }
-      const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal);
+      const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal, order);
       if (!posts.ok) return posts.result;
       return page(`the channel ${channelLabel(target)}`, posts);
     }
@@ -1075,7 +1101,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (withAll.length === 0) return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, notFound: `I found no group chat with ${spokenList(spokenPeople as string[], 'and')}.`, ...missingOf(...notes) });
       return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, clarify: `Which group chat do you mean: the one with ${spokenList(withAll.slice(0, MATTERMOST_CHAT.candidates).map(groupLabel))}?`, ...missingOf(...notes) });
     }
-    const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal);
+    const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal, order);
     if (!posts.ok) return posts.result;
     return page(`the group chat with ${groupLabel(target)}`, posts, missingOf(...notes).missing);
   }

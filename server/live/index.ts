@@ -11,11 +11,10 @@ import { definitionsInTransaction } from '../tools/index.js';
 import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
-import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { freezeNote } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
-import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
@@ -518,37 +517,27 @@ export function announcesLookup(text: string): boolean {
   return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }
 /**
- * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
- * knowledge, conversation history, saves). None of them runs before his first word: research keeps its own
- * gate in `#researchBatch`, and every other name here, reads and saves alike, is refused by `#toolBatch`
- * with the same shape and reason. Saves keep their own later gates once he has spoken
+ * C-TURN8: no tool that reads or writes the owner's own data runs before his first word. Research keeps its own
+ * gate in `#researchBatch`; every other owner-data call is refused by `#toolBatch`, before any argument check,
+ * with the same shape and the same closed reason. Saves keep their own later gates once he has spoken
  * (`not_owner_requested` in the vault tool, `owner_transcript_not_final` / `owner_text_mismatch` in the note
  * provenance path); this gate only answers the case where he has not spoken at all. The `open_*` tools stay
  * open: they read no owner record and the opener never calls them.
  */
-const OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
-  ...INTENT_TOOL_NAMES, RESEARCH_TOOL_NAME, ...TRELLO_TOOL_NAMES,
-  'conversation_history', 'remember_note', 'save_to_vault', 'stage_lux_note',
-]);
-/** F1: the names above cover what the intent fan-out and the saves answer to, but the model calls connector
- *  tools by their own names (`mattermost_chat`, `gmail_search_messages`, ...), and a hand list missed them on
- *  10-30. So the class is taken from the session's live registry: every registered tool reads or writes owner
- *  data unless it is classified otherwise. Only the `open_*` family, the public web search and the alarms
- *  touch no owner record, and every other name, including one a connector adds later, is refused before the
- *  owner's first word. Research stays out: `#researchBatch` owns its gate. */
+/** F1: the model calls connector tools by their own names (`mattermost_chat`, `gmail_search_messages`, ...), and a
+ *  hand list of intent names missed them on 10-30. So the class comes from the session's live registry, deny by
+ *  default: a tool the session can reach is owner data unless it is classified otherwise here, and a connector
+ *  tool registered later is covered the day it is registered. Only the `open_*` family, the public web search and
+ *  the alarms touch no owner record (alarm admission is its own gate), and research keeps its gate in
+ *  `#researchBatch`. */
 const NON_OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   RESEARCH_TOOL_NAME, 'web_search', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm',
 ]);
 const NON_OWNER_DATA_TOOL_PREFIX = 'open_';
-/** The owner-data tool names of one live session: the alias core plus every registered tool not classified as
- *  non-owner-data. Deny by default, so a new connector tool is covered the day it is registered. */
-export function ownerDataToolNames(registry: readonly { name: string }[]): ReadonlySet<string> {
-  const names = new Set<string>(OWNER_DATA_TOOL_NAMES);
-  for (const { name } of registry) {
-    if (NON_OWNER_DATA_TOOL_NAMES.has(name) || name.startsWith(NON_OWNER_DATA_TOOL_PREFIX)) continue;
-    names.add(name);
-  }
-  return names;
+/** F1: the gate's question for one call. A name this session's registry does not carry is owner data too, so a
+ *  connector tool registered a moment ago is refused before the owner has spoken instead of slipping through. */
+export function isOwnerDataCall(name: string, reachable: ReadonlySet<string>): boolean {
+  return !(reachable.has(name) && (NON_OWNER_DATA_TOOL_NAMES.has(name) || name.startsWith(NON_OWNER_DATA_TOOL_PREFIX)));
 }
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
@@ -4560,9 +4549,9 @@ export class LiveSessionOwner {
     // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
     // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
     // before any argument check, with the same shape and the same closed reason.
-    const ownerDataTools = ownerDataToolNames(handle.registry);
+    const reachable = new Set(handle.registry.map(tool => tool.name));
     const beforeOwner = handle.inputAt === undefined
-      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && ownerDataTools.has(call.name));
+      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && isOwnerDataCall(call.name, reachable));
     if (beforeOwner) {
       const refusal: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
         guidance: 'Nothing read yet. Do not retry before the owner speaks; make this call again after their first turn.' };

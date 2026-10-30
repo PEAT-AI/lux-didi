@@ -3,7 +3,7 @@
 // It publishes one base read (mattermost_whoami, the connector's own-account probe), one channel
 // read and the draft family's mattermost_save_draft, and nothing that could post, reply, react or
 // invite. No server, account, token file or network call is touched.
-// argv[2] = pid file (optional), argv[3] = 'scope_missing' to refuse the draft call.
+// argv[2] = pid file (optional), argv[3] = 'auth_needed' to answer the child's own sign-in refusal.
 import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -43,8 +43,8 @@ server.setRequestHandler('tools/call', request => {
   if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
   if (pidFile) appendFileSync(`${pidFile}.args`, `${name} ${JSON.stringify(args)}\n`);
   if (!TOOLS.some(tool => tool.name === name)) return { content: [{ type: 'text', text: `tool_unknown: the draft family does not publish ${name}` }], isError: true };
-  if (mode === 'scope_missing' && name === 'mattermost_save_draft') {
-    return { content: [{ type: 'text', text: 'scope_missing: the local session lacks the draft scope' }], isError: true };
+  if (mode === 'auth_needed' && name === 'mattermost_save_draft') {
+    return { content: [{ type: 'text', text: 'not authenticated: run mattermost_login once' }], isError: true };
   }
   const envelope = envelopeFor(name, args);
   return { content: [{ type: 'text', text: JSON.stringify(envelope) }], structuredContent: envelope, isError: false };

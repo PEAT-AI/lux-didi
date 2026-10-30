@@ -67,11 +67,11 @@ const ownerTools = (h: Host): string[] => {
 };
 
 /** The three endpoints a configured host needs: both google write families and the Mattermost draft. */
-const configured = (pid: (id: string) => string, mode = 'ok'): unknown[] => [
+const configured = (pid: (id: string) => string, googleMode = 'ok', mattermostMode = 'ok'): unknown[] => [
   // google-write-child.mjs reads [family, pidFile, mode]; the Mattermost child reads [pidFile, mode].
-  endpoint({ id: 'gmail_draft', connector: 'google', file: googleWriteChild, argv: ['gmail_draft', pid('gmail_draft'), mode] }),
-  endpoint({ id: 'calendar_write', connector: 'google', file: googleWriteChild, argv: ['calendar_write', pid('calendar_write'), mode] }),
-  endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mode] }),
+  endpoint({ id: 'gmail_draft', connector: 'google', file: googleWriteChild, argv: ['gmail_draft', pid('gmail_draft'), googleMode] }),
+  endpoint({ id: 'calendar_write', connector: 'google', file: googleWriteChild, argv: ['calendar_write', pid('calendar_write'), googleMode] }),
+  endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mattermostMode] }),
 ];
 
 test('W1030: the real host composition offers the four write tools when the families are configured', async t => {
@@ -144,7 +144,7 @@ test('W1030: each write tool reaches its fake child through that composition wit
 });
 
 test('W1030: a write family whose child answers scope_missing is not_authorized with the authorize line', async t => {
-  const h = await host(t, pid => configured(pid, 'scope_missing'));
+  const h = await host(t, pid => configured(pid, 'scope_missing', 'auth_needed'));
   const created = await h.mcp.compose.createEvent({ summary: 'Synthetic block', startUtc: Date.UTC(2026, 10, 30, 9, 0), endUtc: Date.UTC(2026, 10, 30, 10, 0), timeZone: 'UTC', description: '', clientRequestId: 'req-event' });
   assert.deepEqual(created, { state: 'not_authorized', family: 'the calendar_write family', command: COMPOSE_CONSENT.create_event });
   assert.match(COMPOSE_CONSENT.create_event, /lux-google-mcp authorize --family calendar_write/);

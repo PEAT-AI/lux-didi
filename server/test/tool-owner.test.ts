@@ -873,7 +873,7 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft through th
   f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'completed', first.reason);
+  assert.equal(first.status, 'completed', JSON.stringify(first));
   assert.equal(port.log.length, 1, 'one remote draft call');
   assert.match(String(first.result_json), /draft-1/);
   assert.match(String(first.result_json), /"sent":false/);

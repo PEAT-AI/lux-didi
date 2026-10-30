@@ -736,6 +736,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             hostLogEvent({ event: 'alarm_audit', ...ownerRequests.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
+            // A provider generation may replay the seed, but cannot inherit an unspent alarm turn.
+            if (name === 'set_alarm' && tx.get("SELECT ready.journal_id FROM live_journal owner JOIN live_journal ready ON ready.live_session_id=owner.live_session_id AND ready.journal_id>owner.journal_id WHERE owner.live_session_id=? AND owner.journal_id=? AND ready.kind='ready' LIMIT 1", [runId, ask.journalId])) return finish(requestRefusal('no_owner_request'));
             if (name === 'list_alarms') {
               const result: JsonObject = { alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) };
               ownerRequests.commit(runId, name, requestTarget, result);

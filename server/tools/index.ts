@@ -1,3 +1,4 @@
+import { canarySessions } from '../live/canary.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
@@ -707,6 +708,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const input = args as AlarmArguments;
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          if (name === 'set_alarm') {
+            const recorded = store.transaction(tx => tx.get("SELECT result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=? AND state='completed'", [ownerId, context.runId, context.executionId]));
+            if (recorded) return { status: 'completed' as const, result: { id: String(recorded.result_id), sha256: String(recorded.result_sha256) } };
+          }
           let consumed: string | undefined;
           let actionReceipt: JsonObject | undefined;
           const requestTarget = JSON.stringify(input);
@@ -745,6 +750,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             }
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
+            if (canarySessions.isCanary(runId)) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
             }

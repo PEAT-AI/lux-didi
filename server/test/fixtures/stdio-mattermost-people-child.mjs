@@ -285,7 +285,7 @@ const LIST_SCHEMA = people
 const SCHEMAS = {
   mattermost_whoami: { type: 'object', properties: {} },
   mattermost_search: SEARCH_SCHEMA,
-  mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
+  mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, cursor: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
   mattermost_list_channels: LIST_SCHEMA,
   // CA-R2: the thread list and the whole-thread read with its cursor are the newer child's two reads.
   mattermost_list_threads: { type: 'object', additionalProperties: false, properties: {

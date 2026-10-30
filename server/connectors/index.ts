@@ -400,7 +400,7 @@ function threadPostId(args: Record<string, unknown>): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 function threadArgs(args: Record<string, unknown>): boolean {
-  return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
+  return Object.keys(args).every(key => key === 'postId' || key === 'post_id' || key === 'cursor') && threadPostId(args) !== '';
 }
 /** CA-R2: the thread list's own argument bounds: one conversation, an optional window and keyword. */
 function threadListArgs(args: Record<string, unknown>): boolean {
@@ -596,8 +596,8 @@ const mattermostDescriptor: ConnectorDescriptor = {
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
       companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works. Returns at most 8 posts, 250 characters each.', text, 'channel', limit),
       mattermostDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history, and post_id is accepted as the same id. Returns at most 8 posts, 250 characters each.',
-        { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
-        { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
+        { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text }, cursor: { type: 'string', minLength: 1, maxLength: 40 } }, ['postId'], threadArgs,
+        { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args), ...(typeof args['cursor'] === 'string' ? { cursor: args['cursor'] } : {}) } } : undefined) }),
       // CA-R2: the owner's two-step ask: list the topics in one conversation, then read one thread whole.
       mattermostDeclaration('mattermost_list_threads', 'List the threads of one Mattermost conversation, newest activity first: channel_id or dm_username, an optional window, an optional keyword and a page size. Each thread carries its root id, author, created time, preview, reply count and last reply time.', {
         channel_id: { type: 'string', minLength: 1, maxLength: text }, channel_name: { type: 'string', minLength: 1, maxLength: text },

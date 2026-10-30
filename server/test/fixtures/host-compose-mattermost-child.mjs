@@ -13,7 +13,8 @@ const mode = process.argv[3] ?? 'ok';
 
 const TOOLS = [
   { name: 'mattermost_whoami', description: 'Read the signed-in Mattermost account.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
-  { name: 'mattermost_list_channels', description: 'List the visible channels.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
+  // The channel read takes the connector's own bounded limit, so the schema must declare it.
+  { name: 'mattermost_list_channels', description: 'List the visible channels.', inputSchema: { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } } } },
   {
     name: 'mattermost_save_draft',
     description: 'Write one message into the owner\'s own Mattermost reply box, never posted to anyone.',

@@ -1,4 +1,3 @@
-import { canarySessions } from '../live/canary.js';
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
@@ -44,7 +43,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', randomUUID(), context);
+  const session = service.create('ordinary', `canary:${randomUUID()}`, context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
   const signal = new AbortController().signal;
@@ -102,13 +101,12 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     const intent: ToolCallIntent = { ...authority, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
       argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
     owner.journal.intent(intent);
-    canarySessions.open(session.liveSessionId);
-    try {
+    {
       const before = Date.now();
       assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
       const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
       assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
-    } finally { canarySessions.close(session.liveSessionId); }
+    }
   });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);

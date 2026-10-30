@@ -862,7 +862,7 @@ const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnT
   const record = batch.tools[0]!;
   const result = batch.bindings[0]?.result;
   const stored = result === undefined ? undefined : f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE owner_id=? AND result_id=?', ['owner', result.id]));
-  return { status: record.status === 'completed' ? 'completed' : record.reason === 'unknown' ? 'unknown' : 'refused', reason: record.reason, result_json: stored === undefined ? undefined : String(stored['result_json'] ?? '') };
+  return { status: record.status, reason: record.reason, result_json: stored === undefined ? undefined : String(stored['result_json'] ?? '') };
 };
 
 test('W1030 draft_email: a split two-turn ask writes one unsent draft through the production call path', async t => {

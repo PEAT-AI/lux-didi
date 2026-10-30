@@ -962,7 +962,7 @@ test('W1030 delete_event: a block the owner names is removed only when this sess
   const port = composePort();
   const readBack: ComposeDispatch = { ...port, findNamedEvent: async input => input.words.includes('standup') ? { state: 'found', eventId: 'event-read-7' } : { state: 'none' } };
   const f = await fixture(t, { compose: readBack, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'cancel my standup', 1_000);
+  f.owner.observeAlarmOwner('run', 'j1', 'cancel my standup meeting', 1_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
   assert.equal(removed.status, 'completed');
   assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');

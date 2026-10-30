@@ -12,10 +12,10 @@
     "mongoose_read": { "status": "implemented", "didi": "mongoose_company" },
     "trello_write": { "status": "implemented", "didi": "trello_create_card" },
     "alarms": { "status": "implemented", "didi": "set_alarm" },
-    "email_draft": { "status": "planned", "didi": "draft_email" },
-    "calendar_create": { "status": "planned", "didi": "create_event" },
-    "calendar_delete": { "status": "planned", "didi": "delete_event" },
-    "chat_draft": { "status": "planned", "didi": "draft_chat" },
+    "email_draft": { "status": "implemented", "didi": "draft_email" },
+    "calendar_create": { "status": "implemented", "didi": "create_event" },
+    "calendar_delete": { "status": "implemented", "didi": "delete_event" },
+    "chat_draft": { "status": "implemented", "didi": "draft_chat" },
     "recurrence": { "status": "planned", "didi": "set_alarm" }
   },
   "tools": {

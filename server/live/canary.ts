@@ -223,11 +223,17 @@ type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms:
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
   #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean } | undefined;
-  constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }, private readonly now: () => number = Date.now) {}
+  constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }, private readonly now: () => number = Date.now, private readonly cancelAlarm?: (id: string) => boolean) {}
   shutdown(): void {
     if (!this.#session) return;
     const { id, timer, abort } = this.#session;
-    clearTimeout(timer); abort.abort(); this.live.revoke(id); canarySessions.close(id); this.#session = undefined;
+    clearTimeout(timer); abort.abort();
+    this.#cancelAlarms(id);
+    this.live.revoke(id); canarySessions.close(id); this.#session = undefined;
+  }
+  #cancelAlarms(id: string): void {
+    const rows = this.store.transaction(tx => tx.all("SELECT a.id FROM alarms a JOIN tool_calls c ON c.execution_id=a.id WHERE a.state IN ('pending','ringing') AND c.run_id=? AND json_extract(c.intent_json,'$.toolName') IN ('set_alarm','snooze_alarm')", [id]));
+    for (const row of rows) this.cancelAlarm?.(String(row.id));
   }
   open(value: unknown, context: LiveContext, deadline = Date.now() + 350_000): LiveSessionSnapshot {
     const asks = validateCanaryAsks(value);
@@ -239,7 +245,7 @@ export class InstalledCanary {
     canarySessions.open(id);
     const abort = new AbortController();
     const timer = setTimeout(() => {
-      abort.abort(); this.live.revoke(id);
+      this.shutdown();
       if (this.#session?.id === id && !this.#session.running) { canarySessions.close(id); this.#session = undefined; }
     }, remaining);
     timer.unref();
@@ -306,8 +312,8 @@ export class InstalledCanary {
           const reply = item.result;
           if (['set_alarm', 'snooze_alarm'].includes(item.tool) && typeof reply['id'] === 'string' && !cleaned.has(reply['id'])) {
             const alarmId = reply['id'];
-            const observed = this.store.transaction(tx => Boolean(tx.get("SELECT a.id FROM alarms a JOIN tool_calls c ON c.execution_id=a.id WHERE a.id=? AND a.state='pending' AND c.run_id=? AND json_extract(c.intent_json,'$.toolName') IN ('set_alarm','snooze_alarm')", [alarmId, id])));
-            const removed = observed && this.store.transaction(tx => { tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state='pending'", [alarmId]); return Boolean(tx.get("SELECT id FROM alarms WHERE id=? AND state='cancelled'", [alarmId])); });
+            const observed = this.store.transaction(tx => Boolean(tx.get("SELECT a.id FROM alarms a JOIN tool_calls c ON c.execution_id=a.id WHERE a.id=? AND a.state IN ('pending','ringing') AND c.run_id=? AND json_extract(c.intent_json,'$.toolName') IN ('set_alarm','snooze_alarm')", [alarmId, id])));
+            const removed = observed && this.cancelAlarm?.(alarmId) === true;
             cleaned.add(alarmId);
             if (ask.expect.sideEffect === 'alarm' || !removed) effect = { kind: 'alarm', observed, cleaned: removed };
           }

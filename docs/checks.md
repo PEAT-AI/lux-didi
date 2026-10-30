@@ -224,3 +224,12 @@ workspace opener and text-only attachment rejects an ordinary session. Linux CI 
 the same fake assertion/CLI tests without Swift or real services. The broader native
 regression gate remains `scripts/check-native-live.sh`; documentation uses
 `scripts/check-docs.sh`.
+
+### Stop alarms without a call
+
+The owner-local native bearer endpoint `POST /api/v1/alarms/stop` accepts an
+empty JSON object. It cancels all pending and ringing alarms through the host
+scheduler, including when no live call exists. Browser clients are refused.
+Use the host's existing native bearer authorization with this endpoint; never
+put the bearer in a committed script, issue, or diagnostic report. A successful
+reply includes the number of cancelled alarms. It does not quit the app.

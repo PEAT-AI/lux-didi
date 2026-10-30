@@ -5944,6 +5944,7 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).
   const unread = (text: string): boolean => namesUnreadSource(run, text);
+  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   const sameTopic = (text: string): boolean => {
     const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, TOPIC_SKIP));
     return contentKeywords(text, 12, TOPIC_SKIP).every(word => known.has(word) || NAVIGATION_WORDS.has(word));

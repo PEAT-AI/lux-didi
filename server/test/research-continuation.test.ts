@@ -227,7 +227,7 @@ test('G1: a cited 9.8k reply pages evidence first, and paging walks every line',
     assert.notEqual(text.trim(), '', 'no page with evidence to give is empty');
     assert.ok(!JSON.stringify(page).includes('https://'), 'a spoken page names sites, never whole links');
     lines.push(...text.split('\n').filter(line => line !== ''));
-    const cursor = page['pageCursor'];
+    const cursor: unknown = page['pageCursor'];
     page = typeof cursor === 'string' ? book.take(cursor) : undefined;
   }
   assert.match(String((pages[0]!['findings'] as { text: string }[])[0]!.text), /^web: the council approved/u,

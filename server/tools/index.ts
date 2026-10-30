@@ -828,8 +828,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // journal. An id the model produced on its own is refused here, never sent to the helper.
             if (name === 'delete_event') {
               const wanted = typeof (args as JsonObject)['event_id'] === 'string' ? String((args as JsonObject)['event_id']) : undefined;
-              const created = wanted !== undefined && store.transaction(tx => tx.all("SELECT result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND tool_name='create_event' AND state='completed'", [ownerId, context.runId])
-                .some(row => String(row['result_json'] ?? '').includes(wanted)));
+              const created = wanted !== undefined && store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId])
+                .some(row => String(row['intent_json'] ?? '').includes('"toolName":"create_event"') && String(row['result_json'] ?? '').includes(wanted)));
               if (!created) {
                 ownerRequests.failed(runId, name, target, ask.id);
                 return finish({ status: 'refused', code: 'event_not_created_here', say: 'I can only remove a block I made in this call, so I am not touching that event.' });

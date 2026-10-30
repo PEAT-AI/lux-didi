@@ -102,6 +102,15 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 | `check-mcp-config.sh` | Protected MCP configuration and consent (`mcp-config.test`). |
 | `check-connected.sh` | Connector identity and status, and the connected conversation in a real browser. |
 
+## Evals
+
+| Script | Covers |
+| --- | --- |
+| `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Release pull requests only. |
+
+`scripts/run-local-evals.sh` is the owner's own run and is not a check: scripted by default, `--live` only
+with `--yes`, and the full private suite never leaves the owner's machine.
+
 ## Web
 
 | Script | Covers |

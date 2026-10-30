@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { attachHostLogSink, stepSubject, STEP_SUBJECT_CAP, type LiveToolStep } from '../tools/host-events.js';
-import { ResearchLedger, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
@@ -222,11 +222,13 @@ test('F13: a second start carrying this turn\'s research id returns the first re
     asked.push(...subs);
     return subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
   };
-  const first = await runResearch(deps(execute), { action: 'start', question: 'when is the release freeze', lookups: [{ source: 'memory', query: 'release freeze' }] }, new AbortController().signal);
+  // The turn's dedupe lives in the session's scheduler, the layer every Live research call enters through.
+  const scheduler = new ResearchScheduler(deps(execute));
+  const first = await scheduler.call({ action: 'start', question: 'when is the release freeze', lookups: [{ source: 'memory', query: 'release freeze' }] }, new AbortController().signal);
   assert.equal(typeof first['researchId'], 'string');
   const reads = asked.length;
   assert.ok(reads > 0, 'the first start read its sources');
-  const second = await runResearch(deps(execute), {
+  const second = await scheduler.call({
     action: 'start', researchId: String(first['researchId']), question: 'and the freeze again, when', lookups: [{ source: 'memory', query: 'freeze date' }],
   }, new AbortController().signal);
   assert.equal(asked.length, reads, 'a duplicate id dispatches no second read');

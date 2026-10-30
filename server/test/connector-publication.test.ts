@@ -12,6 +12,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { EndpointConfig } from '../adapters/mcp/port.js';
+import { createGoogleReader } from '../connectors/google.js';
+import { GOOGLE_WRITE_TOOLS } from '../connectors/index.js';
+
+const ACCOUNT = 'local';
+const RESOURCE = 'google-fixture';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
@@ -738,4 +748,60 @@ test('W1030: the recorded Mattermost draft family matches the allowed draft name
   }
   assert.deepEqual(connectorDescriptor('mattermost')!.writeEnvelope, [...MATTERMOST_DRAFT_TOOLS]);
   assert.deepEqual(connectorDescriptor('mattermost')!.envelope, [...MATTERMOST_READ_TOOLS], 'the read envelope is unchanged');
+});
+
+
+/** W1030: a scratch directory and the child's call log, so a test can count real dispatches. */
+function scratch(): { dir: string; pidFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-write-'));
+  return { dir, pidFile: join(dir, 'child.pid') };
+}
+function callsOf(pidFile: string): string[] {
+  try { return readFileSync(`${pidFile}.calls`, 'utf8').split('\n').filter(Boolean); } catch { return []; }
+}
+function adapterFor(registry: McpRegistry): McpPort {
+  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+}
+async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: string, names: readonly string[]): Promise<string> {
+  registry.enable(id); registry.allowEgress(id);
+  const discovery = await adapter.discover(id);
+  assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw new Error('not discovered');
+  registry.approve({ endpointId: id, schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: 'local', resource: 'google-fixture', generation: 1 });
+  return discovery.schemaDigest;
+}
+
+// W1030/WT-R7: the recorded write families travel real discovery and the connector's preflight, and a
+// missing probe name is red there rather than at the first draft he asks for.
+test('W1030: each recorded write family discovers, preflights and probes with google_identity only', async t => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const writeChild = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-write-child.mjs');
+  for (const [family, didiFamily] of [['gmail_draft', 'compose'], ['calendar_write', 'calendar_write']] as const) {
+    const { dir, pidFile } = scratch();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const registry = new McpRegistry();
+    const id = `local-${family}`;
+    registry.register({ id, transport: 'stdio', command: process.execPath, args: [writeChild, family, pidFile],
+      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+      account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
+    const adapter = adapterFor(registry);
+    t.after(async () => { await adapter.close?.(); });
+    const recorded = recording.families[family].tools.map((tool: { name: string }) => tool.name) as string[];
+    assert.ok(recorded.includes('google_identity'), `${family} recording publishes the probe`);
+    for (const name of recorded) assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${family} ${name} is in the closed write envelope`);
+    const digest = await discoverAndApprove(registry, adapter, id, recorded);
+    const reader = createGoogleReader({ port: adapter, registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: didiFamily } });
+    const probe = await reader.googleIdentity();
+    assert.equal(probe.state, 'completed', `${family} probe completes with its recorded names`);
+    assert.deepEqual(callsOf(pidFile), ['google_identity'], `${family} consent check calls the probe and nothing else`);
+    // The same catalog without the probe name cannot answer the consent check: preflight refuses it,
+    // so a helper that dropped the probe is caught before any draft or block is attempted.
+    registry.suspend(id);
+    const withoutProbe = await adapter.discover(id);
+    if (withoutProbe.state !== 'discovered') throw new Error('not rediscovered');
+    registry.approve({ endpointId: id, schemaDigest: withoutProbe.schemaDigest, generation: 1, account: ACCOUNT, resource: RESOURCE, toolNames: recorded.filter(name => name !== 'google_identity'), effect: 'read' });
+    const refused = await reader.googleIdentity();
+    assert.notEqual(refused.state, 'completed', `${family} probe is refused when the recording lacks it`);
+    assert.deepEqual(callsOf(pidFile), ['google_identity'], `${family} never calls a write tool when the probe is missing`);
+  }
 });

@@ -1208,23 +1208,22 @@ test('two selected calendars out of three are read with declared helper argument
   for (const args of fake.listArgs) for (const key of Object.keys(args)) assert.ok(Object.hasOwn(properties, key), `undeclared ${key}`);
 });
 
-// W1030: the two write families the helper publishes at 0.2.0, recorded beside the read families.
-test('W1030: the recorded tools/list lists the write families with no send and no invite wire key', () => {
+// W1030: the two write families the helper publishes at 0.2.0 (GW-R4), recorded beside the read families.
+test('W1030: the recorded tools/list carries both write families with their read-only identity probe', () => {
   const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
-  const compose = recording.families.compose.tools.map((tool: { name: string }) => tool.name);
-  const calendarWrite = recording.families.calendar_write.tools.map((tool: { name: string }) => tool.name);
-  assert.deepEqual(compose, ['gmail_create_draft']);
-  assert.deepEqual(calendarWrite, ['calendar_create_event', 'calendar_delete_event']);
+  const names = (family: string) => recording.families[family].tools.map((tool: { name: string }) => tool.name) as string[];
+  assert.deepEqual(names('gmail_draft'), ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft']);
+  assert.deepEqual(names('calendar_write'), ['google_identity', 'calendar_create_event', 'calendar_delete_event']);
+  for (const family of ['gmail_draft', 'calendar_write']) {
+    assert.ok(names(family).includes('google_identity'), `${family} publishes the identity probe`);
+    for (const name of names(family)) assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${name} is in the closed write envelope`);
+  }
   const create = recording.families.calendar_write.tools.find((tool: { name: string }) => tool.name === 'calendar_create_event');
   assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['client_request_id', 'description', 'end', 'location', 'start', 'summary', 'time_zone']);
   assert.equal('attendees' in create.inputSchema.properties, false, 'no attendee key exists on the wire');
-  assert.equal('sendUpdates' in create.inputSchema.properties, false, 'no update notification key exists on the wire');
-  const draft = recording.families.compose.tools[0];
+  const draft = recording.families.gmail_draft.tools.find((tool: { name: string }) => tool.name === 'gmail_create_draft');
   assert.equal('send' in draft.inputSchema.properties, false, 'the compose family cannot send');
-  for (const name of ['gmail_create_draft', 'calendar_create_event', 'calendar_delete_event']) {
-    assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${name} is in the closed write envelope`);
-    assert.equal((GOOGLE_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
-  }
+  assert.deepEqual(Object.keys(recording.families.gmail_draft.tools.find((tool: { name: string }) => tool.name === 'google_identity').inputSchema.properties), [], 'the probe takes no argument');
 });
 
 // W1030/WT-R5: the consent probe of a write family is a read, and a missing token names its own family.

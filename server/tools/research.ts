@@ -3673,6 +3673,11 @@ function sourceKindOfKindName(name: string): SourceKind | null {
 
 /** ROUTE-1022: a continuation the run cannot serve says what to do next, so the model never stalls on it. */
 export const CONTINUATION_UNAVAILABLE_NOTE = 'That earlier result is no longer available. Ask a fresh research question about the same thing.';
+/**
+ * G8: a direction a run cannot carry says so, instead of cancelling the run and answering from nothing. The
+ * run's own findings stay in the reply beside this note.
+ */
+export const DIRECTION_UNSUPPORTED_NOTE = 'This research did not read that source, so that part of the direction was not followed. Ask a fresh research question to read it.';
 
 function bodyCursor(run: RunState, key: string, offset: number, width: number): string {
   const existing = [...run.bodyCursors].find(([, page]) => page.key === key && page.offset === offset)?.[0];
@@ -5818,7 +5823,9 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       if (next === 'due') budgetSpent = true;
     } else budgetSpent = true;
   }
-  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
+  // G5: a source is named as still searching only while it is still in flight here. A read whose findings already
+  // landed is never said to be pending, whatever the snapshot taken when the early answer began still listed.
+  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source) && view.run.pending.has(source));
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
   const hardStopped = budgetSpent || first.cut === true;
@@ -5918,19 +5925,25 @@ const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTIN
  * never read, or words about a new topic, is a new ask, whatever id the model passed with it. Only the
  * model's own direction is judged: a continue's question and topic never reach a source (#565).
  */
+/**
+ * G8: whether this direction names a source the run has not read. A run's route is resolved when it starts, so a
+ * source it never read cannot be added by a later direction.
+ */
+function namesUnreadSource(run: RunState, text: string): boolean {
+  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
+  for (const match of text.matchAll(SOURCE_WORD)) {
+    const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
+    if (source !== undefined && !read.has(source)) return true;
+  }
+  return false;
+}
+
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
   // An explicit local record handle is navigation, not a new topic.
   if (Array.isArray(call.lookups) && call.lookups.some(lookup => isRecord(lookup) && isRecord(lookup['history']) && (lookup['history']['recordRef'] || lookup['history']['cursor']))) return true;
-  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).
-  const unread = (text: string): boolean => {
-    for (const match of text.matchAll(SOURCE_WORD)) {
-      const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
-      if (source !== undefined && !read.has(source)) return true;
-    }
-    return false;
-  };
+  const unread = (text: string): boolean => namesUnreadSource(run, text);
   const sameTopic = (text: string): boolean => {
     const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, TOPIC_SKIP));
     return contentKeywords(text, 12, TOPIC_SKIP).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
@@ -6159,11 +6172,22 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     // more than the run already gave, and keeps its own path.
     if (priorRun !== undefined && bareContinue(call) && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
-      // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
-      deps.ledger.cancelActive();
-      const freshTopic = call.topic?.trim() ?? '';
-      run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
-      run.startedFresh = true;
+      // G8: a direction this run can carry extends it. Cancelling the run and starting an empty one threw away
+      // every finding the owner had already been promised, so the run keeps its evidence and takes the words as
+      // its next round. A direction naming a source this run never read cannot be honoured, and says so.
+      const direction = call.action === 'continue' ? (call.direction ?? '').trim() : '';
+      if (direction !== '' && namesUnreadSource(priorRun, direction)) {
+        return { ...knownReply(deps.ledger, priorRun.researchId, [...priorRun.route], 'partial'), note: DIRECTION_UNSUPPORTED_NOTE };
+      }
+      const extended = direction === '' ? undefined : deps.ledger.resume(priorRun.researchId,
+        { direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
+      if (extended === undefined) {
+        // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
+        deps.ledger.cancelActive();
+        const freshTopic = call.topic?.trim() ?? '';
+        run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
+        run.startedFresh = true;
+      } else run = extended;
     } else {
       const resumed = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
       if (!resumed) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
@@ -6971,18 +6995,72 @@ export const VOICE_REPLY_CUT = 'voice_reply_chars';
 export const VOICE_CURSOR_PREFIX = 'vpage-';
 /** C-CONTINUITY T-11: the closed error a `continue` gets for a cursor this call no longer holds. */
 export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
+/**
+ * G1: the room a voice page always keeps clear for one evidence line. A page whose envelope takes the whole cap
+ * carries no evidence at all, which is how a 3,000-char page of citation links reached the owner empty.
+ */
+export const VOICE_EVIDENCE_RESERVE_CHARS = 240;
+/** G1: how many citations one spoken page names; a page of links is never worth more of the budget than this. */
+const VOICE_CITATION_LIMIT = 12;
 
-/** The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. */
-function voiceEnvelopeOf(reply: JsonObject): JsonObject {
+/** G1: the site a citation belongs to, so a spoken page names it without carrying the whole link. */
+function citationSite(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./u, '');
+  } catch { return url.slice(0, 40); }
+}
+
+/** G1: the citations a spoken page carries, as domain plus index; the full links stay in the host-side reply. */
+function voiceCitationsOf(reply: JsonObject): string[] {
+  const sources = [reply['webSources'], reply['webAttribution']].flatMap(value => Array.isArray(value) ? value : []);
+  const lines: string[] = [];
+  for (const source of sources) {
+    if (lines.length >= VOICE_CITATION_LIMIT) break;
+    const url = isRecord(source) && typeof source['url'] === 'string' ? source['url'] : '';
+    if (url !== '') lines.push(`[${lines.length + 1}] ${citationSite(url)}`);
+  }
+  return lines;
+}
+
+/** G1: trim a page's envelope until one evidence line fits beside it, so links can never fill a whole page. */
+function voiceEnvelopeFits(envelope: JsonObject, cap: number): JsonObject {
+  const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
+  const fits = (): boolean => voicePageChars(envelope, ['e'.repeat(VOICE_EVIDENCE_RESERVE_CHARS)], cursorChars, 1) <= cap;
+  const citations = Array.isArray(envelope['citations']) ? envelope['citations'] as string[] : [];
+  for (let keep = citations.length - 1; keep >= 0 && !fits(); keep -= 1) {
+    if (keep === 0) delete envelope['citations']; else envelope['citations'] = citations.slice(0, keep);
+  }
+  // The header text is the last thing a page can give up: it is cut, never dropped, so the page still covers.
+  for (const key of ['note', 'coverage']) {
+    if (fits()) break;
+    const text = envelope[key];
+    if (typeof text === 'string' && text.length > VOICE_EVIDENCE_RESERVE_CHARS) {
+      envelope[key] = `${text.slice(0, VOICE_EVIDENCE_RESERVE_CHARS - 1)}\u2026`;
+    }
+  }
+  return envelope;
+}
+
+/**
+ * The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. G1: the
+ * citation fields are the one part a page must not carry whole, so they become domain-plus-index citations and
+ * the full links stay in the reply this call keeps host-side.
+ */
+function voiceEnvelopeOf(reply: JsonObject, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   const envelope: JsonObject = {};
   for (const [key, value] of Object.entries(reply)) {
     // W1-R3: the cap pages content and nothing else. Every control field the reply carries (status, canContinue,
     // alreadyDelivered, its own cursor, closed codes, receipts) rides every page untouched, so a reader sees the
     // same facts it would have seen from the whole reply.
     if (key === 'findings' || key === 'bodySlices') continue;
+    // G1: the link footer and the two link tables are what starved the evidence, so a page names its sites and
+    // leaves the links themselves in the reply the call holds.
+    if (key === 'markdown' || key === 'webSources' || key === 'webAttribution') continue;
     envelope[key] = value;
   }
-  return envelope;
+  const citations = voiceCitationsOf(reply);
+  if (citations.length > 0) envelope['citations'] = citations;
+  return voiceEnvelopeFits(envelope, cap);
 }
 
 /** The one-line-units of a reply's bulk, in the order the provider read them: its findings first. */
@@ -7187,7 +7265,7 @@ export class VoiceReplyBook {
 export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   if (JSON.stringify(reply).length <= cap) return reply;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
-  const envelope = voiceEnvelopeOf(reply);
+  const envelope = voiceEnvelopeOf(reply, cap);
   // A body page is a research result too, so it obeys the same cap: its slices are cut at a whole word and the
   // remainder is paged from the book with the reader's own offsets, so nothing is handed over uncapped.
   const slices = Array.isArray(reply['bodySlices']) ? (reply['bodySlices'] as JsonObject[]) : undefined;
@@ -7212,13 +7290,28 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
   const remainingNote = (count: number): string => `+${count} more lines; continue with pageCursor to fetch the rest.`;
-  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/gu, 'more on the next page') : '';
+  // G6: the note is matched case-insensitively, so the reply's own "Nothing more to fetch" is never left
+  // standing beside a "+N more lines" line that contradicts it.
+  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/giu, 'more on the next page') : '';
   // Reserve the continuation line before packing, so announcing a cut never breaks the voice cap.
   const pagedEnvelope: JsonObject = { ...envelope, note: `${previousNote} ${remainingNote(units.length)}`.trim() };
   const { lines, rest } = fitUnits(pagedEnvelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   if (rest.length === 0) return page;
   return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+}
+
+/**
+ * G2: the evidence-first page a fresh session is seeded with. It is the same compact page a voice reply pages,
+ * taken once and without a cursor, so a rebuild hands over evidence lines instead of the first slice of a JSON
+ * body (headers and site names, which is all a 1,200-char prefix of a paged reply ever carried).
+ */
+export function spokenPageOf(reply: JsonObject, cap: number = RESEARCH.voiceReplyChars): JsonObject {
+  const units = voiceUnitsOf(reply);
+  if (units.length === 0) return reply;
+  const envelope = voiceEnvelopeOf(reply, cap);
+  const { lines } = fitUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
+  return { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
 }
 
 /**

@@ -194,3 +194,72 @@ test('#1028: room speech after the answer does not park a late finding', () => {
   assert.equal(lateCommentarySilence({ now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 0, newerWorkAt: 2_000 }), 'new_question',
     'a research operation that started after the answer parks it');
 });
+
+// G1 (call 8be5d80f): the page cap counts evidence first. The reply's citation links alone ran to 8,860 characters,
+// so a 3,000-char page carried no evidence line at all and said only "fetch the next page".
+function citedReply(): Record<string, unknown> {
+  const lines: string[] = [];
+  for (let index = 0; index < 40; index += 1) lines.push(`web: the council approved the budget on reading ${index}`);
+  const web = Array.from({ length: 40 }, (_, index) => ({
+    title: `Result ${index}`,
+    url: `https://news.example${(index % 7) + 1}.com/politics/local-government/2026/10/30/long-article-slug-${index}?utm_source=feed`,
+  }));
+  return {
+    researchId: 'r-web', status: 'answered', canContinue: false, sources: ['web'],
+    findings: [{ source: 'web', text: lines.join('\n') }],
+    markdown: web.map(source => `- [${source.title}](${source.url})`).join('\n'),
+    webSources: web, webAttribution: [],
+  };
+}
+
+test('G1: a cited 9.8k reply pages evidence first, and paging walks every line', () => {
+  const reply = citedReply();
+  assert.ok(JSON.stringify(reply).length > 9_000, `the fixture is the size the owner's call produced (${JSON.stringify(reply).length})`);
+  assert.ok(JSON.stringify(reply['webSources']).length > 3_000, 'its links alone are wider than a page');
+  const book = new VoiceReplyBook();
+  const lines: string[] = [];
+  let page: Record<string, unknown> | undefined = capVoiceReply(reply, book);
+  const pages: Record<string, unknown>[] = [];
+  while (page !== undefined && pages.length < 30) {
+    pages.push(page);
+    assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, `every page obeys the cap (${JSON.stringify(page).length})`);
+    const text = (page['findings'] as { text: string }[])[0]?.text ?? '';
+    assert.notEqual(text.trim(), '', 'no page with evidence to give is empty');
+    assert.ok(!JSON.stringify(page).includes('https://'), 'a spoken page names sites, never whole links');
+    lines.push(...text.split('\n').filter(line => line !== ''));
+    const cursor = page['pageCursor'];
+    page = typeof cursor === 'string' ? book.take(cursor) : undefined;
+  }
+  assert.match(String((pages[0]!['findings'] as { text: string }[])[0]!.text), /^web: the council approved/u,
+    'page 1 carries evidence, not a page of citation links');
+  assert.match(JSON.stringify(pages[0]), /\[\d+\] news\.example\d\.com/u, 'the citations are domains plus an index');
+  assert.equal(lines.length, 40, 'paging walks all of it, with no line lost and none repeated');
+  for (let index = 0; index < 40; index += 1) assert.ok(lines.some(line => line.includes(`reading ${index}`)), `line ${index} was paged`);
+});
+
+test('G6: a page note never says nothing more to fetch while it still owes lines', () => {
+  const reply = { ...longReply(), note: RESEARCH.completeNote };
+  const book = new VoiceReplyBook();
+  const first = capVoiceReply(reply, book);
+  const note = String(first['note'] ?? '');
+  assert.match(note, /more lines/u, 'the page says how much it owes');
+  assert.doesNotMatch(note, /nothing more to fetch/iu, 'and never contradicts itself in the same line');
+});
+
+test('G8: a direction extends the run instead of cancelling it, and an unread source says so', async () => {
+  const h = continuationFixture();
+  const started = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope', topic: 'release scope',
+    lookups: [{ source: 'knowledge', query: 'release scope' }],
+  }, signal());
+  const researchId = String(started['researchId']);
+  const extended = await runResearch(h.deps, { action: 'continue', researchId, direction: 'go deeper on the lighthouse budget vote' }, signal());
+  assert.equal(extended['error'], undefined, 'the direction is served from the run itself');
+  const run = h.deps.ledger.find(researchId);
+  assert.ok(run !== undefined, 'the run the owner was already promised survives');
+  assert.equal(run!.cancelled, false, 'it was never cancelled');
+  assert.equal(run!.direction, 'go deeper on the lighthouse budget vote', 'the direction is the run\'s next round');
+  const refused = await runResearch(h.deps, { action: 'continue', researchId, direction: 'also check the calendar for it' }, signal());
+  assert.match(String(refused['note'] ?? ''), /did not read that source/u, 'a source this run never read is named, not silently dropped');
+  assert.equal(h.deps.ledger.find(researchId)!.cancelled, false, 'and the run is still not cancelled');
+});

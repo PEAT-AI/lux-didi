@@ -4,7 +4,7 @@ import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
-import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -16,7 +16,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -391,9 +391,58 @@ const researchCallFacts = (calls: { name: string; args: JsonObject }[]):
     lookups: Array.isArray(args?.['lookups']) ? args['lookups'].length : 0,
   };
 };
+/** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
+export const refusedResponse = (response: JsonObject): boolean => {
+  if (typeof response['error'] === 'string' && response['error'] !== '') return true;
+  const status = response['status'];
+  return status === 'unavailable' || status === 'denied' || status === 'refused';
+};
+/**
+ * G3: whether audible model speech answered the owner's ask. A session that opened on the host's own line speaks its
+ * opener first, and a filler answers nothing either, so neither spends the turn's one research operation.
+ */
+export function answersTheAsk(openingTurn: boolean | undefined, turnSpoken: string | undefined): boolean {
+  return openingTurn !== true && !isAckOnlyResponse(turnSpoken ?? '');
+}
+
+/**
+ * G4: the rebuild trigger a model mute names. A turn that owes the owner an answer it already holds (a pending tool
+ * result, an answer still owed) is never ambient, whatever the length of the filler it filed; the ambient case is
+ * a call that was only listening and owes nothing.
+ */
+export function muteRebuildTrigger(input: {
+  owesAnswer: boolean; ownerWordsSinceModelOutput: boolean; ackAnsweredOwner: boolean;
+}): 'no_output_after_owner' | 'no_output_after_ambient' {
+  if (input.owesAnswer || input.ownerWordsSinceModelOutput || input.ackAnsweredOwner) return 'no_output_after_owner';
+  return 'no_output_after_ambient';
+}
+
+/**
+ * G5: how long a late finding waits for the turn to go quiet, or undefined when holding it would be pointless. Her
+ * own answer audio is a hold on the same path as her speech, so a result landing mid-sentence is only postponed.
+ */
+export function lateHoldMs(reason: string | null): number | undefined {
+  if (reason === 'owner_speaking') return SPEAKING_HOLD_MS;
+  return reason === 'answer_playing' ? ANSWER_AUDIO_HOLD_MS : undefined;
+}
+
+/**
+ * G2: the digest one tool result batch hands a fresh session: the evidence lines first, then the compact page
+ * they belong to. A raw prefix slice carried headers and site names and stopped before the first finding, so a
+ * rebuilt session owed the owner an answer it had no evidence to give.
+ */
+const unspokenDigestOf = (response: JsonObject): string => {
+  const page = spokenPageOf(response, UNSPOKEN_REPLY_LIMIT);
+  const findings = Array.isArray(page['findings']) ? page['findings'] : [];
+  const evidence = findings.flatMap(finding => typeof finding === 'object' && finding !== null && typeof (finding as JsonObject)['text'] === 'string' ? [String((finding as JsonObject)['text'])] : []).join('\n');
+  if (evidence === '') return JSON.stringify(response);
+  const meta = JSON.stringify({ ...page, findings: [] });
+  const room = UNSPOKEN_REPLY_LIMIT - evidence.length - 1;
+  return room <= 0 ? evidence.slice(0, UNSPOKEN_REPLY_LIMIT) : `${evidence}\n${meta.slice(0, room)}`;
+};
 /** #660: the text of one tool result batch, bounded for the one item a fresh session accepts. */
-const unspokenReply = (outputs: LiveToolResponse[]): string | undefined => {
-  const reply = outputs.map(output => JSON.stringify(output.response)).join('\n').slice(0, UNSPOKEN_REPLY_LIMIT);
+export const unspokenReply = (outputs: LiveToolResponse[]): string | undefined => {
+  const reply = outputs.map(output => unspokenDigestOf(output.response)).join('\n').slice(0, UNSPOKEN_REPLY_LIMIT);
   return reply.length === 0 ? undefined : reply;
 };
 /** S5: how long her own line has to become audible before the turn is settled failed instead of left owing. */
@@ -481,7 +530,7 @@ export function callCeilingMs(toolName: string | undefined): number {
   return toolName === RESEARCH_TOOL_NAME ? RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs : TOOL_CEILING_MS;
 }
 /** R6: how recent the model's own audio must be to hold a late line back. */
-const ANSWER_AUDIO_HOLD_MS = 3_000;
+export const ANSWER_AUDIO_HOLD_MS = 3_000;
 /**
  * C-TURN8: how long an announced lookup has to start its call before the host corrects it. Three seconds,
  * the same one beat this file already treats as a turn's pause (ANSWER_AUDIO_HOLD_MS), so a claim followed
@@ -693,6 +742,8 @@ interface ActiveSession {
   quietRebuild: boolean;
   /** C-PICKUP: the pickup the last recovery attempt opened with, so the receipt names what was sent. */
   recoveryPickup?: 'none' | 'quiet' | 'mute' | 'connection' | undefined;
+  /** G3: this session opened on the host's own line, so its speech is the opener and not the answer to an ask. */
+  openingTurn?: boolean | undefined;
   /** #591: model text or an output transcript since this turn opened, so a turn that spoke is never called ambient. */
   modelTextSinceOpen: boolean;
   /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
@@ -2305,8 +2356,9 @@ export class LiveSessionOwner {
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);
     // #660: the result is owed until the model's own audio proves it said it, so its text travels with the debt
-    // and the session that replaces this one can still speak it.
-    const reply = unspokenReply(outputs);
+    // and the session that replaces this one can still speak it. G7: a refusal the owner never caused is a host
+    // fact, not a result she is told to speak, so before his first word it is logged and nothing more.
+    const reply = this.#preOwnerRefusal(handle, outputs) ? undefined : unspokenReply(outputs);
     if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; handle.unspokenResults = outputs.length; }
     // L-04: the wait that ends the next time she speaks followed a tool, which the heard-silence record names.
     handle.heardAfterTool = true;
@@ -2997,6 +3049,15 @@ export class LiveSessionOwner {
     return conversationId;
   }
 
+  /** F2 widening: the conversation a canary or eval session owns, minted once and never the owner's. */
+  #ownConversationInTx(tx: Transaction, liveSessionId: string, existing?: string): string {
+    const owner = tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [this.#store.assistantId]);
+    if (existing !== undefined && (owner === undefined || String(owner['conversation_id']) !== existing)) return existing;
+    const conversationId = randomUUID();
+    tx.run('INSERT OR REPLACE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, conversationId]);
+    return conversationId;
+  }
+
   /** An explicit new conversation. Nothing ordinary does this, so a topic change keeps the same id. */
   newConversation(): string {
     this.#guardOpen();
@@ -3011,6 +3072,9 @@ export class LiveSessionOwner {
   #conversationOf(liveSessionId: string): string {
     return this.#store.transaction(tx => {
       const row = tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [liveSessionId]);
+      // F2 widening: a canary or an eval session gets a conversation of its own. Joining the owner's is how a
+      // typed ask reached an owner call, so its conversation is never the one the owner's sessions share.
+      if (!ownerMemorySession(tx, liveSessionId)) return this.#ownConversationInTx(tx, liveSessionId, row === undefined ? undefined : String(row['conversation_id']));
       if (row) return String(row['conversation_id']);
       const conversationId = this.#conversationInTx(tx, this.#store.assistantId);
       tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, conversationId]);
@@ -3083,8 +3147,10 @@ export class LiveSessionOwner {
 
   #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
     const conversationId = this.#conversationOf(liveSessionId);
+    // F2 widening: the seed reads the owner's own sessions only. A canary or eval session that once shared this
+    // conversation id still never lends a turn to an owner call.
     const rows = this.#store.transaction(tx => tx.all(
-      "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
+      `SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND ${ownerMemorySessionSql('s')} AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id`,
       [conversationId]));
     const runs: { role: 'user' | 'model'; text: string }[] = [];
     let role: 'user' | 'model' | undefined; let pending = '';
@@ -3180,7 +3246,16 @@ export class LiveSessionOwner {
    * network one again.
    */
   #rebuildTrigger(handle: ActiveSession, reason: string | null): (typeof LIVE_REBUILD_TRIGGERS)[number] {
-    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) || this.#ackAnsweredOwner(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
+    if (reason === 'model_mute') {
+      // G4: the classification reads the turn's role, not the length of its filler. A turn that owes the owner an
+      // answer it already has in hand (a pending tool result, an answer still owed) is never ambient, however long
+      // the filler it filed was: the pickup answers his ask and never reopens on a seed line.
+      return muteRebuildTrigger({
+        owesAnswer: handle.awaitingAnswer || handle.unspoken !== undefined || handle.answerAt !== undefined,
+        ownerWordsSinceModelOutput: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
+        ackAnsweredOwner: this.#ackAnsweredOwner(handle.liveSessionId),
+      });
+    }
     if (reason === 'research_context') return 'research_context';
     if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
       || reason === 'handshake_timeout') return 'session_window';
@@ -3303,6 +3378,9 @@ export class LiveSessionOwner {
     // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
     handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
       : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
+    // G3: this session opens on the host's own line, so its first speech is the opener and never the answer to
+    // the owner's ask. The flag falls when the owner's own words arrive, which is the turn the ask really opens.
+    handle.openingTurn = request.openingText !== undefined || request.opening === 'model_first';
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
@@ -3917,8 +3995,10 @@ export class LiveSessionOwner {
           this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
           // C-RESEARCH-CONTRACT Q-08: audible words after this turn's research result are the answer to that turn,
-          // so a start that follows them is the orphan run the admission refuses by name.
-          handle.researchAdmission.answered();
+          // so a start that follows them is the orphan run the admission refuses by name. G3: only an answer
+          // spends the turn. The opener a rebuilt session speaks, and a filler it files before it goes quiet, are
+          // not the answer to the ask, so the owner's retry of that ask stays admitted.
+          if (answersTheAsk(handle.openingTurn, handle.turnSpoken)) handle.researchAdmission.answered();
           handle.turnAudioAt = handle.lastModelAudioAt;
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
@@ -3977,6 +4057,10 @@ export class LiveSessionOwner {
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal && typeof event.text === 'string' && event.text.trim() !== '') {
+            // G3: the owner's own words open the turn that answers the ask, so the host's opener is behind us.
+            handle.openingTurn = false;
+          }
           if (handle.inputFinal && typeof event.text === 'string') handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${event.text}`.slice(-12000);
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
@@ -4453,13 +4537,16 @@ export class LiveSessionOwner {
     const reason = this.#lateCommentaryReason(handle, event);
     // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
     // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
-    if (reason === 'owner_speaking') {
+    // G5: her own answer audio is a hold too. A result that lands while she is still speaking is rescheduled for
+    // the next pause on the same path, so a result is never parked for good because it arrived mid-sentence.
+    const holdMs = lateHoldMs(reason);
+    if (holdMs !== undefined) {
       handle.lateHoldTimer?.cancel();
       handle.lateHoldTimer = this.#schedule(() => {
         handle.lateHoldTimer = undefined;
         if (this.#settled(handle) || generation !== handle.generation) return;
         this.#lateFindings(handle, generation, event);
-      }, SPEAKING_HOLD_MS);
+      }, holdMs);
     }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = lateFindingsText(event.source, event.items);
@@ -4484,6 +4571,15 @@ export class LiveSessionOwner {
     // case the old boolean mislabelled as a busy tool.
     if (handle.heardAfterTool || handle.thinking || handle.awaitingAnswer) return 'provider';
     return 'owner';
+  }
+
+  /**
+   * G7: whether this batch refused the call instead of answering it, before the owner's first word. A refusal he
+   * never caused is logged as a host fact; handing it to her as "tell the owner now" has her speak a fault that
+   * belongs to the host and is not about anything he asked.
+   */
+  #preOwnerRefusal(handle: ActiveSession, outputs: LiveToolResponse[]): boolean {
+    return outputs.length > 0 && outputs.every(output => refusedResponse(output.response)) && !this.#ownerSpoke(handle.liveSessionId);
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */

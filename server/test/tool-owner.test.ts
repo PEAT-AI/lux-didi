@@ -881,7 +881,8 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft through th
   const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
   assert.equal(replay.status, 'completed');
   assert.equal(port.log.length, 1, 'the replay writes nothing');
-  assert.match(String(replay.result_json), /draft-1/, 'the replay returns the recorded receipt');
+  const replayed = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE owner_id='owner' AND execution_id='run:2:0'"));
+  assert.match(String(replayed?.['result_json'] ?? ''), /draft-1/, `the replay records the receipt it returned: ${JSON.stringify(replay)}`);
 });
 
 test('W1030 recipient: two spoken matches ask, and no address is invented', async t => {

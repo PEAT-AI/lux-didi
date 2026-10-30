@@ -823,7 +823,10 @@ function auditClock(lines: readonly LogLine[]): CallAudit['clock'] {
 /** C-LOGS11: the whole audit of one call, from the store's timeline and the day's logs. Pure. */
 export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit {
   const lines = sessionLines(scan, report.liveSessionId);
-  const calls = report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines)));
+  // F8: a rebuild drops the turn link, so a call can be in the store with no turn. It is still a call:
+  // count it, count its refusal, and list it under its own bucket instead of vanishing.
+  const calls = [...report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines))),
+    ...report.unattributedCalls.map(call => auditCallRow(call, lines))];
   const turns = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
   const timed = calls.filter((call): call is AuditCallRow & { totalMs: number } => call.totalMs !== null);
   const refusalsByCode: Record<string, number> = {};
@@ -894,6 +897,10 @@ export function renderCallAudit(audit: CallAudit): string {
   for (const call of audit.calls) {
     out.push(`${call.turnId ?? '-'} ${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   }
+  const orphanCalls = audit.calls.filter(call => call.turnId === null);
+  out.push('');
+  out.push(`after rebuild, no turn calls=${orphanCalls.length}`);
+  for (const call of orphanCalls) out.push(`${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   out.push('');
   out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');
   for (const turn of audit.turns) {

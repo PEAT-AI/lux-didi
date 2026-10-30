@@ -358,6 +358,22 @@ function auditA(store: Store): CallAudit {
   return buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(logsA()));
 }
 
+test('F8: a call with no turn after a rebuild is listed in its own bucket and counted', () => {
+  withStore(store => {
+    storeA(store);
+    // A rebuild drops the turn link, so this call is in the store with turn_id null.
+    call(store, SESSION, null as unknown as string, 'call:orphan', 'set_alarm', 'refused', 30, T0 + 3_000);
+    const audit = auditA(store);
+    assert.equal(audit.calls.length, 4, 'the audit counts every call, not only the ones a turn claims');
+    assert.deepEqual(audit.calls.filter(row => row.turnId === null).map(row => row.callKey), ['call:orphan']);
+    // The refusal count carries the orphan too: one gmail grant refusal plus one orphan refusal.
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, missing: 1 });
+    const text = renderCallAudit(audit);
+    assert.match(text, /after rebuild, no turn calls=1/u);
+    assert.match(text, /call:orphan set_alarm/u);
+  });
+});
+
 test('C-LOGS11: the audit names every tool call and every owner turn of one call', () => {
   withStore(store => {
     storeA(store);

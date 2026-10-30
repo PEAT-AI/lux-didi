@@ -29,6 +29,8 @@ cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 mkdir -p "$out/source/people"
 cp "$root"/server/people/*.ts "$out/source/people/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
+# W1030: mcp.ts composes the host's write dispatch, so the module it imports rides along.
+cp "$root/server/host/compose-dispatch.ts" "$out/source/host/"
 # C-FILLER: the trello suite asserts its padded-write log line survives safeEvent, so the host log and the
 # modules it closes over (its events, prompt, routes and stop-phrase imports) ride along.
 cp "$root/server/host/log.ts" "$root/server/host/events.ts" "$out/source/host/"

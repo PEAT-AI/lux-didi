@@ -174,7 +174,9 @@ export interface MattermostDraftInput { channelId?: string; dmUsername?: string;
 
 export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(MATTERMOST_READ_TOOLS);
+// W1030: the endpoint's published catalog may be its reads, its draft family or both, so the known set
+// is the read envelope plus the draft envelope; which names a grant may cover stays the policy's.
+const ELIGIBLE: ReadonlySet<string> = new Set<string>([...MATTERMOST_READ_TOOLS, ...MATTERMOST_DRAFT_TOOLS]);
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';

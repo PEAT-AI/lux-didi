@@ -26,6 +26,8 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
+# W1030: mcp.ts composes the host's write dispatch, so the module it imports rides along.
+cp "$root/server/host/compose-dispatch.ts" "$out/source/host/"
 # W14: the loud-error suite proves the classified-failure row is admitted by the real host log, so the
 # harness compiles host/log.ts and its small import closure too.
 cp "$root/server/host/log.ts" "$out/source/host/"

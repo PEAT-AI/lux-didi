@@ -567,6 +567,16 @@ export function connectionEnvelope(connector: string, endpoint: { resource: stri
   return name === undefined ? [] : MONGOOSE_ENDPOINT_TOOLS[name];
 }
 
+/**
+ * W1030: the write names one endpoint may be granted, taken from the connector's own write envelope and
+ * only for the names that endpoint actually published. A family the child does not publish
+ * contributes nothing, so a read-only endpoint is granted exactly what it was before.
+ */
+export function writeEnvelopeFor(connector: string, published: readonly string[]): string[] {
+  const write = connectorDescriptor(connector)?.writeEnvelope ?? [];
+  return write.filter(name => published.includes(name));
+}
+
 /** The composed names a connector may hold, given the child names it already holds. */
 export function composedGrantedNames(connector: string, granted: readonly string[]): string[] {
   const present = new Set(granted);

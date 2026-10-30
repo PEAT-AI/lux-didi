@@ -968,7 +968,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const root = input.post_id === undefined ? undefined : boundedText(input.post_id);
       if (root === undefined) return { state: 'refused', reason: 'thread-needs-post-id' };
       const thread = await read('mattermost_get_thread', { post_id: root }, signal);
-      if (!thread.ok) return thread;
+      if (!thread.ok) return thread.result;
       capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(post => chatPost(post, who.owner.username))
         .sort((left, right) => Date.parse(left.time) - Date.parse(right.time) || 0);

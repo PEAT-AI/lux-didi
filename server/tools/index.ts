@@ -24,7 +24,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
@@ -699,7 +699,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
         description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
-        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' } }, additionalProperties: false },
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' }, kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Optional recurrence the owner stated in their own words; the host verifies it against them.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Optional weekly weekday set, 0 Sunday to 6 Saturday, verified against the owner words.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
@@ -737,18 +737,34 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
             if (name === 'list_alarms') {
-              const result: JsonObject = { alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) };
+              const result: JsonObject = { alarms: listPendingAlarms(tx).map(entry => ({ id: entry.id, fire_at_utc: entry.fireAtUtc, tz: entry.tz, label: entry.label, state: entry.state,
+                ...(entry.series ? { series: { id: entry.series.id, rule: entry.series.rule, weekdays: entry.series.weekdays, local_time: entry.series.localTime, text: entry.series.text } } : {}) })) };
               ownerRequests.commit(runId, name, requestTarget, result);
               return finish(result);
             }
             const now = options.alarms?.now() ?? Date.now();
             if (name === 'cancel_alarm') {
-              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              if (!args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              const target = String(input.id);
+              // The owner's own words choose one occurrence ("skip this Saturday") or the whole series.
+              const targeted = alarmSeriesRow(tx, target);
+              const series = targeted ?? (parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesOfOccurrence(tx, target) : undefined);
+              if (series) {
+                const cancelled = cancelAlarmSeries(tx, series.id);
+                consumed = ask.journalId;
+                return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
+                  say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
+              }
+              if (!tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              materialiseSeriesOccurrence(tx, input.id!, now);
               consumed = ask.journalId;
-              return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
+              return finish({ status: 'cancelled', id: args.id, scope: 'occurrence', say: 'Alarm cancelled.' });
             }
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
+            // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
+            const spec = parseSeriesRule(ask.words ?? '');
+            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) return finish({ status: 'refused', reason: 'rule_mismatch' });
             if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
@@ -760,11 +776,21 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               alarmTz = String(old.tz);
               tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
+            const seriesId = name === 'set_alarm' && parsed.series ? randomUUID() : undefined;
+            if (seriesId && parsed.series) insertAlarmSeries(tx, { id: seriesId, rule: parsed.series, label: parsed.label, createdJournalId: ask.journalId });
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, parsed.label, ask.journalId]);
-            if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
+            // A series keeps exactly one materialised occurrence, linked to its rule.
+            if (seriesId) linkAlarmOccurrence(tx, context.executionId, seriesId);
+            if (name === 'snooze_alarm') {
+              tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
+              // Snoozing moves the ringing occurrence only: the series' next reminder is unchanged.
+              const link = tx.get('SELECT series_id FROM alarm_occurrences WHERE alarm_id=?', [input.id!]);
+              if (link) linkAlarmOccurrence(tx, context.executionId, String(link.series_id));
+            }
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
+              ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
               say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {

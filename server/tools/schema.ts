@@ -182,4 +182,12 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
     `CREATE TABLE alarm_snoozes (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id), next_alarm_id TEXT NOT NULL REFERENCES alarms(id))`,
     `CREATE TABLE alarm_missed_mentions (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id))`,
   ],
+}, { owner: 'tools', version: 6, statements: [
+  `CREATE TABLE alarm_series (
+    id TEXT PRIMARY KEY, rule_kind TEXT NOT NULL CHECK(rule_kind IN ('daily','weekdays','weekly')),
+    weekdays TEXT NOT NULL, local_time TEXT NOT NULL, tz TEXT NOT NULL, label TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('active','cancelled')), created_journal_id TEXT NOT NULL)`,
+  `CREATE TABLE alarm_occurrences (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id), series_id TEXT NOT NULL REFERENCES alarm_series(id))`,
+  `CREATE INDEX alarm_occurrences_series ON alarm_occurrences(series_id)`,
+],
 }];

@@ -233,3 +233,15 @@ scheduler, including when no live call exists. Browser clients are refused.
 Use the host's existing native bearer authorization with this endpoint; never
 put the bearer in a committed script, issue, or diagnostic report. A successful
 reply includes the number of cancelled alarms. It does not quit the app.
+
+### Recurring reminders
+
+A reminder can repeat daily, on weekdays or on a weekly weekday set ("every
+Saturday at ten remind me to do one hour of cardio"); `set_alarm` reads the rule
+from the owner's own words, `list_alarms` shows the rule and its next occurrence,
+and `cancel_alarm` cancels one occurrence ("skip this Saturday") or the whole
+series ("stop the Saturday cardio reminders"). The series keeps the timezone it
+was said in, so travel or a host timezone change never moves it. The stop
+endpoint above also cancels every active series: it cancels the series row
+(never a silent row delete) together with the ringing and pending occurrences,
+so a stopped series is gone from `list_alarms` until the owner asks again.

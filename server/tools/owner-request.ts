@@ -173,6 +173,7 @@ export function requestRefusal(code: string): { status: 'refused'; code: string;
     target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?',
     missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',
     time_mismatch: 'The alarm was not set because the requested time differs from yours.',
+    rule_mismatch: 'The alarm was not set because the recurrence differs from yours.',
     invalid_time: 'The alarm was not set because that time is invalid.', alarm_not_active: 'That alarm is not active.',
     alarm_failed: 'The alarm action failed; no alarm was set.',
   };

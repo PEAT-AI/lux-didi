@@ -47,6 +47,10 @@ export class AlarmScheduler {
     this.recheck('mutation');
     return row;
   }
+  cancelAll(): number {
+    const ids = this.options.store.transaction(tx => tx.all("SELECT id FROM alarms WHERE state IN ('pending','ringing')"));
+    return ids.reduce((count, row) => count + Number(this.cancel(String(row.id))), 0);
+  }
   cancel(id: string): boolean {
     const changed = this.options.store.transaction(tx => tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?))", [id, this.options.clock.now()]));
     this.recheck('mutation');

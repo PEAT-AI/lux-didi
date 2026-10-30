@@ -43,7 +43,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', randomUUID(), context);
+  const session = service.create('ordinary', `canary:${randomUUID()}`, context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
   const signal = new AbortController().signal;
@@ -93,6 +93,21 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
     }, `${definition.name} must accept its stored intent`);
   }
+  await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
+    const args = { fire_at_utc: alarmNow + 1000 };
+    owner.ownerRequests.answered!(session.liveSessionId);
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
+    const definition = live.find(tool => tool.name === 'set_alarm')!;
+    const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
+      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+    owner.journal.intent(intent);
+    {
+      const before = alarmNow;
+      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
+      const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
+      assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
+    }
+  });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);
   t.after(() => endHandleSession(session.liveSessionId));
@@ -216,8 +231,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
-      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
-      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
+      const noAlarmIntent = tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+      if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
+      const expected = noAlarmIntent ? 'no_owner_request' : row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
       if (expected === 'set') {
         const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));

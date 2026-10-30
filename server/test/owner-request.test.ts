@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { parseAlarmTime } from '../tools/alarm.js';
 import { OwnerRequests } from '../tools/owner-request.js';
 
 test('direct102 authority: finals alone grant compound effects, consumed once with idempotent retries', () => {
@@ -50,7 +51,7 @@ test('direct102 authority: fragments only join an explicitly pending clarificati
   now = 120001;
   assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'request_expired');
   requests.observe('s', 'j3', 'a.m. Singapore time');
-  assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
+  assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'no_owner_request');
 });
 
 test('direct102 authority: external content records provenance counts but never creates a grant', () => {
@@ -87,7 +88,9 @@ for (const words of ['do not open the deck', 'do not set an alarm', 'do not save
   test(`direct102 authority: nonimperative and negated speech creates no grant: ${words}`, () => {
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'j1', words);
-    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) assert.equal(requests.authorize('s', kind, 'x').code,
+    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) if ((kind as string) === 'set_alarm') {
+      assert.equal(requests.authorize('s', kind, 'x').code, 'no_owner_request');
+    } else assert.equal(requests.authorize('s', kind, 'x').code,
       words.includes('open') && kind === 'open' || words.includes('alarm') && kind === 'set_alarm' || words.includes('save') && kind === 'lux_note' ? 'no_owner_request' : 'allowed');
   });
 }
@@ -164,7 +167,9 @@ for (const [words, _kinds] of [
 ] as const) test(`hear104 owner framing: ${words}`, () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j', words);
-  for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code,
+  for (const [kind] of reportedActions) if (kind === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(words)) {
+    assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request');
+  } else assert.equal(requests.authorize('s', kind, 'target').code,
     'allowed', kind);
 });
 for (const [words, kinds] of [
@@ -219,7 +224,7 @@ for (const words of [
     requests.observe('s', 'old', 'open the deck and set an alarm for seven');
     requests.observe('s', 'new', words);
     assert.equal(requests.authorize('s', 'open', 'deck').code, words === "don't open the deck" ? 'no_owner_request' : 'allowed');
-    assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
+    assert.equal(requests.authorize('s', 'set_alarm', 'time').code, /\balarm\b/i.test(words) ? 'allowed' : 'no_owner_request');
     assert.equal(requests.authorize('s', 'lux_note', 'note').code, /save/.test(words) ? 'no_owner_request' : 'allowed');
   });
 }
@@ -273,4 +278,33 @@ test('spontaneous calls do not wait for nonexistent owner input', async () => {
     assert.equal(finished, true);
     assert.equal(requests.authorize('synthetic', 'open', 'target').code, 'no_owner_request');
   } finally { controller.abort(); }
+});
+
+test('C-SAFETY: a mail turn cannot inherit an unspent alarm grant', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'alarm-turn', 'Set an alarm in ten minutes');
+  requests.observe('s', 'mail-turn', 'Find the synthetic mail');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'mail').code, 'allowed');
+});
+test('C-SAFETY: a non-alarm finalized ask never grants set_alarm', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'mail-turn', 'Find the synthetic mail');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'mail').code, 'allowed');
+});
+
+
+test('SA-R2: split finalized alarm ask retains timezone and is admitted once', () => {
+  const now = Date.parse('2026-10-28T13:00:00Z');
+  const requests = new OwnerRequests(() => 0, () => now);
+  requests.observe('s', 'alarm-first', 'set an alarm for seven');
+  requests.observe('s', 'alarm-timezone', 'a.m. Singapore time');
+  const ask = requests.authorize('s', 'set_alarm', 'seven-sg');
+  assert.equal(ask.code, 'allowed');
+  const parsed = parseAlarmTime(ask.words ?? '', ask.observedAt ?? now, 'UTC');
+  assert.equal(parsed.status, 'ready');
+  if (parsed.status !== 'ready') return;
+  assert.equal(parsed.tz, 'Asia/Singapore');
+  assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
+  requests.commit('s', 'set_alarm', 'seven-sg', { status: 'set' }, ask.id);
+  assert.equal(requests.authorize('s', 'set_alarm', 'another').code, 'grant_spent');
 });

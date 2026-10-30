@@ -78,7 +78,7 @@ export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetai
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
-  const canary = live ? new InstalledCanary(store, live) : undefined;
+  const canary = live ? new InstalledCanary(store, live, undefined, undefined, options.alarms ? id => options.alarms!.scheduler.cancel(id) : undefined) : undefined;
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
   const alarmStreams = new Set<() => void>();
@@ -151,6 +151,13 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           send(res, 200, success(await canary.run(input['sessionId'], context.clientId)));
         }
         return;
+      }
+      if (url.pathname === '/api/v1/alarms/stop') {
+        operatorPrincipal(req, store, origin);
+        if (method !== 'POST' || !options.alarms) throw new ServiceError('BAD_REQUEST', 'Alarm stop unavailable');
+        const body = await readBody(req);
+        if (Object.keys(body).length) throw new ServiceError('BAD_REQUEST', 'Empty body required');
+        send(res, 200, success({ cancelled: options.alarms.scheduler.cancelAll() })); return;
       }
       if (url.pathname.startsWith('/api/v1/alarms/') && options.alarms) {
         const actor = principal(req);

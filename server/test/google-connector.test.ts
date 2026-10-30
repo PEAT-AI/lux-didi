@@ -20,7 +20,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
-import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
+import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
@@ -1221,6 +1221,7 @@ test('W1030: the recorded tools/list lists the write families with no send and n
   const draft = recording.families.compose.tools[0];
   assert.equal('send' in draft.inputSchema.properties, false, 'the compose family cannot send');
   for (const name of ['gmail_create_draft', 'calendar_create_event', 'calendar_delete_event']) {
-    assert.ok(GOOGLE_TOOLS.includes(name as never), `${name} is in the closed helper envelope`);
+    assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${name} is in the closed write envelope`);
+    assert.equal((GOOGLE_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
   }
 });

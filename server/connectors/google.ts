@@ -10,8 +10,12 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
  * envelope is refused even when the remote lists it: the local read classification is the
  * authority, never the remote's readOnlyHint.
  */
-export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file', 'gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
-export type GoogleTool = (typeof GOOGLE_TOOLS)[number];
+export const GOOGLE_READ_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file'] as const;
+/** The read envelope an approved read grant may name; the write families are never part of it. */
+export const GOOGLE_TOOLS = GOOGLE_READ_TOOLS;
+/** W1030: the write calls, each on its own family, endpoint and token (C-GWRITE). */
+export const GOOGLE_WRITE_TOOLS = ['gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
+export type GoogleTool = (typeof GOOGLE_READ_TOOLS)[number] | (typeof GOOGLE_WRITE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
 export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[]>> = {

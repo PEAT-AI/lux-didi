@@ -5,7 +5,7 @@ import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import { createGoogleReader, GOOGLE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
+import { createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
@@ -65,6 +65,8 @@ export interface ConnectorToolDeclaration {
 export interface ConnectorDescriptor {
   id: string;
   envelope: readonly string[];
+  /** W1030: the write calls this connector may reach for the host's compose port, never for the model. */
+  writeEnvelope?: readonly string[];
   /** The connector's tool table for one approved policy (bounds may shape the schemas). */
   declarations(policy: ConnectionPolicy): readonly ConnectorToolDeclaration[];
   /** A per-connection reader bound to the approved endpoint, digest and generation. */
@@ -303,7 +305,10 @@ function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint):
 }
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',
+  // W1030: the read envelope is the only model-facing google surface; the two write families are
+  // reached by the host's compose port through `createReader().call`, never as connector tools.
   envelope: GOOGLE_TOOLS,
+  writeEnvelope: GOOGLE_WRITE_TOOLS,
   declarations() {
     const listProps = { maxResults: { type: 'integer', minimum: 1, maximum: 50 }, pageToken: { type: 'string', minLength: 1 } };
     return [

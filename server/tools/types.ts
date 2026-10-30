@@ -1,5 +1,4 @@
 import type { TrelloBoard } from './trello.js';
-import type { ComposeDispatch } from './compose.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
@@ -48,6 +47,21 @@ export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
+export type ComposeOutcome =
+  | { state: 'done'; response: JsonObject; clash?: string }
+  | { state: 'not_authorized'; family: string; command: string }
+  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown'; candidates: string[] }
+  | { state: 'unknown'; reason: string }
+  | { state: 'failed'; reason: string };
+
+export interface ComposeDispatch {
+  /** Resolve the spoken name through the owner's own reads (see `resolveRecipient`) before writing. */
+  draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome>;
+}
+
 export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   log?: (event: ToolFailureEvent) => void;

@@ -1,5 +1,6 @@
 import { parseAlarmTime } from './alarm.js';
 import type { JsonObject } from '../adapters/model/types.js';
+import type { ComposeDispatch, ComposeOutcome } from './types.js';
 
 /**
  * The write surface Naya may reach by voice: drafts that only the owner can send, and calendar
@@ -219,21 +220,6 @@ export const COMPOSE_GUIDANCE = 'Naya drafts email and Mattermost messages and p
  * A host that has no consented family answers `not_authorized` with the one command to run; one
  * whose remote result is lost answers `unknown` rather than inventing a success.
  */
-export type ComposeOutcome =
-  | { state: 'done'; response: JsonObject; clash?: string }
-  | { state: 'not_authorized'; family: string; command: string }
-  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown'; candidates: string[] }
-  | { state: 'unknown'; reason: string }
-  | { state: 'failed'; reason: string };
-
-export interface ComposeDispatch {
-  /** Resolve the spoken name through the owner's own reads (see `resolveRecipient`) before writing. */
-  draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome>;
-  draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome>;
-  createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome>;
-  deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome>;
-}
-
 export interface ComposeTool { description: string; parameters: JsonObject; validate(args: unknown): boolean }
 
 /** One declaration per ability, each closed: nothing here can address a person or an invitation. */

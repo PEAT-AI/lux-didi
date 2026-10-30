@@ -143,7 +143,9 @@ export interface GoogleReader {
 
 export interface GoogleOptions { port: McpPort; registry: McpRegistry; config: GoogleConfig }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(GOOGLE_TOOLS);
+// W1030: the endpoint's published catalog may be a read family, a write family or both, so the known
+// set is the read envelope plus the write envelope; which names a grant may cover stays the policy's.
+const ELIGIBLE: ReadonlySet<string> = new Set<string>([...GOOGLE_TOOLS, ...GOOGLE_WRITE_TOOLS]);
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
@@ -190,7 +192,8 @@ interface Settings {
 
 /** A family the config names must be a real one; an unknown family is a config fault, never a silent default. */
 export function googleFamilyTools(family: unknown): { ok: true; family: GoogleFamily; tools: readonly GoogleTool[] } | { ok: false; reason: string } {
-  if (family !== 'gmail' && family !== 'calendar' && family !== 'drive') return { ok: false, reason: 'unknown-family' };
+  // W1030: the two write families are real families too, each with its own endpoint and token.
+  if (family !== 'gmail' && family !== 'calendar' && family !== 'drive' && family !== 'compose' && family !== 'calendar_write') return { ok: false, reason: 'unknown-family' };
   return { ok: true, family, tools: GOOGLE_FAMILIES[family] };
 }
 

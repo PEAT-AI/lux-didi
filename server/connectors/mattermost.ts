@@ -992,8 +992,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           if (spokenPerson === undefined) return { state: 'refused', reason: 'invalid-person' };
           const person = await findPerson(spokenPerson, capture, signal);
           if (person.kind === 'failed') return person.result;
-          if (person.kind !== 'person' || person.dmChannelId === undefined) {
-            return finish({ ...base, read: `a person called ${spokenPerson}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }) });
+          if (person.kind === 'clarify') return finish({ ...base, read: `a person called ${spokenPerson}`, clarify: person.text });
+          if (person.kind !== 'person') return finish({ ...base, read: `a person called ${spokenPerson}`, notFound: person.text });
+          if (person.dmChannelId === undefined) {
+            return finish({ ...base, read: `a thread with ${person.display} about ${asked}`, notFound: `You have no direct conversation with ${person.display}, so there is no thread there.` });
           }
           conversation = person.dmChannelId;
           read2 = `the thread with ${person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`} about ${asked}`;

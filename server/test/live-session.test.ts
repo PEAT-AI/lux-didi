@@ -7909,12 +7909,12 @@ test('C-SAFETY: three typed asks finish without audio and never rebuild for audi
 });
 
 test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms and replay returns its receipt', async t => {
-  const fake = progressPort();
+  const fake = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, inputRates: [16000] });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, limits: openaiLimits });
   const { session } = await openPort(h, 'alarm-history-replay');
   async function call(id: string) {
     const before = fake.toolResponses.length;
-    fake.emit({ type: 'toolCall', calls: [{ id, name: 'set_alarm', args: {} }] });
+    fake.emit(portEvent({ type: 'toolCall', calls: [{ id, name: 'set_alarm', args: {} }] }));
     for (let n = 0; n < 100 && fake.toolResponses.length === before; n++) await settlePort();
     assert.equal(fake.toolResponses.length, before + 1);
     return fake.toolResponses.at(-1)![0]!.response;

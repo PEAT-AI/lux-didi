@@ -68,7 +68,7 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 | Script | Covers |
 | --- | --- |
 | `check-service.sh` | Type-check and build; runtime store and HTTP tests (`runtime.test`, `http.test`). |
-| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery, host-log and Trello guidance tests, the `--mongoose-login` CLI sign-in (`mongoose-login.integration.mjs`), then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
+| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery, host-log and Trello guidance tests, the `host-compose-wire` suite that proves the write path through the real host composition (the shipped `draft_email`, `draft_chat`, `create_event` and `delete_event` tools, their closed wire arguments, the `google_identity` consent probe and the `connector_not_authorized` answer), the `--mongoose-login` CLI sign-in (`mongoose-login.integration.mjs`), then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
 | `check-host-entry.sh` | Host entry migration and reopen ring (`host-entry.test.mjs`). |
 | `check-domain.sh` | Domain and provenance tests against a temporary SQLite database. |
 | `check-chat.sh` | Text chat, chat tools, prompt, model, runtime, domain and HTTP regressions. |

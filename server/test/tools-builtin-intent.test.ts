@@ -1,3 +1,4 @@
+import { canarySessions } from '../live/canary.js';
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
@@ -93,6 +94,22 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
     }, `${definition.name} must accept its stored intent`);
   }
+  await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
+    const args = { fire_at_utc: Date.now() + 1000 };
+    owner.ownerRequests.answered!(session.liveSessionId);
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', Date.now());
+    const definition = owner.liveDefinitions(session.liveSessionId).find(tool => tool.name === 'set_alarm')!;
+    const intent: ToolCallIntent = { ...authority, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
+      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+    owner.journal.intent(intent);
+    canarySessions.open(session.liveSessionId);
+    try {
+      const before = Date.now();
+      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
+      const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
+      assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
+    } finally { canarySessions.close(session.liveSessionId); }
+  });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);
   t.after(() => endHandleSession(session.liveSessionId));

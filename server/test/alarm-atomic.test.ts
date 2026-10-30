@@ -50,7 +50,8 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
   assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
   assert.equal(store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [intent.executionId])?.state), 'completed');
   const replay = await tool.execute(args, { ...intent, signal });
-  assert.deepEqual(replay, result, 'recorded execution returns the same durable result');
+  const recorded = store.transaction(tx => tx.get('SELECT result_id,result_sha256 FROM tool_calls WHERE execution_id=?', [intent.executionId]))!;
+  assert.deepEqual(replay, { status: 'completed', result: { id: recorded.result_id, sha256: recorded.result_sha256 } }, 'recorded execution returns the same durable result');
   assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, 'replay never creates another alarm');
   await service.shutdown(); store.close();
   const recovered = new Store(directory, migrations);

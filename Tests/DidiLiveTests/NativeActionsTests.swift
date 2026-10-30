@@ -138,8 +138,25 @@ import Foundation
         // C-OPEN 5: a web destination opens in Chrome when Chrome is installed, else in the default browser.
         check(NativeActions.chromeBundleIdentifier == "com.google.Chrome", "Chrome is named by its bundle id")
         let withChrome = FakeWorkspace(chrome: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
-        let chromeActions = NativeActions(home: home, opener: NativeActions.browserOpener(withChrome))
+        let chromeActions = NativeActions(home: home, opener: NativeActions.browserOpener(withChrome),
+                                           browserState: { BrowserState(installed: true, running: true) })
         check(await chromeActions.perform(.openURL, target: "https://docs.google.com/presentation/d/SyntheticDeck01/edit").code == .opened, "a deck opens through the workspace port")
+        // F6b: a link that needs a Chrome which is not running is refused closed, and Chrome is never started:
+        // a launch would pick a remembered profile, which is a guess about the owner.
+        let stoppedChrome = FakeWorkspace(chrome: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
+        let stopped = NativeActions(home: home, opener: NativeActions.browserOpener(stoppedChrome),
+                                    browserState: { BrowserState(installed: true, running: false) })
+        let stoppedReceipt = await stopped.perform(.openURL, target: "https://docs.google.com/presentation/d/SyntheticDeck02/edit")
+        check(stoppedReceipt.code == .browserNotRunning, "a stopped Chrome answers browser_not_running")
+        check(stoppedReceipt.code.rawValue == "browser_not_running", "the closed code crosses the wire by name")
+        check(stoppedReceipt.ok == false, "a browser that is not running is not an opened receipt")
+        check(stoppedChrome.calls.isEmpty, "nothing was looked up, launched or opened in a guessed profile")
+        check(NativeActions.guidance(for: "Synthetic Owner") == "Synthetic, Chrome is not open, could you open it for me?",
+              "the line names the owner from the account, never a literal")
+        check(NativeActions.guidance(for: "") == "there, Chrome is not open, could you open it for me?", "a nameless account still gets a sentence")
+        // A Mac without Chrome keeps opening in the default browser.
+        let withoutChrome = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: false, running: false) })
+        check(await withoutChrome.perform(.openURL, target: "https://example.invalid/note").code == .opened, "no Chrome installed is the default browser, unchanged")
         check(withChrome.calls == ["lookup com.google.Chrome", "app Google Chrome.app https://docs.google.com/presentation/d/SyntheticDeck01/edit"], "Chrome opens the deck when it is installed: \(withChrome.calls)")
         let noChrome = FakeWorkspace(chrome: nil)
         let defaultActions = NativeActions(home: home, opener: NativeActions.browserOpener(noChrome))

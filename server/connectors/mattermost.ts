@@ -22,8 +22,13 @@ export const MATTERMOST_TOOLS = [
  * chat read that needs one says once which capability is missing.
  */
 export const MATTERMOST_PERSON_TOOLS = ['mattermost_resolve_person', 'mattermost_conversation_overview'] as const;
-/** Every name the connector may ever read: the base reads plus the person reads. */
-export const MATTERMOST_READ_TOOLS = [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS] as const;
+/**
+ * CA-R2: the topic reads a newer child publishes. They join the read envelope so an approval can grant them;
+ * a child without them still serves every base read, and the topics mode says once which capability is missing.
+ */
+export const MATTERMOST_TOPIC_TOOLS = ['mattermost_list_threads'] as const;
+/** Every name the connector may ever read: the base reads, the person reads and the topic reads. */
+export const MATTERMOST_READ_TOOLS = [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS] as const;
 export type MattermostTool = (typeof MATTERMOST_READ_TOOLS)[number];
 
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
@@ -37,7 +42,7 @@ export const MATTERMOST_ATTENTION_TOOL = 'mattermost_attention';
 /** C-CHAT: the connector's own person, group and channel read, one composed view over several child reads. */
 export const MATTERMOST_CHAT_TOOL = 'mattermost_chat';
 /** C-CHAT: the window a person, group or channel read covers when the ask names none, and its page bounds. */
-export const MATTERMOST_CHAT = { days: 30, limit: 8, maxOffset: 1000, maxPeople: 4, candidates: 3, overviewPosts: 3, channelRows: 10, groupRows: 200 } as const;
+export const MATTERMOST_CHAT = { days: 30, limit: 8, maxOffset: 1000, maxPeople: 4, candidates: 3, overviewPosts: 3, channelRows: 10, groupRows: 200, topicPages: 20 } as const;
 
 /** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
 export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 10, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
@@ -109,7 +114,7 @@ export interface AttentionItem {
 export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once. */ missing?: string }
 
 /** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group, one thread. */
-export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group' | 'thread';
+export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group' | 'thread' | 'topics';
 export interface ChatReadInput {
   intent: ChatReadIntent;
   person?: string; people?: string[]; channel?: string; query?: string;
@@ -139,8 +144,12 @@ export interface MattermostChatRead {
   total?: number; returned: number; offset: number;
   posts: ChatReadPost[];
   sections?: ChatOverviewSection[];
+  /** CA-R2: the topics a `topics` read listed, with their counts and dates, so one can be read whole next. */
+  topics?: ChatTopicRow[];
   clarify?: string; notFound?: string; missing?: string;
 }
+/** CA-R2: one thread the topic list names. `rootId` is what the thread read takes. */
+export interface ChatTopicRow { rootId: string; author: string; createdAt: string; preview: string; replies: number; participants: string[]; lastReplyAt?: string }
 
 export interface MattermostReader {
   whoami(signal?: AbortSignal): Promise<MattermostResult>;
@@ -436,6 +445,23 @@ export function withoutOwner(text: string, owner: string, display = ''): string 
 }
 
 /** One child post as a chat read carries it, attachment text after the message. */
+/** CA-R2: one listed thread, in the shape the chat read hands the model. */
+function topicRow(raw: Record<string, unknown>): ChatTopicRow {
+  const created = firstText(raw, ['created_at', 'createdAt', 'timestamp']);
+  const last = firstText(raw, ['last_reply_at', 'lastReplyAt']);
+  const participants = Array.isArray(raw['participants']) ? raw['participants'].filter(participant => typeof participant === 'string') as string[] : [];
+  const replies = raw['reply_count'] ?? raw['replyCount'];
+  return {
+    rootId: firstText(raw, ['root_id', 'rootId', 'id']),
+    author: firstText(raw, ['author', 'username']),
+    createdAt: created,
+    preview: postText(raw).slice(0, 200),
+    replies: Number.isSafeInteger(replies) ? replies as number : 0,
+    participants,
+    ...(last === '' ? {} : { lastReplyAt: last }),
+  };
+}
+
 /** W2B/F5c: the rows whose own name or display name is exactly the spoken key, and nothing else. */
 function strongChannelMatches(rows: readonly MattermostChannel[], key: string): MattermostChannel[] {
   return rows.filter(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
@@ -936,7 +962,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   async function chat(input: ChatReadInput, signal?: AbortSignal): Promise<MattermostResult> {
     const denied = preflight(registry, settings, MATTERMOST_CHAT_TOOL);
     if (denied) return { state: 'refused', reason: denied };
-    const intents: readonly ChatReadIntent[] = ['person', 'overview', 'channel', 'group', 'thread'];
+    const intents: readonly ChatReadIntent[] = ['person', 'overview', 'channel', 'group', 'thread', 'topics'];
     if (!intents.includes(input.intent)) return { state: 'refused', reason: 'invalid-intent' };
     const day = /^\d{4}-\d{2}-\d{2}$/u;
     if ([input.from_date, input.to_date].some(value => value !== undefined && (typeof value !== 'string' || !day.test(value)))) return { state: 'refused', reason: 'invalid-window' };
@@ -979,53 +1005,94 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const order = input.order ?? 'newest';
     if (order !== 'oldest' && order !== 'newest') return { state: 'refused', reason: 'invalid-order' };
     // F5c: one thread, whole and in time order, through the child's own thread read.
+    /**
+     * CA-R2: the one conversation a topics or a keyword thread read belongs to: a person's direct messages or a
+     * channel the owner named. Ambiguity is a question back, never a guess.
+     */
+    const conversationFor = async (): Promise<{ ok: true; args: JsonObject; label: string } | { ok: false; result: MattermostResult }> => {
+      if (input.person !== undefined) {
+        const spokenPerson = boundedText(input.person);
+        if (spokenPerson === undefined) return { ok: false, result: { state: 'refused', reason: 'invalid-person' } };
+        const person = await findPerson(spokenPerson, capture, signal);
+        if (person.kind === 'failed') return { ok: false, result: person.result };
+        if (person.kind === 'clarify') return { ok: false, result: finish({ ...base, read: `a person called ${spokenPerson}`, clarify: person.text }) };
+        if (person.kind !== 'person') return { ok: false, result: finish({ ...base, read: `a person called ${spokenPerson}`, notFound: person.text }) };
+        const named = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
+        return { ok: true, args: person.dmChannelId === undefined ? { dm_username: person.username } : { channel_id: person.dmChannelId }, label: `direct messages with ${named}` };
+      }
+      if (input.channel !== undefined) {
+        const spokenChannel = boundedText(input.channel);
+        if (spokenChannel === undefined) return { ok: false, result: { state: 'refused', reason: 'invalid-channel' } };
+        const resolved = await resolveChannel(spokenChannel, signal);
+        if (typeof resolved !== 'string') {
+          return { ok: false, result: finish({ ...base, read: `a channel called ${spokenChannel}`, notFound: `I do not know a channel called ${spokenChannel}. Which channel did you mean?` }) };
+        }
+        return { ok: true, args: { channel_id: resolved }, label: `the channel ${spokenChannel}` };
+      }
+      return { ok: false, result: { state: 'refused', reason: 'thread-needs-conversation' } };
+    };
+
+    /** CA-R2: the threads one conversation holds, newest activity first, with the child's own count. */
+    const listThreads = async (conversation: JsonObject, keyword: string): Promise<{ ok: true; topics: ChatTopicRow[]; total?: number } | { ok: false; result: MattermostResult }> => {
+      const args: JsonObject = { ...conversation, since: window.from, ...(window.to === undefined ? {} : { until: window.to }), ...(keyword === '' ? {} : { query: keyword }), limit, order: 'activity' };
+      const listed = await read('mattermost_list_threads', args, signal);
+      if (!listed.ok) return { ok: false, result: listed.result };
+      capture(listed.evidence);
+      const data = contentJson(listed.evidence.decodedResult);
+      const rows = isRecord(data) && Array.isArray(data['threads']) ? data['threads'].filter(isRecord) : [];
+      return { ok: true, total: isRecord(data) && Number.isSafeInteger(data['total_threads']) ? data['total_threads'] as number : undefined, topics: rows.map(topicRow) };
+    };
+
+    // CA-R2: the first step of the owner's ask: the topics of one conversation, with counts and dates.
+    if (input.intent === 'topics') {
+      const conversation = await conversationFor();
+      if (!conversation.ok) return conversation.result;
+      const listed = await listThreads(conversation.args, asked);
+      if (!listed.ok) return finish({ ...base, read: `the topics in ${conversation.label}`, missing: 'listing the threads of one conversation needs the newer chat archive' });
+      if (listed.topics.length === 0) {
+        return finish({ ...base, read: `the topics in ${conversation.label}${span}${about}`, notFound: asked === '' ? `There are no threads in ${conversation.label} in that window.` : `No thread in ${conversation.label} is about ${asked}.` });
+      }
+      return finish({ ...base, read: `the topics in ${conversation.label}${span}${about}${listed.total === undefined ? '' : `, of ${listed.total}`}`, ...(listed.total === undefined ? {} : { total: listed.total }), returned: listed.topics.length, topics: listed.topics });
+    }
+
     if (input.intent === 'thread') {
-      // F5c: a thread is named either by the root post id an earlier result carried, or by the topic and the
-      // conversation the owner named: the newest post about that topic there decides which thread he means.
+      // F5c/CA-R2: a thread is named by the root id an earlier result carried, or by the topic and the
+      // conversation the owner named: the newest thread about it decides which one he means.
       let root = input.post_id === undefined ? undefined : boundedText(input.post_id);
       if (root === undefined) {
         if (asked === '') return { state: 'refused', reason: 'thread-needs-post-id-or-topic' };
-        let conversation: string | undefined;
-        let read2: string;
-        if (input.person !== undefined) {
-          const spokenPerson = boundedText(input.person);
-          if (spokenPerson === undefined) return { state: 'refused', reason: 'invalid-person' };
-          const person = await findPerson(spokenPerson, capture, signal);
-          if (person.kind === 'failed') return person.result;
-          if (person.kind === 'clarify') return finish({ ...base, read: `a person called ${spokenPerson}`, clarify: person.text });
-          if (person.kind !== 'person') return finish({ ...base, read: `a person called ${spokenPerson}`, notFound: person.text });
-          if (person.dmChannelId === undefined) {
-            return finish({ ...base, read: `a thread with ${person.display} about ${asked}`, notFound: `You have no direct conversation with ${person.display}, so there is no thread there.` });
+        const conversation = await conversationFor();
+        if (!conversation.ok) return conversation.result;
+        const listed = await listThreads(conversation.args, asked);
+        let chosen: string | undefined = listed.ok ? listed.topics[0]?.rootId : undefined;
+        if (!listed.ok) {
+          // An older child without the thread list: the newest post about the topic carries the root.
+          const channelId = typeof conversation.args['channel_id'] === 'string' ? conversation.args['channel_id'] : undefined;
+          if (channelId !== undefined) {
+            const found = await postsRead(who.owner.username, { query: asked, channel: channelId, ...dates }, limit, 0, capture, signal, 'newest');
+            if (!found.ok) return found.result;
+            const newest = found.posts[0];
+            chosen = newest === undefined ? undefined : (newest.rootId === undefined || newest.rootId === '' ? newest.id : newest.rootId);
           }
-          conversation = person.dmChannelId;
-          read2 = `the thread with ${person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`} about ${asked}`;
-        } else if (input.channel !== undefined) {
-          const spokenChannel = boundedText(input.channel);
-          if (spokenChannel === undefined) return { state: 'refused', reason: 'invalid-channel' };
-          const key = nameKey(spokenChannel);
-          if (key === '') return { state: 'refused', reason: 'invalid-channel' };
-          const channels = await loadChannels(signal, capture);
-          if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
-          const strong = strongChannelMatches(channels.filter(channel => channel.type !== 'D' && channel.type !== 'G'), key);
-          const only = strong.length === 1 ? strong[0]! : undefined;
-          if (only === undefined || only.id === undefined) {
-            return finish({ ...base, read: `a channel called ${spokenChannel}`, clarify: `Which channel do you mean: ${spokenList(strong.slice(0, MATTERMOST_CHAT.candidates).map(channelLabel))}?` });
-          }
-          conversation = only.id;
-          read2 = `the thread in the channel ${channelLabel(only)} about ${asked}`;
-        } else {
-          return { state: 'refused', reason: 'thread-needs-conversation' };
         }
-        const found = await postsRead(who.owner.username, { query: asked, channel: conversation, ...dates }, limit, 0, capture, signal, 'newest');
-        if (!found.ok) return found.result;
-        const newest = found.posts[0];
-        if (newest === undefined) return finish({ ...base, read: read2, notFound: `I found no post about ${asked} in that conversation.` });
-        root = newest.rootId === undefined || newest.rootId === '' ? newest.id : newest.rootId;
+        if (chosen === undefined || chosen === '') return finish({ ...base, read: `the thread in ${conversation.label} about ${asked}`, notFound: `I found no thread about ${asked} in ${conversation.label}.` });
+        root = chosen;
       }
-      const thread = await read('mattermost_get_thread', { post_id: root }, signal);
-      if (!thread.ok) return thread.result;
-      capture(thread.evidence);
-      const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(post => chatPost(post, who.owner.username))
+      // A long thread is read in full: the child hands a cursor, and every page joins the same answer.
+      let rows: Record<string, unknown>[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < MATTERMOST_CHAT.topicPages; page++) {
+        const thread = await read('mattermost_get_thread', { post_id: root, ...(cursor === undefined ? {} : { cursor }) }, signal);
+        if (!thread.ok) return thread.result;
+        capture(thread.evidence);
+        const readRows = postsIn(thread.evidence.decodedResult) ?? [];
+        rows = [...rows, ...readRows];
+        const data = contentJson(thread.evidence.decodedResult);
+        const next = isRecord(data) && (typeof data['cursor'] === 'string' || typeof data['cursor'] === 'number') ? String(data['cursor']) : '';
+        if (next === '' || next === cursor || readRows.length === 0) break;
+        cursor = next;
+      }
+      const posts = rows.map(post => chatPost(post, who.owner.username))
         .sort((left, right) => Date.parse(left.time) - Date.parse(right.time) || 0);
       return page('the thread', { posts });
     }

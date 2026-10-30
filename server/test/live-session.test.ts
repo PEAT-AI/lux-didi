@@ -7459,7 +7459,7 @@ test('R9-W5 refusal retains delivered findings and projection uses closed refusa
   assert.doesNotMatch(String(reply['directive']), /nothing|empty|blocked/iu);
   assert.equal(reply['status'], 'blocked', 'W5-R2 preserves accepted admission envelope');
   assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
-  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /findings from calendar; 1 delivered items/u);
+  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /findings from calendar; 1 delivered item/u);
 });
 
 test('R9-W5 late findings all retain source and lookup provenance', () => {
@@ -7998,6 +7998,7 @@ test('C-SAFETY review: changed-name replay is refused before normal execution af
   assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch' });
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a changed name cannot reuse the recorded id to create an alarm');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))?.n, 1, 'the original recorded identity stays immutable');
+});
 // F2: on 10-30 the owner's call opened on the canary's own thread because the canary session wrote an ordinary
 // summary row. A canary session is marked by the key it creates, so it distils nothing and offers nothing.
 test('F2: a canary session distils nothing and its summary reaches no owner opener', async t => {

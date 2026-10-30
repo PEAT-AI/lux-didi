@@ -8,6 +8,8 @@ public enum NativeActionCode: String, Sendable, Equatable {
     case notAllowed = "not_allowed"
     case notFound = "not_found"
     case failed
+    /// F6b: the browser this open would use is installed but not running. Nothing was launched.
+    case browserNotRunning = "browser_not_running"
 }
 
 public struct NativeActionResult: Sendable, Equatable {
@@ -178,6 +180,13 @@ public struct SystemWorkspace: BrowserWorkspace {
     }
 }
 
+/// F6b: whether the browser an https open would use is installed, and whether it is already running.
+public struct BrowserState: Sendable, Equatable {
+    public let installed: Bool
+    public let running: Bool
+    public init(installed: Bool, running: Bool) { self.installed = installed; self.running = running }
+}
+
 /// The native boundary. It re-checks the allowlist itself and never trusts the host's argument shape.
 public actor NativeActions: NativeActionExecuting {
     public typealias Opener = @Sendable (URL, Bool) async -> Bool
@@ -187,6 +196,7 @@ public actor NativeActions: NativeActionExecuting {
 
     private let home: URL
     private let opener: Opener
+    private let browserState: @Sendable () -> BrowserState
     private let clock: @Sendable () -> Date
     private let log: Logger
     private var mattermostHost: String?
@@ -194,10 +204,12 @@ public actor NativeActions: NativeActionExecuting {
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                 opener: @escaping Opener = NativeActions.workspaceOpen,
+                browserState: @escaping @Sendable () -> BrowserState = NativeActions.systemBrowserState,
                 mattermostHost: String? = nil,
                 clock: @escaping @Sendable () -> Date = { Date() }) {
         self.home = home.resolvingSymlinksInPath().standardizedFileURL
         self.opener = opener
+        self.browserState = browserState
         self.mattermostHost = mattermostHost
         self.clock = clock
         self.log = Logger(subsystem: "ai.lux.didi", category: "native-actions")
@@ -205,6 +217,23 @@ public actor NativeActions: NativeActionExecuting {
 
     /// C-OPEN 5: the browser a web destination opens in, named by bundle id and resolved by the workspace.
     public static let chromeBundleIdentifier = "com.google.Chrome"
+
+    /// F6b: the line she says when the link needed a browser that is not running. The owner's own name comes
+    /// from the account this Mac is signed in to, never a literal in the source.
+    public static var browserNotRunningGuidance: String { guidance(for: NSFullUserName()) }
+
+    /// The same line for a name that was already read, so a test never depends on who is logged in.
+    public static func guidance(for fullName: String) -> String {
+        let name = fullName.split(separator: " ").first.map(String.init) ?? "there"
+        return "\(name), Chrome is not open, could you open it for me?"
+    }
+
+    /// F6b: whether the browser an https open would use is installed, and whether it is already running.
+    public static let systemBrowserState: @Sendable () -> BrowserState = {
+        let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: chromeBundleIdentifier)
+        let running = !NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundleIdentifier).isEmpty
+        return BrowserState(installed: application != nil, running: running)
+    }
 
     /// A web destination opens in Chrome when Chrome is installed and in the default browser otherwise; a
     /// file opens in its own app. No script, no profile flag, no keystroke: only the workspace open call.
@@ -247,6 +276,13 @@ public actor NativeActions: NativeActionExecuting {
         case .openURL:
             guard let destination = OpenDestination.of(target, mattermostHost: mattermostHost), let url = URL(string: target)
             else { return receipt(action, .notAllowed, "none") }
+            // F6b: a link opens in Chrome, and Chrome is only opened in a profile it is already running in.
+            // Opening a stopped Chrome would start it in a remembered profile, which is a guess about the owner.
+            let browser = browserState()
+            if browser.installed && !browser.running {
+                log.notice("native action open_url browser_not_running guidance=\(NativeActions.browserNotRunningGuidance, privacy: .public)")
+                return receipt(action, .browserNotRunning, "browser")
+            }
             return await open(url, isApplication: false, action: action, detail: destination.kind)
         case .openFile:
             guard let url = fileURL(target) else { return receipt(action, .notAllowed, extensionOf(target)) }

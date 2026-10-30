@@ -91,9 +91,15 @@ function jsonTypeOf(value: unknown): string {
   return typeof value;
 }
 /** Metadata only: top-level keys and each value's JSON type, never a value. */
+/** Metadata only: top-level keys and each value's SHAPE (a string's length, an array's length), never a value. */
+function shapeOf(value: unknown): string {
+  if (typeof value === 'string') return `string_${value.length}`;
+  if (Array.isArray(value)) return `array_${value.length}`;
+  return jsonTypeOf(value);
+}
 function logArgumentsRejected(name: string, args: unknown): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
-  const fields = Object.keys(record).slice(0,24).map(key => `${/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key'}:${jsonTypeOf(record[key])}`);
+  const fields = Object.keys(record).slice(0,24).map(key => `${/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key'}:${shapeOf(record[key])}`);
   hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields, reason: args === null || typeof args !== 'object' || Array.isArray(args) ? 'arguments_not_object' : 'schema_validation_failed' });
 }
 /** The one line the model may speak when a call is refused for its arguments: owner-facing, no host prose. */
@@ -109,15 +115,16 @@ export function invalidArgumentsResponse(reason: string): JsonObject | undefined
   };
 }
 /** For every declared tool: the tool name and its expected argument shape, never the bad values. */
-function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>): string {
-  if (guidance !== undefined && guidance.length > 0) return `Invalid arguments for ${name}. ${guidance}`;
+function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>, rejected?: string | undefined): string {
+  const token = rejected === undefined ? '' : ` Rejected argument: ${rejected}.`;
+  if (guidance !== undefined && guidance.length > 0) return `Invalid arguments for ${name}.${token} ${guidance}`;
   const properties = (parameters['properties'] ?? {}) as Record<string, { type?: unknown; items?: unknown }>;
   const shape = Object.entries(properties).map(([key, schema]) => {
     const items = schema?.items as { type?: unknown } | undefined;
     const type = schema?.type === 'array' ? `array of ${String(items?.type ?? 'value')}` : String(schema?.type ?? 'value');
     return `${key} (${type})`;
   }).join(', ');
-  return `Invalid arguments for ${name}. Expected an object with ${shape}.`;
+  return `Invalid arguments for ${name}.${token} Expected an object with ${shape}.`;
 }
 export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: readonly { binding: ToolResultBinding; response: JsonObject; dataClasses?: readonly DataClass[] }[] }
 interface CallOutcome { record: ToolRecord; binding?: ToolResultBinding; response?: Part; fatal?: { status: LoopResult['status']; reason: string } }
@@ -143,9 +150,10 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
-          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || !tool.validate(call.args)) {
+          const rejected = tool.rejection?.(call.args);
+          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || rejected !== undefined || !tool.validate(call.args)) {
             const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
-            const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters);
+            const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, rejected);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
             logArgumentsRejected(call.name, call.args);
             return;

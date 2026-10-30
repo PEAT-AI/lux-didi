@@ -711,8 +711,8 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
-  // D102-R2: key names and the validator reason code are diagnostic metadata, never values.
-  assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
+  // D102-R2/F3: key names and value shapes (a length, never a value) are diagnostic metadata.
+  assert.deepEqual(event.fields, ['ids:array_1', 'limit:number']);
   assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
@@ -820,3 +820,51 @@ for (const channel of ['eng', 'synthetic-missing']) {
     assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);
   });
 }
+
+// F3: the owner's two reads failed on Didi's own validator with no dispatch, and the fix text never
+// named the key. The model's observed shape is refused with its closed token, the fix text says which
+// keys each intent takes, and the corrected shape passes the same validator.
+test('F3: a rejected mattermost_chat call names its failing key and rule, and the fix text leads to a valid call', async t => {
+  const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
+  const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const names = sourceTools.map(tool => tool.name);
+  const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
+  const f = await fixture(t, { policy: p, sourceTools, resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify([]) }] }) });
+  const tool = f.definitions().find(candidate => candidate.name === 'mattermost_chat')!;
+  // Exactly the shape the model sent: every key, the unused ones empty.
+  const observed = { intent: 'person', person: 'Synthetic', people: [], channel: '', query: '', from_date: '2026-10-01', to_date: '2026-10-30', sides: 'both', offset: 0, limit: 20 };
+  assert.equal(tool.validate(observed), false, 'the observed shape is refused, not coerced');
+  assert.equal(tool.rejection?.(observed), 'channel:empty', 'the first failing key and rule is named as a closed token');
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
+  const batch = await runToolCalls(f.owner, [{ id: 'observed', name: tool.name, args: observed }], {
+    registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
+    authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
+    seenIds: new Set(), step: 1, invalidAttempts: new Set(),
+  } as never);
+  detach();
+  const reason = String(batch.tools[0]?.reason ?? '');
+  assert.match(reason, /channel:empty/u, 'the tool result names the failing key');
+  assert.match(reason, /Omit keys you do not use/u, 'the fix text tells the model to omit what it does not use');
+  assert.match(reason, /Never send an empty string/u);
+  // Metadata only: key names and shapes, never a value.
+  const logged = events.find(line => line.event === 'tool_arguments_rejected') as { fields?: string[] } | undefined;
+  assert.deepEqual(logged?.fields, ['intent:string_6', 'person:string_9', 'people:array_0', 'channel:string_0', 'query:string_0', 'from_date:string_10', 'to_date:string_10', 'sides:string_4', 'offset:number', 'limit:number']);
+  assert.doesNotMatch(JSON.stringify(logged), /Synthetic/u);
+  // The corrected shape, which is what the fix text asks for, passes the same validator.
+  const corrected = { intent: 'person', person: 'Synthetic', sides: 'both', from_date: '2026-10-01', to_date: '2026-10-30' };
+  assert.equal(tool.rejection?.(corrected), undefined);
+  assert.equal(tool.validate(corrected), true);
+  // An empty optional string is never silently dropped: it is refused with its own token.
+  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', channel: 'synthetic-channel' }), 'channel:not_for_person');
+  assert.equal(tool.rejection?.({ intent: 'group', people: ['Synthetic One'] }), 'people:min2');
+  assert.equal(tool.rejection?.({ intent: 'channel', channel: 'synthetic-channel', query: '   ' }), 'query:empty');
+  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', query: 'topic' }), 'query:placeholder');
+  // F5c: a thread is one post id, or a topic plus exactly one conversation.
+  assert.equal(tool.rejection?.({ intent: 'thread' }), 'post_id:required');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot' }), 'thread:needs_conversation');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic', channel: 'synthetic-channel' }), 'thread:one_conversation');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic' }), undefined);
+  assert.equal(tool.rejection?.({ intent: 'thread', post_id: 'synthetic-root' }), undefined);
+  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', post_id: 'synthetic-root' }), 'post_id:not_for_intent');
+});

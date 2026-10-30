@@ -75,6 +75,9 @@ const adaDm = channelById.get('chanDzz000000000000000000a');
 
 let seq = 0;
 const POSTS = [];
+// CA-R2: a thread long enough to need more than one page.
+const THREAD_PAGE_SIZE = 3;
+const THREAD_PAGES = 2;
 const add = (channelId, author, at, message, extra = {}) => {
   seq += 1;
   const id = `post${String(seq).padStart(4, '0')}xxxxxxxxxxxxxxxxxx`.slice(0, 26);
@@ -170,7 +173,8 @@ function search(args) {
     const stem = word => word.replace(/(?:ing|ed)$/u, '');
     list = list.filter(post => terms.every(term => words(`${post.message} ${post.attachmentText ?? ''}`).some(word => args.mode === 'hybrid' ? stem(word) === stem(term) : word === term)));
   }
-  list.sort((a, b) => b.at - a.at);
+  // F5b: the child the newer wagon serves also accepts sort=oldest, so a chronological walk can be proved.
+  list.sort((a, b) => (args.sort === 'oldest' ? a.at - b.at : b.at - a.at));
   const offset = args.offset ?? 0;
   const limit = args.limit ?? 10;
   const page = list.slice(offset, offset + limit).map(serialize);
@@ -269,7 +273,7 @@ function overview(args) {
 const SEARCH_SCHEMA = { type: 'object', additionalProperties: false, properties: {
   query: { type: 'string', default: '' }, author: { type: 'string' }, channel: { type: 'string' }, from_date: { type: 'string' }, to_date: { type: 'string' },
   replies_to: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 }, offset: { type: 'integer', minimum: 0 },
-  sort: { type: 'string', enum: ['relevance', 'newest'] }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, rerank: { type: 'boolean' }, format: { type: 'string', enum: ['concise', 'detailed'] },
+  sort: { type: 'string', enum: ['relevance', 'newest', 'oldest'] }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, rerank: { type: 'boolean' }, format: { type: 'string', enum: ['concise', 'detailed'] },
 } };
 const LIST_SCHEMA = people
   ? { type: 'object', additionalProperties: false, properties: {
@@ -281,8 +285,14 @@ const LIST_SCHEMA = people
 const SCHEMAS = {
   mattermost_whoami: { type: 'object', properties: {} },
   mattermost_search: SEARCH_SCHEMA,
-  mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
+  mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, cursor: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
   mattermost_list_channels: LIST_SCHEMA,
+  // CA-R2: the thread list and the whole-thread read with its cursor are the newer child's two reads.
+  mattermost_list_threads: { type: 'object', additionalProperties: false, properties: {
+    channel_id: { type: 'string' }, channel_name: { type: 'string' }, dm_username: { type: 'string' },
+    since: { type: 'string' }, until: { type: 'string' }, query: { type: 'string' },
+    limit: { type: 'integer', minimum: 1, maximum: 50 }, order: { type: 'string', enum: ['activity', 'oldest', 'newest'] },
+  } },
   mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
   ...(people ? {
     mattermost_resolve_person: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1 } } },
@@ -333,8 +343,33 @@ server.setRequestHandler('tools/call', async (request) => {
     return text({ total: list.length, returned: list.length, results: list });
   }
   if (name === 'mattermost_get_thread') {
+    // F5c/CA-R2: a thread is its root and replies, oldest first. A long thread answers pages behind a cursor,
+    // so a caller that stops at the first page loses its tail.
     const root = POSTS.find(post => post.id === args.post_id);
-    return text({ root: root ? serialize(root) : null, replies: [] });
+    if (root === undefined) return text({ root: null, replies: [] });
+    const replies = [];
+    for (let index = 0; index < THREAD_PAGES * THREAD_PAGE_SIZE; index++) {
+      replies.push({ ...root, id: `${root.id}-reply${index}`, timestamp: iso(root.at + (index + 1) * 60 * 1000), message: `synthetic thread reply ${index}` });
+    }
+    const start = Number(args.cursor ?? 0);
+    const page = replies.slice(start, start + THREAD_PAGE_SIZE);
+    const next = start + THREAD_PAGE_SIZE < replies.length ? String(start + THREAD_PAGE_SIZE) : undefined;
+    return text({ root: start === 0 ? serialize(root) : null, replies: page.map(serialize), ...(next === undefined ? {} : { cursor: next }) });
+  }
+  if (name === 'mattermost_list_threads') {
+    // CA-R2: one conversation's threads, newest activity first: the root of every conversation start that
+    // has at least one reply, plus its counts and dates.
+    const channelId = typeof args.channel_id === 'string' ? args.channel_id : resolveChannel(args.channel_name ?? args.dm_username)?.id;
+    if (channelId === undefined) return error('Unknown channel');
+    const roots = POSTS.filter(post => post.channelId === channelId && (post.rootId === undefined || post.rootId === ''))
+      .sort((a, b) => b.at - a.at);
+    const threads = roots.map(root => ({
+      root_id: root.id, author: root.username, created_at: serialize(root).timestamp,
+      preview: root.message, truncated: false, reply_count: THREAD_PAGES * THREAD_PAGE_SIZE,
+      participants: [root.username], last_reply_at: iso(root.at + THREAD_PAGES * THREAD_PAGE_SIZE * 60 * 1000),
+      permalink: `https://chat.example.invalid/${channelId}/${root.id}`,
+    })).filter(thread => args.query === undefined || `${thread.preview}`.toLowerCase().includes(String(args.query).toLowerCase()));
+    return text({ threads: threads.slice(0, args.limit ?? 20), total_threads: threads.length, standalone_posts: POSTS.filter(post => post.channelId === channelId).length - roots.length });
   }
   if (name === 'mattermost_list_channels') {
     const listed = listChannels(args);

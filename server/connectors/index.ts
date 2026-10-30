@@ -60,6 +60,8 @@ export interface ConnectorToolDeclaration {
   guidance?: string;
   /** Boundary normalization applied before validation and dispatch; undefined refuses the shape. */
   normalize?(args: unknown): { args: Record<string, unknown>; notice?: string } | undefined;
+  /** F3: the closed `key:rule` token for an unusable argument shape, named back to the model. */
+  rejection?(args: unknown): string | undefined;
   validate(args: unknown): boolean;
 }
 export interface ConnectorDescriptor {
@@ -362,6 +364,8 @@ export class ConnectorCompositionError extends Error {
 /** Company readers accept only an optional bounded limit and one required text field. */
 const isText = (value: unknown, max: number): boolean => typeof value === 'string' && value.trim() !== '' && value.length <= max;
 const isCount = (value: unknown, min: number, max: number): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
+/** F3: words a model uses to stand in for a topic it does not have. */
+const PLACEHOLDER_QUERIES: ReadonlySet<string> = new Set(['topic', 'topics', 'something', 'anything', 'stuff', 'things', 'n/a', 'na', 'none', 'null', 'undefined', 'the topic', 'placeholder']);
 
 /** A declaration whose tool takes more than one text field and a limit: the Mattermost read surface. */
 /**
@@ -374,15 +378,19 @@ export interface ConnectorComposedTool {
   readonly parameters: { properties: Record<string, unknown>; required: readonly string[] };
   /** The child reads it needs; every one must be granted for the composite to be granted. */
   readonly requires: readonly string[];
+  /** F3: one-try guidance for the model, and the closed token a rejected shape answers with. */
+  readonly guidance?: string;
+  readonly rejection?: (args: unknown) => string | undefined;
   readonly validate: (args: Record<string, unknown>) => boolean;
 }
 
-function mattermostDeclaration(name: string, description: string, properties: Record<string, unknown>, required: readonly string[], validate: (args: Record<string, unknown>) => boolean, extra: Pick<ConnectorToolDeclaration, 'normalize' | 'guidance'> = {}): ConnectorToolDeclaration {
+function mattermostDeclaration(name: string, description: string, properties: Record<string, unknown>, required: readonly string[], validate: (args: Record<string, unknown>) => boolean, extra: Pick<ConnectorToolDeclaration, 'normalize' | 'guidance' | 'rejection'> = {}): ConnectorToolDeclaration {
   return {
     name, description, effect: 'read',
     parameters: { type: 'object', additionalProperties: false, required: [...required], properties },
     validate(args) { return isRecord(args) && validate(args); },
     ...extra,
+    ...(extra.rejection === undefined ? {} : { rejection: (args: unknown) => isRecord(args) ? extra.rejection!(args) : 'arguments:not_object' }),
   };
 }
 
@@ -392,7 +400,16 @@ function threadPostId(args: Record<string, unknown>): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 function threadArgs(args: Record<string, unknown>): boolean {
-  return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
+  return Object.keys(args).every(key => key === 'postId' || key === 'post_id' || key === 'cursor') && threadPostId(args) !== '';
+}
+/** CA-R2: the thread list's own argument bounds: one conversation, an optional window and keyword. */
+function threadListArgs(args: Record<string, unknown>): boolean {
+  if (!Object.keys(args).every(key => ['channel_id', 'channel_name', 'dm_username', 'since', 'until', 'query', 'limit', 'order'].includes(key))) return false;
+  if (!['channel_id', 'channel_name', 'dm_username'].some(key => args[key] !== undefined && isText(args[key], 200))) return false;
+  if (['channel_id', 'channel_name', 'dm_username', 'query'].some(key => args[key] !== undefined && (typeof args[key] !== 'string' || (args[key] as string).length > 200))) return false;
+  if (['since', 'until'].some(key => args[key] !== undefined && (typeof args[key] !== 'string' || (args[key] as string).length > 40))) return false;
+  if (args['limit'] !== undefined && !isCount(args['limit'], 1, 50)) return false;
+  return args['order'] === undefined || ['activity', 'oldest', 'newest'].includes(String(args['order']));
 }
 function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: number): boolean {
   if (!Object.keys(args).every(key => ['query', 'limit', 'from_date', 'to_date', 'channel', 'offset'].includes(key))) return false;
@@ -404,10 +421,23 @@ function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: nu
 }
 /** The declaration a composed tool publishes; the host digests exactly these fields. */
 function composedDeclaration(tool: ConnectorComposedTool): ConnectorToolDeclaration {
-  return mattermostDeclaration(tool.name, tool.description, tool.parameters.properties, tool.parameters.required, tool.validate);
+  return mattermostDeclaration(tool.name, tool.description, tool.parameters.properties, tool.parameters.required, tool.validate, {
+    ...(tool.guidance === undefined ? {} : { guidance: tool.guidance }),
+    ...(tool.rejection === undefined ? {} : { rejection: tool.rejection }),
+  });
 }
 
 /** The composed tools each connector may be granted, beside the read tools it publishes. */
+/**
+ * F3: the one-try fix text. It names which keys each intent takes, says which to omit, and never
+ * asks the model to fix a value it cannot see.
+ */
+const CHAT_GUIDANCE = 'Omit keys you do not use: send only the keys this intent reads. A person read takes intent, person, sides and the two dates;' 
+  + ' an overview or group read takes intent, person or people, sides and the dates; a channel read takes intent, channel and the dates;'
+  + ' A topics read takes intent plus person or channel and the two dates, and lists the threads of that one conversation.'
+  + ' A thread read then takes intent and either post_id from an earlier result or query plus person or channel, one of the two. Never send people or channel on a person read. Send query only to filter by a topic'
+  + ' the owner named in this ask, never a recency word and never a leftover from an earlier ask. Send order oldest only when the owner asks for the'
+  + ' conversation in order. Never send an empty string: leave the key out instead.';
 export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly ConnectorComposedTool[]>> = {
   mattermost: [{
     name: MATTERMOST_ATTENTION_TOOL,
@@ -422,11 +452,11 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
     // C-CHAT: one read per ask for a person, the overview with a person, a channel or a group chat. It stands
     // on the base reads only; the person reads a newer child adds are used when granted and named when not.
     name: MATTERMOST_CHAT_TOOL,
-    description: 'Read the team chat for one person, one channel or one group chat: what a person wrote the owner (person, sides theirs or both), everything the owner and a person exchanged across their direct messages, shared group chats and channels (overview), the newest posts of a named channel (channel), or a group chat by its members (group). Names are matched strictly; an ambiguous name returns a question naming the candidates, never a guess. Newest first, with the archive\'s own match count.',
+    description: 'Read the team chat for one person, one channel or one group chat: what a person wrote the owner (person, sides theirs or both), everything the owner and a person exchanged across their direct messages, shared group chats and channels (overview), the newest posts of a named channel (channel), or a group chat by its members (group). Names are matched strictly; an ambiguous name returns a question naming the candidates, never a guess. Newest first, with the archive\'s own match count; send order oldest to walk the conversation from its first post and page with offset, and intent thread with the post_id of an earlier result to read one whole thread in time order.',
     parameters: {
       required: ['intent'],
       properties: {
-        intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group'] },
+        intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group', 'thread', 'topics'], description: 'topics lists the threads of one conversation with their counts and dates; thread then reads one of them whole by its root id. Two steps: topics, then thread.' },
         person: { type: 'string', minLength: 1, maxLength: 80, description: 'The person as the owner said it: a first name, a full name or a username.' },
         people: { type: 'array', minItems: 2, maxItems: MATTERMOST_CHAT.maxPeople, items: { type: 'string', minLength: 1, maxLength: 80 } },
         channel: { type: 'string', minLength: 1, maxLength: 80, description: 'The channel name as the owner said it.' },
@@ -434,27 +464,65 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
         from_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'First local day of the window; the last 30 days by default.' },
         to_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
         sides: { type: 'string', enum: ['theirs', 'both'] },
+        post_id: { type: 'string', minLength: 1, maxLength: 80, description: 'Thread reads only: the root post id of a thread an earlier result returned. Omit it when naming a topic and a conversation instead.' },
+        order: { type: 'string', enum: ['newest', 'oldest'], description: 'Time order: newest first by default, oldest for "in order".' },
         offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset },
         limit: { type: 'integer', minimum: 1, maximum: 50 },
       },
     },
     requires: MATTERMOST_TOOLS,
+    guidance: CHAT_GUIDANCE,
+    rejection: args => chatRejection(args as Record<string, unknown>),
     validate: args => chatReadArgs(args),
   }],
 };
 
-/** C-CHAT: the chat read's own argument bounds, checked before any child read. */
+/**
+ * C-CHAT/F3: the chat read's own argument bounds, checked before any child read. A refusal names the
+ * failing key and rule as one closed token (`channel:empty`, `people:min2`), never the value, so the
+ * model gets a fix it can act on and the host log stays metadata only.
+ */
+function chatRejection(args: Record<string, unknown>): string | undefined {
+  const keys = ['intent', 'person', 'people', 'channel', 'query', 'post_id', 'order', 'from_date', 'to_date', 'sides', 'offset', 'limit'];
+  if (!Object.keys(args).every(key => keys.includes(key))) return 'arguments:unknown_key';
+  const intent = String(args['intent']);
+  if (!['person', 'overview', 'channel', 'group', 'thread'].includes(intent)) return 'intent:unknown';
+  // F3: an empty string is not a value. A key the intent does not take, or one sent empty, is refused
+  // with its own token instead of being silently dropped.
+  for (const key of ['person', 'channel', 'query', 'post_id'] as const) {
+    const value = args[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') return `${key}:type`;
+    if (value.trim() === '') return `${key}:empty`;
+    if (value.length > (key === 'query' ? 200 : 80)) return `${key}:long`;
+  }
+  // A word that stands in for a topic is not a topic.
+  if (typeof args['query'] === 'string' && PLACEHOLDER_QUERIES.has(args['query'].trim().toLowerCase())) return 'query:placeholder';
+  if (args['order'] !== undefined && args['order'] !== 'oldest' && args['order'] !== 'newest') return 'order:unknown';
+  if (args['people'] !== undefined && !(Array.isArray(args['people']) && args['people'].length >= 2 && args['people'].length <= MATTERMOST_CHAT.maxPeople && args['people'].every(name => isText(name, 80)))) return 'people:min2';
+  if (['from_date', 'to_date'].some(key => args[key] !== undefined && !(typeof args[key] === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(args[key] as string)))) return 'dates:format';
+  if (args['sides'] !== undefined && args['sides'] !== 'theirs' && args['sides'] !== 'both') return 'sides:unknown';
+  if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return 'offset:range';
+  if (args['limit'] !== undefined && !isCount(args['limit'], 1, 50)) return 'limit:range';
+  // F3: each intent reads a named set of keys, so a key from another intent is a fixable mistake.
+  if (intent === 'person' && args['people'] !== undefined) return 'people:not_for_person';
+  if (intent === 'person' && args['channel'] !== undefined) return 'channel:not_for_person';
+  if (intent === 'channel' && args['person'] !== undefined) return 'person:not_for_channel';
+  if (intent === 'channel' && args['people'] !== undefined) return 'people:not_for_channel';
+  // F5c: a thread is one root post id, or a topic inside a conversation the owner named.
+  // CA-R2: the two-step flow starts with the thread list of one conversation.
+  if (intent === 'topics' && args['person'] === undefined && args['channel'] === undefined) return 'topics:needs_conversation';
+  if (intent === 'topics' && args['post_id'] !== undefined) return 'post_id:not_for_intent';
+  if (intent === 'thread' && args['post_id'] === undefined) {
+    if (args['query'] === undefined) return 'post_id:required';
+    if (args['person'] === undefined && args['channel'] === undefined) return 'thread:needs_conversation';
+    if (args['person'] !== undefined && args['channel'] !== undefined) return 'thread:one_conversation';
+  }
+  if (intent !== 'thread' && args['post_id'] !== undefined) return 'post_id:not_for_intent';
+  return undefined;
+}
 function chatReadArgs(args: Record<string, unknown>): boolean {
-  const keys = ['intent', 'person', 'people', 'channel', 'query', 'from_date', 'to_date', 'sides', 'offset', 'limit'];
-  if (!Object.keys(args).every(key => keys.includes(key))) return false;
-  if (!['person', 'overview', 'channel', 'group'].includes(String(args['intent']))) return false;
-  if (['person', 'channel'].some(key => args[key] !== undefined && !isText(args[key], 80))) return false;
-  if (args['query'] !== undefined && !isText(args['query'], 200)) return false;
-  if (args['people'] !== undefined && !(Array.isArray(args['people']) && args['people'].length >= 2 && args['people'].length <= MATTERMOST_CHAT.maxPeople && args['people'].every(name => isText(name, 80)))) return false;
-  if (['from_date', 'to_date'].some(key => args[key] !== undefined && !(typeof args[key] === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(args[key] as string)))) return false;
-  if (args['sides'] !== undefined && args['sides'] !== 'theirs' && args['sides'] !== 'both') return false;
-  if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return false;
-  return args['limit'] === undefined || isCount(args['limit'], 1, 50);
+  return chatRejection(args) === undefined;
 }
 
 /**
@@ -528,8 +596,15 @@ const mattermostDescriptor: ConnectorDescriptor = {
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
       companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works. Returns at most 8 posts, 250 characters each.', text, 'channel', limit),
       mattermostDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history, and post_id is accepted as the same id. Returns at most 8 posts, 250 characters each.',
-        { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
-        { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
+        { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text }, cursor: { type: 'string', minLength: 1, maxLength: 40 } }, ['postId'], threadArgs,
+        { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args), ...(typeof args['cursor'] === 'string' ? { cursor: args['cursor'] } : {}) } } : undefined) }),
+      // CA-R2: the owner's two-step ask: list the topics in one conversation, then read one thread whole.
+      mattermostDeclaration('mattermost_list_threads', 'List the threads of one Mattermost conversation, newest activity first: channel_id or dm_username, an optional window, an optional keyword and a page size. Each thread carries its root id, author, created time, preview, reply count and last reply time.', {
+        channel_id: { type: 'string', minLength: 1, maxLength: text }, channel_name: { type: 'string', minLength: 1, maxLength: text },
+        dm_username: { type: 'string', minLength: 1, maxLength: text }, since: { type: 'string', maxLength: 40 },
+        until: { type: 'string', maxLength: 40 }, query: { type: 'string', maxLength: text },
+        limit: { type: 'integer', minimum: 1, maximum: limit }, order: { type: 'string', enum: ['activity', 'oldest', 'newest'] },
+      }, [], threadListArgs),
       mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless from_date names an older start. No channel id needed: search first, no channel list needed. Use author for a person, from_date/to_date for date windows and channel for a named channel; never use inline After:<date>, Before:<date> or In:<channel> operators, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
         { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset, description: 'Skip this many matches: the next page of the same search.' }, from_date: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO day the window starts at; 90 days before now by default.' }, to_date: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
       // #604: the composite's own declaration, so one table feeds the grant and the dispatch.

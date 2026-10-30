@@ -823,11 +823,16 @@ function auditClock(lines: readonly LogLine[]): CallAudit['clock'] {
 /** C-LOGS11: the whole audit of one call, from the store's timeline and the day's logs. Pure. */
 export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit {
   const lines = sessionLines(scan, report.liveSessionId);
-  const calls = report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines)));
+  // F8: a rebuild drops the turn link, so a call can be in the store with no turn. It is still a call:
+  // count it, count its refusal, and list it under its own bucket instead of vanishing.
+  const calls = [...report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines))),
+    ...report.unattributedCalls.map(call => auditCallRow(call, lines))];
   const turns = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
   const timed = calls.filter((call): call is AuditCallRow & { totalMs: number } => call.totalMs !== null);
   const refusalsByCode: Record<string, number> = {};
-  for (const call of calls) if (call.outcome === 'refused') { const code = call.refusalCode ?? MISSING; refusalsByCode[code] = (refusalsByCode[code] ?? 0) + 1; }
+  // CA-R4: a blocked call (answer_already_given, a grant refusal) is a refusal the owner must see counted,
+  // not only a number on its own line.
+  for (const call of calls) if (call.outcome === 'refused' || call.outcome === 'blocked') { const code = call.refusalCode ?? MISSING; refusalsByCode[code] = (refusalsByCode[code] ?? 0) + 1; }
   const slowest = [...timed].sort((left, right) => right.totalMs - left.totalMs).slice(0, AUDIT_SLOW_LIMIT)
     .map(call => ({ callKey: call.callKey, turnId: call.turnId, name: call.name, totalMs: call.totalMs }));
   const coverage = report.coverage;
@@ -894,6 +899,10 @@ export function renderCallAudit(audit: CallAudit): string {
   for (const call of audit.calls) {
     out.push(`${call.turnId ?? '-'} ${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   }
+  const orphanCalls = audit.calls.filter(call => call.turnId === null);
+  out.push('');
+  out.push(`after rebuild, no turn calls=${orphanCalls.length}`);
+  for (const call of orphanCalls) out.push(`${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   out.push('');
   out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');
   for (const turn of audit.turns) {

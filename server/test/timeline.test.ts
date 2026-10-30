@@ -302,7 +302,7 @@ function turn(store: Store, session: string, turnId: string, index: number, open
   record(store, 'turn.opened', { liveSessionId: session, turnId }, { origin: 'owner', turnIndex: index, openedAt, monoMs: index * 1_000 });
 }
 
-function call(store: Store, session: string, turnId: string, callKey: string, name: string, outcome: 'completed' | 'refused', ms: number, at: number): void {
+function call(store: Store, session: string, turnId: string, callKey: string, name: string, outcome: 'completed' | 'refused' | 'blocked', ms: number, at: number): void {
   record(store, 'call.intent', { liveSessionId: session, turnId, callKey }, { name, argsChars: 24, intentAt: at });
   record(store, 'call.executed', { liveSessionId: session, turnId, callKey }, { executedAt: at + 1 });
   record(store, 'call.output_written', { liveSessionId: session, turnId, callKey }, { outputWrittenAt: at + ms, outcome, ms, resultChars: 8 });
@@ -357,6 +357,43 @@ function logsA(): string[] {
 function auditA(store: Store): CallAudit {
   return buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(logsA()));
 }
+
+// CA-R4 (CALLS-1030b G9): a blocked call is a refusal the audit counts, with its own code.
+test('CA-R4: a blocked call is counted in the refusals by code', () => {
+  withStore(store => {
+    storeA(store);
+    call(store, SESSION, 't1', 'call:blocked', 'research', 'blocked', 5, T0 + 4_000);
+    const scan = scanOf([...logsA(), line(T0 + 4_000, 'tool_call_outcome', { liveSessionId: SESSION, turnId: 't1', callKey: 'call:blocked', outcome: 'blocked', refusalCode: 'answer_already_given', ms: 5 })]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scan);
+    const blocked = audit.calls.find(row => row.callKey === 'call:blocked')!;
+    assert.equal(blocked.outcome, 'blocked');
+    assert.equal(blocked.refusalCode, 'answer_already_given', 'the code the outcome line named');
+    assert.equal(audit.aggregates.refusalsByCode['answer_already_given'], 1, 'a blocked call is in the refusal counts');
+    assert.equal(audit.aggregates.refusalsByCode['grant_not_permitted'], 1, 'and the refused call keeps its own count');
+    const text = renderCallAudit(audit);
+    assert.match(text, /refusals by code .*answer_already_given=1/u);
+  });
+});
+
+test('F8: a call with no turn after a rebuild is listed in its own bucket and counted', () => {
+  withStore(store => {
+    storeA(store);
+    // A rebuild drops the turn link: the call is recorded with no turn at all, so its turn_id is null.
+    const orphan = (id: string, at: number): void => {
+      record(store, 'call.intent', { liveSessionId: SESSION, callKey: id }, { name: 'set_alarm', argsChars: 12, intentAt: at });
+      record(store, 'call.output_written', { liveSessionId: SESSION, callKey: id }, { outputWrittenAt: at + 30, outcome: 'refused', ms: 30, resultChars: 8 });
+    };
+    orphan('call:orphan', T0 + 3_000);
+    const audit = auditA(store);
+    assert.equal(audit.calls.length, 4, 'the audit counts every call, not only the ones a turn claims');
+    assert.deepEqual(audit.calls.filter(row => row.turnId === null).map(row => row.callKey), ['call:orphan']);
+    // The refusal count carries the orphan too: one gmail grant refusal plus one orphan refusal.
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, missing: 1 });
+    const text = renderCallAudit(audit);
+    assert.match(text, /after rebuild, no turn calls=1/u);
+    assert.match(text, /call:orphan set_alarm/u);
+  });
+});
 
 test('C-LOGS11: the audit names every tool call and every owner turn of one call', () => {
   withStore(store => {

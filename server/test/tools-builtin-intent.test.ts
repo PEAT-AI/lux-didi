@@ -193,6 +193,44 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   assert.match(response, /nothing is open/);
   assert.ok(events.some(event => { const row = event as Record<string, unknown>; return row.event === 'tool_handler_error' && row.reason === 'executor_intent_mismatch'; }));
 
+  // F6a: a site the resolver could not find is the site-not-found payload, never an authorization refusal.
+  const notFoundEvents: Record<string, unknown>[] = [];
+  const detachNotFound = attachHostLogSink({ event: event => notFoundEvents.push(event as Record<string, unknown>) });
+  t.after(detachNotFound);
+  noteOwnerWords(session.liveSessionId, 'open zzsyntheticnotasite');
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open zzsyntheticnotasite', Date.now());
+  const notFound = await runToolCalls(owner, [{ id: 'synthetic-not-found', name: 'open_web', args: { kind: 'site', target: 'zzsyntheticnotasite' } }], {
+    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+  } as never);
+  const notFoundText = JSON.stringify(notFound.accepted);
+  assert.match(notFoundText, /"not_found"/, 'the resolver answer is reported as itself');
+  assert.doesNotMatch(notFoundText, /target_not_authorized/, 'a missing site is never relabelled as an unauthorized target');
+  assert.match(notFoundText, /could not find that site/u, 'she is told what to say: the site was not found');
+  assert.ok(notFoundEvents.some(event => event['event'] === 'open_resolve' && event['target'] === 'web' && event['outcome'] === 'not_found' && typeof event['ms'] === 'number'),
+    'the resolver outcome and duration are logged');
+
+  const beforeNoBrowser = notFoundEvents.length;
+  // F6b: a link that needs a Chrome that is not running is a closed refusal with the line she says, and the
+  // host never gets a launch order for it.
+  noteOwnerWords(session.liveSessionId, 'open example.invalid in my browser');
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open example.invalid in my browser', Date.now());
+  t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
+  const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'example.invalid' } }], {
+    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+  } as never);
+  const noBrowserText = JSON.stringify(noBrowser.accepted);
+  assert.match(noBrowserText, /browser_not_running/);
+  assert.match(noBrowserText, /Chrome is not open, could you open it for me\?/u);
+  assert.doesNotMatch(noBrowserText, /opening example\.invalid/u, 'nothing opened, so nothing is announced as opening');
+  // F13: an open that never reached the native side is a host refusal, not a native action line.
+  const nativeLines = notFoundEvents.slice(0, beforeNoBrowser).filter(event => event['event'] === 'native_action');
+  assert.deepEqual(nativeLines, [], 'a request that never reached the native side writes no native_action line');
+  assert.ok(notFoundEvents.some(event => event['event'] === 'open_audit' && event['refusalCode'] === 'not_found'), 'the host refusal is the audit line');
+
   // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
   const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
     id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];

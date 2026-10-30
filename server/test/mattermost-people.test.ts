@@ -962,6 +962,18 @@ test('C-RESIDUE explicit DM scope precedes person overview', () => {
   }
 });
 
+test('F5a (O-A1): a later page of a 0-hit topic read is an honest gap, never a second fallback', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'zzsyntheticnotopic', limit: 3, offset: 3 }));
+  const calls = searches(f.calls());
+  assert.equal(calls.length, 2, 'the first page searched and fell back; the second page searched once');
+  const page = calls.at(-1)!;
+  assert.equal(page['query'], 'zzsyntheticnotopic', 'the later page keeps the topic it was asked for');
+  assert.equal(page['offset'], 3, 'and its own offset');
+  assert.equal(read.returned, 0, 'an empty later page is reported as empty');
+  assert.equal(read.posts.length, 0);
+});
+
 // ---- F5: order, the recent-unfiltered fallback, and one thread ------------------------------------------
 
 test('F5b: order oldest is refused honestly when the child cannot walk from the oldest end', async t => {

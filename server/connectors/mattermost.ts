@@ -888,7 +888,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     let broadened: string | undefined;
     // F5a: no keyword hit is not permission to rank by relevance. The same conversation is read again
     // unfiltered, newest first, and the result says which read it is.
-    if ((postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '') {
+    // O-A1: only the first page falls back. A later page of a multi-term read that matched nothing is an
+    // honest gap in a topic read, never a reason to re-read the conversation from its newest post.
+    if (offset === 0 && (postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '') {
       result = await read('mattermost_search', { ...args, query: '' }, signal);
       if (!result.ok) return result;
       capture(result.evidence);

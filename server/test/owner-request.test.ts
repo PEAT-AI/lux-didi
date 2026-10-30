@@ -88,7 +88,7 @@ for (const words of ['do not open the deck', 'do not set an alarm', 'do not save
   test(`direct102 authority: nonimperative and negated speech creates no grant: ${words}`, () => {
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'j1', words);
-    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) if (kind === 'set_alarm') {
+    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) if ((kind as string) === 'set_alarm') {
       assert.equal(requests.authorize('s', kind, 'x').code, 'no_owner_request');
     } else assert.equal(requests.authorize('s', kind, 'x').code,
       words.includes('open') && kind === 'open' || words.includes('alarm') && kind === 'set_alarm' || words.includes('save') && kind === 'lux_note' ? 'no_owner_request' : 'allowed');

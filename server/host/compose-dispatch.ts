@@ -150,7 +150,7 @@ export function createComposeDispatch(options: { store: Store; ownerId: string; 
   /** The Mattermost channels the owner's own channel read returns, as ids with their spoken names. */
   const channels = async (): Promise<{ id: string; names: string[] }[]> => {
     const result = await call('mattermost', 'mattermost_list_channels', {});
-    if (result.state !== 'completed') { probe = `call-${result.state}-${result.state === 'refused' ? result.reason : result.reason}`; return []; }
+    if (result.state !== 'completed') { probe = result.state === 'refused' || result.state === 'unknown' ? `call-${result.state}-${result.reason}` : `call-${result.state}`; return []; }
     const payload = readMattermostPayload(port, result);
     if (!payload.ok) { probe = `payload-${payload.reason}`; return []; }
     let envelope: unknown;

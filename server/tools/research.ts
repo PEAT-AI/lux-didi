@@ -5821,7 +5821,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   // G5: a source whose findings already landed in the ledger is never called still reading, whatever the
   // snapshot taken when the early answer began still listed.
   const landed = new Set<SourceKind>();
-  for (const entry of view.run.ledger.values()) landed.add(entry.source);
+  for (const entry of view.run.ledger.values()) if (entry.source !== null) landed.add(entry.source);
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source) && !landed.has(source));
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.

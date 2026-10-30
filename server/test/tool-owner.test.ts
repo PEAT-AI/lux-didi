@@ -42,7 +42,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads' }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -76,7 +76,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}) });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -96,7 +96,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}) }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) }); },
   };
 }
 
@@ -855,7 +855,7 @@ const liveExecute = (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<ty
 
 test('W1030 draft_email: a split two-turn ask writes one unsent draft and its replay returns the receipt', async t => {
   const port = composePort();
-  const f = await fixture(t, { compose: port });
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
   f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
   f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
@@ -878,7 +878,7 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft and its re
 test('W1030 recipient: two spoken matches ask, and the model address never reaches the draft', async t => {
   const port = composePort();
   const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
-  const f = await fixture(t, { compose: ambiguous });
+  const f = await fixture(t, { compose: ambiguous, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const call = composeCall(f, 'run:1:0', 'draft_email', args);
@@ -893,7 +893,7 @@ test('W1030 recipient: two spoken matches ask, and the model address never reach
 
 test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft tool, never a post', async t => {
   const port = composePort();
-  const f = await fixture(t, { compose: port });
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
   const dm = composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' });
   f.owner.journal.intent(dm);
@@ -909,7 +909,7 @@ test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft t
 
 test('W1030 create_event: the window comes from his words, a colleague stays a described name, a clash is reported', async t => {
   const port = composePort();
-  const f = await fixture(t, { compose: port });
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
   const args = { summary: 'gym' };
   const call = composeCall(f, 'run:1:0', 'create_event', args);
@@ -929,7 +929,7 @@ test('W1030 create_event: the window comes from his words, a colleague stays a d
 
 test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
   const port = composePort();
-  const f = await fixture(t, { compose: port });
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const call = composeCall(f, 'run:1:0', 'draft_email', args);
@@ -946,7 +946,7 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one action and writes nothing', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
   const args = { summary: 'block' };
   const call = composeCall(f, 'run:1:0', 'create_event', args);

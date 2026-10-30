@@ -69,6 +69,11 @@ export interface ConnectorDescriptor {
   envelope: readonly string[];
   /** W1030: the write calls this connector may reach for the host's compose port, never for the model. */
   writeEnvelope?: readonly string[];
+  /**
+   * W1030: the family's read-only consent probe. A write name is grantable only beside it, so a stored
+   * approval can never name a write alone and a consent check can never write.
+   */
+  writeProbe?: string;
   /** The connector's tool table for one approved policy (bounds may shape the schemas). */
   declarations(policy: ConnectionPolicy): readonly ConnectorToolDeclaration[];
   /** A per-connection reader bound to the approved endpoint, digest and generation. */
@@ -323,6 +328,7 @@ const googleDescriptor: ConnectorDescriptor = {
   // reached by the host's compose port through `createReader().call`, never as connector tools.
   envelope: GOOGLE_TOOLS,
   writeEnvelope: GOOGLE_WRITE_TOOLS,
+  writeProbe: 'google_identity',
   declarations() {
     const listProps = { maxResults: { type: 'integer', minimum: 1, maximum: 50 }, pageToken: { type: 'string', minLength: 1 } };
     return [
@@ -567,6 +573,28 @@ export function connectionEnvelope(connector: string, endpoint: { resource: stri
   return name === undefined ? [] : MONGOOSE_ENDPOINT_TOOLS[name];
 }
 
+/**
+ * W1030: the write names one endpoint may be granted, taken from the connector's own write envelope and
+ * only for the names that endpoint actually published. A family the child does not publish
+ * contributes nothing, so a read-only endpoint is granted exactly what it was before.
+ */
+export function writeEnvelopeFor(connector: string, published: readonly string[]): string[] {
+  const write = connectorDescriptor(connector)?.writeEnvelope ?? [];
+  return write.filter(name => published.includes(name));
+}
+
+/**
+ * W1030: the write names one connection may hold, given the names it published. They are grantable only
+ * when the family's read-only consent probe is published too, exactly as a composite is grantable only
+ * beside its children, so no approval can name a write without the read that proves it.
+ */
+export function writeGrantedNames(connector: string, published: readonly string[]): string[] {
+  const descriptor = connectorDescriptor(connector);
+  const write = writeEnvelopeFor(connector, published);
+  const probe = descriptor?.writeProbe;
+  return probe !== undefined && published.includes(probe) ? write : [];
+}
+
 /** The composed names a connector may hold, given the child names it already holds. */
 export function composedGrantedNames(connector: string, granted: readonly string[]): string[] {
   const present = new Set(granted);
@@ -620,6 +648,8 @@ const mattermostDescriptor: ConnectorDescriptor = {
   id: 'mattermost', envelope: MATTERMOST_READ_TOOLS,
   // W1030: the draft family, its own names and its own grant, never inside the read envelope.
   writeEnvelope: MATTERMOST_DRAFT_TOOLS,
+  // The draft family proves itself with the connector's own read-only whoami, never with a draft.
+  writeProbe: 'mattermost_whoami',
   declarations(policy) {
     const text = Math.min(200, policy.bounds.maxQueryChars);
     const limit = Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit);

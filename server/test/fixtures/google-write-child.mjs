@@ -11,6 +11,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 const family = process.argv[2] ?? 'gmail_draft';
 const pidFile = process.argv[3];
+// argv[4] = 'scope_missing' makes every write (never the consent probe) answer the helper's own
+// credential refusal, so the host's not_authorized path can be driven without any real token.
+const mode = process.argv[4] ?? 'ok';
 const recording = JSON.parse(readFileSync(new URL('./google-tools-list.json', import.meta.url), 'utf8'));
 const TOOLS = recording.families[family].tools;
 
@@ -35,8 +38,13 @@ server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
   if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
+  // The exact wire arguments, one line per call, so a test can prove what was and was not sent.
+  if (pidFile) appendFileSync(`${pidFile}.args`, `${name} ${JSON.stringify(args)}\n`);
   const published = TOOLS.some(tool => tool.name === name);
   if (!published) return { content: [{ type: 'text', text: `tool_unknown: the ${family} family does not publish ${name}` }], isError: true };
+  if (mode === 'scope_missing' && name !== 'google_identity') {
+    return { content: [{ type: 'text', text: `scope_missing: the ${family} token lacks the scope this call needs` }], isError: true };
+  }
   const envelope = envelopeFor(name, args);
   return { content: [{ type: 'text', text: JSON.stringify(envelope) }], structuredContent: envelope, isError: false };
 });

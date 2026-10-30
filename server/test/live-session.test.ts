@@ -7911,7 +7911,7 @@ test('C-SAFETY: three typed asks finish without audio and never rebuild for audi
 test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms and replay returns its receipt', async t => {
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, limits: openaiLimits });
-  await openPort(h, 'alarm-history-replay');
+  const { session } = await openPort(h, 'alarm-history-replay');
   async function call(id: string) {
     const before = fake.toolResponses.length;
     fake.emit({ type: 'toolCall', calls: [{ id, name: 'set_alarm', args: {} }] });
@@ -7925,6 +7925,8 @@ test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms 
   fake.emit({ type: 'turnComplete' }); await settlePort();
   fake.emit({ type: 'goAway', timeLeftMs: 1 });
   for (let n = 0; n < 100 && fake.requests.length < 2; n++) await settlePort();
+  for (let n = 0; n < 100 && !h.owner.providerReady(session.liveSessionId); n++) await settlePort();
+  assert.ok(h.owner.providerReady(session.liveSessionId), 'rebuilt provider ready');
   assert.equal(fake.requests.length, 2, 'provider rebuilt');
   assert.match(JSON.stringify(fake.requests.at(-1)!.history), /Set an alarm in ten minutes/, 'alarm ask is in seeded history');
   h.owner.text('Find the synthetic mail');

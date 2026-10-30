@@ -98,7 +98,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     owner.ownerRequests.answered!(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', Date.now());
     const definition = live.find(tool => tool.name === 'set_alarm')!;
-    const intent: ToolCallIntent = { ...authority, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
+    const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
       argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
     owner.journal.intent(intent);
     {

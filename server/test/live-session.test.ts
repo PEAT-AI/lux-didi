@@ -7890,3 +7890,20 @@ test('actual InstalledCanary never-ready close releases production session and l
     host.shutdown();
   } finally { stop(); }
 });
+
+test('C-SAFETY: three typed asks finish without audio and never rebuild for audible debt', async t => {
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'typed-three-no-audio');
+  for (let ask = 0; ask < 3; ask++) {
+    h.owner.text(`Find synthetic note ${ask}`);
+    fake.emit({ type: 'toolCall', calls: [{ id: `typed-${ask}`, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] });
+    for (let n = 0; n < 100 && fake.toolResponses.length <= ask; n++) await settlePort();
+    assert.equal(fake.toolResponses.length, ask + 1);
+    fake.emit({ type: 'modelText', text: 'Synthetic answer.' });
+    fake.emit({ type: 'turnComplete' });
+    await settlePort();
+    h.advance(30000); scheduler.runDue(); await settlePort();
+    assert.equal(fake.requests.length, 1, 'response completion answers a typed turn without requiring audible audio');
+  }
+});

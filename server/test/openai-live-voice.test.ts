@@ -2597,3 +2597,40 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   await quiet();
   assert.equal(completions(captured), 0);
 });
+
+test('three synchronous typed finals form one user message and one response', async t => {
+  const { socket, session } = await fakeReady(t);
+  const start = socket.sent.length;
+  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
+  await quiet();
+  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
+  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
+  const messages = frames.filter(frame => frame.type === 'response.item.create');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
+});
+
+test('typed finals wait for all function outputs before their single user message and continuation', async t => {
+  const { socket, session } = await fakeReady(t);
+  socket.deliver(delegated('response.created', { response: { id: 'synthetic_inflight' } }));
+  socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic_owed', name: 'research', arguments: '{}' } }));
+  await quiet();
+  const start = socket.sent.length;
+  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
+  await quiet();
+  assert.equal(socket.sent.slice(start).length, 0);
+  socket.deliver(delegated('response.done', { response: { id: 'synthetic_inflight', status: 'completed' } }));
+  await quiet();
+  assert.equal(socket.sent.slice(start).length, 0);
+  session.sendToolResponse({ responses: [{ id: 'synthetic_owed', name: 'research', response: { ok: true } }] });
+  await quiet();
+  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
+  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
+  const messages = frames.filter(frame => frame.item?.type === 'message');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
+  const output = frames.findIndex(frame => frame.item?.type === 'function_call_output');
+  assert.ok(output >= 0);
+  assert.ok(output < frames.indexOf(messages[0]!));
+  assert.ok(frames.indexOf(messages[0]!) < frames.findIndex(frame => frame.type === 'response.create'));
+});

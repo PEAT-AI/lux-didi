@@ -170,7 +170,8 @@ function search(args) {
     const stem = word => word.replace(/(?:ing|ed)$/u, '');
     list = list.filter(post => terms.every(term => words(`${post.message} ${post.attachmentText ?? ''}`).some(word => args.mode === 'hybrid' ? stem(word) === stem(term) : word === term)));
   }
-  list.sort((a, b) => b.at - a.at);
+  // F5b: the child the newer wagon serves also accepts sort=oldest, so a chronological walk can be proved.
+  list.sort((a, b) => (args.sort === 'oldest' ? a.at - b.at : b.at - a.at));
   const offset = args.offset ?? 0;
   const limit = args.limit ?? 10;
   const page = list.slice(offset, offset + limit).map(serialize);
@@ -269,7 +270,7 @@ function overview(args) {
 const SEARCH_SCHEMA = { type: 'object', additionalProperties: false, properties: {
   query: { type: 'string', default: '' }, author: { type: 'string' }, channel: { type: 'string' }, from_date: { type: 'string' }, to_date: { type: 'string' },
   replies_to: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 }, offset: { type: 'integer', minimum: 0 },
-  sort: { type: 'string', enum: ['relevance', 'newest'] }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, rerank: { type: 'boolean' }, format: { type: 'string', enum: ['concise', 'detailed'] },
+  sort: { type: 'string', enum: ['relevance', 'newest', 'oldest'] }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, rerank: { type: 'boolean' }, format: { type: 'string', enum: ['concise', 'detailed'] },
 } };
 const LIST_SCHEMA = people
   ? { type: 'object', additionalProperties: false, properties: {

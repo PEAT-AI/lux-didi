@@ -860,4 +860,11 @@ test('F3: a rejected mattermost_chat call names its failing key and rule, and th
   assert.equal(tool.rejection?.({ intent: 'group', people: ['Synthetic One'] }), 'people:min2');
   assert.equal(tool.rejection?.({ intent: 'channel', channel: 'synthetic-channel', query: '   ' }), 'query:empty');
   assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', query: 'topic' }), 'query:placeholder');
+  // F5c: a thread is one post id, or a topic plus exactly one conversation.
+  assert.equal(tool.rejection?.({ intent: 'thread' }), 'post_id:required');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot' }), 'thread:needs_conversation');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic', channel: 'synthetic-channel' }), 'thread:one_conversation');
+  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic' }), undefined);
+  assert.equal(tool.rejection?.({ intent: 'thread', post_id: 'synthetic-root' }), undefined);
+  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', post_id: 'synthetic-root' }), 'post_id:not_for_intent');
 });

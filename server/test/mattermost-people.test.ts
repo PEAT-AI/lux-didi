@@ -988,3 +988,49 @@ test('F5c: a thread read returns the whole thread in chronological order through
   assert.equal(refused.state, 'refused');
   assert.equal((refused as { reason: string }).reason, 'thread-needs-post-id');
 });
+
+test('F5b: order oldest walks the conversation ascending when the child accepts it, page by page', async t => {
+  const f = await setup(t, 'people');
+  const first = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest', limit: 3 }));
+  const calls = searches(f.calls());
+  assert.equal(calls[0]?.['sort'], 'oldest', 'the child is asked for the order the owner asked for');
+  const times = first.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'oldest first');
+  const second = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest', limit: 3, offset: 3 }));
+  assert.deepEqual(searches(f.calls()).at(-1)?.['offset'], 3, 'the next page starts where the last ended');
+  const later = second.posts.map(post => Date.parse(post.time));
+  assert.ok(later.every(time => Number.isFinite(time)));
+  assert.ok(first.posts.length > 0 && second.posts.length > 0);
+  const head = Date.parse(first.posts[0]!.time);
+  const tail = Date.parse(second.posts[0]!.time);
+  assert.ok(head <= tail || second.posts.length === 0, 'the second page continues forward in time');
+});
+
+test('F5c: a thread about a topic in a direct conversation is the newest matching post and its thread', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', person: 'Ada', query: 'pilot' }));
+  const searches = f.calls().filter(call => call.name === 'mattermost_search').map(call => call.arguments);
+  assert.equal(searches.at(-1)?.['channel'], ADA_DM, 'the topic is searched inside that direct conversation');
+  assert.equal(searches.at(-1)?.['query'], 'pilot');
+  const asked = f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments);
+  assert.equal(asked.length, 1, 'the thread is read once');
+  assert.equal(typeof asked[0]?.['post_id'], 'string', 'its root is the id the matching post carried');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'the whole thread comes back oldest first');
+  assert.ok(read.posts.length > 0, 'the thread holds the root and its replies');
+  assert.match(read.read, /thread/u);
+});
+
+test('F5c: a thread about a topic in a named channel uses that channel, and one conversation is required', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', channel: 'Builders', query: 'pilot' }));
+  const searches = f.calls().filter(call => call.name === 'mattermost_search').map(call => call.arguments);
+  assert.equal(searches.at(-1)?.['query'], 'pilot');
+  assert.equal(searches.at(-1)?.['channel'], BUILDERS, 'the channel the owner named, not another one');
+  assert.ok(read.posts.length > 0);
+  const neither = await f.reader.chat({ intent: 'thread', query: 'pilot' });
+  assert.equal(neither.state, 'refused');
+  assert.equal((neither as { reason: string }).reason, 'thread-needs-conversation');
+  const noTopic = await f.reader.chat({ intent: 'thread', person: 'Ada' });
+  assert.equal((noTopic as { reason: string }).reason, 'thread-needs-post-id-or-topic');
+});

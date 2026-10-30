@@ -43,7 +43,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', randomUUID(), context);
+  const session = service.create('ordinary', `canary:${randomUUID()}`, context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
   const signal = new AbortController().signal;
@@ -62,6 +62,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
     set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
+    // W1030: the write tools, with the closed shapes their declarations accept.
+    draft_email: { to: 'Priya', subject: 'synthetic', body: 'synthetic' }, draft_chat: { person: 'Sam', message: 'synthetic' },
+    create_event: { summary: 'synthetic block' }, delete_event: { event_id: 'synthetic-event' },
   };
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   for (const enabled of [undefined, true, false]) {
@@ -93,6 +96,21 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
     }, `${definition.name} must accept its stored intent`);
   }
+  await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
+    const args = { fire_at_utc: alarmNow + 1000 };
+    owner.ownerRequests.answered!(session.liveSessionId);
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
+    const definition = live.find(tool => tool.name === 'set_alarm')!;
+    const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
+      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+    owner.journal.intent(intent);
+    {
+      const before = alarmNow;
+      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
+      const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
+      assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
+    }
+  });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);
   t.after(() => endHandleSession(session.liveSessionId));
@@ -178,6 +196,44 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   assert.match(response, /nothing is open/);
   assert.ok(events.some(event => { const row = event as Record<string, unknown>; return row.event === 'tool_handler_error' && row.reason === 'executor_intent_mismatch'; }));
 
+  // F6a: a site the resolver could not find is the site-not-found payload, never an authorization refusal.
+  const notFoundEvents: Record<string, unknown>[] = [];
+  const detachNotFound = attachHostLogSink({ event: event => notFoundEvents.push(event as Record<string, unknown>) });
+  t.after(detachNotFound);
+  noteOwnerWords(session.liveSessionId, 'open zzsyntheticnotasite');
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open zzsyntheticnotasite', Date.now());
+  const notFound = await runToolCalls(owner, [{ id: 'synthetic-not-found', name: 'open_web', args: { kind: 'site', target: 'zzsyntheticnotasite' } }], {
+    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+  } as never);
+  const notFoundText = JSON.stringify(notFound.accepted);
+  assert.match(notFoundText, /"not_found"/, 'the resolver answer is reported as itself');
+  assert.doesNotMatch(notFoundText, /target_not_authorized/, 'a missing site is never relabelled as an unauthorized target');
+  assert.match(notFoundText, /could not find that site/u, 'she is told what to say: the site was not found');
+  assert.ok(notFoundEvents.some(event => event['event'] === 'open_resolve' && event['target'] === 'web' && event['outcome'] === 'not_found' && typeof event['ms'] === 'number'),
+    'the resolver outcome and duration are logged');
+
+  const beforeNoBrowser = notFoundEvents.length;
+  // F6b: a link that needs a Chrome that is not running is a closed refusal with the line she says, and the
+  // host never gets a launch order for it.
+  noteOwnerWords(session.liveSessionId, 'open example.invalid in my browser');
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open example.invalid in my browser', Date.now());
+  t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
+  const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'example.invalid' } }], {
+    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+  } as never);
+  const noBrowserText = JSON.stringify(noBrowser.accepted);
+  assert.match(noBrowserText, /browser_not_running/);
+  assert.match(noBrowserText, /Chrome is not open, could you open it for me\?/u);
+  assert.doesNotMatch(noBrowserText, /opening example\.invalid/u, 'nothing opened, so nothing is announced as opening');
+  // F13: an open that never reached the native side is a host refusal, not a native action line.
+  const nativeLines = notFoundEvents.slice(0, beforeNoBrowser).filter(event => event['event'] === 'native_action');
+  assert.deepEqual(nativeLines, [], 'a request that never reached the native side writes no native_action line');
+  assert.ok(notFoundEvents.some(event => event['event'] === 'open_audit' && event['refusalCode'] === 'not_found'), 'the host refusal is the audit line');
+
   // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
   const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
     id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
@@ -216,8 +272,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
-      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
-      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
+      const noAlarmIntent = tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+      if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
+      const expected = noAlarmIntent ? 'no_owner_request' : row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
       if (expected === 'set') {
         const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));

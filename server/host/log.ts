@@ -351,10 +351,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
-  if (['open_audit', 'alarm_audit', 'lux_note_audit'].includes(String(value.event)) && 'grantKind' in value) {
+  // W1030/WT-R2: the write tools' grant and its spend reach the audit trail beside the read tools'.
+  if (['open_audit', 'alarm_audit', 'lux_note_audit', 'compose_audit'].includes(String(value.event)) && 'grantKind' in value) {
     if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;
     if (!Number.isInteger(value.ownerFinals) || Number(value.ownerFinals) < 0 || !Number.isFinite(value.requestAgeMs) || Number(value.requestAgeMs) < 0) return;
-    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note'].includes(String(value.grantKind))) return;
+    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note', 'draft_email', 'draft_chat', 'create_event', 'delete_event'].includes(String(value.grantKind))) return;
     if (!['absent', 'available', 'spent'].includes(String(value.grantState))) return;
     if (typeof value.refusalCode !== 'string' || !/^[a-z_]{1,64}$/.test(value.refusalCode)) return;
     return { event: value.event, ownerFinals: value.ownerFinals, requestAgeMs: value.requestAgeMs, grantKind: value.grantKind, grantState: value.grantState, refusalCode: value.refusalCode };
@@ -368,6 +369,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed', 'no_open_intent', 'kind_mismatch'].includes(value.code)) return;
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
+  }
+  if (value.event === 'open_resolve') {
+    // F6a: what the resolver answered and how long it took, in closed words only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'outcome', 'target'].join(',')) return;
+    if (!Number.isSafeInteger(value.ms) || Number(value.ms) < 0 || Number(value.ms) > 600_000) return;
+    if (!['web', 'source', 'file'].includes(String(value.target))) return;
+    if (!['opened', 'not_found', 'ambiguous', 'not_allowed', 'no_open_intent', 'not_owner_words', 'failed'].includes(String(value.outcome))) return;
+    return { event: 'open_resolve', target: value.target, outcome: value.outcome, ms: value.ms };
   }
   if (value.event === 'live_claim_without_call') {
     // C-TURN8: a claim the turn never acted on is counted from the turn's sequence and its bound, nothing else.
@@ -782,7 +791,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // Closed shape: tool name and argument key:type paths only, never a value.
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
-    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)$/;
+    // F3: key:shape, where a shape is a type and, for a string or an array, its length. Never a value.
+    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)(_\d{1,7})?$/;
     if (!token(value.tool)) return;
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;

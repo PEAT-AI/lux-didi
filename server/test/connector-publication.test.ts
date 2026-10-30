@@ -12,11 +12,21 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { EndpointConfig } from '../adapters/mcp/port.js';
+import { createGoogleReader } from '../connectors/google.js';
+import { GOOGLE_WRITE_TOOLS } from '../connectors/index.js';
+
+const ACCOUNT = 'local';
+const RESOURCE = 'google-fixture';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
-import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_DRAFT_TOOLS, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, MATTERMOST_TOPIC_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
@@ -433,7 +443,7 @@ test('C-CHAT: a policy may grant the person reads and the chat read, never a wri
     route: { identity: 'mattermost', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 },
   };
-  assert.deepEqual([...MATTERMOST_READ_TOOLS], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS]);
+  assert.deepEqual([...MATTERMOST_READ_TOOLS], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS]);
   assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL] } as never));
   assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS, MATTERMOST_CHAT_TOOL] } as never), 'the older child keeps the chat read');
   assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, 'mattermost_post_message'] } as never), /invalid_read_tools/u);
@@ -510,7 +520,7 @@ test('W2-R1: a release that widens inside the reviewed envelope reconnects the o
   assert.equal(after?.generation, Number(before?.generation) + 1, 'a reconciled widening is a new generation');
   assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.state, 'connected');
   assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
-    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
   // The child also publishes a write tool the envelope never carries, and the widening is not a way in.
   const grant = widened.registry.currentGrant('mattermost');
   assert.ok(grant && !grant.toolNames.includes('mattermost_post_message'));
@@ -564,7 +574,7 @@ test('W2-R1: a widening outside the reviewed envelope is never granted, in any m
   const grant = widened.registry.currentGrant('mattermost');
   assert.ok(grant && !grant.toolNames.includes('mattermost_admin_delete') && !grant.toolNames.includes('mattermost_post_message'));
   assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
-    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() });
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS].sort() });
 });
 
 test('C-CHAT: the install route, a new connection id for the newer child beside the disabled old one, settles from the envelope', async t => {
@@ -720,4 +730,79 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
     assert.equal(h.report(moved)?.tools, 0);
     assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_envelope_widened'), false);
   } finally { await moved.close(); }
+});
+
+// W1030: the Mattermost draft family is recorded beside the read family and never inside it.
+test('W1030: the recorded Mattermost draft family matches the allowed draft names and no read map carries them', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
+  assert.deepEqual(recording.tools.map(tool => tool.name), [...MATTERMOST_DRAFT_TOOLS]);
+  for (const name of MATTERMOST_DRAFT_TOOLS) {
+    assert.equal((MATTERMOST_READ_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
+    assert.equal((MATTERMOST_TOOLS as readonly string[]).includes(name), false, `${name} is not a base read`);
+    assert.equal((MATTERMOST_PERSON_TOOLS as readonly string[]).includes(name), false, `${name} is not a person read`);
+  }
+  const draft = recording.tools[0]!;
+  assert.deepEqual(Object.keys(draft.inputSchema.properties).sort(), ['channel_id', 'dm_username', 'message', 'root_id']);
+  for (const forbidden of ['send', 'post', 'attachments', 'props']) {
+    assert.equal(forbidden in draft.inputSchema.properties, false, `the draft family has no ${forbidden} key`);
+  }
+  assert.deepEqual(connectorDescriptor('mattermost')!.writeEnvelope, [...MATTERMOST_DRAFT_TOOLS]);
+  assert.deepEqual(connectorDescriptor('mattermost')!.envelope, [...MATTERMOST_READ_TOOLS], 'the read envelope is unchanged');
+});
+
+
+/** W1030: a scratch directory and the child's call log, so a test can count real dispatches. */
+function scratch(): { dir: string; pidFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-write-'));
+  return { dir, pidFile: join(dir, 'child.pid') };
+}
+function callsOf(pidFile: string): string[] {
+  try { return readFileSync(`${pidFile}.calls`, 'utf8').split('\n').filter(Boolean); } catch { return []; }
+}
+function adapterFor(registry: McpRegistry): McpPort {
+  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+}
+async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: string, names: readonly string[]): Promise<string> {
+  registry.enable(id); registry.allowEgress(id);
+  const discovery = await adapter.discover(id);
+  assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw new Error('not discovered');
+  registry.approve({ endpointId: id, schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: 'local', resource: 'google-fixture', generation: 1 });
+  return discovery.schemaDigest;
+}
+
+// W1030/WT-R7: the recorded write families travel real discovery and the connector's preflight, and a
+// missing probe name is red there rather than at the first draft he asks for.
+test('W1030: each recorded write family discovers, preflights and probes with google_identity only', async t => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const writeChild = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-write-child.mjs');
+  for (const [family, didiFamily] of [['gmail_draft', 'compose'], ['calendar_write', 'calendar_write']] as const) {
+    const { dir, pidFile } = scratch();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const registry = new McpRegistry();
+    const id = `local-${family}`;
+    registry.register({ id, transport: 'stdio', command: process.execPath, args: [writeChild, family, pidFile],
+      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+      account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
+    const adapter = adapterFor(registry);
+    t.after(async () => { await adapter.close?.(); });
+    const recorded = recording.families[family].tools.map((tool: { name: string }) => tool.name) as string[];
+    assert.ok(recorded.includes('google_identity'), `${family} recording publishes the probe`);
+    for (const name of recorded) assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${family} ${name} is in the closed write envelope`);
+    const digest = await discoverAndApprove(registry, adapter, id, recorded);
+    const reader = createGoogleReader({ port: adapter, registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: didiFamily } });
+    const probe = await reader.googleIdentity();
+    assert.equal(probe.state, 'completed', `${family} probe completes with its recorded names`);
+    assert.deepEqual(callsOf(pidFile), ['google_identity'], `${family} consent check calls the probe and nothing else`);
+    // The same catalog without the probe name cannot answer the consent check: preflight refuses it,
+    // so a helper that dropped the probe is caught before any draft or block is attempted.
+    registry.suspend(id);
+    const withoutProbe = await adapter.discover(id);
+    if (withoutProbe.state !== 'discovered') throw new Error('not rediscovered');
+    registry.approve({ endpointId: id, schemaDigest: withoutProbe.schemaDigest, generation: 2, account: ACCOUNT, resource: RESOURCE, toolNames: recorded.filter(name => name !== 'google_identity'), effect: 'read' });
+    const narrowed = createGoogleReader({ port: adapter, registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: withoutProbe.schemaDigest, generation: 2, family: didiFamily } });
+    const refused = await narrowed.googleIdentity();
+    assert.notEqual(refused.state, 'completed', `${family} probe is refused when the recording lacks it`);
+    assert.deepEqual(callsOf(pidFile), ['google_identity'], `${family} never calls a write tool when the probe is missing`);
+  }
 });

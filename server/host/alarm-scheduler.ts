@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { alarmSeriesOfOccurrence, carryOccurrenceSeries, materialiseSeriesOccurrence, seriesRuleOf, seriesText } from '../tools/alarm.js';
 import { alarmSchedulerStarted } from './events.js';
 import type { AlarmLogEvent, AlarmSchedulerEvent } from './events.js';
 import type { StorePort, SQLRow, Transaction } from '../contracts/storage.js';
@@ -47,16 +48,37 @@ export class AlarmScheduler {
     this.recheck('mutation');
     return row;
   }
+  cancelAll(): number {
+    // Stop never silently loses a series: the series rows are cancelled in the same transaction, not deleted.
+    const cancelled = this.options.store.transaction(tx => {
+      tx.run("UPDATE alarm_series SET state='cancelled' WHERE state='active'");
+      const ids = tx.all("SELECT id FROM alarms WHERE state IN ('pending','ringing')");
+      for (const row of ids) tx.run("UPDATE alarms SET state='cancelled' WHERE id=?", [String(row.id)]);
+      return ids.length;
+    });
+    // The shell stops a ring only on a state frame, so a stop must publish the settled rows itself.
+    this.recheck('mutation');
+    return cancelled;
+  }
   cancel(id: string): boolean {
-    const changed = this.options.store.transaction(tx => tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?))", [id, this.options.clock.now()]));
+    const now = this.options.clock.now();
+    const changed = this.options.store.transaction(tx => {
+      const rows = tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?))", [id, now]);
+      // Settling an occurrence and materialising its series' next one are one transaction.
+      if (rows === 1) materialiseSeriesOccurrence(tx, id, now);
+      return rows;
+    });
     this.recheck('mutation');
     return changed === 1;
   }
   acknowledge(id: string): boolean {
+    const now = this.options.clock.now();
     const alarm = this.options.store.transaction(tx => {
       const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
       if (!row) return undefined;
       tx.run("UPDATE alarms SET state='done' WHERE id=?", [id]);
+      // The next occurrence takes the settled one's place atomically, so exactly one stays pending.
+      materialiseSeriesOccurrence(tx, id, now);
       return read(row);
     });
     if (alarm) this.record(alarm, 'alarm_acknowledged', 'owner_speech');
@@ -70,6 +92,7 @@ export class AlarmScheduler {
       tx.run("UPDATE alarms SET state='done' WHERE id=?", [id]);
       const next = this.insert(tx, { fireAtUtc, tz: String(old.tz), label: String(old.label), createdJournalId });
       tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [id, next.id]);
+      carryOccurrenceSeries(tx, id, next.id);
       return next;
     });
     this.record(row, 'alarm_set', 'owner_request');
@@ -84,9 +107,12 @@ export class AlarmScheduler {
     const now = clock.now();
     const { ringing, missed } = store.transaction(tx => {
       const before = tx.all("SELECT * FROM alarms WHERE state IN ('pending','ringing')").map(read);
+      // Settling by being missed also settles its series occurrence, in this same transaction.
+      const settling = tx.all("SELECT id FROM alarms WHERE (state='pending' AND fire_at_utc<=?) OR (state='ringing' AND ring_deadline_utc<=?)", [now - 1200000, now]).map(row => String(row.id));
       tx.run("UPDATE alarms SET state='missed' WHERE state='pending' AND fire_at_utc<=?", [now - 1200000]);
       tx.run("UPDATE alarms SET state='missed' WHERE state='ringing' AND ring_deadline_utc<=?", [now]);
       tx.run("UPDATE alarms SET state='ringing',ring_started_at_utc=?,ring_deadline_utc=? WHERE state='pending' AND fire_at_utc<=?", [now, now + 600000, now]);
+      for (const id of settling) materialiseSeriesOccurrence(tx, id, now);
       return {
         ringing: tx.all("SELECT * FROM alarms WHERE state='ringing' ORDER BY fire_at_utc,id").map(read) as AlarmDue[],
         missed: before.filter(row => row.state === 'pending' ? row.fireAtUtc <= now - 1200000 : row.ringDeadlineUtc! <= now),
@@ -168,7 +194,13 @@ export class AlarmSessionCoordinator {
     const alreadyLive = this.options.hasLiveSession();
     try {
       const scheduledTime = new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit' }).format(alarm.fireAtUtc);
-      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc! }, `alarm:${id}`);
+      // A series occurrence carries its rule into the host note, so she can answer "is this every week?".
+      const series = this.options.store.transaction(tx => {
+        const row = alarmSeriesOfOccurrence(tx, id);
+        return row ? seriesText(seriesRuleOf(row)) : undefined;
+      });
+      const setup: import('../live/types.js').SeriesAlarmSetup = { ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc!, ...(series ? { series } : {}) };
+      const liveSessionId = this.options.open(setup, `alarm:${id}`);
       this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
       return { status: alreadyLive ? 'live' : 'created', liveSessionId };
     } catch {

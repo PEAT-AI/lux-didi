@@ -814,6 +814,9 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
     if (frame.type === 'toolResult') resultResolve();
   });
   await once(ws, 'open'); await h.f.frame(1); h.f.send({ setupComplete: {} }); await ready;
+  // C-TURN8: an owner-data or unknown tool is refused before the owner speaks, so the owner speaks first and
+  // the undeclared name then reaches the ordinary not-granted refusal this test covers.
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic owner turn', finished: true } } });
   h.f.send({ toolCall: { functionCalls: [{ id: 'refused', name: 'not_granted', args: { secret: CANARY } }] } });
   await h.f.frame(2); await result;
   assert.equal(markers.some(marker => marker.type === 'toolCall'), true);

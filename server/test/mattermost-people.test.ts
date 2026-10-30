@@ -12,7 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
-  connectorDescriptor, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
+  connectorDescriptor, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOPIC_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
 import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
@@ -99,7 +99,7 @@ const searches = (calls: readonly Call[]) => calls.filter(call => call.name === 
 
 test('C-CHAT: the read envelope carries the two person reads, never a write, and the composites stand on the base reads', () => {
   const envelope = connectionEnvelope('mattermost', { resource: RESOURCE });
-  assert.deepEqual([...envelope], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS]);
+  assert.deepEqual([...envelope], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS]);
   assert.deepEqual([...MATTERMOST_READ_TOOLS], [...envelope]);
   assert.ok(!envelope.includes('mattermost_post_message'));
   assert.deepEqual(composedGrantedNames('mattermost', [...MATTERMOST_TOOLS]).sort(), [MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(),
@@ -115,7 +115,7 @@ test('C-CHAT: the read envelope carries the two person reads, never a write, and
 
 test('C-CHAT: a newer child is granted its person reads and the filtered channel list passes the schema check', async t => {
   const f = await setup(t, 'people');
-  assert.deepEqual([...f.names].sort(), [...MATTERMOST_READ_TOOLS].sort(), 'the seven reads, and the write the child publishes stays out');
+  assert.deepEqual([...f.names].sort(), [...MATTERMOST_READ_TOOLS].sort(), 'every read the child publishes, and the write it publishes stays out');
   const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'AI AI AI' }));
   assert.equal(read.read.startsWith('the channel AI AI AI'), true);
   assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'AI AI AI', types: ['O', 'P'], limit: 10 });
@@ -781,24 +781,20 @@ test('discussion noun asks and product mishearings route to chat, not unrelated 
   for (const question of ['recent news from Acme', 'mask this image', 'metamorphic rocks']) assert.equal(chatAsk(question), false, question);
 });
 
-test('empty topic read retries hybrid exactly once with the same DM and date filters', async t => {
+test('F5a: an empty topic read retries the same conversation unfiltered, once, never by relevance', async t => {
   const f = await setup(t, 'people');
-  const call = f.adapter.call.bind(f.adapter);
-  const searches: Record<string, unknown>[] = [];
-  f.adapter.call = async (request, signal) => {
-    if (request.toolName !== 'mattermost_search') return call(request, signal);
-    searches.push({ ...request.arguments });
-    // The fake archive has related DM posts, but only the broader engine finds them.
-    return call(request.arguments['mode'] === 'hybrid' ? { ...request, arguments: { ...request.arguments, query: '' } } : request, signal);
-  };
-  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) }));
+  // A topic word the fake archive has never seen: the keyword read matches nothing.
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'zzsyntheticnotopic', from_date: fixtureDaysAgo(7) }));
+  const searchCalls = searches(f.calls());
   assert.ok(read.posts.length > 0);
-  assert.equal(searches.length, 2);
-  assert.equal(searches[0]?.['mode'], 'keyword');
-  assert.equal(searches[1]?.['mode'], 'hybrid');
-  assert.equal(searches[1]?.['channel'], ADA_DM);
-  assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
-  assert.match(read.read, /hybrid/iu);
+  assert.equal(searchCalls.length, 2);
+  assert.equal(searchCalls[0]?.['mode'], 'keyword');
+  assert.equal(searchCalls[1]?.['mode'], 'keyword', 'the second read is keyword too: relevance is never a substitute for order');
+  assert.equal(searchCalls[1]?.['query'], '');
+  assert.equal(searchCalls[1]?.['channel'], ADA_DM);
+  assert.equal(searchCalls[1]?.['from_date'], fixtureDaysAgo(7));
+  assert.equal(searchCalls[1]?.['sort'], 'newest');
+  assert.match(read.read, /fallback: recent_unfiltered/u);
 });
 
 // Synthetic tools/list recording supplied with C-CHAT, retrieved 2026-10-29.
@@ -810,7 +806,14 @@ const recordedMattermostToolsList = {
     from_date: { type: 'string' }, to_date: { type: 'string' }, replies_to: { type: 'string' },
     limit: { type: 'integer' }, offset: { type: 'integer' }, sort: { type: 'string' },
     mode: { type: 'string' }, rerank: { type: 'boolean' }, format: { type: 'string' },
-  } } }],
+  } } }, {
+    // CA-R2: the newer child's thread list, so the drift gate covers the read that lists topics.
+    name: 'mattermost_list_threads', inputSchema: { type: 'object', properties: {
+      channel_id: { type: 'string' }, channel_name: { type: 'string' }, dm_username: { type: 'string' },
+      since: { type: 'string' }, until: { type: 'string' }, query: { type: 'string' },
+      limit: { type: 'integer' }, order: { type: 'string' },
+    } },
+  }],
 };
 
 test('Mattermost declared child argument schemas match the recorded binary tools/list', () => {
@@ -855,7 +858,7 @@ test('MM-1 and MM-6: repeated channel names and inflected topics return the name
   const first = chatRead(await f.reader.chat(calls[0]!.args as never));
   assert.equal(first.clarify, undefined);
   assert.ok(first.posts.some(post => /deployed sandbox/u.test(post.text)));
-  assert.match(first.read, /hybrid/u);
+  assert.match(first.read, /fallback: recent_unfiltered/u, 'the topic read fell back to the recent unfiltered read');
   const revised = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Alpha Alpha Alpha Alpha', query: 'university', from_date: fixtureDaysAgo(7) }));
   assert.equal(revised.clarify, undefined);
   assert.ok(revised.posts.some(post => /https:\/\/example.invalid\/article/u.test(post.text)));
@@ -912,7 +915,8 @@ test('plain topic searches also retry broader once and disclose hybrid to the mo
 test('a refused broader chat read is a refusal, never a false empty success', async t => {
   const f = await setup(t, 'people');
   const call = f.adapter.call.bind(f.adapter);
-  f.adapter.call = (request, signal) => request.arguments['mode'] === 'hybrid' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
+  // F5a: the broader read is the unfiltered recent read of the same conversation, and its refusal is the answer.
+  f.adapter.call = (request, signal) => request.arguments['query'] === '' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
   const result = await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) });
   assert.equal(result.state, 'refused');
   assert.equal('reason' in result && result.reason, 'read-grant-missing');
@@ -956,4 +960,157 @@ test('C-RESIDUE explicit DM scope precedes person overview', () => {
     assert.equal('person' in intent && intent.person, 'Ada');
     assert.equal('sides' in intent && intent.sides, 'both');
   }
+});
+
+test('F5a (O-A1): a later page of a 0-hit topic read is an honest gap, never a second fallback', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'zzsyntheticnotopic', limit: 3, offset: 3 }));
+  const calls = searches(f.calls());
+  assert.equal(calls.length, 1, 'a later page searched once: no fallback');
+  const page = calls.at(-1)!;
+  assert.equal(page['query'], 'zzsyntheticnotopic', 'the later page keeps the topic it was asked for');
+  assert.equal(page['offset'], 3, 'and its own offset');
+  assert.equal(read.returned, 0, 'an empty later page is reported as empty');
+  assert.equal(read.posts.length, 0);
+});
+
+// ---- F5: order, the recent-unfiltered fallback, and one thread ------------------------------------------
+
+test('F5b: order oldest is refused honestly when the child cannot walk from the oldest end', async t => {
+  const f = await setup(t, 'people');
+  // An older child: its sort enum offers newest only, so an ascending walk is impossible and must be refused.
+  const visible = f.adapter.visibleTools.bind(f.adapter);
+  f.adapter.visibleTools = (id: string) => visible(id).map(tool => tool.name !== 'mattermost_search' ? tool : {
+    ...tool,
+    inputSchema: { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties ?? {}), sort: { type: 'string', enum: ['relevance', 'newest'] } } },
+  });
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest' });
+  assert.equal(result.state, 'refused');
+  assert.equal((result as { reason: string }).reason, 'order-unsupported');
+  const newest = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'newest' }));
+  assert.equal(searches(f.calls()).at(-1)?.['sort'], 'newest');
+  assert.equal(newest.posts.length > 0, true);
+});
+
+test('F5b: an unknown order is refused before any read', async t => {
+  const f = await setup(t, 'people');
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', order: 'synthetic' as never });
+  assert.equal(result.state, 'refused');
+  assert.equal(searches(f.calls()).length, 0);
+});
+
+test('F5c: a thread read returns the whole thread in chronological order through the child thread read', async t => {
+  const f = await setup(t, 'people');
+  // The root post id comes from an earlier result, which is how the model gets one.
+  const earlier = chatRead(await f.reader.chat({ intent: 'channel', channel: 'AI AI AI' }));
+  const rootId = earlier.posts[0]!.id;
+  const read = chatRead(await f.reader.chat({ intent: 'thread', post_id: rootId }));
+  const threadCalls = f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments);
+  assert.deepEqual(threadCalls[0], { post_id: rootId }, 'the first page is the root id from the earlier result');
+  assert.equal(read.posts.length > 1, true, 'the root and its replies');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'chronological, oldest first');
+  const refused = await f.reader.chat({ intent: 'thread' });
+  assert.equal(refused.state, 'refused');
+  assert.equal((refused as { reason: string }).reason, 'thread-needs-post-id-or-topic');
+});
+
+test('F5b: order oldest walks the conversation ascending when the child accepts it, page by page', async t => {
+  const f = await setup(t, 'people');
+  const first = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest', limit: 3 }));
+  const calls = searches(f.calls());
+  assert.equal(calls[0]?.['sort'], 'oldest', 'the child is asked for the order the owner asked for');
+  const times = first.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'oldest first');
+  const second = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', order: 'oldest', limit: 3, offset: 3 }));
+  assert.deepEqual(searches(f.calls()).at(-1)?.['offset'], 3, 'the next page starts where the last ended');
+  const later = second.posts.map(post => Date.parse(post.time));
+  assert.ok(later.every(time => Number.isFinite(time)));
+  assert.ok(first.posts.length > 0 && second.posts.length > 0);
+  const head = Date.parse(first.posts[0]!.time);
+  const tail = Date.parse(second.posts[0]!.time);
+  assert.ok(head <= tail || second.posts.length === 0, 'the second page continues forward in time');
+});
+
+test('F5c: a thread about a topic in a direct conversation is the newest matching post and its thread', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', person: 'Ada', query: 'pilot' }));
+  const listed = f.calls().filter(call => call.name === 'mattermost_list_threads').map(call => call.arguments);
+  assert.equal(listed.at(-1)?.['channel_id'] ?? listed.at(-1)?.['dm_username'], ADA_DM, 'the topic is looked up inside that direct conversation');
+  assert.equal(listed.at(-1)?.['query'], 'pilot');
+  const asked = f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments);
+  assert.ok(asked.length >= 1, 'the thread is read');
+  assert.equal(typeof asked[0]?.['post_id'], 'string', 'its root is the id the matching post carried');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'the whole thread comes back oldest first');
+  assert.ok(read.posts.length > 0, 'the thread holds the root and its replies');
+  assert.match(read.read, /thread/u);
+});
+
+test('F5c: a thread about a topic in a named channel uses that channel, and one conversation is required', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', channel: 'Builders', query: 'pilot' }));
+  const listed = f.calls().filter(call => call.name === 'mattermost_list_threads').map(call => call.arguments);
+  assert.equal(listed.at(-1)?.['query'], 'pilot');
+  assert.equal(listed.at(-1)?.['channel_id'], BUILDERS, 'the channel the owner named, not another one');
+  assert.ok(read.posts.length > 0);
+  const neither = await f.reader.chat({ intent: 'thread', query: 'pilot' });
+  assert.equal(neither.state, 'refused');
+  assert.equal((neither as { reason: string }).reason, 'thread-needs-conversation');
+  const noTopic = await f.reader.chat({ intent: 'thread', person: 'Ada' });
+  assert.equal((noTopic as { reason: string }).reason, 'thread-needs-post-id-or-topic');
+});
+
+// ---- CA-R2: the owner's two-step ask: the topics of one conversation, then one thread whole ----------------
+
+test('CA-R2: topics lists a channel\'s threads with counts and dates, newest activity first', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'topics', channel: 'AI AI AI' }));
+  const listed = f.calls().filter(call => call.name === 'mattermost_list_threads').map(call => call.arguments);
+  assert.equal(listed.length, 1, 'one thread list for one conversation');
+  assert.deepEqual([listed[0]?.['order'], typeof listed[0]?.['since']], ['activity', 'string'], 'newest activity first, inside the window');
+  assert.ok(Array.isArray(read.topics) && read.topics.length > 0, 'the topics reach the reply');
+  const first = read.topics![0]!;
+  assert.equal(typeof first.rootId, 'string');
+  assert.ok(first.rootId !== '', 'every topic names the root id the thread read takes');
+  assert.equal(typeof first.replies, 'number');
+  assert.ok(Number.isFinite(Date.parse(first.createdAt)), 'a topic carries its date');
+  assert.ok(first.preview.length > 0, 'and one line of what it is about');
+  assert.match(read.read, /^the topics in the channel AI AI AI/u);
+});
+
+test('CA-R2: topics lists a direct conversation\'s threads by the username the roster knows', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'topics', person: 'Ada' }));
+  const listed = f.calls().filter(call => call.name === 'mattermost_list_threads').map(call => call.arguments);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0]?.['channel_id'] ?? listed[0]?.['dm_username'], ADA_DM, 'the direct conversation, not a channel');
+  assert.ok((read.topics ?? []).length > 0);
+  assert.match(read.read, /^the topics in direct messages with/u);
+});
+
+test('CA-R2: a thread read by the root id a topic list carried returns it whole, paged to the end', async t => {
+  const f = await setup(t, 'people');
+  const listed = chatRead(await f.reader.chat({ intent: 'topics', channel: 'AI AI AI' }));
+  const rootId = listed.topics![0]!.rootId;
+  const read = chatRead(await f.reader.chat({ intent: 'thread', post_id: rootId }));
+  const pages = f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments);
+  assert.ok(pages.length > 1, 'a long thread is read page by page');
+  assert.deepEqual(pages[0], { post_id: rootId }, 'the first page is the root and its first replies');
+  assert.equal(typeof pages[1]?.['cursor'], 'string', 'the next page is asked for by the cursor the child returned');
+  assert.equal(read.posts.length, 1 + 6, 'the whole thread: the root and every reply, not the first page');
+  const times = read.posts.map(post => Date.parse(post.time));
+  assert.deepEqual(times, [...times].sort((left, right) => left - right), 'root first, then ascending');
+});
+
+test('CA-R2: a thread by keyword uses the thread list, and no topics in the window answers honestly', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'thread', channel: 'AI AI AI', query: 'model' }));
+  const listed = f.calls().filter(call => call.name === 'mattermost_list_threads').map(call => call.arguments);
+  assert.equal(listed.length, 1, 'the keyword goes to the thread list, not to a post search');
+  assert.equal(listed[0]?.['query'], 'model');
+  assert.ok(read.posts.length > 0);
+  const empty = chatRead(await f.reader.chat({ intent: 'topics', channel: 'AI AI AI', query: 'zzsyntheticnotopic' }));
+  assert.equal(empty.notFound, 'No thread in the channel AI AI AI is about zzsyntheticnotopic.');
+  assert.deepEqual(empty.topics ?? [], [], 'an empty window lists nothing rather than inventing a topic');
 });

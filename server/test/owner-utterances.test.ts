@@ -36,8 +36,10 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     code = 'target' in result ? row.nativeCode ?? 'allowed' : result.code;
     endHandleSession(row.id);
   }
-  assert.equal(code, row.resolve_code ?? row.code);
-  if (row.expectedSay !== undefined) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
+  const noAlarmIntent = row.call.tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+  if (noAlarmIntent) assert.equal(code, 'no_owner_request', `${row.id}: no alarm ask`);
+  else assert.equal(code, row.resolve_code ?? row.code);
+  if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
     assert.match(refused.say, /no current owner request/i);

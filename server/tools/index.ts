@@ -2,6 +2,11 @@ import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
+
+/** F6a: the resolver's answer and duration, in closed words: a target class, an outcome code and ms. */
+function openResolve(input: { target: 'web' | 'source' | 'file'; outcome: string; ms: number }): void {
+  hostLogEvent({ event: 'open_resolve', target: input.target, outcome: input.outcome, ms: input.ms });
+}
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
 import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -24,8 +29,9 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { ALARM_NAMES, ALARM_IDENTITY, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
+import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -245,6 +251,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
+    if (COMPOSE_NAMES.some(name => name === call.toolName) && call.accountId === COMPOSE_IDENTITY.accountId && call.resourceId === COMPOSE_IDENTITY.resourceId) {
+      // W1030: the write tools are gateway tools pinned to his own compose surface, never a chosen account.
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
     }
     if (call.toolName === VAULT_WRITE_IDENTITY.name && call.accountId === VAULT_WRITE_IDENTITY.accountId && call.resourceId === VAULT_WRITE_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
@@ -699,7 +710,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
         description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
-        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' } }, additionalProperties: false },
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' }, kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Optional recurrence the owner stated in their own words; the host verifies it against them.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Optional weekly weekday set, 0 Sunday to 6 Saturday, verified against the owner words.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
@@ -707,6 +718,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const input = args as AlarmArguments;
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          if (name === 'set_alarm') {
+            const recorded = store.transaction(tx => tx.get("SELECT result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=? AND state='completed'", [ownerId, context.runId, context.executionId]));
+            if (recorded) return { status: 'completed' as const, result: { id: String(recorded.result_id), sha256: String(recorded.result_sha256) } };
+          }
           let consumed: string | undefined;
           let actionReceipt: JsonObject | undefined;
           const requestTarget = JSON.stringify(input);
@@ -733,18 +748,37 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
             if (name === 'list_alarms') {
-              const result: JsonObject = { alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) };
+              const result: JsonObject = { alarms: listPendingAlarms(tx).map(entry => ({ id: entry.id, fire_at_utc: entry.fireAtUtc, tz: entry.tz, label: entry.label, state: entry.state,
+                ...(entry.series ? { series: { id: entry.series.id, rule: entry.series.rule, weekdays: entry.series.weekdays, local_time: entry.series.localTime, text: entry.series.text } } : {}) })) };
               ownerRequests.commit(runId, name, requestTarget, result);
               return finish(result);
             }
             const now = options.alarms?.now() ?? Date.now();
             if (name === 'cancel_alarm') {
-              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              if (!args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              const target = String(input.id);
+              // The owner's own words choose one occurrence ("skip this Saturday") or the whole series, so a
+              // series id the model picked never widens an occurrence ask into a series cancel.
+              const series = parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesRow(tx, target) ?? alarmSeriesOfOccurrence(tx, target) : undefined;
+              if (series) {
+                const cancelled = cancelAlarmSeries(tx, series.id);
+                consumed = ask.journalId;
+                return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
+                  say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
+              }
+              // One occurrence: a series id stands for that series' single pending occurrence.
+              const occurrence = alarmSeriesRow(tx, target) ? pendingOccurrenceOf(tx, target) : target;
+              if (!occurrence || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              materialiseSeriesOccurrence(tx, occurrence, now);
               consumed = ask.journalId;
-              return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
+              return finish({ status: 'cancelled', id: args.id, scope: 'occurrence', say: 'Alarm cancelled.' });
             }
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
+            // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
+            const spec = parseSeriesRule(ask.words ?? '');
+            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) return finish({ status: 'refused', reason: 'rule_mismatch' });
+            if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
             }
@@ -755,11 +789,20 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               alarmTz = String(old.tz);
               tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
+            const seriesId = name === 'set_alarm' && parsed.series ? randomUUID() : undefined;
+            if (seriesId && parsed.series) insertAlarmSeries(tx, { id: seriesId, rule: parsed.series, label: parsed.label, createdJournalId: ask.journalId });
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, parsed.label, ask.journalId]);
-            if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
+            // A series keeps exactly one materialised occurrence, linked to its rule.
+            if (seriesId) linkAlarmOccurrence(tx, context.executionId, seriesId);
+            if (name === 'snooze_alarm') {
+              tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
+              // Snoozing moves the ringing occurrence only: the series' next reminder is unchanged.
+              carryOccurrenceSeries(tx, input.id!, context.executionId);
+            }
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
+              ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
               say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {
@@ -777,6 +820,81 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed' as const, result };
         },
       });
+      // W1030: the write surface he asked for by voice. Each call is bound to one owner turn and one
+      // target, keeps its outcome as the receipt, and replays that receipt instead of writing twice.
+      for (const name of COMPOSE_NAMES) {
+        const tool = COMPOSE_TOOLS[name];
+        definitions.push({
+          ...COMPOSE_IDENTITY, name, effect: 'write', description: tool.description, guidance: COMPOSE_GUIDANCE,
+          parameters: tool.parameters, validate: tool.validate,
+          async execute(args, context) {
+            if (context.runId !== runId || !tool.validate(args) || context.signal.aborted) return { status: 'failed' as const };
+            await ownerRequests.waitForFinal(runId, context.signal);
+            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+            const call = store.transaction(tx => {
+              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+              const stored = storedCall(tx, row);
+              exactIntent(tx, { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
+                toolName: name, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)),
+                ...(stored.callId !== undefined ? { callId: stored.callId } : {}) });
+              validateCallRun(tx, stored);
+              return stored as ToolCallIntent;
+            });
+            const finish = (response: JsonObject) => ({ status: 'completed' as const, result: store.transaction(tx => complete(call, response, ['ordinary'], tx)) });
+            // The target is derived from his words and this turn, so the peek only needs the turn: a spent
+            // grant still names its journal, and the authorize below decides whether this is its replay.
+            const peek = ownerRequests.authorize(runId, name, '');
+            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
+            if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
+            const target = composeTarget(name, args, clientRequestId(peek.journalId));
+            const ask = ownerRequests.authorize(runId, name, target);
+            if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
+            if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
+            const claimed = ownerRequests.claim(runId, name, target, ask.id);
+            if (claimed.code !== 'allowed') return finish(requestRefusal(claimed.code));
+            // W1030: a delete names either a block this session created (matched exactly against its own
+            // receipt) or one he named unambiguously and a calendar read in this session returned. A model
+            // id that matches neither is refused here and never reaches the helper.
+            let deleteId: string | undefined = typeof (args as JsonObject)['event_id'] === 'string' ? String((args as JsonObject)['event_id']) : undefined;
+            if (name === 'delete_event') {
+              const rows = store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId]));
+              const created = createdEventIds(rows);
+              const named = deleteId === undefined && options.compose?.findNamedEvent !== undefined
+                ? await options.compose.findNamedEvent({ words: ask.words ?? '', clientRequestId: clientRequestId(ask.journalId) })
+                : undefined;
+              if (deleteId === undefined || !created.includes(deleteId)) {
+                if (named?.state === 'found') deleteId = named.eventId;
+              }
+              if (deleteId === undefined) {
+                ownerRequests.failed(runId, name, target, ask.id);
+                const asked = named?.state === 'ambiguous' && named.candidates.length > 0
+                  ? `I have more than one block like that in this session: ${named.candidates.slice(0, 3).join(', ')}. Which one?`
+                  : 'I can only remove a block I made in this session. Tell me which one, or ask me to look at your calendar first.';
+                return finish({ status: 'refused', code: named?.state === 'ambiguous' ? 'event_ambiguous' : 'event_not_created_here', say: asked });
+              }
+              if (!created.includes(deleteId) && named?.state !== 'found') {
+                ownerRequests.failed(runId, name, target, ask.id);
+                return finish({ status: 'refused', code: 'event_not_created_here', say: 'I can only remove a block I made in this session, so I am not touching that event.' });
+              }
+            }
+            // A block the calendar read resolved is removed by the id that read returned, never by prose.
+            if (name === 'delete_event' && typeof deleteId === 'string') args = { event_id: deleteId };
+            const turn = clientRequestId(ask.journalId);
+            const outcome = options.compose === undefined
+              ? notAuthorizedFor(name)
+              : await runCompose(options.compose, name, args, { words: ask.words ?? '', clientRequestId: turn, now: options.alarms?.now() ?? Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+            // A lost remote answer spends the grant and claims nothing: he is told it is unknown, and a
+            // retry cannot write twice.
+            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: 'none' });
+            if (outcome.state === 'unknown') return { status: 'unknown' as const, code: dispatchedFailureCode('write_unknown') };
+            if (outcome.state === 'done') ownerRequests.commit(runId, name, target, composeResult(outcome));
+            else ownerRequests.failed(runId, name, target, ask.id);
+            return finish(composeResult(outcome));
+          },
+        });
+      }
       // Host-native open actions: the frame goes down the local Live socket and the ack is the result.
       for (const openTool of OPEN_TOOLS) definitions.push({
         name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
@@ -811,7 +929,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             : { code, say: 'The host could not confirm that the target opened.' };
           if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
-          else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
+          // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
           // refused handle is traceable without ever logging the handle or his words.
 
@@ -848,7 +966,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const requestTarget = JSON.stringify(args);
           let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          const startedAt = Date.now();
           const resolved = authorization.code === 'allowed' ? await resolveWebOpen(args, authorization.words ?? '', context.signal) : { code: 'no_open_intent' as const };
+          // F6a: the resolver's own answer and how long it took, in closed words.
+          openResolve({ target: 'web', outcome: 'target' in resolved ? 'opened' : resolved.code, ms: Date.now() - startedAt });
           let dispatched = 'target' in resolved ? resolved.target : undefined;
           if (dispatched && authorization.code === 'allowed') {
             authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
@@ -858,7 +979,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const refused = 'target' in resolved ? undefined : resolved.code;
           const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
-          else nativeActionReceipt('open_url', code, 'web');
+          // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
           // bound it and the class it resolved to, never the words or the address.
 
@@ -870,7 +991,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // case carries the domains so she asks which one he means.
           const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
             : !eligible ? requestRefusal(authorization.code)
+            // F6a: a site the resolver could not find says so; it is never relabelled as an authorization refusal.
+            : refused === 'not_found' ? openWebFailure('not_found')
             : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'browser_not_running' ? { code, say: OPEN_GUIDANCE.browser_not_running, fixNotForSpeech: 'Chrome is not running and nothing was launched, so no profile was guessed. Say the line to the owner by name and do not claim anything opened.' }
             : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
             : { code, say: 'The host could not confirm that the target opened.' };
           if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
@@ -969,6 +1093,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           }
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
+            ...(declaration.rejection === undefined ? {} : { rejection: declaration.rejection }),
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) { return { status: 'unknown' }; }

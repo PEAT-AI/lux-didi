@@ -15,7 +15,7 @@ import type { DataClass, ModelControl, ModelPort, ModelRequest, ModelResult, Tra
 import { GeminiAdapter } from '../adapters/model/index.js';
 import {
   OPEN_LOOP_MAX_CHARS, SUMMARY_MAX_RETRIES, SUMMARY_PROMPT_VERSION, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
-  createSummarizer, distillationPrompt, parseDistillationResult, TOOL_OUTCOME_MAX_LINES, type SummarizerOptions,
+  createSummarizer, distillationPrompt, parseDistillationResult, readSessionTranscript, TOOL_OUTCOME_MAX_LINES, type SummarizerOptions,
 } from '../services/summarize.js';
 
 const NOW = 1_700_000_000_000;
@@ -111,6 +111,11 @@ test('the distillation prompt is the authored verbatim constant and output parse
   assert.ok(prompt.includes('the owner said'));
   assert.ok(prompt.includes('Tool outcomes come only from the Tool outcomes block below'));
   assert.ok(prompt.includes("never by Mira's spoken explanation of it"));
+  // F12: the two rules 10-30 needed, and a closed tool-evidence surface.
+  assert.ok(prompt.includes('A destination, name, number or decision that\nMira said, guessed or supplied is never written as "the owner said"'),
+    'a model-supplied fact is never attributed to the owner');
+  assert.ok(prompt.includes('Never quote or paraphrase tool guidance, instructions, refusal messages, validator text'),
+    'tool guidance and validator text never reach memory');
   assert.ok(prompt.includes('Set skip to true only for calls consisting entirely of small talk or app tests.'));
   assert.ok(prompt.includes('A substantive story, decision or discussion must be summarised'));
   assert.deepEqual(parseDistillationResult('```json\n{"skip": false, "summary": "the owner said hello"}\n```'),
@@ -873,5 +878,51 @@ test('F6: complete short recall has no more note, while a truncated record offer
     assert.equal(full['status'], 'complete');
     assert.equal(full['canContinue'], false);
     assert.match(String(full['note']), /Nothing more to fetch/);
+  } finally { f.cleanup(); }
+});
+
+// F2: on 10-30 the owner's call opened on the canary's own thread and replayed the canary's asks. A canary or a
+// typed eval session marks its kind in the key it creates, so nothing of it is owner memory: no opener, no hit.
+test('F2: a canary session leaves no opener and no history hit in the owner session that follows', () => {
+  const f = open();
+  try {
+    insertPastSummary(f.store, 'canary-thread', 'The canary asked about the synthetic lighthouse thread.');
+    seedTurn(f.store, 'canary-thread', 'inputTranscription', 'The synthetic lighthouse is the canary ask.');
+    f.store.transaction(tx => tx.run('UPDATE live_sessions SET idempotency_key=? WHERE live_session_id=?',
+      ['canary:canary-thread', 'canary-thread']));
+    insertPastSummary(f.store, 'owner-thread', 'The owner said the synthetic violet map thread is his own.');
+    seedTurn(f.store, 'owner-thread', 'inputTranscription', 'The synthetic violet map is the owner ask.');
+    const candidates = f.store.transaction(tx => summaries.injectionCandidates(tx));
+    assert.deepEqual(candidates.map(row => row.liveSessionId), ['owner-thread'], 'the canary summary is never an opener');
+    const scope = { ownerId: f.store.assistantId, runId: 'owner-call', routeIdentity: 'synthetic',
+      authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
+    const reader = createHistoryReader();
+    const hits = JSON.stringify(f.store.transaction(tx => {
+      backfillHistoryTurns(tx);
+      return reader.read(tx, scope, { query: 'synthetic lighthouse violet map' }).response;
+    }));
+    assert.equal(hits.includes('lighthouse'), false, 'the canary words never come back as history');
+    assert.equal(hits.includes('violet map'), true, 'his own words still do');
+  } finally { f.cleanup(); }
+});
+
+// F12: the 10-30 summary carried not-for-speech validator text, so only the owner's and the assistant's own
+// transcript turns may reach the distillation input; a tool row and its guidance never do.
+test('F12: tool guidance and validator text never enter the distillation input', () => {
+  const f = open();
+  try {
+    seedSession(f.store, 'f12-session');
+    seedTurn(f.store, 'f12-session', 'inputTranscription', 'Send the synthetic deck to the Berlin office.');
+    seedTurn(f.store, 'f12-session', 'outputTranscription', 'Sent to the Berlin office.');
+    const guidance = 'Nothing read yet. Do not retry before the owner speaks; make this call again after their first turn.';
+    f.store.transaction(tx => tx.run(
+      "INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES ('f12-session','toolResult',?,1,?,?)",
+      [guidance, guidance.length, NOW]));
+    const transcript = f.store.transaction(tx => readSessionTranscript(tx, 'f12-session'));
+    assert.deepEqual(transcript.turns.map(turn => turn.speaker), ['owner', 'assistant'], 'only the two speakers make turns');
+    const input = buildDistillationInput({ assistantName: 'Naya', turns: transcript.turns, toolNames: transcript.toolNames,
+      dateMs: NOW, timeZone: 'UTC', injected: [] });
+    assert.equal(input.text.includes('Nothing read yet'), false, 'tool guidance and validator text stay out of memory');
+    assert.equal(input.text.includes('Do not retry'), false, 'no instruction text is quoted as anything said');
   } finally { f.cleanup(); }
 });

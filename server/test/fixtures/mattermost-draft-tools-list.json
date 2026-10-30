@@ -1,0 +1,48 @@
+{
+  "helper": "mattermost-mcp",
+  "version": "0.2.0",
+  "retrieved": "2026-10-30",
+  "family": "draft",
+  "note": "W1030 synthetic recording of the local Mattermost child's draft family; no live server was called.",
+  "tools": [
+    {
+      "name": "mattermost_save_draft",
+      "description": "Write one message into the owner's own Mattermost drafts or reply box. The child never posts: sending is the web client's own click.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dm_username": {
+            "type": "string",
+            "minLength": 1
+          },
+          "root_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "mattermost_list_drafts",
+      "description": "List the drafts the owner already has, so a draft can be confirmed without sending anything.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

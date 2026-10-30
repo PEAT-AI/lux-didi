@@ -23,6 +23,8 @@ find server -mindepth 1 -maxdepth 1 -type d \
 find server -mindepth 1 -maxdepth 1 -type f -name '*.ts' -exec cp {} "$out/source/" \;
 ln -s "$deps" "$out/node_modules"
 cp server/test/research-mail-query.test.ts server/test/mattermost-host-replay.test.ts server/test/chat.test.ts server/test/chat-tools.test.ts server/test/chat-process.ts server/test/prompt.test.ts server/test/model.test.ts server/test/runtime.test.ts server/test/http.test.ts "$out/source/test/"
+# server/eval reuses the repo's fake live voice port, so the staged tree carries the fixtures it imports.
+cp -R server/test/fixtures "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 mapfile_compat=()
 while IFS= read -r file; do mapfile_compat+=("$file"); done < <(find "$out/source" -name '*.ts' -type f)

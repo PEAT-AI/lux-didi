@@ -21,6 +21,9 @@ const cases = [
   [{ remembered: false, status: 'error', code: 'tool_journal_failed' }, 'failed', 'tool_journal_failed'],
   [{ status: 'completed' }, 'unknown', undefined],
   [{ saved: false, code: 'unrecognized_gate' }, 'unknown', 'unrecognized_gate'],
+  [{ code: 'opened', kind: 'url', title: 'Synthetic site' }, 'completed', undefined],
+  [{ status: 'set', id: 'synthetic-alarm-id', fire_at_utc: 'synthetic-time' }, 'completed', undefined],
+  [{ status: 'set' }, 'unknown', undefined],
 ] as const;
 for (const [response, outcome, refusalCode] of cases) {
   test(`business outcome ${JSON.stringify(response)}`, () => {

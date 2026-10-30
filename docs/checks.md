@@ -82,6 +82,14 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 
 ## Live voice and the research layer
 
+`history_exclusions` and session kinds (F2): a live session's kind is the prefix of the idempotency key it was
+created under, and `liveSessionKindOf` reads it back from the store. An unmarked key is the owner's own call; a
+`canary:` key names the installed canary, and `eval:` or `test:` name a typed eval or test harness. A marked
+session is never owner memory: it schedules no summarizer run, its `conversation_summaries` row is never an
+injection candidate for `buildOpeningOptions` or the earlier-conversations section, and `history-reader` skips
+both its summaries and its turns in `history_turns`. Rows already in an owner store stay untouched: they are
+filtered on read, so removing them is an owner decision and never a check or a migration.
+
 | Script | Covers |
 | --- | --- |
 | `check-live-voice.sh` | Provider adapters: `live-voice`, `openai-live-voice`, `resample` tests. |
@@ -101,6 +109,22 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 | `check-mcp-stdio.sh` | The stdio MCP transport against a child fixture. |
 | `check-mcp-config.sh` | Protected MCP configuration and consent (`mcp-config.test`). |
 | `check-connected.sh` | Connector identity and status, and the connected conversation in a real browser. |
+
+## Evals
+
+| Script | Covers |
+| --- | --- |
+| `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Release pull requests only. |
+
+`scripts/run-local-evals.sh` is the owner's own run and is not a check: scripted by default, `--live` only
+with `--yes`, and the full private suite never leaves the owner's machine.
+
+The eval harness is a developer tool, never a production unit. `server/eval/` has its own TypeScript
+project (`server/tsconfig.eval.json`, extending `server/tsconfig.json`) and is not in the production
+`include`, so the service build never carries it: `server/test/host.test.ts` still sees exactly the
+production roots, and `check-host.sh` excludes exactly `server/eval/` from its `console.log` scan because
+none of that code can reach the supervised stdout. That exclusion holds only while nothing production-side
+imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source imports from `server/eval/`.
 
 ## Web
 
@@ -224,3 +248,24 @@ workspace opener and text-only attachment rejects an ordinary session. Linux CI 
 the same fake assertion/CLI tests without Swift or real services. The broader native
 regression gate remains `scripts/check-native-live.sh`; documentation uses
 `scripts/check-docs.sh`.
+
+### Stop alarms without a call
+
+The owner-local native bearer endpoint `POST /api/v1/alarms/stop` accepts an
+empty JSON object. It cancels all pending and ringing alarms through the host
+scheduler, including when no live call exists. Browser clients are refused.
+Use the host's existing native bearer authorization with this endpoint; never
+put the bearer in a committed script, issue, or diagnostic report. A successful
+reply includes the number of cancelled alarms. It does not quit the app.
+
+### Recurring reminders
+
+A reminder can repeat daily, on weekdays or on a weekly weekday set ("every
+Saturday at ten remind me to do one hour of cardio"); `set_alarm` reads the rule
+from the owner's own words, `list_alarms` shows the rule and its next occurrence,
+and `cancel_alarm` cancels one occurrence ("skip this Saturday") or the whole
+series ("stop the Saturday cardio reminders"). The series keeps the timezone it
+was said in, so travel or a host timezone change never moves it. The stop
+endpoint above also cancels every active series: it cancels the series row
+(never a silent row delete) together with the ringing and pending occurrences,
+so a stopped series is gone from `list_alarms` until the owner asks again.

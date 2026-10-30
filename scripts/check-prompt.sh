@@ -203,3 +203,10 @@ assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations wor
 assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE
+
+# F12: the distillation prompt is the one place long-term memory is written from a call, so its attribution and
+# its closed tool-evidence rule are asserted here, on the source the summarizer service ships.
+grep -Fq 'is never written as "the owner said"' server/services/summarize.ts
+grep -Fq 'Never quote or paraphrase tool guidance, instructions, refusal messages, validator text' server/services/summarize.ts
+grep -Fq "Only what the Owner-tagged transcript turns actually contain may be attributed to the owner." server/services/summarize.ts
+printf '%s\n' 'F12 summary attribution and closed tool evidence: PASS'

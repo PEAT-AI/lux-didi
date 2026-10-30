@@ -133,7 +133,10 @@ export interface LiveOwnerConfig {
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
 export interface AlarmSessionSetup { readonly ownerDisplayName: string; readonly scheduledTime: string; readonly label?: string; readonly alarmId?: string; readonly ringDeadlineUtc?: number }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup }
+
+/** A6: a series occurrence also carries the rule its host note must state. */
+export type SeriesAlarmSetup = AlarmSessionSetup & { readonly series?: string };
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup; readonly sessionKind?: import('../domain/history-lifecycle.js').LiveSessionKind }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

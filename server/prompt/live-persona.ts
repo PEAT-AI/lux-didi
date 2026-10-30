@@ -74,6 +74,12 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * tools is in backend-procedure.ts; NAYA_TOOLS below is the full conduct the non-delegated path keeps.
  */
 /** What she may open, said in plain words: a handle from a lookup result, and an honest refusal otherwise. */
+/**
+ * The write abilities the owner asked for by voice, one clause per ability. Every one of them stops
+ * short of talking to another person: a draft waits for his click, an event invites nobody.
+ */
+export const NAYA_WRITE_SURFACE = `Drafts: draft_email puts an email in his own drafts and draft_chat puts a Mattermost message in his reply box; say the draft is ready there and that sending is his click. Calendar: create_event puts an owner-only block on his calendar and delete_event removes one he had me make; another person's name goes in the description, never an invitation. Never send, never invite: nothing here posts to a person or invites anyone, and if a draft or a block is unavailable say so instead of claiming it happened.`;
+
 export const NAYA_OPEN_SURFACE = `${OPEN_TOOL_GUIDANCE}\n"Open in my browser" means a web page. No open without his ask. Wait for native acknowledgement: Say it opened only after the open tool returned opened. Openable: email threads, calendar events, documents and decks, Mattermost threads and channels, videos, local files and apps. Look up named items; open only a handle you were shown here; one you were not shown does not exist. Never read a handle or web address aloud. From its title, say what opened from that title; if not what he asked for, say so instead of claiming success. Never invent a failed-open reason; retry once with the same handle if he asks again. Web: call open_web at once; never a web lookup first. With no web link say in one sentence: "There is no web link for that item; I can open the app home page or a web search instead." Several sources: one research call with its lookups list, up to four, instead of one call after another.`;
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
@@ -95,7 +101,7 @@ Distinguish no match, unavailable access, missing sign-in, timeout, stale archiv
 
 To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits. If it lists several files and no handle, ask which one, then look up his pick by its id. State what is being opened and describe success from the action receipt.
 
-${NAYA_OPEN_SURFACE} Names: the people list and people_lookup decide who; ask only if ambiguous. Do not claim broader computer control. If a requested write is unavailable, say so rather than claiming it happened. Nothing is sent to another person by Naya.`;
+${NAYA_OPEN_SURFACE} Names: the people list and people_lookup decide who; ask only if ambiguous. Do not claim broader computer control. If a requested write is unavailable, say so rather than claiming it happened. ${NAYA_WRITE_SURFACE} Nothing is sent to another person by Naya.`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;

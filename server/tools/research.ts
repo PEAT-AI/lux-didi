@@ -1828,6 +1828,35 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
   return [...merged];
 }
 
+/** F7: a Drive name search that matched nothing, in the shaper's own closed words. */
+function driveSearchFoundNothing(text: string): boolean {
+  const answer = text.trim();
+  return answer === '' || answer.startsWith('No Drive file matched that name.');
+}
+
+/**
+ * F7: one empty Drive name search earns one retry carrying the single most distinctive title word with the
+ * kind filter still on, newest first, so a title carrying recency or a colleague's name still finds the file.
+ */
+async function broadenedDriveRetry(execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>, subs: readonly IntentSubCall[], results: readonly IntentSubResult[], signal: AbortSignal, broadened: Map<string, string>): Promise<readonly IntentSubResult[]> {
+  let merged: readonly IntentSubResult[] = results;
+  for (let index = 0; index < subs.length; index++) {
+    const sub = subs[index]!;
+    const result = merged[index];
+    if (sub.name !== INTERNAL.driveSearch || broadened.has(sub.key) || result === undefined || !result.ok || !driveSearchFoundNothing(result.text)) continue;
+    const term = driveDistinctiveToken(typeof sub.args['query'] === 'string' ? sub.args['query'] : '');
+    if (term === undefined) continue;
+    const args: JsonObject = { ...sub.args, query: term };
+    try {
+      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
+      // The retry ran, so the answer says the name was broadened either way, never that Drive held nothing.
+      broadened.set(sub.key, term);
+      if (retried?.ok === true && !driveSearchFoundNothing(retried.text)) merged = merged.map((row, at) => (at === index ? retried : row));
+    } catch { /* keep the empty first answer */ }
+  }
+  return [...merged];
+}
+
 /**
  * C-CHAT: what a chat read says beside its posts, kept for the reply: the conversation and window it read,
  * a capability the child lacks, the question it asks back, and the next page when it matched more than it
@@ -2082,6 +2111,8 @@ export interface RunState {
   droppedDayFilters: Set<string>;
   /** #647: the chat reads a broadened retry answered, by their sub key, with the one term that was sent. */
   broadenedChat: Map<string, string>;
+  /** F7: Drive name searches that already spent their one broadened retry. */
+  broadenedDrive: Map<string, string>;
   calendarScopeAttempted?: boolean;
   /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
   calendarNotRead?: string;
@@ -2192,7 +2223,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), historyMore: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), broadenedDrive: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -3671,6 +3702,18 @@ function sourceKindOfKindName(name: string): SourceKind | null {
   }
 }
 
+/**
+ * G5: the sources the early answer still names as "still searching": a read in flight whose findings have not
+ * landed. A source whose findings are already in the ledger is never called pending, whatever the snapshot taken
+ * when the early answer began still listed.
+ */
+export function stillSearchingOf(reading: readonly SourceKind[],
+  run: { sourcesDone: ReadonlySet<SourceKind>; ledger: ReadonlyMap<string, { source: SourceKind | null }> }): SourceKind[] {
+  const landed = new Set<SourceKind>();
+  for (const entry of run.ledger.values()) if (entry.source !== null) landed.add(entry.source);
+  return reading.filter(source => !run.sourcesDone.has(source) && !landed.has(source));
+}
+
 /** ROUTE-1022: a continuation the run cannot serve says what to do next, so the model never stalls on it. */
 export const CONTINUATION_UNAVAILABLE_NOTE = 'That earlier result is no longer available. Ask a fresh research question about the same thing.';
 
@@ -4038,6 +4081,11 @@ function capWebMetadata(reply: JsonObject): void {
   }
 }
 
+/** A record read: a history page carrying the record's own text, which pages at its own 6,000 char room. */
+function isRecordRead(reply: JsonObject): boolean {
+  return Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string');
+}
+
 /**
  * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
@@ -4049,7 +4097,7 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
   // A requested body read and a record read page at their own 6,000 char room, so neither is held to the
   // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
-  if (Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string')) return reply;
+  if (isRecordRead(reply)) return reply;
   capWebMetadata(reply);
   const rawWebReason = isRecord(reply['unavailable']) ? reply['unavailable']['web'] : undefined;
   if (typeof rawWebReason === 'string' && rawWebReason.startsWith('web_insufficient:')) webInsufficient(reply, rawWebReason.slice('web_insufficient:'.length));
@@ -4652,6 +4700,33 @@ const DRIVE_KIND_WORDS: readonly { kind: keyof typeof DRIVE_MIME_TYPES; words: R
 ];
 /** The words that name the kind, the app or the act, never the file; what is left is the name searched. */
 const DRIVE_FILLER = /\b(?:the|a|an|my|our|his|open|opening|show|find|pull|bring|up|please|in|on|chrome|browser|google|drive|file|files|decks?|slides?|presentations?|pptx?|powerpoints?|sheets?|spreadsheets?|xlsx?|excel|docs?|documents?|docx|word|link|from|of|for|that|this|it|me|can|you|could|would)\b/gu;
+/**
+ * F7: the words that are about when, sharing or the person, never about the file's name. A recency word, a
+ * "shared with X" clause and a connective all cost the exact-name match a Drive search needs.
+ */
+const DRIVE_TIME_AND_SHARING = /\b(?:recent|recently|latest|last|newest|new|old|older|oldest|today|tomorrow|yesterday|this|next|past|week|weeks|month|months|year|years|day|days|morning|afternoon|evening|shared|share|sharing|sent|send|received|someone|anyone|somebody|person|people|colleague|teammate|boss|manager|with|by|from|about|regarding|re|and|or|but|also|only|again|still|just)\b/gu;
+
+/** The roster's own names, so "shared with Ada" searches the title and not the person. */
+function rosterNamePatterns(): RegExp[] {
+  return (peopleSnapshot()?.people ?? []).flatMap(person => [person.name, ...person.aliases])
+    .map(name => name.trim().toLowerCase()).filter(name => name.length > 1)
+    .map(name => new RegExp(`(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu'));
+}
+
+/** F7: the title words left once the act, the kind, the clock, the sharing and the person are gone. */
+function driveNameQuery(text: string): string {
+  let cleaned = text.replace(DRIVE_FILLER, ' ').replace(DRIVE_TIME_AND_SHARING, ' ');
+  for (const pattern of rosterNamePatterns()) cleaned = cleaned.replace(pattern, ' ');
+  return cleaned.replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+}
+
+/** F7: the one word a broadening can send: the longest left after the noise, or nothing when it is all noise. */
+function driveDistinctiveToken(name: string): string | undefined {
+  const words = name.split(' ').filter(word => word.length > 2);
+  if (words.length < 2) return undefined;
+  return words.reduce((longest, word) => (word.length > longest.length ? word : longest));
+}
+
 /** The reread of one file he picked: `id:` and the id a listing carried. */
 const DRIVE_FILE_ID = /^id:\s*([A-Za-z0-9_-]{10,256})$/u;
 
@@ -4661,7 +4736,7 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
   if (id !== undefined) return [{ key: 'dr0', name: INTERNAL.driveGet, args: { file_id: id } }];
   const text = query.toLowerCase();
   const kind = (DRIVE_KIND_WORDS.find(entry => entry.words.test(text)) ?? DRIVE_KIND_WORDS.find(entry => entry.words.test(ownerWords.toLowerCase())))?.kind;
-  const name = text.replace(DRIVE_FILLER, ' ').replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+  const name = driveNameQuery(text);
   if (name === '') return [];
   return [{ key: 'dr0', name: INTERNAL.driveSearch, args: { query: name, ...(kind === undefined ? {} : { mime_types: [...DRIVE_MIME_TYPES[kind]] }), limit: 5 } as JsonObject }];
 }
@@ -5818,7 +5893,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       if (next === 'due') budgetSpent = true;
     } else budgetSpent = true;
   }
-  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
+  const pending = stillSearchingOf([...first.reading], view.run);
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
   const hardStopped = budgetSpent || first.cut === true;
@@ -5918,19 +5993,26 @@ const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTIN
  * never read, or words about a new topic, is a new ask, whatever id the model passed with it. Only the
  * model's own direction is judged: a continue's question and topic never reach a source (#565).
  */
+/**
+ * G8: whether this direction names a source the run has not read. A run's route is resolved when it starts, so a
+ * source it never read cannot be added by a later direction.
+ */
+function namesUnreadSource(run: RunState, text: string): boolean {
+  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
+  for (const match of text.matchAll(SOURCE_WORD)) {
+    const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
+    if (source !== undefined && !read.has(source)) return true;
+  }
+  return false;
+}
+
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
   // An explicit local record handle is navigation, not a new topic.
   if (Array.isArray(call.lookups) && call.lookups.some(lookup => isRecord(lookup) && isRecord(lookup['history']) && (lookup['history']['recordRef'] || lookup['history']['cursor']))) return true;
-  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).
-  const unread = (text: string): boolean => {
-    for (const match of text.matchAll(SOURCE_WORD)) {
-      const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
-      if (source !== undefined && !read.has(source)) return true;
-    }
-    return false;
-  };
+  const unread = (text: string): boolean => namesUnreadSource(run, text);
+  const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   const sameTopic = (text: string): boolean => {
     const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, TOPIC_SKIP));
     return contentKeywords(text, 12, TOPIC_SKIP).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
@@ -6159,11 +6241,20 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     // more than the run already gave, and keeps its own path.
     if (priorRun !== undefined && bareContinue(call) && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
-      // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
-      deps.ledger.cancelActive();
-      const freshTopic = call.topic?.trim() ?? '';
-      run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
-      run.startedFresh = true;
+      // G8: a direction this run can carry extends it. Cancelling the run and starting an empty one threw away
+      // every finding the owner had already been promised, so the run keeps its evidence and takes the words as
+      // its next round. A direction naming a source this run never read is the #654 case: it starts fresh and
+      // says so.
+      const direction = call.action === 'continue' ? (call.direction ?? '').trim() : '';
+      const extended = direction === '' || namesUnreadSource(priorRun, direction) ? undefined : deps.ledger.resume(priorRun.researchId,
+        { direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
+      if (extended === undefined) {
+        // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
+        deps.ledger.cancelActive();
+        const freshTopic = call.topic?.trim() ?? '';
+        run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
+        run.startedFresh = true;
+      } else run = extended;
     } else {
       const resumed = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
       if (!resumed) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
@@ -6246,7 +6337,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
-      if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      if (!dispatchSignal.aborted) results = [...await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat)];
+      // F7: the same one-place rule for a Drive name search that matched nothing.
+      if (!dispatchSignal.aborted) results = [...await broadenedDriveRetry(executeSource, subs, results, progressSignal, run.broadenedDrive)];
       noteChatReads(run, subs, results);
       finish(results, current() ? undefined : 'cancelled');
     }
@@ -6971,18 +7064,101 @@ export const VOICE_REPLY_CUT = 'voice_reply_chars';
 export const VOICE_CURSOR_PREFIX = 'vpage-';
 /** C-CONTINUITY T-11: the closed error a `continue` gets for a cursor this call no longer holds. */
 export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
+/**
+ * G1: the room a voice page always keeps clear for one evidence line. A page whose envelope takes the whole cap
+ * carries no evidence at all, which is how a 3,000-char page of citation links reached the owner empty.
+ */
+export const VOICE_EVIDENCE_RESERVE_CHARS = 240;
+/** G1: how many citations one spoken page names; a page of links is never worth more of the budget than this. */
+const VOICE_CITATION_LIMIT = 12;
 
-/** The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. */
-function voiceEnvelopeOf(reply: JsonObject): JsonObject {
+/** G1: the site a citation belongs to, so a spoken page names it without carrying the whole link. */
+function citationSite(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./u, '');
+  } catch { return url.slice(0, 40); }
+}
+
+/** G1: the citations a spoken page carries, as domain plus index; the full links stay in the host-side reply. */
+function voiceCitationsOf(reply: JsonObject): string[] {
+  const sources = [reply['webSources'], reply['webAttribution']].flatMap(value => Array.isArray(value) ? value : []);
+  const lines: string[] = [];
+  for (const source of sources) {
+    if (lines.length >= VOICE_CITATION_LIMIT) break;
+    const url = isRecord(source) && typeof source['url'] === 'string' ? source['url'] : '';
+    if (url !== '') lines.push(`[${lines.length + 1}] ${citationSite(url)}`);
+  }
+  return lines;
+}
+
+/**
+ * G1: the fields a page keeps whatever it costs, because they are what makes it readable as a reply rather than a
+ * fragment. Every other field is bulk the page has no room for, and it goes.
+ */
+const VOICE_PAGE_CONTROL_FIELDS = new Set(['researchId', 'status', 'canContinue', 'alreadyDelivered', 'error', 'cut',
+  'citations', 'note', 'coverage']);
+
+/**
+ * G1: trim a page's envelope until one evidence line fits beside it. It is not only links that fill a page: a
+ * mail-shaped reply carries its message ids and coverage map in the same envelope, so any bulk field a page has no
+ * room for is dropped largest first, then the citations shrink, then the header is cut. A page therefore always
+ * carries evidence when the reply has any, and never rides at twice the voice cap.
+ */
+function voiceEnvelopeFits(envelope: JsonObject, cap: number): JsonObject {
+  const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
+  const fits = (): boolean => voicePageChars(envelope, ['e'.repeat(VOICE_EVIDENCE_RESERVE_CHARS)], cursorChars, 1) <= cap;
+  for (let bulk = heaviestBulkField(envelope); bulk !== undefined && !fits(); bulk = heaviestBulkField(envelope)) delete envelope[bulk];
+  const citations = Array.isArray(envelope['citations']) ? envelope['citations'] as string[] : [];
+  for (let keep = citations.length - 1; keep >= 0 && !fits(); keep -= 1) {
+    if (keep === 0) delete envelope['citations']; else envelope['citations'] = citations.slice(0, keep);
+  }
+  // The header text is the last thing a page can give up: it is cut, never dropped, so the page still covers.
+  for (const key of ['note', 'coverage']) {
+    if (fits()) break;
+    const text = envelope[key];
+    if (typeof text === 'string' && text.length > VOICE_EVIDENCE_RESERVE_CHARS) {
+      envelope[key] = `${text.slice(0, VOICE_EVIDENCE_RESERVE_CHARS - 1)}\u2026`;
+    }
+  }
+  // Only a header longer than the whole page is left at this point: it goes, so the page never overruns its cap.
+  for (const key of ['note', 'coverage']) if (!fits()) delete envelope[key];
+  return envelope;
+}
+
+/** G1: the largest field a page may drop, or undefined when only its control fields and header are left. */
+function heaviestBulkField(envelope: JsonObject): string | undefined {
+  let heaviest: string | undefined;
+  let size = -1;
+  for (const key of Object.keys(envelope)) {
+    if (VOICE_PAGE_CONTROL_FIELDS.has(key)) continue;
+    const width = JSON.stringify(envelope[key] ?? null).length;
+    if (width > size) { heaviest = key; size = width; }
+  }
+  return heaviest;
+}
+
+/**
+ * The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. G1: the
+ * citation fields are the one part a page must not carry whole, so they become domain-plus-index citations and
+ * the full links stay in the reply this call keeps host-side.
+ */
+function voiceEnvelopeOf(reply: JsonObject, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   const envelope: JsonObject = {};
   for (const [key, value] of Object.entries(reply)) {
     // W1-R3: the cap pages content and nothing else. Every control field the reply carries (status, canContinue,
     // alreadyDelivered, its own cursor, closed codes, receipts) rides every page untouched, so a reader sees the
     // same facts it would have seen from the whole reply.
     if (key === 'findings' || key === 'bodySlices') continue;
+    // G1: the link footer and the two link tables are what starved the evidence, so a page names its sites and
+    // leaves the links themselves in the reply the call holds.
+    if (key === 'markdown' || key === 'webSources' || key === 'webAttribution') continue;
     envelope[key] = value;
   }
-  return envelope;
+  const citations = voiceCitationsOf(reply);
+  if (citations.length > 0) envelope['citations'] = citations;
+  // A record read's history page is the evidence the owner asked for, not bulk beside it, so it is never fitted away.
+  if (isRecordRead(reply)) return envelope;
+  return voiceEnvelopeFits(envelope, cap);
 }
 
 /** The one-line-units of a reply's bulk, in the order the provider read them: its findings first. */
@@ -7187,7 +7363,7 @@ export class VoiceReplyBook {
 export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   if (JSON.stringify(reply).length <= cap) return reply;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
-  const envelope = voiceEnvelopeOf(reply);
+  const envelope = voiceEnvelopeOf(reply, cap);
   // A body page is a research result too, so it obeys the same cap: its slices are cut at a whole word and the
   // remainder is paged from the book with the reader's own offsets, so nothing is handed over uncapped.
   const slices = Array.isArray(reply['bodySlices']) ? (reply['bodySlices'] as JsonObject[]) : undefined;
@@ -7212,13 +7388,28 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
   const remainingNote = (count: number): string => `+${count} more lines; continue with pageCursor to fetch the rest.`;
-  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/gu, 'more on the next page') : '';
+  // G6: the note is matched case-insensitively, so the reply's own "Nothing more to fetch" is never left
+  // standing beside a "+N more lines" line that contradicts it.
+  const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/giu, 'more on the next page') : '';
   // Reserve the continuation line before packing, so announcing a cut never breaks the voice cap.
   const pagedEnvelope: JsonObject = { ...envelope, note: `${previousNote} ${remainingNote(units.length)}`.trim() };
   const { lines, rest } = fitUnits(pagedEnvelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   if (rest.length === 0) return page;
   return { ...page, note: `${previousNote} ${remainingNote(rest.length)}`.trim(), canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+}
+
+/**
+ * G2: the evidence-first page a fresh session is seeded with. It is the same compact page a voice reply pages,
+ * taken once and without a cursor, so a rebuild hands over evidence lines instead of the first slice of a JSON
+ * body (headers and site names, which is all a 1,200-char prefix of a paged reply ever carried).
+ */
+export function spokenPageOf(reply: JsonObject, cap: number = RESEARCH.voiceReplyChars): JsonObject {
+  const units = voiceUnitsOf(reply);
+  if (units.length === 0) return reply;
+  const envelope = voiceEnvelopeOf(reply, cap);
+  const { lines } = fitUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
+  return { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
 }
 
 /**
@@ -7333,6 +7524,8 @@ export class ResearchScheduler {
   #active = new Map<string, ActiveRun>();
   /** E7: the live turn window: the run each coalesce key last answered, and when. */
   #recent = new Map<string, { id: string; at: number; reply: JsonObject; reachable: string }>();
+  /** F13: the answer this turn already gave, by the run id our own start minted, so an echoed id is one research. */
+  #answered = new Map<string, { at: number; reply: JsonObject; reachable: string }>();
   /**
    * #664: how many research calls each delegation has made in the turn window. A delegation is the owner's
    * one ask, which the scheduler sees as the same coalesce key: a keyword, a lookup batch or a reworded
@@ -7356,6 +7549,15 @@ export class ResearchScheduler {
         return inflight.entry.awaiter.promise;
       }
       // E7: the same question and sources, answered moments ago in this turn, is the same research.
+      // F13: a start that carries an id this turn already answered is the same research, whatever wording it
+      // arrives in: the first result stands and nothing is read a second time.
+      if (call.researchId !== undefined) {
+        const answered = this.#answered.get(call.researchId);
+        if (answered !== undefined && answered.reachable === reachable && this.#deps.now() - answered.at <= RESEARCH.coalesceWindowMs) {
+          this.#deps.logJoined?.(call.researchId, 'recent');
+          return Promise.resolve(answered.reply);
+        }
+      }
       const recent = this.#recent.get(coalesceKey(call));
       // #664: a delegation reads at most three times. The fourth call was the backend re-asking one lookup
       // eight times in 14 s, so it is told to answer the owner with what it holds and it reads nothing.
@@ -7388,6 +7590,7 @@ export class ResearchScheduler {
       // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
       const id = newResearchId();
       for (const [key, entry] of this.#recent) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#recent.delete(key);
+      for (const [id, entry] of this.#answered) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#answered.delete(id);
       for (const [entry, spend] of this.#delegation) if (this.#deps.now() - spend.at > RESEARCH.coalesceWindowMs) this.#delegation.delete(entry);
       this.#delegation.set(key, { at, calls, id });
       this.#deps.logJoined?.(id, 'start');
@@ -7447,7 +7650,12 @@ export class ResearchScheduler {
     } };
     const settle = (): void => { if (this.#active.get(id) === entry) this.#active.delete(id); };
     runResearch(deps, call, signal).then(reply => {
-      if (call.action === 'start') this.#recent.set(coalesceKey(call), { id, at: this.#deps.now(), reply, reachable: reachable ?? reachableNow(this.#deps) });
+      if (call.action === 'start') {
+        const at = this.#deps.now();
+        const reach = reachable ?? reachableNow(this.#deps);
+        this.#recent.set(coalesceKey(call), { id, at, reply, reachable: reach });
+        this.#answered.set(id, { at, reply, reachable: reach });
+      }
       if (!entry.superseded) awaiter.resolve(reply);
       if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     }).catch(() => {
@@ -7492,7 +7700,10 @@ export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>
 export function findingCount(finding: JsonObject): number {
   if (Array.isArray(finding['items'])) return finding['items'].length;
   const shown = typeof finding['text'] === 'string' ? /: (\d+) of \d+ shown/u.exec(finding['text']) : null;
-  return shown ? Number(shown[1]) : 0;
+  if (shown) return Number(shown[1]);
+  // CA-R4: a finding that carries text is a delivered finding. A long evidence block has no page marker,
+  // and counting it as nothing made the journal say "no findings" over nine kilobytes of evidence.
+  return typeof finding['text'] === 'string' && finding['text'].trim() !== '' ? 1 : 0;
 }
 
 export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {

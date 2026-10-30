@@ -203,6 +203,14 @@ const SAFE_BINDING = /^[A-Za-z0-9._@+/-]{1,512}$/;
  * the owner can run it once without looking anything up. A word that is not a plain path or address is
  * left out, so the line never becomes a second command.
  */
+/**
+ * W1030: the one consent sentence the write families reuse, in the repo's own read-family wording with
+ * the helper's authorize command for that family. It names no new CLI of its own.
+ */
+export function googleConsentLine(family: string): string {
+  return `auth needed: run ${authorizeCommandFor(family)} to sign in again`;
+}
+
 function authorizeCommandFor(family: string, endpoint?: ConnectionEndpoint): string {
   const command = `lux-google-mcp authorize --family ${family}`;
   if (endpoint === undefined || !('transport' in endpoint)) return command;
@@ -214,6 +222,10 @@ function authorizeCommandFor(family: string, endpoint?: ConnectionEndpoint): str
 
 function googleFamilyOf(evidence: ConnectorEvidence): string {
   if (typeof evidence.tool !== 'string') return 'calendar';
+  // W1030: the write tools answer with their own family, so the one command he is told names the token
+  // that is actually missing rather than the gmail or calendar read one.
+  if (evidence.tool === 'gmail_create_draft') return 'compose';
+  if (evidence.tool === 'calendar_create_event' || evidence.tool === 'calendar_delete_event') return 'calendar_write';
   return evidence.tool.startsWith('gmail') ? 'gmail' : evidence.tool.startsWith('drive') ? 'drive' : 'calendar';
 }
 

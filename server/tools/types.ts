@@ -47,6 +47,31 @@ export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
+export type ComposeOutcome =
+  | { state: 'done'; response: JsonObject; clash?: string }
+  | { state: 'not_authorized'; family: string; command: string }
+  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown'; candidates: string[] }
+  | { state: 'unknown'; reason: string }
+  | { state: 'failed'; reason: string };
+
+export interface ComposeDispatch {
+  /** Resolve the spoken name through the owner's own reads (see `resolveRecipient`) before writing. */
+  draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  /**
+   * W1030: the second delete arm. A calendar read this session returned decides which block he means,
+   * by exact id; the helper itself refuses an event it did not create.
+   */
+  findNamedEvent?(input: { words: string; clientRequestId: string }): Promise<NamedEventOutcome>;
+}
+
+export type NamedEventOutcome =
+  | { state: 'found'; eventId: string }
+  | { state: 'ambiguous'; candidates: string[] }
+  | { state: 'none' };
+
 export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   log?: (event: ToolFailureEvent) => void;
@@ -62,6 +87,11 @@ export interface ToolsOwnerOptions {
   configuredConnectionIds?(): readonly string[] | undefined;
   /** W7: the owner's Trello board service; absent means no Trello tools are ever offered. */
   trello?: TrelloBoard;
+  /**
+   * W1030: the host's compose surface for drafts, calendar blocks and their deletion. Absent means no
+   * write tool is offered; a family without consent answers connector_not_authorized, never a crash.
+   */
+  compose?: ComposeDispatch;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
@@ -69,13 +99,15 @@ export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused'
 /** W6: the host decides a composed-note stage; the tool only asks, and the frozen payload is the host's own. */
 export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue | (() => Promise<JsonValue>);
 
-export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note';
+export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note'
+  | 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event';
 export type RequestCode = 'allowed' | 'idempotent' | 'no_owner_request' | 'request_expired' | 'grant_spent';
 export type RequestAuthorization =
   | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string; observedAt?: number }
   | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; observedAt?: number; receipt?: unknown };
 
 export interface OwnerRequestPort {
+  invalidateAlarm(session: string): void;
   answered?(session: string): void;
   partial(session: string): void;
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;

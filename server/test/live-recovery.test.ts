@@ -392,6 +392,8 @@ test('F5/F3: tool_output_sent measures the span from the frame that asked for it
   (await sessionAt(h, 0))!.live();
   await attachment.ready;
   await flush();
+  // The owner speaks first: a lookup before her first turn is refused at once and never measures a span.
+  await ownerSpoke(h);
   h.holdTool();
   h.port.emit({ type: 'toolCall', calls: [{ id: 'k1', name: 'search_knowledge', args: { query: 'plan', limit: 3 } }], sequence: 0 } as LiveVoiceEvent);
   await flush();

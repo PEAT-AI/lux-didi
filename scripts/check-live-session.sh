@@ -62,3 +62,5 @@ assert.equal(typeof live.validateLiveProfile, 'function');
 assert.ok(Array.isArray(live.liveMigrations) && live.liveMigrations[0].owner === 'live');
 console.log('Offline canonical tarball live session core import: PASS');
 NODE
+
+node --test test/canary.test.mjs

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, runResearch, findingCount, shapeBlock,
   type CandidateKind, type ResearchDeps, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -433,4 +433,18 @@ test('E5: a triage mail block ranks the owner thread, then people, then bulk, an
   assert.equal(people.every(line => /Question|on it/u.test(line)), true, `the five human rows fill the cap first, got ${JSON.stringify(people)}`);
   assert.equal(block.lines.slice(0, 5).some(line => /Sale/u.test(line)), false, 'no newsletter before a person');
   assert.match(block.text, /2 left out/u, 'the block counts the rows the cap dropped');
+});
+
+// CA-R4 (CALLS-1030b G9): a research result that carries evidence was journalled as "no findings" because the
+// count only read structured items and "N of M shown" pages. A finding with text is a delivered finding.
+test('CA-R4: a finding that carries evidence counts as delivered, so the journal never says no findings', () => {
+  assert.equal(findingCount({ source: 'drive', text: 'x'.repeat(9_800), chars: 9_800 }), 1, 'a long evidence block is one delivered finding');
+  assert.equal(findingCount({ source: 'drive', text: 'Harbour review deck' }), 1);
+  assert.equal(findingCount({ source: 'drive', text: '   ' }), 0, 'an empty finding is nothing');
+  assert.equal(findingCount({ source: 'mail', items: [{}, {}], text: 'two' }), 2, 'structured items still count themselves');
+  assert.equal(findingCount({ source: 'mail', text: 'messages: 3 of 40 shown' }), 3, 'and a page marker still wins');
+  // The journal head the owner reads: evidence is named, and one item is not "items".
+  const findings = [{ source: 'drive', text: 'x'.repeat(9_800) }];
+  const count = findings.reduce((total, finding) => total + findingCount(finding), 0);
+  assert.equal(`findings from drive; ${count} delivered ${count === 1 ? 'item' : 'items'}`, 'findings from drive; 1 delivered item');
 });

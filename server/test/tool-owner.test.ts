@@ -940,12 +940,15 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   assert.equal((await liveExecute(f, call, args)).status, 'completed');
   assert.equal(port.log.length, 1);
   const rebuilt = f.reopen();
-  rebuilt.observeAlarmOwner('run', 'j9', 'draft an email to Priya', 3_000);
+  // A rebuild replays history, not a fresh write intent: the words carry no draft, so nothing may be written.
+  rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
   const after = { ...call, executionId: 'run:1:1', callId: 'call-run:1:1' };
   rebuilt.journal.intent(after);
   const refused = await rebuilt.liveDefinitions('run', () => ({ code: 'remembered' })).find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
+  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:1']))?.result_json);
+  assert.match(stored, /no_owner_request/);
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one action and writes nothing', async t => {

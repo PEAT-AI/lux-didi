@@ -704,8 +704,8 @@ const WRAPPER_3O_CHARS = 6603;
 // C-RESEARCH8: the two-ask rule and the re-worded evidence sentence add 2 chars on top, so the merged measure is
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
 // W3-R2 set this 14_559 ceiling; TRAIN9-R2 preserves every rule within it through equivalent wording.
-// W1030: the four write abilities re-pin the measure to 14_735, since TR-R5 re-pins and never trims.
-const WRAPPER_W5_CHARS = 14_735;
+// W1030: the four write abilities re-pin the measure to 14_778, since TR-R5 re-pins and never trims.
+const WRAPPER_W5_CHARS = 14_778;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',

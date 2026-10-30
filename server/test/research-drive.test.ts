@@ -150,3 +150,23 @@ test('F7: a Drive name of one word is not broadened, because there is nothing to
   assert.equal(h.calls.filter(call => call.name === 'drive_search_files').length, 1, 'no retry without a distinctive word');
   endHandleSession('drive-f7-single');
 });
+
+// F13: the owner's report was that a Drive read which had answered still carried an "unavailable" receipt.
+// This pins the whole receipt surface of one successful read: the reply's own source verdict, the per-source
+// host receipt, and its absence from the reply's unavailable reasons.
+test('F13: a drive read that answered reports ok in every receipt it issues', async () => {
+  beginHandleSession('drive-f13');
+  const h = harness(['drive'], () => shapeDriveSearch({ files: [DECK] }).text);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'open the harbour deck', topic: 'harbour deck', lookups: [{ source: 'drive', query: 'harbour deck' }] }, new AbortController().signal);
+  assert.deepEqual(reply['sources'], { drive: 'ok' }, 'the reply verdict is ok');
+  assert.equal(reply['unavailable'], undefined, 'nothing is reported unavailable');
+  assert.equal(h.sources.length > 0, true, 'a per-source host receipt was issued');
+  assert.deepEqual(h.sources.map(event => event.outcome), ['ok'], 'and it says ok, never unavailable');
+  assert.deepEqual(h.sources.map(event => event.source), ['drive']);
+  // The same holds for an empty read: "no file matched" is a search that answered, not an outage.
+  const empty = harness(['drive'], () => shapeDriveSearch({ files: [] }).text);
+  const emptyReply = await runResearch(empty.deps, { action: 'start', question: 'open the missing deck', topic: 'missing deck', lookups: [{ source: 'drive', query: 'synthetic missing title' }] }, new AbortController().signal);
+  assert.equal(emptyReply['unavailable'], undefined, 'an empty read is not an unavailable one');
+  assert.deepEqual(empty.sources.map(event => event.outcome), ['empty'], 'the receipt names the empty search');
+  endHandleSession('drive-f13');
+});

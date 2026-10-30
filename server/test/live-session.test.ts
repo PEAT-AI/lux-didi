@@ -809,7 +809,9 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   if (openDelegation) {
     await ownerSpoke(h);
     h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-    while (!h.calls.length) await tick();
+    // Bounded, so a refused call fails here instead of spinning past the test timeout and holding the file open.
+    for (let i = 0; i < 2000 && !h.calls.length; i++) await tick();
+    assert.equal(h.calls.length, 1, 'the delegation is open: its tool started and has not returned');
   }
   // A response is streaming into the socket the app already cancelled.
   h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });

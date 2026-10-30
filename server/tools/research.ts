@@ -4081,6 +4081,11 @@ function capWebMetadata(reply: JsonObject): void {
   }
 }
 
+/** A record read: a history page carrying the record's own text, which pages at its own 6,000 char room. */
+function isRecordRead(reply: JsonObject): boolean {
+  return Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string');
+}
+
 /**
  * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
@@ -4092,7 +4097,7 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
   // A requested body read and a record read page at their own 6,000 char room, so neither is held to the
   // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
-  if (Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string')) return reply;
+  if (isRecordRead(reply)) return reply;
   capWebMetadata(reply);
   const rawWebReason = isRecord(reply['unavailable']) ? reply['unavailable']['web'] : undefined;
   if (typeof rawWebReason === 'string' && rawWebReason.startsWith('web_insufficient:')) webInsufficient(reply, rawWebReason.slice('web_insufficient:'.length));
@@ -7151,6 +7156,8 @@ function voiceEnvelopeOf(reply: JsonObject, cap: number = RESEARCH.voiceReplyCha
   }
   const citations = voiceCitationsOf(reply);
   if (citations.length > 0) envelope['citations'] = citations;
+  // A record read's history page is the evidence the owner asked for, not bulk beside it, so it is never fitted away.
+  if (isRecordRead(reply)) return envelope;
   return voiceEnvelopeFits(envelope, cap);
 }
 

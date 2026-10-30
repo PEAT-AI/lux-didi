@@ -1,4 +1,5 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
+const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
   id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
@@ -40,10 +41,11 @@ export class OwnerRequests implements OwnerRequestPort {
     const alarmIntent = /\balarm\b|\bwake me\b|\bremind me\b/i.test(words);
     const timeFragment = /^(?:[\d\s:.,!?-]|(?:at|in|for|a|an|and|from|now|please|um|uh|up|past|to|where|you|wake|so|like|basically|have|put|it|again|today|tomorrow|morning|evening|noon|midnight|am|pm|m|utc|singapore|time|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|half|quarter|minutes?|hours?|seconds?)\b)+$/i.test(words);
     const alarmFollowup = timeFragment && previous?.alarmWords !== undefined && this.clock() - previous.start <= 120000 && (previous.pending?.kind === 'set_alarm' || !previous.answered && previous.grants.get('set_alarm')?.target === undefined);
-    const alarmWords = alarmIntent ? previous?.alarmWords && !previous.answered && previous.grants.get('set_alarm')?.target === undefined && this.clock() - previous.start <= 120000 ? `${previous.alarmWords} ${words}` : words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
+    const alarmWordsRaw = alarmIntent ? previous?.alarmWords && !previous.answered && previous.grants.get('set_alarm')?.target === undefined && this.clock() - previous.start <= 120000 ? `${previous.alarmWords} ${words}` : words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
+    const alarmWords = alarmWordsRaw === undefined ? undefined : normalizeOwnerWords(alarmWordsRaw);
     if (alarmWords !== undefined) grants.set('set_alarm', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
-      const combined = (words.startsWith(previous.words) ? words : `${previous.words} ${words}`).replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
+      const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
       if (!relative.test(previous.words) && relative.test(combined)) previous.observedAt = observedAt;
       previous.words = combined;

@@ -3510,6 +3510,12 @@ export class LiveSessionOwner {
     handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
     handle.researchAdmission.ownerTurn();
+    handle.inputFinalTimer?.cancel();
+    handle.inputAt = this.#now();
+    handle.inputFinal = true;
+    handle.inputFinalAt = handle.inputAt;
+    handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${text}`.slice(-12000);
+    handle.ownerLastWords = text.trim().split(/\s+/u).length;
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
     // Same rule as provider activity: the owner's mute suspends the idle clock until the unmute.

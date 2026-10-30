@@ -50,3 +50,16 @@ test('hear104 alarm authority: finals join until the completed answer', () => {
   gate.observe('s', 'j4', 'a.m. Singapore time');
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
 });
+
+test('alarm authority: a recurring ask authorizes one set_alarm and a replay creates nothing', () => {
+  const gate = new OwnerRequests();
+  gate.observe('s', 'j-recur', 'Every Saturday at ten remind me to do one hour of cardio.');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
+  const request = gate.currentId('s');
+  assert.ok(request);
+  assert.equal(gate.claim('s', 'set_alarm', 'alarm', request).code, 'allowed');
+  // The asking turn spends the grant: a replay of the same turn executes nothing.
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'grant_spent');
+  gate.answered('s');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
+});

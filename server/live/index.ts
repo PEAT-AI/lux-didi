@@ -78,10 +78,12 @@ export function openersNote(openers: readonly string[], topics: readonly (string
 }
 
 import { ALARM_MODE_MARKER } from './types.js';
-export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
+import type { SeriesAlarmSetup } from './alarm-mode.js';
+export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
   const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  const series = input.series?.trim();
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */

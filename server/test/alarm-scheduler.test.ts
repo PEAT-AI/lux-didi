@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/schema.js';
-import { AlarmScheduler, type AlarmDue } from '../host/alarm-scheduler.js';
+import { AlarmScheduler, AlarmShellBridge, type AlarmDue, type AlarmShellFrame } from '../host/alarm-scheduler.js';
+import { randomUUID } from 'node:crypto';
+import { cancelAlarmSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, seriesNextFireAt } from '../tools/alarm.js';
 
 function fixture(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(tmpdir(), 'synthetic-alarm-'));
@@ -147,4 +149,136 @@ test('C-SAFETY: operator stop cancels pending and ringing alarms through schedul
   assert.equal(f.scheduler.list().find(row => row.id === ringing.id)?.state, 'ringing');
   assert.equal((f.scheduler as AlarmScheduler & { cancelAll(): number }).cancelAll(), 2);
   assert.ok(f.scheduler.list().every(row => row.state === 'cancelled'));
+});
+
+const SERIES_TZ = 'Asia/Singapore';
+const saturday = { kind: 'weekly' as const, weekdays: [6], hour: 10, minute: 0, tz: SERIES_TZ };
+
+function openSeries(f: ReturnType<typeof fixture>, rule: Parameters<typeof seriesNextFireAt>[0]) {
+  const seriesId = randomUUID();
+  const firstId = randomUUID();
+  const fireAtUtc = seriesNextFireAt(rule, f.now());
+  f.store.transaction(tx => {
+    insertAlarmSeries(tx, { id: seriesId, rule, label: 'do one hour of cardio', createdJournalId: 'synthetic-series' });
+    tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending','synthetic-series')", [firstId, fireAtUtc, rule.tz, 'do one hour of cardio']);
+    linkAlarmOccurrence(tx, firstId, seriesId);
+  });
+  f.scheduler.recheck('mutation');
+  return { seriesId, firstId, fireAtUtc };
+}
+
+function pendingRows(f: ReturnType<typeof fixture>) {
+  return f.store.transaction(tx => tx.all("SELECT id,fire_at_utc FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id")
+    .map(row => ({ id: String(row.id), fireAtUtc: Number(row.fire_at_utc) })));
+}
+
+function seriesState(f: ReturnType<typeof fixture>, seriesId: string) {
+  return f.store.transaction(tx => tx.get('SELECT state FROM alarm_series WHERE id=?', [seriesId])?.state);
+}
+
+test('C-RECUR: a restart between fire and acknowledgement keeps exactly one pending occurrence', t => {
+  const f = fixture(t);
+  const s = openSeries(f, saturday);
+  assert.equal(pendingRows(f).length, 1);
+  f.advance(s.fireAtUtc - f.now());
+  f.scheduler.recheck('timer');
+  assert.equal(f.scheduler.list().find(row => row.id === s.firstId)?.state, 'ringing');
+  f.scheduler.stop();
+  const recovered = f.create();
+  recovered.recheck('start');
+  recovered.recheck('reconnect');
+  assert.equal(pendingRows(f).length, 1, 'a restart never materialises a second occurrence');
+  recovered.acknowledge(s.firstId);
+  const next = pendingRows(f);
+  assert.equal(next.length, 1);
+  assert.equal(next[0]!.fireAtUtc, seriesNextFireAt(saturday, s.fireAtUtc));
+  recovered.stop();
+});
+
+test('C-RECUR: a duplicate recheck does not double-materialise, and a missed occurrence materialises one', t => {
+  const f = fixture(t);
+  const s = openSeries(f, saturday);
+  f.advance(s.fireAtUtc - f.now());
+  f.scheduler.recheck('timer');
+  f.scheduler.acknowledge(s.firstId);
+  f.scheduler.recheck('mutation');
+  f.scheduler.recheck('mutation');
+  f.scheduler.recheck('wake');
+  const next = pendingRows(f);
+  assert.equal(next.length, 1);
+  f.advance(next[0]!.fireAtUtc - f.now() + 21 * 60000);
+  f.scheduler.recheck('wake');
+  assert.equal(f.scheduler.list().find(row => row.id === next[0]!.id)?.state, 'missed');
+  const afterMiss = pendingRows(f);
+  assert.equal(afterMiss.length, 1, 'a missed occurrence settles its series exactly once');
+  assert.equal(afterMiss[0]!.fireAtUtc, seriesNextFireAt(saturday, next[0]!.fireAtUtc));
+});
+
+test('C-RECUR: skipping one occurrence keeps the series, cancelling the series stops it', t => {
+  const f = fixture(t);
+  const s = openSeries(f, saturday);
+  assert.equal(f.scheduler.cancel(s.firstId), true);
+  const next = pendingRows(f);
+  assert.equal(next.length, 1, 'skipping one Saturday keeps exactly one pending occurrence');
+  assert.equal(next[0]!.fireAtUtc, seriesNextFireAt(saturday, s.fireAtUtc));
+  assert.equal(seriesState(f, s.seriesId), 'active');
+  const cancelled = f.store.transaction(tx => cancelAlarmSeries(tx, s.seriesId));
+  assert.equal(cancelled, 1);
+  assert.equal(seriesState(f, s.seriesId), 'cancelled');
+  assert.equal(pendingRows(f).length, 0);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1, 'a cancelled series is kept, never silently deleted');
+});
+
+test('C-RECUR: snoozing moves the ringing occurrence only and the series continues', t => {
+  const f = fixture(t);
+  const s = openSeries(f, saturday);
+  f.advance(s.fireAtUtc - f.now());
+  f.scheduler.recheck('timer');
+  const snoozed = f.scheduler.snooze(s.firstId, f.now() + 300000, 'synthetic-snooze');
+  assert.equal(pendingRows(f).length, 1);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT series_id FROM alarm_occurrences WHERE alarm_id=?', [snoozed.id])?.series_id), s.seriesId);
+  f.advance(300000);
+  f.scheduler.recheck('timer');
+  f.scheduler.acknowledge(snoozed.id);
+  const next = pendingRows(f);
+  assert.equal(next.length, 1);
+  assert.equal(next[0]!.fireAtUtc, seriesNextFireAt(saturday, snoozed.fireAtUtc), 'the series keeps its own schedule, not the snoozed hour');
+});
+
+test('C-RECUR: list shows the rule with its next occurrence, and stop cancels the series without deleting it', t => {
+  const f = fixture(t);
+  const s = openSeries(f, { kind: 'daily', weekdays: [], hour: 22, minute: 30, tz: SERIES_TZ });
+  const entries = f.store.transaction(tx => listPendingAlarms(tx));
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.series?.id, s.seriesId);
+  assert.equal(entries[0]?.series?.text, 'every day at 22:30 Singapore time');
+  assert.equal((f.scheduler as AlarmScheduler & { cancelAll(): number }).cancelAll(), 1);
+  assert.equal(seriesState(f, s.seriesId), 'cancelled');
+  assert.equal(pendingRows(f).length, 0);
+  f.scheduler.recheck('wake');
+  assert.equal(pendingRows(f).length, 0, 'a stopped series never materialises another occurrence');
+});
+
+test('C-RECUR: operator stop publishes the settled state so the shell stops ringing', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'synthetic-alarm-stop-'));
+  const store = new Store(dir, toolsMigrations);
+  let now = Date.parse('2026-10-28T00:00:00Z');
+  const frames: AlarmShellFrame[] = [];
+  const shell = new AlarmShellBridge();
+  const unbind = shell.bind(frame => { frames.push(frame); return true; });
+  const clock = { now: () => now, setTimeout: () => 1, clearTimeout: () => {} };
+  // The runtime wires exactly this pair: changed -> alarmShell.state(rows).
+  const scheduler = new AlarmScheduler({ store, clock, emit: () => {}, changed: rows => shell.state(rows) });
+  t.after(() => { unbind(); scheduler.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  scheduler.set({ fireAtUtc: now + 1000, tz: 'UTC', label: '', createdJournalId: 'synthetic-stop' });
+  now += 1000;
+  scheduler.recheck('timer');
+  const ringing = frames.at(-1);
+  assert.equal(ringing?.type, 'alarm_state');
+  assert.equal(ringing?.type === 'alarm_state' ? ringing.alarms[0]?.state : undefined, 'ringing');
+  frames.length = 0;
+  assert.equal((scheduler as AlarmScheduler & { cancelAll(): number }).cancelAll(), 1);
+  const settled = frames.at(-1);
+  assert.equal(settled?.type, 'alarm_state', 'the shell bridge receives a state frame on stop');
+  assert.equal(settled?.type === 'alarm_state' ? settled.alarms[0]?.state : undefined, 'cancelled', 'the frame carries the cancelled rows, so the ring stops');
 });

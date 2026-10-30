@@ -16,7 +16,7 @@
     "calendar_create": { "status": "implemented", "didi": "create_event" },
     "calendar_delete": { "status": "implemented", "didi": "delete_event" },
     "chat_draft": { "status": "implemented", "didi": "draft_chat" },
-    "recurrence": { "status": "planned", "didi": "set_alarm" }
+    "recurrence": { "status": "implemented", "didi": "set_alarm" }
   },
   "tools": {
     "resolve_person": { "didi": "people.lookup", "kind": "read", "capability": "people", "connector": "people" },

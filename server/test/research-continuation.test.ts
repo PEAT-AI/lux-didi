@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, RESEARCH, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, type ResearchDeps } from '../tools/research.js';
+import { ResearchAdmission, ResearchLedger, RESEARCH, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
+import { answersTheAsk } from '../live/index.js';
 import type { IntentSubResult } from '../tools/intent.js';
 import { lateCommentarySilence } from '../live/index.js';
 
@@ -264,4 +265,59 @@ test('G8: a direction extends the run instead of cancelling it, and an unread so
   const other = await runResearch(h.deps, { action: 'continue', researchId, direction: 'also check the calendar for it' }, signal());
   assert.match(String(other['note'] ?? ''), /fresh lookup, not a continuation/u, 'the one ask the run cannot honour says so');
   assert.notEqual(String(other['researchId']), researchId, 'and it runs under its own id');
+});
+
+// B-1 (review finding, requirement 1): it is not only citation links that can fill a page. A mail-shaped reply
+// carries its message ids and coverage map in the same envelope, so the invariant is asserted against that shape too.
+test('B-1: an adversarial mail envelope still pages evidence inside the cap', () => {
+  const lines: string[] = [];
+  for (let index = 0; index < 40; index += 1) lines.push(`mail: the renewal thread agreed the Friday date, item ${index}`);
+  const reply: Record<string, unknown> = {
+    researchId: 'r-mail', status: 'answered', canContinue: false, sources: ['mail'],
+    findings: [{ source: 'mail', text: lines.join('\n') }],
+    mailMessages: Array.from({ length: 60 }, (_, index) => ({ id: `m-${index}`, threadId: `t-${index}`, internalDate: 1_700_000_000_000 + index })),
+    mailCoverage: { view: 'metadata', metadataTruncated: true, received: 60, shown: 40 },
+    receipts: Array.from({ length: 20 }, (_, index) => ({ key: `receipt-${index}`, detail: 'x'.repeat(80) })),
+  };
+  assert.ok(JSON.stringify(reply).length > 6_000, `the fixture is bulk-heavy (${JSON.stringify(reply).length})`);
+  const book = new VoiceReplyBook();
+  const first = capVoiceReply(reply, book);
+  const wire = JSON.stringify(first);
+  assert.ok(wire.length <= RESEARCH.voiceReplyChars, `the page obeys the cap (${wire.length})`);
+  const text = (first['findings'] as { text: string }[])[0]?.text ?? '';
+  assert.match(text, /^mail: the renewal thread agreed the Friday date, item 0/u, 'page 1 carries evidence');
+  assert.equal(first['mailMessages'], undefined, 'bulk the page has no room for is dropped, not left to starve it');
+});
+
+// B-2 (review finding, requirement 3): the exact sequence of call 8be5d80f, rebuild then quip then retry.
+test('B-3: a source whose findings are in the ledger is never called still searching', () => {
+  const reading = ['mail', 'chat'] as const;
+  const run = (done: string[], landed: (string | null)[]) => ({
+    sourcesDone: new Set(done) as ReadonlySet<'mail' | 'chat'>,
+    ledger: new Map(landed.map((source, index) => [`entry-${index}`, { source: source as 'mail' | 'chat' | null }])),
+  });
+  assert.deepEqual(stillSearchingOf(reading, run([], [])), ['mail', 'chat'], 'nothing landed, both are still searching');
+  assert.deepEqual(stillSearchingOf(reading, run([], ['mail'])), ['chat'], 'a landed source is never said to be pending');
+  assert.deepEqual(stillSearchingOf(reading, run(['mail', 'chat'], ['mail'])), [], 'a finished read is never pending either');
+});
+
+test('B-2: rebuild, quip, retry, and the retry is not refused as answered', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true });
+  admission.delivered('r-1');
+  // The rebuilt session speaks a quip: an opening turn is never the answer, so the turn is not spent.
+  assert.equal(answersTheAsk(true, 'So, where were we?'), false);
+  if (answersTheAsk(true, 'So, where were we?')) admission.answered();
+  const retry = admission.admit('start', false, false, 'what is the release scope');
+  assert.notEqual(retry.reason, 'answer_already_given', 'the quip never made the turn answered');
+  // The owner says "I need a moment to try again", which grants the retry its own operation.
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true },
+    'the retry of the same ask is admitted');
+  // A real answer still spends the turn, which is the mark G3 must not weaken.
+  admission.delivered('r-2');
+  if (answersTheAsk(false, 'The council approved the budget on Tuesday.')) admission.answered();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release budget'),
+    { admitted: false, reason: 'answer_already_given' });
 });

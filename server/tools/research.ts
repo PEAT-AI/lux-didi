@@ -3671,6 +3671,18 @@ function sourceKindOfKindName(name: string): SourceKind | null {
   }
 }
 
+/**
+ * G5: the sources the early answer still names as "still searching": a read in flight whose findings have not
+ * landed. A source whose findings are already in the ledger is never called pending, whatever the snapshot taken
+ * when the early answer began still listed.
+ */
+export function stillSearchingOf(reading: readonly SourceKind[],
+  run: { sourcesDone: ReadonlySet<SourceKind>; ledger: ReadonlyMap<string, { source: SourceKind | null }> }): SourceKind[] {
+  const landed = new Set<SourceKind>();
+  for (const entry of run.ledger.values()) if (entry.source !== null) landed.add(entry.source);
+  return reading.filter(source => !run.sourcesDone.has(source) && !landed.has(source));
+}
+
 /** ROUTE-1022: a continuation the run cannot serve says what to do next, so the model never stalls on it. */
 export const CONTINUATION_UNAVAILABLE_NOTE = 'That earlier result is no longer available. Ask a fresh research question about the same thing.';
 
@@ -5818,11 +5830,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       if (next === 'due') budgetSpent = true;
     } else budgetSpent = true;
   }
-  // G5: a source whose findings already landed in the ledger is never called still reading, whatever the
-  // snapshot taken when the early answer began still listed.
-  const landed = new Set<SourceKind>();
-  for (const entry of view.run.ledger.values()) if (entry.source !== null) landed.add(entry.source);
-  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source) && !landed.has(source));
+  const pending = stillSearchingOf(first.reading, view.run);
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
   const hardStopped = budgetSpent || first.cut === true;
@@ -7018,10 +7026,24 @@ function voiceCitationsOf(reply: JsonObject): string[] {
   return lines;
 }
 
-/** G1: trim a page's envelope until one evidence line fits beside it, so links can never fill a whole page. */
+/**
+ * G1: the fields a page keeps whatever it costs, because they are what makes it readable as a reply rather than a
+ * fragment. Every other field is bulk the page has no room for, and it goes.
+ */
+const VOICE_PAGE_CONTROL_FIELDS = new Set(['researchId', 'status', 'canContinue', 'alreadyDelivered', 'error', 'cut',
+  'citations', 'note', 'coverage']);
+
+/**
+ * G1: trim a page's envelope until one evidence line fits beside it. It is not only links that fill a page: a
+ * mail-shaped reply carries its message ids and coverage map in the same envelope, so any bulk field a page has no
+ * room for is dropped largest first, then the citations shrink, then the header is cut. A page therefore always
+ * carries evidence when the reply has any, and never rides at twice the voice cap.
+ */
 function voiceEnvelopeFits(envelope: JsonObject, cap: number): JsonObject {
   const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
   const fits = (): boolean => voicePageChars(envelope, ['e'.repeat(VOICE_EVIDENCE_RESERVE_CHARS)], cursorChars, 1) <= cap;
+  const weight = (key: string): number => JSON.stringify(envelope[key] ?? null).length;
+  for (let bulk = heaviestBulkField(envelope); bulk !== undefined && !fits(); bulk = heaviestBulkField(envelope)) delete envelope[bulk];
   const citations = Array.isArray(envelope['citations']) ? envelope['citations'] as string[] : [];
   for (let keep = citations.length - 1; keep >= 0 && !fits(); keep -= 1) {
     if (keep === 0) delete envelope['citations']; else envelope['citations'] = citations.slice(0, keep);
@@ -7034,7 +7056,21 @@ function voiceEnvelopeFits(envelope: JsonObject, cap: number): JsonObject {
       envelope[key] = `${text.slice(0, VOICE_EVIDENCE_RESERVE_CHARS - 1)}\u2026`;
     }
   }
+  // Only a header longer than the whole page is left at this point: it goes, so the page never overruns its cap.
+  for (const key of ['note', 'coverage']) if (!fits()) delete envelope[key];
   return envelope;
+}
+
+/** G1: the largest field a page may drop, or undefined when only its control fields and header are left. */
+function heaviestBulkField(envelope: JsonObject): string | undefined {
+  let heaviest: string | undefined;
+  let size = -1;
+  for (const key of Object.keys(envelope)) {
+    if (VOICE_PAGE_CONTROL_FIELDS.has(key)) continue;
+    const width = JSON.stringify(envelope[key] ?? null).length;
+    if (width > size) { heaviest = key; size = width; }
+  }
+  return heaviest;
 }
 
 /**

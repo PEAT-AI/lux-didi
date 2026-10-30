@@ -284,8 +284,11 @@ test('W1030 write intent: a split ask grants on the turn that carries the intent
   requests.observe('s', 'j1', 'draft an email');
   requests.observe('s', 'j2', 'to Priya about the invoice');
   assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
-  requests.commit('s', 'draft_email', 'Priya', { status: 'draft_ready' });
-  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'idempotent');
+  const receipt = draftEmailResult({ draftId: 'd1', to: 'Priya', subject: 'the invoice' });
+  requests.commit('s', 'draft_email', 'Priya', receipt);
+  const replay = requests.authorize('s', 'draft_email', 'Priya');
+  assert.equal(replay.code, 'idempotent');
+  assert.deepEqual(replay.code === 'idempotent' ? replay.receipt : undefined, receipt);
 });
 
 test('W1030 write intent: the intent in the second turn still grants the first turn target', () => {

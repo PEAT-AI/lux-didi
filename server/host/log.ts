@@ -351,10 +351,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
-  if (['open_audit', 'alarm_audit', 'lux_note_audit'].includes(String(value.event)) && 'grantKind' in value) {
+  // W1030/WT-R2: the write tools' grant and its spend reach the audit trail beside the read tools'.
+  if (['open_audit', 'alarm_audit', 'lux_note_audit', 'compose_audit'].includes(String(value.event)) && 'grantKind' in value) {
     if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;
     if (!Number.isInteger(value.ownerFinals) || Number(value.ownerFinals) < 0 || !Number.isFinite(value.requestAgeMs) || Number(value.requestAgeMs) < 0) return;
-    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note'].includes(String(value.grantKind))) return;
+    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note', 'draft_email', 'draft_chat', 'create_event', 'delete_event'].includes(String(value.grantKind))) return;
     if (!['absent', 'available', 'spent'].includes(String(value.grantState))) return;
     if (typeof value.refusalCode !== 'string' || !/^[a-z_]{1,64}$/.test(value.refusalCode)) return;
     return { event: value.event, ownerFinals: value.ownerFinals, requestAgeMs: value.requestAgeMs, grantKind: value.grantKind, grantState: value.grantState, refusalCode: value.refusalCode };

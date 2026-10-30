@@ -213,3 +213,114 @@ export function notAuthorizedResult(family: string, command: string): JsonObject
   return { status: CONNECTOR_NOT_AUTHORIZED, family, code: CONNECTOR_NOT_AUTHORIZED, say: `I do not have ${family} write access yet. Ask him to run ${command} and I will do it.` };
 }
 export const COMPOSE_GUIDANCE = 'Naya drafts email and Mattermost messages and puts owner-only blocks on the calendar. She never sends and never invites.';
+
+/**
+ * The host's compose surface, and the only thing that may reach a mail, chat or calendar write.
+ * A host that has no consented family answers `not_authorized` with the one command to run; one
+ * whose remote result is lost answers `unknown` rather than inventing a success.
+ */
+export type ComposeOutcome =
+  | { state: 'done'; response: JsonObject; clash?: string }
+  | { state: 'not_authorized'; family: string; command: string }
+  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown'; candidates: string[] }
+  | { state: 'unknown'; reason: string }
+  | { state: 'failed'; reason: string };
+
+export interface ComposeDispatch {
+  /** Resolve the spoken name through the owner's own reads (see `resolveRecipient`) before writing. */
+  draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome>;
+  deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome>;
+}
+
+export interface ComposeTool { description: string; parameters: JsonObject; validate(args: unknown): boolean }
+
+/** One declaration per ability, each closed: nothing here can address a person or an invitation. */
+export const COMPOSE_TOOLS: Readonly<Record<ComposeName, ComposeTool>> = {
+  draft_email: {
+    description: 'Write an email into his own drafts. Give the name he said, the subject and the body. Naya never sends: sending is his click. There is no recipient address to give and no send.',
+    parameters: { type: 'object', properties: { to: { type: 'string', description: 'The name he said, exactly as he said it; the host resolves the address from his own mail.' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'], additionalProperties: false },
+    validate: validateDraftEmail,
+  },
+  draft_chat: {
+    description: 'Write a Mattermost message into his reply box, to a person or in a channel thread. Naya never posts: sending is his click.',
+    parameters: { type: 'object', properties: { person: { type: 'string' }, channel: { type: 'string' }, root_id: { type: 'string', description: 'The thread root, when he replied in a thread.' }, message: { type: 'string' } }, required: ['message'], additionalProperties: false },
+    validate: validateDraftChat,
+  },
+  create_event: {
+    description: 'Put an owner-only block on his own calendar from the day and time he said. Never invite anyone; another name goes in the description. The host reads the time from his words, so give no start or end.',
+    parameters: { type: 'object', properties: { summary: { type: 'string' }, duration_minutes: { type: 'number', description: 'Only when he said how long it lasts; the host reads his words first.' } }, required: ['summary'], additionalProperties: false },
+    validate: validateCreateEvent,
+  },
+  delete_event: {
+    description: 'Remove a block on his calendar that this call made, or one he named without ambiguity. Only events Naya created herself.',
+    parameters: { type: 'object', properties: { event_id: { type: 'string', description: 'The event this call created, when he means that one.' } }, additionalProperties: false },
+    validate: validateDeleteEvent,
+  },
+};
+
+/** The target the grant and its claim are bound to, derived from his words and the turn. */
+export function composeTarget(name: ComposeName, args: JsonObject, turn: string): string {
+  const text = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (name === 'draft_email') return `mail:${text(args['to'])}`;
+  if (name === 'draft_chat') return `chat:${text(args['person'] ?? args['channel'])}${text(args['root_id']) ? `:${text(args['root_id'])}` : ''}`;
+  if (name === 'create_event') return `event:${turn}`;
+  return `event:${text(args['event_id']) || turn}`;
+}
+
+/** What the model hears and what the receipt records, for every outcome the host can report. */
+export function composeResult(outcome: ComposeOutcome): JsonObject {
+  if (outcome.state === 'done') {
+    if (outcome.clash === undefined) return outcome.response;
+    return { ...outcome.response, clash: outcome.clash, say: `${String(outcome.response['say'] ?? '')} That clashes with ${outcome.clash}.`.trim() };
+  }
+  if (outcome.state === 'recipient') {
+    const names = outcome.candidates.slice(0, 3);
+    const asked = outcome.code === 'recipient_ambiguous'
+      ? `I found more than one match: ${names.join(', ')}. Which one did you mean?`
+      : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
+    return { status: 'refused', code: outcome.code, candidates: names, say: asked };
+  }
+  if (outcome.state === 'not_authorized') return notAuthorizedResult(outcome.family, outcome.command);
+  if (outcome.state === 'unknown') {
+    return { status: 'unknown', code: 'write_unknown', say: 'I cannot tell whether that went through, so I will not say it did. Check your own drafts or calendar before asking me again.' };
+  }
+  return { status: 'failed', code: outcome.reason, say: 'That did not go through, so nothing was written.' };
+}
+
+/** Run one write through the host port, with the event window and the description built here. */
+export async function runCompose(port: ComposeDispatch, name: ComposeName, args: JsonObject, context: { words: string; clientRequestId: string; now: number; timeZone: string; ownerName?: string }): Promise<ComposeOutcome> {
+  if (name === 'draft_email') {
+    const input = args as unknown as DraftEmailArguments;
+    return await port.draftEmail({ to: input.to, subject: input.subject, body: input.body, clientRequestId: context.clientRequestId });
+  }
+  if (name === 'draft_chat') {
+    const input = args as unknown as DraftChatArguments;
+    return await port.draftChat({ ...(input.person !== undefined ? { person: input.person } : {}), ...(input.channel !== undefined ? { channel: input.channel } : {}), ...(input.root_id !== undefined ? { rootId: input.root_id } : {}), message: input.message, clientRequestId: context.clientRequestId });
+  }
+  if (name === 'delete_event') {
+    const input = args as unknown as DeleteEventArgs;
+    if (input.event_id === undefined) return { state: 'failed', reason: 'event_not_named' };
+    return await port.deleteEvent({ eventId: input.event_id, clientRequestId: context.clientRequestId });
+  }
+  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName);
+  if (window.status !== 'ready') return { state: 'failed', reason: window.reason };
+  const input = args as unknown as CreateEventArgs;
+  const description = window.names.length > 0 ? `${input.summary}. Owner-only block; ${window.names.join(', ')} is named here and was not invited.` : `${input.summary}. Owner-only block; no invitations were sent.`;
+  return await port.createEvent({ summary: input.summary, startUtc: window.startUtc, endUtc: window.endUtc, timeZone: window.timeZone, description, clientRequestId: context.clientRequestId });
+}
+
+/** The family each write needs, and the one line he must act on when it is not consented. */
+export const COMPOSE_FAMILY: Readonly<Record<ComposeName, string>> = {
+  draft_email: 'the Google compose family', draft_chat: 'the Mattermost drafts family',
+  create_event: 'the Google calendar_write family', delete_event: 'the Google calendar_write family',
+};
+export const COMPOSE_CONSENT: Readonly<Record<ComposeName, string>> = {
+  draft_email: 'connect the Google compose family in Settings, Connectors',
+  draft_chat: 'connect the Mattermost drafts family in Settings, Connectors',
+  create_event: 'connect the Google calendar_write family in Settings, Connectors',
+  delete_event: 'connect the Google calendar_write family in Settings, Connectors',
+};
+/** The closed answer for a family this host cannot reach yet, with the one action to take. */
+export const notAuthorizedFor = (name: ComposeName): ComposeOutcome => ({ state: 'not_authorized', family: COMPOSE_FAMILY[name], command: COMPOSE_CONSENT[name] });

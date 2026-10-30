@@ -14,6 +14,7 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { COMPOSE_IDENTITY, draftChatResult, draftEmailResult, type ComposeDispatch, type ComposeOutcome } from '../tools/compose.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -41,7 +42,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -75,7 +76,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -95,7 +96,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}) }); },
   };
 }
 
@@ -820,3 +821,136 @@ for (const channel of ['eng', 'synthetic-missing']) {
     assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);
   });
 }
+
+// W1030/WT-R1: the write tools through the real tool call, with a synthetic compose port standing in
+// for the host's connector families. No send, no invite, no second write on replay.
+function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
+  return Object.assign({
+    log,
+    async draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome> {
+      log.push(`gmail_create_draft:${input.to}:${input.clientRequestId}`);
+      return { state: 'done', response: draftEmailResult({ draftId: 'draft-1', to: input.to, subject: input.subject }) };
+    },
+    async draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome> {
+      log.push(`mattermost_save_draft:${input.person ?? input.channel ?? ''}:${input.rootId ?? 'none'}`);
+      return { state: 'done', response: draftChatResult({ channelId: 'chan-1', target: input.person ?? input.channel ?? '', ...(input.rootId !== undefined ? { rootId: input.rootId } : {}) }) };
+    },
+    async createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome> {
+      log.push(`calendar_create_event:${input.startUtc}:${input.endUtc}:${input.description}`);
+      return { state: 'done', response: { status: 'event_created', event_id: 'event-1', start: new Date(input.startUtc).toISOString(), end: new Date(input.endUtc).toISOString(), time_zone: input.timeZone, description: input.description, attendees: 0, invitations: 'none', say: `${new Date(input.startUtc).toISOString()} is on your calendar. No invitations were sent.` } };
+    },
+    async deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome> {
+      log.push(`calendar_delete_event:${input.eventId}`);
+      return { state: 'done', response: { status: 'event_deleted', event_id: input.eventId, say: 'Removed from your calendar.' } };
+    },
+  }) as ComposeDispatch & { log: string[] };
+}
+
+const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
+  ...f.intent(executionId, name, args), accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
+});
+
+test('W1030 draft_email: a split two-turn ask writes one unsent draft and its replay returns the receipt', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port });
+  assert.ok(f.definitions().some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
+  f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
+  f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
+  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
+  const call = composeCall(f, 'run:1:0', 'draft_email', args);
+  f.owner.journal.intent(call);
+  const outcome = await f.execute(call, args);
+  assert.equal(outcome.status, 'completed');
+  assert.equal(port.log.length, 1, 'one remote draft call');
+  const first = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json;
+  assert.match(String(first), /draft-1/);
+  assert.match(String(first), /never sends|his click/);
+  assert.match(String(first), /"sent":false/);
+  const replay = composeCall(f, 'run:1:1', 'draft_email', args);
+  f.owner.journal.intent(replay);
+  assert.equal((await f.execute(replay, args)).status, 'completed');
+  assert.equal(port.log.length, 1, 'the replay writes nothing');
+});
+
+test('W1030 recipient: two spoken matches ask, and the model address never reaches the draft', async t => {
+  const port = composePort();
+  const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
+  const f = await fixture(t, { compose: ambiguous });
+  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
+  const call = composeCall(f, 'run:1:0', 'draft_email', args);
+  f.owner.journal.intent(call);
+  assert.equal((await f.execute(call, args)).status, 'completed');
+  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
+  assert.match(stored, /recipient_ambiguous/);
+  assert.match(stored, /Priya Raman, Priya Shah/);
+  assert.doesNotMatch(stored, /@example/, 'no address is invented');
+  assert.equal(port.log.length, 0, 'an ambiguous ask writes nothing');
+});
+
+test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft tool, never a post', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port });
+  f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
+  const dm = composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' });
+  f.owner.journal.intent(dm);
+  assert.equal((await f.execute(dm, { person: 'Sam', message: 'On my way.' })).status, 'completed');
+  f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
+  const thread = composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' });
+  f.owner.journal.intent(thread);
+  assert.equal((await f.execute(thread, { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
+  assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
+  const definitions = f.definitions().map(definition => definition.name);
+  assert.equal(definitions.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
+});
+
+test('W1030 create_event: the window comes from his words, a colleague stays a described name, a clash is reported', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port });
+  f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
+  const args = { summary: 'gym' };
+  const call = composeCall(f, 'run:1:0', 'create_event', args);
+  f.owner.journal.intent(call);
+  const outcome = await f.execute(call, args);
+  assert.equal(outcome.status, 'completed');
+  const line = port.log[0] ?? '';
+  const start = Number(line.split(':')[1]);
+  const end = Number(line.split(':')[2]);
+  assert.equal(end - start, 3_600_000, 'one hour from his words');
+  assert.match(line, /Zara/);
+  assert.match(line, /no invitations were sent/i);
+  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
+  assert.match(stored, /"attendees":0/);
+  assert.match(stored, /"invitations":"none"/);
+});
+
+test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port });
+  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
+  const call = composeCall(f, 'run:1:0', 'draft_email', args);
+  f.owner.journal.intent(call);
+  assert.equal((await f.execute(call, args)).status, 'completed');
+  assert.equal(port.log.length, 1);
+  const rebuilt = f.reopen();
+  rebuilt.observeAlarmOwner('run', 'j9', 'draft an email to Priya', 3_000);
+  const after = { ...call, executionId: 'run:1:1' };
+  rebuilt.journal.intent(after);
+  const refused = await rebuilt.definitions('run').find(definition => definition.name === 'draft_email')!.execute(args, { ...after, signal: f.signal });
+  assert.equal(refused.status, 'completed');
+  assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
+});
+
+test('W1030 connector_not_authorized: a family this host cannot reach names the one action and writes nothing', async t => {
+  const f = await fixture(t);
+  f.owner.observeAlarmOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
+  const args = { summary: 'block' };
+  const call = composeCall(f, 'run:1:0', 'create_event', args);
+  f.owner.journal.intent(call);
+  assert.equal((await f.execute(call, args)).status, 'completed');
+  const stored = String(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.result_json);
+  assert.match(stored, /connector_not_authorized/);
+  assert.match(stored, /calendar_write/);
+  assert.match(stored, /Settings, Connectors/);
+});

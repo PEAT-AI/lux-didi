@@ -1,4 +1,5 @@
 import type { TrelloBoard } from './trello.js';
+import type { ComposeDispatch } from './compose.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
@@ -62,6 +63,11 @@ export interface ToolsOwnerOptions {
   configuredConnectionIds?(): readonly string[] | undefined;
   /** W7: the owner's Trello board service; absent means no Trello tools are ever offered. */
   trello?: TrelloBoard;
+  /**
+   * W1030: the host's compose surface for drafts, calendar blocks and their deletion. Absent means no
+   * write tool is offered; a family without consent answers connector_not_authorized, never a crash.
+   */
+  compose?: ComposeDispatch;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

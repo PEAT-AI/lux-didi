@@ -110,7 +110,7 @@ test('C-OPEN 4 and 6: the host log admits the two wiring lines with ids only', (
 test('F7: the name query drops recency, sharing, connectives and roster names, and a 0-hit read retries once', async () => {
   beginHandleSession('drive-f7');
   // A roster person: "the deck Ada shared with me" is about the title, not about Ada.
-  installPeople(parsePeople({ version: 1, people: [{ id: 'ada-moss', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['ada@example.invalid'] }] }));
+  installPeople(parsePeople({ version: 1, people: [{ id: 'ada-moss', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: 'ada@example.invalid', mattermost: 'ada.moss' }] }));
   const shapes = [
     // The shapes the owner actually used: recency, who shared it, a connective and a person.
     { words: 'open the deck Ada shared with me yesterday about the harbour pilot', query: 'harbour pilot deck' },

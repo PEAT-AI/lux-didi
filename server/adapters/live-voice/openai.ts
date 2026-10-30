@@ -487,6 +487,9 @@ class Session implements LiveVoiceSession {
   private playbackUntil = 0;
   private lastForwardedAt = 0;
   private audioSinceCompletion = false;
+  /** Text terminal completion is safe only when this session has no microphone stream. */
+  private inputAudioSeen = false;
+  private typedTurn = false;
   private idleQuiet: unknown;
   /** True between a delegated `response.created` and its `response.done`. */
   private delegatedOutstanding = false;
@@ -1029,6 +1032,7 @@ class Session implements LiveVoiceSession {
   }
 
   private completeTurn(): void {
+    this.typedTurn = false;
     const idleMs = Math.max(0, Math.round(this.clock.now() - this.lastForwardedAt));
     this.audioSinceCompletion = false;
     this.stretchOpen = false;
@@ -1165,7 +1169,7 @@ class Session implements LiveVoiceSession {
       this.continuationTiming = undefined;
     }
     this.delegatedOutstanding = false;
-    if (completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
+    if (!this.typedTurn && completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
       this.silentRescueUsed = true;
       this.answerNow = true;
       this.continuationOwed = true;
@@ -1182,7 +1186,10 @@ class Session implements LiveVoiceSession {
     if (message) this.responseDone(message);
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
-    this.settleTurn();
+    if (completed && this.typedTurn && !this.inputAudioSeen && !this.audioSinceCompletion && !this.holding && this.pendingCalls.length === 0 && !this.continuationOwed) {
+      this.typedTurn = false;
+      this.completeTurn();
+    } else this.settleTurn();
     this.writeAnswered();
     this.resumeContinuation();
   }
@@ -1713,6 +1720,7 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.settings.allowed.includes(input.dataClass)) fail('route_denied');
+    this.inputAudioSeen = true;
     this.diagnostic.audioCalls += 1; this.diagnostic.audioBytes += input.pcm.byteLength;
     const pcm = this.upsampler.process(input.pcm);
     if (!pcm.byteLength) return;
@@ -1898,6 +1906,7 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
+    this.typedTurn = true;
     if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }] } }))) fail(this.terminal!.code);
     // #677: a response the wire would refuse (a call still owes its output) is never written: the line rides the one
     // continuation that follows the owed output.

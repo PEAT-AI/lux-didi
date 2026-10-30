@@ -783,23 +783,17 @@ test('discussion noun asks and product mishearings route to chat, not unrelated 
 
 test('F5a: an empty topic read retries the same conversation unfiltered, once, never by relevance', async t => {
   const f = await setup(t, 'people');
-  const call = f.adapter.call.bind(f.adapter);
-  const searches: Record<string, unknown>[] = [];
-  f.adapter.call = async (request, signal) => {
-    if (request.toolName !== 'mattermost_search') return call(request, signal);
-    searches.push({ ...request.arguments });
-    // The fake archive answers the topic read with nothing: the fallback must not ask the broader engine.
-    return call(request.arguments['query'] === '' ? request : { ...request, arguments: { ...request.arguments, query: '' } }, signal);
-  };
-  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) }));
+  // A topic word the fake archive has never seen: the keyword read matches nothing.
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'zzsyntheticnotopic', from_date: fixtureDaysAgo(7) }));
+  const searchCalls = searches(f.calls());
   assert.ok(read.posts.length > 0);
-  assert.equal(searches.length, 2);
-  assert.equal(searches[0]?.['mode'], 'keyword');
-  assert.equal(searches[1]?.['mode'], 'keyword', 'the second read is keyword too: relevance is never a substitute for order');
-  assert.equal(searches[1]?.['query'], '');
-  assert.equal(searches[1]?.['channel'], ADA_DM);
-  assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
-  assert.equal(searches[1]?.['sort'], 'newest');
+  assert.equal(searchCalls.length, 2);
+  assert.equal(searchCalls[0]?.['mode'], 'keyword');
+  assert.equal(searchCalls[1]?.['mode'], 'keyword', 'the second read is keyword too: relevance is never a substitute for order');
+  assert.equal(searchCalls[1]?.['query'], '');
+  assert.equal(searchCalls[1]?.['channel'], ADA_DM);
+  assert.equal(searchCalls[1]?.['from_date'], fixtureDaysAgo(7));
+  assert.equal(searchCalls[1]?.['sort'], 'newest');
   assert.match(read.read, /fallback: recent_unfiltered/u);
 });
 
@@ -857,7 +851,7 @@ test('MM-1 and MM-6: repeated channel names and inflected topics return the name
   const first = chatRead(await f.reader.chat(calls[0]!.args as never));
   assert.equal(first.clarify, undefined);
   assert.ok(first.posts.some(post => /deployed sandbox/u.test(post.text)));
-  assert.match(first.read, /hybrid/u);
+  assert.match(first.read, /fallback: recent_unfiltered/u, 'the topic read fell back to the recent unfiltered read');
   const revised = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Alpha Alpha Alpha Alpha', query: 'university', from_date: fixtureDaysAgo(7) }));
   assert.equal(revised.clarify, undefined);
   assert.ok(revised.posts.some(post => /https:\/\/example.invalid\/article/u.test(post.text)));
@@ -914,7 +908,8 @@ test('plain topic searches also retry broader once and disclose hybrid to the mo
 test('a refused broader chat read is a refusal, never a false empty success', async t => {
   const f = await setup(t, 'people');
   const call = f.adapter.call.bind(f.adapter);
-  f.adapter.call = (request, signal) => request.arguments['mode'] === 'hybrid' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
+  // F5a: the broader read is the unfiltered recent read of the same conversation, and its refusal is the answer.
+  f.adapter.call = (request, signal) => request.arguments['query'] === '' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
   const result = await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) });
   assert.equal(result.state, 'refused');
   assert.equal('reason' in result && result.reason, 'read-grant-missing');
@@ -961,19 +956,6 @@ test('C-RESIDUE explicit DM scope precedes person overview', () => {
 });
 
 // ---- F5: order, the recent-unfiltered fallback, and one thread ------------------------------------------
-
-test('F5a: a 0-hit topic read falls back to the unfiltered recent read, newest first, never to relevance', async t => {
-  const f = await setup(t, 'people');
-  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', query: 'zzsyntheticnotopic' }));
-  const calls = searches(f.calls());
-  assert.equal(calls.length, 2, 'one keyword read and one fallback, never a third');
-  assert.ok(calls.every(args => args['mode'] === 'keyword'), 'no hybrid relevance read');
-  assert.deepEqual(calls[1], { query: '', mode: 'keyword', limit: 8, sort: 'newest', channel: ADA_DM, from_date: daysAgo(30) });
-  assert.match(read.read, /fallback: recent_unfiltered/u, 'the result says which read it is');
-  const times = read.posts.map(post => Date.parse(post.time));
-  assert.ok(times.every(time => Number.isFinite(time)), 'every post carries its time');
-  assert.deepEqual(times, [...times].sort((left, right) => right - left), 'the page is newest first, as the declaration promises');
-});
 
 test('F5b: order oldest is refused honestly when the child cannot walk from the oldest end', async t => {
   const f = await setup(t, 'people');

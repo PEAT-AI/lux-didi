@@ -931,7 +931,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   async function chat(input: ChatReadInput, signal?: AbortSignal): Promise<MattermostResult> {
     const denied = preflight(registry, settings, MATTERMOST_CHAT_TOOL);
     if (denied) return { state: 'refused', reason: denied };
-    const intents: readonly ChatReadIntent[] = ['person', 'overview', 'channel', 'group'];
+    const intents: readonly ChatReadIntent[] = ['person', 'overview', 'channel', 'group', 'thread'];
     if (!intents.includes(input.intent)) return { state: 'refused', reason: 'invalid-intent' };
     const day = /^\d{4}-\d{2}-\d{2}$/u;
     if ([input.from_date, input.to_date].some(value => value !== undefined && (typeof value !== 'string' || !day.test(value)))) return { state: 'refused', reason: 'invalid-window' };

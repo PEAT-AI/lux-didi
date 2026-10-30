@@ -328,6 +328,12 @@ export function linkAlarmOccurrence(tx: Transaction, alarmId: string, seriesId: 
   tx.run('INSERT INTO alarm_occurrences(alarm_id,series_id) VALUES(?,?)', [alarmId, seriesId]);
 }
 
+/** A snooze successor continues the same series, so the series never loses its one pending occurrence. */
+export function carryOccurrenceSeries(tx: Transaction, fromAlarmId: string, toAlarmId: string): void {
+  const link = tx.get('SELECT series_id FROM alarm_occurrences WHERE alarm_id=?', [fromAlarmId]);
+  if (link) linkAlarmOccurrence(tx, toAlarmId, String(link.series_id));
+}
+
 export function alarmSeriesRow(tx: Transaction, id: string): AlarmSeries | undefined {
   const row = tx.get(`SELECT ${SERIES_COLUMNS} FROM alarm_series WHERE id=?`, [id]);
   return row ? readSeries(row) : undefined;

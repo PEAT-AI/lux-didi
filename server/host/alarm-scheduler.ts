@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesRuleOf, seriesText } from '../tools/alarm.js';
+import { alarmSeriesOfOccurrence, carryOccurrenceSeries, materialiseSeriesOccurrence, seriesRuleOf, seriesText } from '../tools/alarm.js';
 import { alarmSchedulerStarted } from './events.js';
 import type { AlarmLogEvent, AlarmSchedulerEvent } from './events.js';
 import type { StorePort, SQLRow, Transaction } from '../contracts/storage.js';
@@ -89,6 +89,7 @@ export class AlarmScheduler {
       tx.run("UPDATE alarms SET state='done' WHERE id=?", [id]);
       const next = this.insert(tx, { fireAtUtc, tz: String(old.tz), label: String(old.label), createdJournalId });
       tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [id, next.id]);
+      carryOccurrenceSeries(tx, id, next.id);
       return next;
     });
     this.record(row, 'alarm_set', 'owner_request');

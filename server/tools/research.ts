@@ -5830,7 +5830,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       if (next === 'due') budgetSpent = true;
     } else budgetSpent = true;
   }
-  const pending = stillSearchingOf(first.reading, view.run);
+  const pending = stillSearchingOf([...first.reading], view.run);
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
   const hardStopped = budgetSpent || first.cut === true;
@@ -7042,7 +7042,6 @@ const VOICE_PAGE_CONTROL_FIELDS = new Set(['researchId', 'status', 'canContinue'
 function voiceEnvelopeFits(envelope: JsonObject, cap: number): JsonObject {
   const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
   const fits = (): boolean => voicePageChars(envelope, ['e'.repeat(VOICE_EVIDENCE_RESERVE_CHARS)], cursorChars, 1) <= cap;
-  const weight = (key: string): number => JSON.stringify(envelope[key] ?? null).length;
   for (let bulk = heaviestBulkField(envelope); bulk !== undefined && !fits(); bulk = heaviestBulkField(envelope)) delete envelope[bulk];
   const citations = Array.isArray(envelope['citations']) ? envelope['citations'] as string[] : [];
   for (let keep = citations.length - 1; keep >= 0 && !fits(); keep -= 1) {

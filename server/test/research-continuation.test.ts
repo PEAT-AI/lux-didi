@@ -310,7 +310,8 @@ test('B-2: rebuild, quip, retry, and the retry is not refused as answered', () =
   assert.equal(answersTheAsk(true, 'So, where were we?'), false);
   if (answersTheAsk(true, 'So, where were we?')) admission.answered();
   const retry = admission.admit('start', false, false, 'what is the release scope');
-  assert.notEqual(retry.reason, 'answer_already_given', 'the quip never made the turn answered');
+  const refusedAsAnswered = retry.admitted === false && retry.reason === 'answer_already_given';
+  assert.equal(refusedAsAnswered, false, 'the quip never made the turn answered');
   // The owner says "I need a moment to try again", which grants the retry its own operation.
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true },

@@ -7,6 +7,7 @@ import {
 import { safeEvent } from '../host/log.js';
 import { beginHandleSession, endHandleSession, exposeHandles, resolveHandle } from '../tools/open-handles.js';
 import { DRIVE_CHOOSE_GUIDANCE, shapeDriveFile, shapeDriveSearch } from '../tools/live-shape.js';
+import { installPeople, parsePeople } from '../people/index.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const owners = [{ displayName: 'Synthetic Owner', emailAddress: 'owner@example.test' }];
@@ -108,6 +109,8 @@ test('C-OPEN 4 and 6: the host log admits the two wiring lines with ids only', (
 
 test('F7: the name query drops recency, sharing, connectives and roster names, and a 0-hit read retries once', async () => {
   beginHandleSession('drive-f7');
+  // A roster person: "the deck Ada shared with me" is about the title, not about Ada.
+  installPeople(parsePeople({ version: 1, people: [{ id: 'ada-moss', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['ada@example.invalid'] }] }));
   const shapes = [
     // The shapes the owner actually used: recency, who shared it, a connective and a person.
     { words: 'open the deck Ada shared with me yesterday about the harbour pilot', query: 'harbour pilot deck' },
@@ -132,6 +135,7 @@ test('F7: the name query drops recency, sharing, connectives and roster names, a
     assert.deepEqual(retry.args['mime_types'], searches[0]!.args['mime_types'], 'the kind filter is kept on the retry');
     assert.ok(reply, 'the read still answers');
   }
+  installPeople(null);
   endHandleSession('drive-f7');
 });
 

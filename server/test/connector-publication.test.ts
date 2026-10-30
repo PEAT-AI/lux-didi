@@ -724,7 +724,7 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
 
 // W1030: the Mattermost draft family is recorded beside the read family and never inside it.
 test('W1030: the recorded Mattermost draft family matches the allowed draft names and no read map carries them', () => {
-  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
   assert.deepEqual(recording.tools.map(tool => tool.name), [...MATTERMOST_DRAFT_TOOLS]);
   for (const name of MATTERMOST_DRAFT_TOOLS) {
     assert.equal((MATTERMOST_READ_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);

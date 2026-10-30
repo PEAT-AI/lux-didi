@@ -7936,3 +7936,19 @@ test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms 
   assert.deepEqual(replay, original, 'same provider call id receives recorded result, not a duplicate refusal or a new effect');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
 });
+
+test('C-SAFETY: rebuild expires an unspent alarm ask before seeded replay can execute it', async t => {
+  const fake = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, inputRates: [16000] });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, limits: openaiLimits });
+  const { session } = await openPort(h, 'unspent-alarm-replay');
+  h.owner.text('Set an alarm in ten minutes');
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let n = 0; n < 100 && (fake.requests.length < 2 || !h.owner.providerReady(session.liveSessionId)); n++) await settlePort();
+  assert.equal(fake.requests.length, 2);
+  assert.ok(h.owner.providerReady(session.liveSessionId));
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'replayed-unspent-alarm', name: 'set_alarm', args: {} }] }));
+  for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
+  const response = fake.toolResponses[0]![0]!.response;
+  assert.equal(response['reason'] ?? response['code'], 'no_owner_request');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
+});

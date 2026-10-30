@@ -14,7 +14,7 @@ export const GOOGLE_READ_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 
 /** The read envelope an approved read grant may name; the write families are never part of it. */
 export const GOOGLE_TOOLS = GOOGLE_READ_TOOLS;
 /** W1030: the write calls, each on its own family, endpoint and token (C-GWRITE). */
-export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
+export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
 export type GoogleTool = (typeof GOOGLE_READ_TOOLS)[number] | (typeof GOOGLE_WRITE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
@@ -28,7 +28,7 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
   // calendar_write family writes or removes an attendee-free event the helper itself created.
   // GW-R4: each write family carries the read-only google_identity probe, so a consent check can never
   // write. Didi's compose label is the helper's gmail_draft family.
-  compose: ['google_identity', 'gmail_create_draft'],
+  compose: ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft'],
   calendar_write: ['google_identity', 'calendar_create_event', 'calendar_delete_event'],
 };
 export type GoogleFamily = 'gmail' | 'calendar' | 'drive' | 'compose' | 'calendar_write';

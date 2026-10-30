@@ -830,7 +830,9 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit
   const turns = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
   const timed = calls.filter((call): call is AuditCallRow & { totalMs: number } => call.totalMs !== null);
   const refusalsByCode: Record<string, number> = {};
-  for (const call of calls) if (call.outcome === 'refused') { const code = call.refusalCode ?? MISSING; refusalsByCode[code] = (refusalsByCode[code] ?? 0) + 1; }
+  // CA-R4: a blocked call (answer_already_given, a grant refusal) is a refusal the owner must see counted,
+  // not only a number on its own line.
+  for (const call of calls) if (call.outcome === 'refused' || call.outcome === 'blocked') { const code = call.refusalCode ?? MISSING; refusalsByCode[code] = (refusalsByCode[code] ?? 0) + 1; }
   const slowest = [...timed].sort((left, right) => right.totalMs - left.totalMs).slice(0, AUDIT_SLOW_LIMIT)
     .map(call => ({ callKey: call.callKey, turnId: call.turnId, name: call.name, totalMs: call.totalMs }));
   const coverage = report.coverage;

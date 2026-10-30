@@ -619,7 +619,8 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
     const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
-    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
+    // CA-R4: a result that carries evidence is never journalled as "no findings", and one item is not "items".
+    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered ${count === 1 ? 'item' : 'items'}` : 'no findings';
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;

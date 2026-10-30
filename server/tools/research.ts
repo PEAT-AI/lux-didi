@@ -7569,7 +7569,10 @@ export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>
 export function findingCount(finding: JsonObject): number {
   if (Array.isArray(finding['items'])) return finding['items'].length;
   const shown = typeof finding['text'] === 'string' ? /: (\d+) of \d+ shown/u.exec(finding['text']) : null;
-  return shown ? Number(shown[1]) : 0;
+  if (shown) return Number(shown[1]);
+  // CA-R4: a finding that carries text is a delivered finding. A long evidence block has no page marker,
+  // and counting it as nothing made the journal say "no findings" over nine kilobytes of evidence.
+  return typeof finding['text'] === 'string' && finding['text'].trim() !== '' ? 1 : 0;
 }
 
 export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Transaction, SQLRow } from '../contracts/storage.js';
 import type { DataClass, JsonObject } from '../adapters/model/types.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
+import { ownerMemorySessionSql } from './history-lifecycle.js';
 import { fold, tokenize } from './util.js';
 
 export interface HistoryScope {
@@ -133,13 +134,18 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
     if (value.text.trim()) records.push(value);
   };
   for (const row of tx.all('SELECT id FROM entries ORDER BY id')) admit(entryValue(tx, String(row.id)));
-  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? ''])) admit(summaryValue(tx, String(row.id), eligibility));
+  // F2: a summary or a turn of a marked canary or typed eval session is not history. The join is skipped when
+  // this store carries no live sessions at all.
+  const liveSessions = !!tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'");
+  for (const row of tx.all(liveSessions
+    ? `SELECT cs.id FROM conversation_summaries cs JOIN live_sessions l ON l.live_session_id=cs.live_session_id WHERE cs.status='complete' AND cs.live_session_id<>? AND ${ownerMemorySessionSql('l')} ORDER BY cs.id`
+    : "SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? ''])) admit(summaryValue(tx, String(row.id), eligibility));
   const terms = recallTerms(query);
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
   const current = scope.currentSessionId ?? '';
-  const hits = !tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'") ? [] : expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
+  const hits = !liveSessions ? [] : expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
     JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id JOIN live_sessions l ON l.live_session_id=t.live_session_id
-    WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<?
+    WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<? AND ${ownerMemorySessionSql('l')}
     ORDER BY rank,t.role='owner' DESC,l.terminal_at DESC`, [expression, scope.ownerId, current, from ? Date.parse(from) : 0, to ? Date.parse(to) : Number.MAX_SAFE_INTEGER]) : tx.all(`SELECT t.*,0 AS rank FROM history_turns t
     JOIN history_sessions h ON h.live_session_id=t.live_session_id WHERE h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<? ORDER BY t.at DESC,t.role='owner' DESC`, [scope.ownerId, current, from ? Date.parse(from) : 0, to ? Date.parse(to) : Number.MAX_SAFE_INTEGER]);
   const seen = new Set<string>();

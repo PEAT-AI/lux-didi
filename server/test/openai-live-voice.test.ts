@@ -2655,3 +2655,42 @@ test('a typed final before response.created waits for the already requested resp
   await quiet();
   assert.equal(creates(), 2, 'the follow-up gets one response after the first has ended');
 });
+
+// F4: on 10-30 a silent completed continuation set the answer-now lock, and the corrected retry after an
+// invalid_arguments refusal was refused as `research_cap_reached`. The rescue asks for speech only; the cap is
+// research's own and keeps its code.
+test('F4: a silent continuation requests speech without locking a tool, and the corrected retry is admitted', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before + 1, 'the silent rescue still asks for one more response');
+  const callsBefore = opened.captured.events.filter(event => event.type === 'toolCall').length;
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-retry' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-retry-call', name: 'mattermost_chat', arguments: '{}' } }));
+  await quiet();
+  assert.deepEqual(opened.socket.sent.filter(frame => frame.includes('research_cap_reached')), [],
+    'a non-research tool is never refused as a research cap');
+  assert.equal(opened.captured.events.filter(event => event.type === 'toolCall').length, callsBefore + 1,
+    'the corrected retry is admitted');
+});
+
+// F10: on 10-30 eight windows were talked over and the owner's sentence was once finished for him, because an
+// app_quiet final after about 0.7 s lets the provider answer a hesitation. A mid-thought tail waits longer; a
+// finished sentence keeps today's latency.
+test('F10: a mid-thought tail holds the answer for the longer window, a finished sentence does not', async t => {
+  const held = async (words: string) => {
+    const clock = new FakeClock();
+    const opened = await fakeReady(t, { clock });
+    opened.socket.deliver({ type: 'session.input_transcript.delta', delta: words });
+    const starts = () => opened.captured.events.filter(event => event.type === 'modelTurnStarted').length;
+    clock.advance(700); await quiet();
+    const atSevenHundred = starts();
+    clock.advance(900); await quiet();
+    return { atSevenHundred, afterHold: starts() };
+  };
+  assert.deepEqual(await held('book the table for the'), { atSevenHundred: 0, afterHold: 1 },
+    'a trailing preposition holds the answer past the old quiet window');
+  assert.deepEqual(await held('book the table for two at seven.'), { atSevenHundred: 1, afterHold: 1 },
+    'a finished sentence answers at the same 700 ms as before');
+});

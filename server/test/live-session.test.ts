@@ -6373,6 +6373,28 @@ test('C-TURN8: an owner-data read other than research is refused no_owner_input 
   h.owner.revoke(session.liveSessionId);
 });
 
+// F1: on 10-30 the model called mattermost_chat twice before the owner's first word, because the gate held
+// intent names (chat, mail, ...) and not the names of the tools it actually calls. Every connector family is
+// covered by its registry class now, and the same call is admitted once he has spoken.
+test('F1: no connector read of any family runs before the owner speaks', async t => {
+  const h = await harness(t, { tools: true, mattermost: true, calendar: true, mail: true, mongoose: true });
+  await attached(h, 'owner-data-gate');
+  for (const [id, name] of [['m1', 'mattermost_chat'], ['g1', 'gmail_search_messages'], ['c1', 'calendar_list_events'],
+    ['d1', 'drive_search_files'], ['k1', 'search_knowledge'], ['q1', 'ask_mongoose'], ['t1', 'trello_read']] as const) {
+    await settleLiveTool(h, id, name, {}, { spoke: false });
+    const response = JSON.parse(lastToolResponse(h)) as { name: string; response: Record<string, unknown> };
+    assert.equal(response.name, name);
+    assert.deepEqual({ error: response.response['error'], reason: response.response['reason'] },
+      { error: 'opener_not_fetched', reason: 'no_owner_input' }, `${name} is refused before his first word`);
+  }
+  assert.deepEqual(h.calls.map(call => call.name), [], 'no read reached a source');
+  await ownerSpoke(h);
+  await settleLiveTool(h, 'm2', 'mattermost_chat', {}, { spoke: false });
+  const admitted = JSON.parse(lastToolResponse(h)) as { name: string; response: Record<string, unknown> };
+  assert.equal(admitted.name, 'mattermost_chat');
+  assert.notEqual(admitted.response['error'], 'opener_not_fetched', 'his first turn opens the same call');
+});
+
 // C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
 // it reach the note or vault gates that name a different cause.
 test('C-TURN8: legacy save before owner speech is retired and writes nothing', async t => {
@@ -7976,4 +7998,50 @@ test('C-SAFETY review: changed-name replay is refused before normal execution af
   assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch' });
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a changed name cannot reuse the recorded id to create an alarm');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))?.n, 1, 'the original recorded identity stays immutable');
+// F2: on 10-30 the owner's call opened on the canary's own thread because the canary session wrote an ordinary
+// summary row. A canary session is marked by the key it creates, so it distils nothing and offers nothing.
+test('F2: a canary session distils nothing and its summary reaches no owner opener', async t => {
+  const terminal: string[] = [];
+  const h = await harness(t, { tools: true, onSessionTerminal: liveSessionId => { terminal.push(liveSessionId); } });
+  const canary = h.owner.create({ idempotencyKey: 'canary:synthetic-canary-1', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: canary.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  await ownerSpoke(h);
+  h.owner.revoke(canary.liveSessionId);
+  assert.deepEqual(terminal, [], 'a marked canary session schedules no distillation');
+  // The three rows already in his store look like this one: a complete summary written before the mark existed.
+  h.store.transaction(tx => seedSummary(tx, canary.liveSessionId,
+    'The canary asked about the synthetic lighthouse thread.', NOW - 60_000, h.store.assistantId, NOW - 60_000));
+  const session = h.owner.create({ idempotencyKey: 'owner-after-canary', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+  assert.deepEqual((JSON.parse(String(row['memory_provenance'])) as { injectedSummaryIds: string[] }).injectedSummaryIds, [],
+    'the owner session is offered no canary summary');
+});
+
+// CB-R1(a): the settled projection once read "findings from ;" with an empty source list. It now names the
+// sources when the findings carry them, and otherwise omits the clause instead of leaving it empty.
+test('CB-R1(a): a research projection with no named source never says findings from nothing', () => {
+  const unnamed = researchProjection({ status: 'completed', findings: [{ summary: 'synthetic item' }], note: 'two items' }, 'completed');
+  assert.equal(unnamed.includes('findings from'), false, 'no empty source list is ever spelled out');
+  assert.match(unnamed, /delivered items/, 'the count still reaches the model');
+  const named = researchProjection({ status: 'completed', findings: [{ source: 'calendar', summary: 'synthetic event' }] }, 'completed');
+  assert.match(named, /^research: completed, findings from calendar; 1 delivered items$/);
+});
+
+// CB-R1(b): a file-open ask reads no calendar. The call's own start uses the cached digest once (1015), and the
+// ask that follows, "open the synthetic deck", adds no digest read and no calendar_list_events dispatch.
+test('CB-R1(b): a file-open ask triggers no calendar digest read', async t => {
+  let digestReads = 0;
+  const h = await harness(t, { tools: true, calendarDigest: {
+    forStart: async () => { digestReads += 1; return { state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }; },
+    refresh: () => { digestReads += 1; } } });
+  const { session } = await attached(h, 'file-open-ask');
+  assert.equal(digestReads, 1, 'the start reads the cached digest once');
+  await ownerSpoke(h, 'open the synthetic deck');
+  await settleLiveTool(h, 'open-1', 'open_file', { path: 'synthetic-deck.key' }, { spoke: false });
+  assert.equal(digestReads, 1, 'the file-open ask reads no calendar digest');
+  assert.deepEqual(h.calls.filter(call => call.name === 'calendar_list_events'), [], 'and no calendar read is dispatched');
+  h.owner.revoke(session.liveSessionId);
 });

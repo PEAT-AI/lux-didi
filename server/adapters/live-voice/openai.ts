@@ -110,6 +110,24 @@ const QUEUE_LOG_INTERVAL_MS = 1_000;
 /** Turn taking: the owner's input episode ends after this much quiet on the input transcript. The episode closes
  *  the journal pair the host needs; it cuts nothing (ruling W1-R1). */
 const INPUT_EPISODE_QUIET_MS = 700;
+/** F10: on 10-30 eight windows were talked over and the model once finished the owner's sentence for him. His last
+ *  words ending mid-thought (no terminal punctuation and a trailing preposition, article or conjunction) are a
+ *  hesitation, not a finished turn, so the episode waits this much longer before the provider may answer. A clear
+ *  sentence end keeps INPUT_EPISODE_QUIET_MS, and the bound is fixed, never open ended. */
+const INPUT_EPISODE_HESITATION_QUIET_MS = 1_600;
+/** The words that leave one thought open: a preposition, an article or a conjunction at the tail of the transcript. */
+const HESITATION_TAIL_WORDS: ReadonlySet<string> = new Set<string>([
+  'a', 'an', 'the', 'and', 'or', 'but', 'so', 'to', 'for', 'of', 'with', 'at', 'in', 'on', 'about', 'from', 'by',
+  'into', 'as', 'that', 'is', 'was', 'will', 'would', 'can', 'could', 'my', 'our', 'your', 'their', 'his', 'her',
+  'its', 'than', 'then', 'like', 'over', 'under', 'between', 'before', 'after',
+]);
+/** The owner's episode ends mid-thought: no terminal punctuation, and a word that leaves the sentence open. */
+export function hesitationOpen(words: string): boolean {
+  const tail = words.trim();
+  if (tail === '' || /[.!?]['"’”)]?$/u.test(tail)) return false;
+  const last = tail.split(/\s+/u).at(-1)?.toLowerCase().replace(/[^a-z']/gu, '') ?? '';
+  return HESITATION_TAIL_WORDS.has(last);
+}
 /** Audible silence: SPEAKING ends after this much output quiet with the local playback drained, and the 2000 ms
  *  presentation idle stays the semantic end of the turn. */
 const OUTPUT_SILENCE_MS = 500;
@@ -482,6 +500,8 @@ class Session implements LiveVoiceSession {
   /** The input episode's quiet timer and its token, which is what a lone journal pair of the owner's turn needs. */
   private episodeQuiet: unknown;
   private episodeToken = 0;
+  /** F10: what the owner has said so far in this episode, which decides whether the tail is a finished sentence. */
+  private episodeWords = '';
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -922,7 +942,11 @@ class Session implements LiveVoiceSession {
     // Ruling GL1-R1: a whitespace-only fragment is still journaled below, but it carries no word, so it starts no
     // episode, takes no word and never touches the barge-in latch.
     // Ruling GL1-R1: a whitespace-only fragment is still journaled, and it starts no episode.
-    if (message.delta.trim().length) this.noteInput();
+    if (message.delta.trim().length) {
+      // F10: the episode's own words decide the quiet window, so they are kept as they arrive.
+      this.episodeWords = `${this.episodeWords} ${message.delta}`.trim().slice(-240);
+      this.noteInput();
+    }
     this.userTranscriptOpen = true;
     if (typeof message.event_id === 'string' && PROVIDER_ID.test(message.event_id)) this.lastEventId = message.event_id;
     this.diagnostic.inputTranscriptionEvents += 1;
@@ -950,7 +974,9 @@ class Session implements LiveVoiceSession {
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
     const token = this.episodeToken + 1, epoch = this.socket;
     this.episodeToken = token;
-    this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => {
+    // F10: a mid-thought tail earns the longer window, so a hesitation is not answered over.
+    const quiet = hesitationOpen(this.episodeWords) ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
+    this.episodeQuiet = this.clock.setTimer(quiet, () => {
       if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
       this.endInputEpisode();
     });
@@ -958,12 +984,14 @@ class Session implements LiveVoiceSession {
 
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
+    this.episodeWords = '';
     this.ownerTurnEnded();
   }
 
   /** A new response, a cut or a closed session retires the pending episode, so its quiet timer cannot fire later. */
   private clearInputEpisode(): void {
     this.episodeToken += 1;
+    this.episodeWords = '';
     if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
   }
 
@@ -1173,7 +1201,9 @@ class Session implements LiveVoiceSession {
     this.delegatedOutstanding = false;
     if (!this.typedTurn && completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
       this.silentRescueUsed = true;
-      this.answerNow = true;
+      // F4: the silent rescue asks for one more response, never a tool lock. On 10-30 this flag became
+      // `lastAnswerNow` and the corrected retry after an invalid_arguments refusal was refused as
+      // `research_cap_reached`; the real research cap below keeps that code for itself.
       this.continuationOwed = true;
     }
     // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here
@@ -1231,8 +1261,10 @@ class Session implements LiveVoiceSession {
       name: call.name, argsChars: typeof item.arguments === 'string' ? item.arguments.length : 0,
       intentAt: this.clock.now(), providerCallId: call.id,
     });
-    // SI-R3: admission is per owner question, including parallel calls in one provider response.
-    if (this.lastAnswerNow || call.name === 'research') {
+    // SI-R3: admission is per owner question, including parallel calls in one provider response. F4: only the
+    // research cap refuses a call, and it refuses research alone, so a non-research tool is never answered with
+    // `research_cap_reached` and a corrected retry is always admitted.
+    if (call.name === 'research') {
       if (this.lastAnswerNow || this.researchCalls >= 6) {
         this.answerNow = true;
         this.sendToolResponse({ responses: [{ id: call.id, name: call.name, response: {

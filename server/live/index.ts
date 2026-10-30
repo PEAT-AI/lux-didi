@@ -4,18 +4,17 @@ import { requestRefusal } from '../tools/owner-request.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
-import { recordHistorySession, historySessionEvidence, recordHistoryDependency } from '../domain/history-lifecycle.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
-import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { freezeNote } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
-import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
@@ -170,7 +169,7 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
  * subject as well as words. Nothing here reaches host.log.
  */
 function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[] }[] {
-  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC", [assistantId]);
+  const sessions = tx.all(`SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
   const previous: ReturnType<typeof previousOpeners> = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   for (const row of sessions) {
@@ -518,18 +517,28 @@ export function announcesLookup(text: string): boolean {
   return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }
 /**
- * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
- * knowledge, conversation history, saves). None of them runs before his first word: research keeps its own
- * gate in `#researchBatch`, and every other name here, reads and saves alike, is refused by `#toolBatch`
- * with the same shape and reason. Saves keep their own later gates once he has spoken
+ * C-TURN8: no tool that reads or writes the owner's own data runs before his first word. Research keeps its own
+ * gate in `#researchBatch`; every other owner-data call is refused by `#toolBatch`, before any argument check,
+ * with the same shape and the same closed reason. Saves keep their own later gates once he has spoken
  * (`not_owner_requested` in the vault tool, `owner_transcript_not_final` / `owner_text_mismatch` in the note
  * provenance path); this gate only answers the case where he has not spoken at all. The `open_*` tools stay
  * open: they read no owner record and the opener never calls them.
  */
-const OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
-  ...INTENT_TOOL_NAMES, RESEARCH_TOOL_NAME, ...TRELLO_TOOL_NAMES,
-  'conversation_history', 'remember_note', 'save_to_vault', 'stage_lux_note',
+/** F1: the model calls connector tools by their own names (`mattermost_chat`, `gmail_search_messages`, ...), and a
+ *  hand list of intent names missed them on 10-30. So the class comes from the session's live registry, deny by
+ *  default: a tool the session can reach is owner data unless it is classified otherwise here, and a connector
+ *  tool registered later is covered the day it is registered. Only the `open_*` family, the public web search and
+ *  the alarms touch no owner record (alarm admission is its own gate), and research keeps its gate in
+ *  `#researchBatch`. */
+const NON_OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  RESEARCH_TOOL_NAME, 'web_search', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm',
 ]);
+const NON_OWNER_DATA_TOOL_PREFIX = 'open_';
+/** F1: the gate's question for one call. A name this session's registry does not carry is owner data too, so a
+ *  connector tool registered a moment ago is refused before the owner has spoken instead of slipping through. */
+export function isOwnerDataCall(name: string, reachable: ReadonlySet<string>): boolean {
+  return !(reachable.has(name) && (NON_OWNER_DATA_TOOL_NAMES.has(name) || name.startsWith(NON_OWNER_DATA_TOOL_PREFIX)));
+}
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
 export const DELEGATION_DEADLINE_MS = 25_000;
@@ -619,7 +628,11 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
     const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
-    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
+    // CB-R1(a): a finding with no source name must never read "findings from ;". Name the sources when the
+    // findings carry them, otherwise omit the clause and keep the count.
+    const head = count === 0 ? 'no findings'
+      : sources.length === 0 ? `${count} delivered items`
+      : `findings from ${sources.join(', ')}; ${count} delivered items`;
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;
@@ -1557,6 +1570,9 @@ export class LiveSessionOwner {
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
+    // F2: a session kind is marked at creation, and the persisted key must say the same thing, so a reader of
+    // the store can tell a canary or typed eval session from the owner's own call without extra state.
+    if (input.sessionKind !== undefined && input.sessionKind !== liveSessionKindOf(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, ...(input.alarm ? { alarm: input.alarm } : {}) });
     const now = this.#now();
@@ -4100,6 +4116,16 @@ export class LiveSessionOwner {
     return (this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[];
   }
 
+  /** F2: the kind comes from the persisted key, so a canary or typed eval session is recognised at any moment of
+   *  its life, including a terminal one, without a second piece of state to keep in step. */
+  #sessionKind(liveSessionId: string): LiveSessionKind {
+    const row = this.#store.transaction(tx => tx.get('SELECT idempotency_key FROM live_sessions WHERE live_session_id=?', [liveSessionId]));
+    return liveSessionKindOf(row === undefined ? '' : String(row['idempotency_key']));
+  }
+
+  /** F2: only this is owner memory. Everything else is a harness session the owner never had. */
+  #ownerMemorySession(liveSessionId: string): boolean { return isOwnerMemorySession(this.#sessionKind(liveSessionId)); }
+
   /**
    * W10 behaviour 1: the run freezes its connections at acceptance. Naming only the connectors that
    * have already finished their handshake drops a slow one (Google stdio, Mongoose HTTP, a source that
@@ -4562,8 +4588,9 @@ export class LiveSessionOwner {
     // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
     // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
     // before any argument check, with the same shape and the same closed reason.
+    const reachable = new Set(handle.registry.map(tool => tool.name));
     const beforeOwner = handle.inputAt === undefined
-      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && OWNER_DATA_TOOL_NAMES.has(call.name));
+      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && isOwnerDataCall(call.name, reachable));
     if (beforeOwner) {
       const refusal: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
         guidance: 'Nothing read yet. Do not retry before the owner speaks; make this call again after their first turn.' };
@@ -4960,7 +4987,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           if (alarm) hostLogEvent({ event: 'alarm_degraded', alarmId: String(alarm.id), scheduledMs: Number(alarm.fire_at_utc), actualMs: this.#now(), reason: 'provider_unavailable' });
         });
       }
-      attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
+      // F2: only the owner's own sessions become owner memory, so a canary or typed eval session never reaches
+      // the summarizer at all.
+      if (this.#ownerMemorySession(handle.liveSessionId)) attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
       if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
       attempt(() => handle.consumer.close());
       handle.resolveDone();

@@ -82,6 +82,14 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 
 ## Live voice and the research layer
 
+`history_exclusions` and session kinds (F2): a live session's kind is the prefix of the idempotency key it was
+created under, and `liveSessionKindOf` reads it back from the store. An unmarked key is the owner's own call; a
+`canary:` key names the installed canary, and `eval:` or `test:` name a typed eval or test harness. A marked
+session is never owner memory: it schedules no summarizer run, its `conversation_summaries` row is never an
+injection candidate for `buildOpeningOptions` or the earlier-conversations section, and `history-reader` skips
+both its summaries and its turns in `history_turns`. Rows already in an owner store stay untouched: they are
+filtered on read, so removing them is an owner decision and never a check or a migration.
+
 | Script | Covers |
 | --- | --- |
 | `check-live-voice.sh` | Provider adapters: `live-voice`, `openai-live-voice`, `resample` tests. |

@@ -442,3 +442,65 @@ test('W1030 closed schemas: the write tools take no address, no epoch and no att
   assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), true);
 });
 
+
+// W1030: a wake-up cue split across two finals must still grant the alarm.
+test('W1030 split alarm cue: "Wake" then "me at seven." grants and sets the alarm', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'Wake');
+  now += 1000;
+  requests.observe('s', 'j2', 'me at seven.');
+  const ask = requests.authorize('s', 'set_alarm', 'seven');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /Wake me at seven/);
+  requests.commit('s', 'set_alarm', 'seven', { status: 'set' }, ask.id);
+  assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'grant_spent');
+});
+
+test('W1030 split alarm cue: "Remind" then "me to stretch at six" grants', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'Remind');
+  requests.observe('s', 'j2', 'me to stretch at six');
+  assert.equal(requests.authorize('s', 'set_alarm', 'six').code, 'allowed');
+});
+
+test('W1030 split alarm cue: the same pair more than 120 s apart does not grant', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'Wake');
+  now += 120001;
+  requests.observe('s', 'j2', 'me at seven.');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'seven').code, 'allowed');
+});
+
+test('W1030 split alarm cue: a lone "Wake" never grants', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'Wake');
+  assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'no_owner_request');
+});
+
+test('W1030 split alarm cue: a fragment followed by an unrelated final does not grant', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'Wake');
+  requests.observe('s', 'j2', "what's on my calendar");
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'seven').code, 'allowed');
+});
+
+test('W1030 split alarm cue: a cue in an answered request does not carry into the next', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'wake me at seven');
+  requests.answered('s');
+  requests.observe('s', 'j2', 'me at nine');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'nine').code, 'allowed');
+});
+
+test('W1030 split alarm cue: a replayed final never re-grants', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'Wake');
+  requests.observe('s', 'j2', 'me at seven.');
+  const ask = requests.authorize('s', 'set_alarm', 'seven');
+  assert.equal(ask.code, 'allowed');
+  requests.commit('s', 'set_alarm', 'seven', { status: 'set' }, ask.id);
+  requests.observe('s', 'j2', 'me at seven.');
+  assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'grant_spent');
+});

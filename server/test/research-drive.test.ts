@@ -103,3 +103,38 @@ test('C-OPEN 4 and 6: the host log admits the two wiring lines with ids only', (
   assert.deepEqual(safeEvent({ event: 'gmail_account_unknown' }), { event: 'gmail_account_unknown' });
   assert.equal(safeEvent({ event: 'gmail_account_unknown', account: 'owner@example.test' }), undefined, 'never an address');
 });
+
+// ---- F7: the Drive name query carries the title, never the clock, the sharing or the person -----------------
+
+test('F7: the name query drops recency, sharing, connectives and roster names, and a 0-hit read retries once', async () => {
+  beginHandleSession('drive-f7');
+  const shapes = [
+    // The shapes the owner actually used: recency, who shared it, a connective and a person.
+    { words: 'open the deck Ada shared with me yesterday about the harbour pilot', query: 'harbour pilot deck' },
+    { words: 'the latest spreadsheet from the team and the synthetic quarter plan', query: 'synthetic quarter plan' },
+  ];
+  for (const shape of shapes) {
+    const asked: string[] = [];
+    const h = harness(['drive'], call => { asked.push(String(call.args['query'] ?? '')); return shapeDriveSearch({ files: [] }).text; });
+    const reply = await runResearch(h.deps, { action: 'start', question: shape.words, topic: shape.words, lookups: [{ source: 'drive', query: shape.words }] }, new AbortController().signal);
+    const searches = h.calls.filter(call => call.name === 'drive_search_files');
+    assert.equal(searches.length, 2, `one empty read and one retry: ${shape.words}`);
+    const sent = String(searches[0]!.args['query'] ?? '');
+    for (const noise of ['yesterday', 'shared', 'latest', 'ada']) assert.equal(sent.includes(noise), false, `the name query drops "${noise}": ${sent}`);
+    // The retry carries the single most distinctive title word and keeps the kind filter when there is one.
+    const retried = String(searches[1]!.args['query'] ?? '');
+    assert.equal(retried.split(' ').length, 1, 'one distinctive word, not the whole phrase');
+    assert.ok(sent.includes(retried), 'the retry word came from the name');
+    assert.deepEqual(searches[1]!.args['mime_types'], searches[0]!.args['mime_types'], 'the kind filter is kept on the retry');
+    assert.ok(reply, 'the read still answers');
+  }
+  endHandleSession('drive-f7');
+});
+
+test('F7: a Drive name of one word is not broadened, because there is nothing to narrow it to', async () => {
+  beginHandleSession('drive-f7-single');
+  const h = harness(['drive'], () => shapeDriveSearch({ files: [] }).text);
+  await runResearch(h.deps, { action: 'start', question: 'open the deck', topic: 'harbour', lookups: [{ source: 'drive', query: 'harbour deck' }] }, new AbortController().signal);
+  assert.equal(h.calls.filter(call => call.name === 'drive_search_files').length, 1, 'no retry without a distinctive word');
+  endHandleSession('drive-f7-single');
+});

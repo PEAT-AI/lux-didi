@@ -1828,6 +1828,35 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
   return [...merged];
 }
 
+/** F7: a Drive name search that matched nothing, in the shaper's own closed words. */
+function driveSearchFoundNothing(text: string): boolean {
+  const answer = text.trim();
+  return answer === '' || answer.startsWith('No Drive file matched that name.');
+}
+
+/**
+ * F7: one empty Drive name search earns one retry carrying the single most distinctive title word with the
+ * kind filter still on, newest first, so a title carrying recency or a colleague's name still finds the file.
+ */
+async function broadenedDriveRetry(execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>, subs: readonly IntentSubCall[], results: readonly IntentSubResult[], signal: AbortSignal, broadened: Map<string, string>): Promise<readonly IntentSubResult[]> {
+  let merged: readonly IntentSubResult[] = results;
+  for (let index = 0; index < subs.length; index++) {
+    const sub = subs[index]!;
+    const result = merged[index];
+    if (sub.name !== INTERNAL.driveSearch || broadened.has(sub.key) || result === undefined || !result.ok || !driveSearchFoundNothing(result.text)) continue;
+    const term = driveDistinctiveToken(typeof sub.args['query'] === 'string' ? sub.args['query'] : '');
+    if (term === undefined) continue;
+    const args: JsonObject = { ...sub.args, query: term };
+    try {
+      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
+      // The retry ran, so the answer says the name was broadened either way, never that Drive held nothing.
+      broadened.set(sub.key, term);
+      if (retried?.ok === true && !driveSearchFoundNothing(retried.text)) merged = merged.map((row, at) => (at === index ? retried : row));
+    } catch { /* keep the empty first answer */ }
+  }
+  return [...merged];
+}
+
 /**
  * C-CHAT: what a chat read says beside its posts, kept for the reply: the conversation and window it read,
  * a capability the child lacks, the question it asks back, and the next page when it matched more than it
@@ -2082,6 +2111,8 @@ export interface RunState {
   droppedDayFilters: Set<string>;
   /** #647: the chat reads a broadened retry answered, by their sub key, with the one term that was sent. */
   broadenedChat: Map<string, string>;
+  /** F7: Drive name searches that already spent their one broadened retry. */
+  broadenedDrive: Map<string, string>;
   calendarScopeAttempted?: boolean;
   /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
   calendarNotRead?: string;
@@ -2192,7 +2223,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), historyMore: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), broadenedDrive: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -4652,6 +4683,33 @@ const DRIVE_KIND_WORDS: readonly { kind: keyof typeof DRIVE_MIME_TYPES; words: R
 ];
 /** The words that name the kind, the app or the act, never the file; what is left is the name searched. */
 const DRIVE_FILLER = /\b(?:the|a|an|my|our|his|open|opening|show|find|pull|bring|up|please|in|on|chrome|browser|google|drive|file|files|decks?|slides?|presentations?|pptx?|powerpoints?|sheets?|spreadsheets?|xlsx?|excel|docs?|documents?|docx|word|link|from|of|for|that|this|it|me|can|you|could|would)\b/gu;
+/**
+ * F7: the words that are about when, sharing or the person, never about the file's name. A recency word, a
+ * "shared with X" clause and a connective all cost the exact-name match a Drive search needs.
+ */
+const DRIVE_TIME_AND_SHARING = /\b(?:recent|recently|latest|last|newest|new|old|older|oldest|today|tomorrow|yesterday|this|next|past|week|weeks|month|months|year|years|day|days|morning|afternoon|evening|shared|share|sharing|sent|send|received|someone|anyone|somebody|person|people|colleague|teammate|boss|manager|with|by|from|about|regarding|re|and|or|but|also|only|again|still|just)\b/gu;
+
+/** The roster's own names, so "shared with Ada" searches the title and not the person. */
+function rosterNamePatterns(): RegExp[] {
+  return (peopleSnapshot()?.people ?? []).flatMap(person => [person.name, ...person.aliases])
+    .map(name => name.trim().toLowerCase()).filter(name => name.length > 1)
+    .map(name => new RegExp(`(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu'));
+}
+
+/** F7: the title words left once the act, the kind, the clock, the sharing and the person are gone. */
+function driveNameQuery(text: string): string {
+  let cleaned = text.replace(DRIVE_FILLER, ' ').replace(DRIVE_TIME_AND_SHARING, ' ');
+  for (const pattern of rosterNamePatterns()) cleaned = cleaned.replace(pattern, ' ');
+  return cleaned.replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+}
+
+/** F7: the one word a broadening can send: the longest left after the noise, or nothing when it is all noise. */
+function driveDistinctiveToken(name: string): string | undefined {
+  const words = name.split(' ').filter(word => word.length > 2);
+  if (words.length < 2) return undefined;
+  return words.reduce((longest, word) => (word.length > longest.length ? word : longest));
+}
+
 /** The reread of one file he picked: `id:` and the id a listing carried. */
 const DRIVE_FILE_ID = /^id:\s*([A-Za-z0-9_-]{10,256})$/u;
 
@@ -4661,7 +4719,7 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
   if (id !== undefined) return [{ key: 'dr0', name: INTERNAL.driveGet, args: { file_id: id } }];
   const text = query.toLowerCase();
   const kind = (DRIVE_KIND_WORDS.find(entry => entry.words.test(text)) ?? DRIVE_KIND_WORDS.find(entry => entry.words.test(ownerWords.toLowerCase())))?.kind;
-  const name = text.replace(DRIVE_FILLER, ' ').replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+  const name = driveNameQuery(text);
   if (name === '') return [];
   return [{ key: 'dr0', name: INTERNAL.driveSearch, args: { query: name, ...(kind === undefined ? {} : { mime_types: [...DRIVE_MIME_TYPES[kind]] }), limit: 5 } as JsonObject }];
 }
@@ -6247,6 +6305,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      // F7: the same one-place rule for a Drive name search that matched nothing.
+      if (!dispatchSignal.aborted) results = await broadenedDriveRetry(executeSource, subs, results, progressSignal, run.broadenedDrive);
       noteChatReads(run, subs, results);
       finish(results, current() ? undefined : 'cancelled');
     }

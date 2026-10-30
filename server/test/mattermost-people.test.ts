@@ -976,8 +976,11 @@ test('F5b: an unknown order is refused before any read', async t => {
 
 test('F5c: a thread read returns the whole thread in chronological order through the child thread read', async t => {
   const f = await setup(t, 'people');
-  const read = chatRead(await f.reader.chat({ intent: 'thread', post_id: 'loadroot1' }));
-  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments), [{ post_id: 'loadroot1' }]);
+  // The root post id comes from an earlier result, which is how the model gets one.
+  const earlier = chatRead(await f.reader.chat({ intent: 'channel', channel: 'AI AI AI' }));
+  const rootId = earlier.posts[0]!.id;
+  const read = chatRead(await f.reader.chat({ intent: 'thread', post_id: rootId }));
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_get_thread').map(call => call.arguments), [{ post_id: rootId }]);
   assert.equal(read.posts.length > 1, true, 'the root and its replies');
   const times = read.posts.map(post => Date.parse(post.time));
   assert.deepEqual(times, [...times].sort((left, right) => left - right), 'chronological, oldest first');

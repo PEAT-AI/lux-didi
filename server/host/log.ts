@@ -369,6 +369,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }
+  if (value.event === 'open_resolve') {
+    // F6a: what the resolver answered and how long it took, in closed words only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'outcome', 'target'].join(',')) return;
+    if (!Number.isSafeInteger(value.ms) || Number(value.ms) < 0 || Number(value.ms) > 600_000) return;
+    if (!['web', 'source', 'file'].includes(String(value.target))) return;
+    if (!['opened', 'not_found', 'ambiguous', 'not_allowed', 'no_open_intent', 'not_owner_words', 'failed'].includes(String(value.outcome))) return;
+    return { event: 'open_resolve', target: value.target, outcome: value.outcome, ms: value.ms };
+  }
   if (value.event === 'live_claim_without_call') {
     // C-TURN8: a claim the turn never acted on is counted from the turn's sequence and its bound, nothing else.
     if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'sequence'].join(',')) return;

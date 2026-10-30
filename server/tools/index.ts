@@ -2,6 +2,11 @@ import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
+
+/** F6a: the resolver's answer and duration, in closed words: a target class, an outcome code and ms. */
+function openResolve(input: { target: 'web' | 'source' | 'file'; outcome: string; ms: number }): void {
+  hostLogEvent({ event: 'open_resolve', target: input.target, outcome: input.outcome, ms: input.ms });
+}
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
 import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -25,7 +30,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -848,7 +853,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const requestTarget = JSON.stringify(args);
           let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          const startedAt = Date.now();
           const resolved = authorization.code === 'allowed' ? await resolveWebOpen(args, authorization.words ?? '', context.signal) : { code: 'no_open_intent' as const };
+          // F6a: the resolver's own answer and how long it took, in closed words.
+          openResolve({ target: 'web', outcome: 'target' in resolved ? 'opened' : resolved.code, ms: Date.now() - startedAt });
           let dispatched = 'target' in resolved ? resolved.target : undefined;
           if (dispatched && authorization.code === 'allowed') {
             authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
@@ -870,7 +878,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // case carries the domains so she asks which one he means.
           const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
             : !eligible ? requestRefusal(authorization.code)
+            // F6a: a site the resolver could not find says so; it is never relabelled as an authorization refusal.
+            : refused === 'not_found' ? openWebFailure('not_found')
             : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
+            : code === 'browser_not_running' ? { code, say: OPEN_GUIDANCE.browser_not_running, fixNotForSpeech: 'Chrome is not running and nothing was launched, so no profile was guessed. Say the line to the owner by name and do not claim anything opened.' }
             : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
             : { code, say: 'The host could not confirm that the target opened.' };
           if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);

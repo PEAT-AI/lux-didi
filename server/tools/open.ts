@@ -9,7 +9,7 @@ export const OPEN_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'nat
 export const OPEN_ACTIONS = ['open_url', 'open_file', 'open_app'] as const;
 export type NativeAction = (typeof OPEN_ACTIONS)[number];
 /** The closed set of ack codes; anything else from the native side is reported as failed. */
-export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
+export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed', 'browser_not_running'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
 export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout'] as const;
@@ -17,9 +17,11 @@ export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
-export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
+export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' | 'browser_not_running', string> = {
   not_found: 'The host could not resolve that shown item.',
   not_allowed: 'I cannot open that target.',
+  // F6b: Chrome is never launched for her; she asks the owner to open it.
+  browser_not_running: 'Chrome is not open, could you open it for me?',
   no_open_intent: 'I did not hear an open request, so nothing is open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };

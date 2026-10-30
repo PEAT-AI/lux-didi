@@ -1,3 +1,4 @@
+import { parseAlarmTime } from './alarm.js';
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
@@ -38,7 +39,9 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const kind of ['open', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
     grants.set('lux_note', {});
     const alarmIntent = /\balarm\b|\bwake me\b|\bremind me\b/i.test(words);
-    const alarmFollowup = previous?.pending?.kind === 'set_alarm' && !/\b(?:mail|email|find|search|calendar|open)\b/i.test(words);
+    const timeFragment = /^(?:[\d\s:.,!?-]|(?:at|in|for|a|an|and|from|now|please|today|tomorrow|morning|evening|noon|midnight|am|pm|m|utc|singapore|time|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|half|quarter|minutes?|hours?|seconds?)\b)+$/i.test(words);
+    const incompleteAlarm = previous?.alarmWords !== undefined && parseAlarmTime(previous.alarmWords, previous.observedAt, 'UTC').status !== 'ready';
+    const alarmFollowup = timeFragment && previous?.alarmWords !== undefined && (previous.pending?.kind === 'set_alarm' || incompleteAlarm);
     const alarmWords = alarmIntent ? words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
     if (alarmWords !== undefined) grants.set('set_alarm', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {

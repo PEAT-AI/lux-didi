@@ -322,7 +322,7 @@ test('C-SAFETY: shutdown cancels every canary alarm, including ringing, before r
   assert.equal(revoked, true);
 });
 
-for (const ending of ['shutdown', 'provider-close', 'provider-end', 'provider-failure']) test(`C-SAFETY: real ringing canary alarm is cancelled on ${ending}`, async t => {
+for (const ending of ['shutdown', 'timeout', 'provider-close', 'provider-end', 'provider-failure']) test(`C-SAFETY: real ringing canary alarm is cancelled on ${ending}`, async t => {
   const { Store } = await import('../dist/runtime/store.js');
   const { domainMigrations } = await import('../dist/domain/schema.js');
   const { liveMigrations } = await import('../dist/live/schema.js');
@@ -336,7 +336,8 @@ for (const ending of ['shutdown', 'provider-close', 'provider-end', 'provider-fa
 
   const id = `synthetic-canary-${ending}`;
   const host = new InstalledCanary(store, { create: () => ({ liveSessionId: id }), revoke() {} }, undefined, undefined, alarmId => scheduler.cancel(alarmId));
-  host.open([ask], { clientId: 'synthetic-owner' });
+  if (ending === 'timeout') t.mock.timers.enable({ apis: ['setTimeout'] });
+  host.open([ask], { clientId: 'synthetic-owner' }, Date.now() + 1000);
   t.after(async () => { host.shutdown(); scheduler.stop(); store.close(); await rm(home, { recursive: true, force: true }); });
   const alarm = scheduler.set({ fireAtUtc: 2000, tz: 'UTC', label: '', createdJournalId: 'synthetic-owner' });
   store.transaction(tx => tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,intent_json,state) VALUES(?,?,?,?,'intent')", [store.assistantId, id, alarm.id, JSON.stringify({ toolName: 'set_alarm' })]));
@@ -347,6 +348,7 @@ for (const ending of ['shutdown', 'provider-close', 'provider-end', 'provider-fa
     close() {}, sendToolResponse() { return 'sent'; },
   });
   if (ending === 'shutdown') host.shutdown();
+  else if (ending === 'timeout') t.mock.timers.tick(1000);
   else if (ending === 'provider-close') wrapped.close();
   else {
     const consume = async () => { for await (const _event of wrapped.events) {} };

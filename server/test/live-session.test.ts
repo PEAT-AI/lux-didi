@@ -7907,3 +7907,30 @@ test('C-SAFETY: three typed asks finish without audio and never rebuild for audi
     assert.equal(fake.requests.length, 1, 'response completion answers a typed turn without requiring audible audio');
   }
 });
+
+test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms and replay returns its receipt', async t => {
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, limits: openaiLimits });
+  await openPort(h, 'alarm-history-replay');
+  async function call(id: string) {
+    const before = fake.toolResponses.length;
+    fake.emit({ type: 'toolCall', calls: [{ id, name: 'set_alarm', args: {} }] });
+    for (let n = 0; n < 100 && fake.toolResponses.length === before; n++) await settlePort();
+    assert.equal(fake.toolResponses.length, before + 1);
+    return fake.toolResponses.at(-1)![0]!.response;
+  }
+  h.owner.text('Set an alarm in ten minutes');
+  const original = await call('synthetic-original-alarm');
+  assert.equal(original['status'], 'set');
+  fake.emit({ type: 'turnComplete' }); await settlePort();
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let n = 0; n < 100 && fake.requests.length < 2; n++) await settlePort();
+  assert.equal(fake.requests.length, 2, 'provider rebuilt');
+  assert.match(JSON.stringify(fake.requests.at(-1)!.history), /Set an alarm in ten minutes/, 'alarm ask is in seeded history');
+  h.owner.text('Find the synthetic mail');
+  const refused = await call('synthetic-mail-alarm');
+  assert.equal(refused['reason'] ?? refused['code'], 'no_owner_request');
+  const replay = await call('synthetic-original-alarm');
+  assert.deepEqual(replay, original, 'same provider call id receives recorded result, not a duplicate refusal or a new effect');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
+});

@@ -179,6 +179,19 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(f.attempts, beforeOutage + 1, 'provider outage cannot open a second alarm session');
   assert.equal(rows().find(row => row.id === outageAlarm.id).state, 'ringing', 'provider outage leaves local ringing active');
   assert.equal((await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  // Stop is independent of a call and uses only this synthetic host's native bearer.
+  await post(`/api/v1/live-sessions/${sessionId}/revoke`, {});
+  host.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES('operator-pending',?,'UTC','','pending','synthetic-journal')", [now + 60000]));
+  const unauthenticated = await fetch(origin + '/api/v1/alarms/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(unauthenticated.status, 401);
+  const browser = await fetch(origin + '/api/v1/alarms/stop', { method: 'POST', headers: { ...headers, origin }, body: '{}' });
+  assert.equal(browser.status, 403, 'native-only operator boundary refuses a browser origin');
+  assert.equal((await post('/api/v1/alarms/stop', { extra: true })).status, 400);
+  const stopped = await post('/api/v1/alarms/stop', {});
+  assert.equal(stopped.status, 200);
+  assert.ok(stopped.body.data.cancelled >= 2);
+  assert.equal(rows().find(row => row.id === outageAlarm.id).state, 'cancelled', 'ringing stops outside a call');
+  assert.equal(rows().find(row => row.id === 'operator-pending').state, 'cancelled');
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   // #751: one start line per host start, and it carries the pending count only, never a label or a time.

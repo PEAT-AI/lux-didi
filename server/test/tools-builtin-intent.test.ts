@@ -272,7 +272,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
-      const noAlarmIntent = tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+      // The alarm cue is judged on the finalized ask: a split ask carries it across its finals.
+      const noAlarmIntent = tool === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(row.finals.join(' '));
       if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
       const expected = noAlarmIntent ? 'no_owner_request' : row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));

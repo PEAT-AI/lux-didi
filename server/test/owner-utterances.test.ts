@@ -36,7 +36,8 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     code = 'target' in result ? row.nativeCode ?? 'allowed' : result.code;
     endHandleSession(row.id);
   }
-  const noAlarmIntent = row.call.tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+  // The alarm cue is judged on the finalized ask: a split ask carries it across its finals.
+  const noAlarmIntent = row.call.tool === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(row.finals.join(' '));
   if (noAlarmIntent) assert.equal(code, 'no_owner_request', `${row.id}: no alarm ask`);
   else assert.equal(code, row.resolve_code ?? row.code);
   if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);

@@ -1,0 +1,252 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Store } from '../runtime/store.js';
+import { toolsMigrations } from '../tools/schema.js';
+import { composeMcpRuntime, type McpRuntimeComposition } from '../host/mcp.js';
+import { GOOGLE_TOOLS } from '../connectors/google.js';
+import { COMPOSE_CONSENT } from '../tools/compose.js';
+import type { RunAcceptance } from '../tools/types.js';
+import { installPeople, parsePeople } from '../people/index.js';
+
+// W1030: every fixture, address and id below is synthetic. No real account, token or Mattermost
+// server is touched: the children are local stdio fakes that record what they were asked for.
+const here = dirname(fileURLToPath(import.meta.url));
+const fixtures = join(here, '..', '..', 'test', 'fixtures');
+const googleWriteChild = join(fixtures, 'google-write-child.mjs');
+const mattermostChild = join(fixtures, 'host-compose-mattermost-child.mjs');
+const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+
+interface Host { dir: string; store: Store; mcp: McpRuntimeComposition; identity: { connector: string; proven: boolean; endpointId?: string }[]; pid: (id: string) => string }
+
+/** A synthetic child: its own argv (the pid file included, in the position that child reads it), then mode. */
+const endpoint = (options: { id: string; connector: string; file: string; argv: string[] }) => ({
+  id: options.id, transport: 'stdio' as const, command: process.execPath, args: [options.file, ...options.argv],
+  env: { HOME: join(tmpdir(), 'didi-compose-wire-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+  connector: options.connector, account: 'owner', resource: options.id, credentialRef: null,
+  enabled: true, allowEgress: true, unknownClass: 'ordinary' as const,
+});
+
+async function host(t: TestContext, build: (pid: (id: string) => string) => readonly unknown[], options: { catalog?: boolean } = {}): Promise<Host> {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-compose-wire-'));
+  const pid = (id: string): string => join(dir, `${id}.pid`);
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  if (options.catalog !== false) writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: build(pid) }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const identity: Host['identity'] = [];
+  const mcp = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    identityLog: (connector, proven, _match, endpointId) => { identity.push({ connector, proven, ...(endpointId === undefined ? {} : { endpointId }) }); },
+  });
+  t.after(async () => { await mcp.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { dir, store, mcp, identity, pid };
+}
+
+/** The recorded wire arguments of one fake child, one line per call. */
+const callsOf = (pidFile: string): { tool: string; args: Record<string, unknown> }[] => {
+  const file = `${pidFile}.args`;
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8').trim().split('\n').filter(line => line !== '').map(line => {
+    const space = line.indexOf(' ');
+    return { tool: line.slice(0, space), args: JSON.parse(line.slice(space + 1)) as Record<string, unknown> };
+  });
+};
+const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => call.tool);
+/** The owner's tool table for one accepted synthetic run: the same call the Live host makes. */
+const ownerTools = (h: Host): string[] => {
+  const acceptance: RunAcceptance = {
+    ownerId: h.store.assistantId, actorId: 'synthetic-actor', runId: 'run-compose-wire', authorityEpoch: h.store.authorityEpoch, revision: 1,
+    route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary'] },
+    allowedClasses: ['ordinary'], connectionIds: [...h.mcp.connectionIds()],
+  };
+  h.store.transaction(tx => h.mcp.owner.snapshotRun(tx, acceptance));
+  return h.mcp.owner.liveDefinitions(acceptance.runId, remember).map(tool => tool.name);
+};
+
+/** The three endpoints a configured host needs: both google write families and the Mattermost draft. */
+const configured = (pid: (id: string) => string, googleMode = 'ok', mattermostMode = 'ok'): unknown[] => [
+  // google-write-child.mjs reads [family, pidFile, mode]; the Mattermost child reads [pidFile, mode].
+  endpoint({ id: 'gmail_draft', connector: 'google', file: googleWriteChild, argv: ['gmail_draft', pid('gmail_draft'), googleMode] }),
+  endpoint({ id: 'calendar_write', connector: 'google', file: googleWriteChild, argv: ['calendar_write', pid('calendar_write'), googleMode] }),
+  endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mattermostMode] }),
+];
+
+test('W1030: the real host composition offers the four write tools when the families are configured', async t => {
+  const h = await host(t, pid => configured(pid));
+  const names = ownerTools(h);
+  for (const name of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) assert.ok(names.includes(name), `${name} is offered`);
+  // The write names ride in the grant and are still never model-facing reads.
+  for (const name of ['gmail_create_draft', 'gmail_create_reply_draft', 'calendar_create_event', 'calendar_delete_event', 'mattermost_save_draft', 'google_identity']) {
+    assert.equal(names.includes(name), false, `${name} is never a model-facing read tool`);
+  }
+  const connected = h.mcp.status().endpoints.map(report => `${report.id}:${report.state}`);
+  assert.deepEqual([...connected].sort(), ['calendar_write:connected', 'gmail_draft:connected', 'mattermost:connected']);
+  // The write family's read-only probe is the only call any google child saw at connect time.
+  assert.deepEqual(toolNames(h.pid('gmail_draft')), ['google_identity'], 'the compose family proves itself with google_identity');
+  assert.deepEqual(toolNames(h.pid('calendar_write')), ['google_identity'], 'the calendar_write family proves itself with google_identity');
+  // That proof is the connector_identity line, and it names the family it proved.
+  const proven = h.identity.filter(line => line.connector === 'google' && line.proven).map(line => line.endpointId).sort();
+  assert.deepEqual(proven, ['calendar_write', 'gmail_draft']);
+  const mattermostGrant = h.mcp.registry.currentGrant('mattermost');
+  assert(mattermostGrant);
+  assert.deepEqual([...mattermostGrant!.toolNames].sort(), ['mattermost_list_channels', 'mattermost_save_draft', 'mattermost_whoami']);
+  // A write family is not a read envelope: the granted names of that endpoint are its write family.
+  const grant = h.mcp.registry.currentGrant('gmail_draft');
+  assert(grant);
+  assert.deepEqual([...grant!.toolNames].sort(), ['gmail_create_draft', 'gmail_create_reply_draft', 'google_identity']);
+  assert.equal(grant!.toolNames.includes('gmail_send'), false);
+});
+
+test('W1030: each write tool reaches its fake child through that composition with the closed arguments', async t => {
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
+  assert.equal(draft.state, 'done');
+  if (draft.state !== 'done') throw new Error('not done');
+  assert.equal(draft.response['status'], 'draft_ready');
+  const sent = callsOf(h.pid('gmail_draft')).find(call => call.tool === 'gmail_create_draft');
+  assert(sent, 'gmail_create_draft reached the child');
+  assert.deepEqual(sent!.args, { to: ['sam@example.test'], subject: 'Synthetic subject', body: 'Synthetic body' });
+  for (const forbidden of ['send', 'sent', 'attachments', 'invite']) assert.equal(forbidden in sent!.args, false, `a draft carries no ${forbidden}`);
+
+  const created = await h.mcp.compose.createEvent({ summary: 'Synthetic block', startUtc: Date.UTC(2026, 10, 30, 9, 0), endUtc: Date.UTC(2026, 10, 30, 10, 0), timeZone: 'UTC', description: 'Synthetic note', clientRequestId: 'req-event' });
+  assert.equal(created.state, 'done');
+  if (created.state !== 'done') throw new Error('not done');
+  assert.equal(created.response['status'], 'event_created');
+  assert.equal(created.response['attendees'], 0);
+  assert.equal(created.response['invitations'], 'none');
+  const event = callsOf(h.pid('calendar_write')).find(call => call.tool === 'calendar_create_event');
+  assert(event, 'calendar_create_event reached the child');
+  assert.equal(event!.args['summary'], 'Synthetic block');
+  assert.equal(event!.args['start'], '2026-11-30T09:00:00.000Z');
+  assert.equal(event!.args['end'], '2026-11-30T10:00:00.000Z');
+  assert.equal(event!.args['time_zone'], 'UTC');
+  // Zero attendees and no update notification are the absence of either field in a schema that closes
+  // the object, so the wire can never carry an invitation.
+  for (const forbidden of ['attendees', 'attendee', 'sendUpdates', 'send_updates', 'invite', 'guests']) {
+    assert.equal(forbidden in event!.args, false, `an event carries no ${forbidden}`);
+  }
+
+  const removed = await h.mcp.compose.deleteEvent({ eventId: 'event-synthetic', clientRequestId: 'req-delete' });
+  assert.equal(removed.state, 'done');
+  const deletion = callsOf(h.pid('calendar_write')).find(call => call.tool === 'calendar_delete_event');
+  assert(deletion, 'calendar_delete_event reached the child');
+  assert.deepEqual(deletion!.args, { event_id: 'event-synthetic' });
+
+  const chat = await h.mcp.compose.draftChat({ person: 'Sam', message: 'Synthetic reply', clientRequestId: 'req-chat' });
+  assert.equal(chat.state, 'done');
+  if (chat.state !== 'done') throw new Error('not done');
+  assert.equal(chat.response['status'], 'draft_ready');
+  assert.equal(chat.response['posted'], false);
+  const draftCall = callsOf(h.pid('mattermost')).find(call => call.tool === 'mattermost_save_draft');
+  assert(draftCall, 'mattermost_save_draft reached the child');
+  assert.deepEqual(draftCall!.args, { message: 'Synthetic reply', dm_username: 'Sam' });
+  for (const forbidden of ['send', 'post', 'posted', 'reply_to_thread']) assert.equal(forbidden in draftCall!.args, false, `a chat draft carries no ${forbidden}`);
+});
+
+test('W1030: a write family whose child answers scope_missing is not_authorized with the authorize line', async t => {
+  const h = await host(t, pid => configured(pid, 'scope_missing', 'auth_needed'));
+  const created = await h.mcp.compose.createEvent({ summary: 'Synthetic block', startUtc: Date.UTC(2026, 10, 30, 9, 0), endUtc: Date.UTC(2026, 10, 30, 10, 0), timeZone: 'UTC', description: '', clientRequestId: 'req-event' });
+  assert.deepEqual(created, { state: 'not_authorized', family: 'the calendar_write family', command: COMPOSE_CONSENT.create_event });
+  assert.match(COMPOSE_CONSENT.create_event, /lux-google-mcp authorize --family calendar_write/);
+  const chat = await h.mcp.compose.draftChat({ person: 'Sam', message: 'Synthetic reply', clientRequestId: 'req-chat' });
+  assert.deepEqual(chat, { state: 'not_authorized', family: 'the Mattermost drafts family', command: 'auth needed: run mattermost_login once' });
+  // The consent probe never writes, so it still succeeded and both endpoints stayed connected.
+  assert.deepEqual(toolNames(h.pid('calendar_write')).slice(0, 1), ['google_identity']);
+  assert.equal(h.mcp.status().endpoints.every(report => report.state === 'connected'), true);
+});
+
+test('W1030: a host with no write family answers connector_not_authorized and spawns nothing', async t => {
+  const h = await host(t, () => [], { catalog: false });
+  const names = ownerTools(h);
+  // The four names are the shipped surface and stay offered; what changes without a family is the answer.
+  for (const name of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) assert.ok(names.includes(name), `${name} stays offered`);
+  const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
+  assert.deepEqual(draft, { state: 'not_authorized', family: 'the gmail_draft family', command: COMPOSE_CONSENT.draft_email });
+  const event = await h.mcp.compose.createEvent({ summary: 'Synthetic block', startUtc: Date.UTC(2026, 10, 30, 9, 0), endUtc: Date.UTC(2026, 10, 30, 10, 0), timeZone: 'UTC', description: '', clientRequestId: 'req-event' });
+  assert.equal(event.state, 'not_authorized');
+  assert.deepEqual(h.mcp.status().endpoints, []);
+  assert.equal(h.mcp.connectionIds().length, 0);
+});
+
+test('W1030: a connect with only the read families is the read surface it always was', async t => {
+  const readChild = join(fixtures, 'google-mcp-child.mjs');
+  const h = await host(t, pid => [endpoint({ id: 'gmail', connector: 'google', file: readChild, argv: ['ok', pid('gmail')] })]);
+  const grant = h.mcp.registry.currentGrant('gmail');
+  assert(grant);
+  assert.deepEqual([...grant!.toolNames].sort(), [...GOOGLE_TOOLS].sort());
+  assert.equal(grant!.effect, 'read');
+  const report = h.mcp.status().endpoints.find(endpoint => endpoint.id === 'gmail');
+  assert.equal(report?.state, 'connected');
+  assert.equal(report?.tools, GOOGLE_TOOLS.length);
+  const names = ownerTools(h);
+  for (const name of ['gmail_get_profile', 'gmail_search_messages', 'calendar_list_events']) assert.ok(names.includes(name), `${name} is still offered`);
+  for (const name of ['gmail_create_draft', 'calendar_create_event', 'mattermost_save_draft']) assert.equal(names.includes(name), false, `${name} is not`);
+  // The compose tools are offered and honest about the family this host does not have.
+  const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
+  assert.equal(draft.state, 'not_authorized');
+});
+
+/** A synthetic roster installed the way the host installs it: the shipped read path, no private file. */
+const installRoster = (t: TestContext): void => {
+  installPeople(parsePeople({ version: 1, people: [
+    { id: 'p-sam', name: 'Sam Rivera', aliases: ['Sam'], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['sam@example.test'], mattermost: 'sam', note: '' },
+    { id: 'p-robin-park', name: 'Robin Park', aliases: ['Robin'], role: 'colleague', circle: 'helm', project: 'helm', tier: 1, email: ['robin.park@example.test'], mattermost: 'robinp', note: '' },
+    { id: 'p-robin-diaz', name: 'Robin Diaz', aliases: ['Robin'], role: 'friend', circle: 'friend', project: '', tier: 1, email: ['robin.diaz@example.test'], mattermost: 'robind', note: '' },
+  ] }));
+  t.after(() => installPeople(null));
+};
+
+test('W1030: a spoken name resolves through the host roster and the child gets that address', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Sam', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-spoken' });
+  assert.equal(draft.state, 'done');
+  const sent = callsOf(h.pid('gmail_draft')).find(call => call.tool === 'gmail_create_draft');
+  assert(sent, 'gmail_create_draft reached the child');
+  assert.deepEqual(sent!.args['to'], ['sam@example.test'], 'the child gets the resolved address, never the spoken name');
+});
+
+test('W1030: a spoken name no read resolves is a question, not a draft and not an authorize line', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Zephyr', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-unknown' });
+  assert.deepEqual(draft, { state: 'recipient', code: 'recipient_unknown', candidates: [] });
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'no draft is written for an unresolved name');
+});
+
+test('W1030: two roster names that match stay a question with their names', async t => {
+  installRoster(t);
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'Robin', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-ambiguous' });
+  assert.equal(draft.state, 'recipient');
+  if (draft.state !== 'recipient') throw new Error('not a recipient question');
+  assert.equal(draft.code, 'recipient_ambiguous');
+  assert.deepEqual([...draft.candidates].sort(), ['Robin Diaz', 'Robin Park']);
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'an ambiguous name writes nothing');
+});
+
+test('W1030: a spoken channel resolves to its id, and two matching channels stay a question', async t => {
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftChat({ channel: 'Town Square', message: 'Synthetic reply', clientRequestId: 'req-channel' });
+  assert.deepEqual(draft.state, 'done', `channel resolution outcome: ${JSON.stringify(draft)}`);
+  assert.ok(callsOf(h.pid('mattermost')).some(call => call.tool === 'mattermost_list_channels'), 'the channel name was resolved through the child channel read');
+  const sent = callsOf(h.pid('mattermost')).find(call => call.tool === 'mattermost_save_draft');
+  assert.deepEqual(sent!.args, { message: 'Synthetic reply', channel_id: 'chan-town' }, 'the child gets the channel id, never the spoken name');
+  const ambiguous = await h.mcp.compose.draftChat({ channel: 'build', message: 'Synthetic reply', clientRequestId: 'req-channel-2' });
+  assert.equal(ambiguous.state, 'recipient');
+  if (ambiguous.state !== 'recipient') throw new Error('not a recipient question');
+  assert.equal(ambiguous.code, 'recipient_ambiguous');
+  assert.deepEqual([...ambiguous.candidates].sort(), ['Build Alerts', 'Build Logs']);
+  assert.equal(callsOf(h.pid('mattermost')).filter(call => call.tool === 'mattermost_save_draft').length, 1, 'only the resolved channel wrote');
+});
+
+test('W1030: an argument refusal keeps its own closed code and never the authorize line', async t => {
+  const h = await host(t, pid => configured(pid));
+  const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 's'.repeat(1200), body: 'Synthetic body', clientRequestId: 'req-long' });
+  assert.deepEqual(draft, { state: 'failed', reason: 'invalid-draft' });
+  assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'a refused argument writes nothing');
+});

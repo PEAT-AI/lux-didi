@@ -1,8 +1,9 @@
-import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames, connectionEnvelope } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames, connectionEnvelope, writeGrantedNames } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
-import type { ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
+import { createComposeDispatch } from './compose-dispatch.js';
+import type { ComposeDispatch, ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
@@ -75,6 +76,8 @@ export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
   owner: ToolsOwner;
+  /** W1030: the write surface the owner's compose tools call, built by this host, never injected. */
+  compose: ComposeDispatch;
   connectionIds(): string[];
   status(): { endpoints: (McpEndpointReport & { connector: string; retrying: boolean })[] };
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */
@@ -359,10 +362,15 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ ...(options.alarms ? { alarms: options.alarms } : {}), grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
+  // W1030: the host's own compose port. It reads the approved write family's policy on each call and
+  // reaches that endpoint through the same registry and transport the reads use; a family with no
+  // approval answers `not_authorized` rather than disappearing.
+  const compose = createComposeDispatch({ store, ownerId, registry, port });
+  const owner = createToolsOwner({ ...(options.alarms ? { alarms: options.alarms } : {}), grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, compose, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
-    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
+    // No readable catalog means no approved family: the compose tools stay offered and answer honestly.
+    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, compose, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
@@ -687,10 +695,18 @@ export async function composeMcpRuntime(options: {
         : [];
       // #604: a connector composite is granted under its own name, and only beside every child read
       // it stands on. It is never a published name, so the envelope above cannot carry it.
+      // W1030: a write family is admitted by the same reviewed code, from its own write envelope and only
+      // for the names the child published. These names ride in the grant so the compose port can reach
+      // them, and they never become model-facing reads (see liveDefinitions' declaration table).
+      const publishedNames = discovery.tools.map(tool => tool.name);
+      // W1030: the write names this child published, chosen by the connector's own write envelope. They do
+      // not need a read name beside them here, which is exactly how a write-only endpoint connects at all;
+      // the probe closure that stops a stored approval naming a write alone lives in validatePolicy.
+      const writes = grantMode === 'owner-trusted-reads' ? writeGrantedNames(entry.connector, publishedNames).sort() : [];
       const composed = composedGrantedNames(entry.connector, names).sort();
-      const granted = [...names, ...composed].sort();
+      const granted = [...names, ...composed, ...writes].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
-      if (!names.length) {
+      if (!names.length && !writes.length) {
         const proof = provenIdentity.get(entry.id);
         if (proof) options.identityLog?.('mongoose', proof.proven, proof.match, entry.id, proof.code);
         options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted), tools: 0 });
@@ -868,7 +884,9 @@ export async function composeMcpRuntime(options: {
         registry.observed(entry.id, discovery.tools, registry.revision(entry.id));
         // The registry grant carries the names the endpoint publishes; a connector composite is a
         // policy name, so it is the approval that covers it, never this projection (#604).
-        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name)), effect: 'read' });
+        // W1030: a write name rides in the callable grant too, because the compose port reaches the
+        // endpoint through the same registry a read does. It is still never a model-facing read tool.
+        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: 'read' });
         return true;
       });
       if (!published) {
@@ -922,7 +940,7 @@ export async function composeMcpRuntime(options: {
     }));
   };
   const composition: McpRuntimeComposition = {
-    registry, port: sourcePort, owner,
+    registry, port: sourcePort, owner, compose,
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
     connectionIds: () => {

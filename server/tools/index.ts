@@ -96,9 +96,15 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // #604: a connector composite is a grantable name of its own, but only beside every child read it
   // stands on, so the policy can never widen the envelope one composed name at a time.
   const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
-  const grantable = [...envelope, ...composed.map(tool => tool.name)];
+  // W1030: a write family's own names are grantable, but never as reads: they ride beside the family's
+  // read-only consent probe and are never model-facing tool declarations (see liveDefinitions below).
+  const declaration = connectorDescriptor(p.connector);
+  const writes = declaration?.writeEnvelope ?? [];
+  const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
   if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > grantable.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !grantable.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   if (composed.some(tool => p.toolNames.includes(tool.name) && !tool.requires.every(child => p.toolNames.includes(child)))) throw Error('invalid_read_tools');
+  // The same closure for a write family: a write name is grantable only beside the read-only probe.
+  if (writes.some(name => p.toolNames.includes(name)) && (declaration?.writeProbe === undefined || !p.toolNames.includes(declaration.writeProbe))) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
   if ((p.bindingMode === 'connection' && p.sourcePolicy.unknownClass === null) || (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass))) throw Error('invalid_unknown_class');
   exact(p.route, ['identity', 'allowedClasses']); text(p.route.identity); classSet(p.route.allowedClasses);
@@ -1089,6 +1095,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // is absent from the model-facing table; it stays dispatchable through the connector.
           if (!declaration) {
             if (descriptor.envelope.includes(name)) continue;
+            // W1030: a write name is reachable only through the host's compose port, never the model.
+            if ((descriptor.writeEnvelope ?? []).includes(name)) continue;
             throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
           }
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,

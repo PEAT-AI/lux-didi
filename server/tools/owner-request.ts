@@ -38,9 +38,9 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const kind of ['open', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
     grants.set('lux_note', {});
     const alarmIntent = /\balarm\b|\bwake me\b|\bremind me\b/i.test(words);
-    const timeFragment = /^(?:[\d\s:.,!?-]|(?:at|in|for|a|an|and|from|now|please|today|tomorrow|morning|evening|noon|midnight|am|pm|m|utc|singapore|time|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|half|quarter|minutes?|hours?|seconds?)\b)+$/i.test(words);
+    const timeFragment = /^(?:[\d\s:.,!?-]|(?:at|in|for|a|an|and|from|now|please|um|uh|up|past|to|where|you|wake|so|like|basically|have|put|it|again|today|tomorrow|morning|evening|noon|midnight|am|pm|m|utc|singapore|time|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|half|quarter|minutes?|hours?|seconds?)\b)+$/i.test(words);
     const alarmFollowup = timeFragment && previous?.alarmWords !== undefined && this.clock() - previous.start <= 120000 && (previous.pending?.kind === 'set_alarm' || !previous.answered && previous.grants.get('set_alarm')?.target === undefined);
-    const alarmWords = alarmIntent ? words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
+    const alarmWords = alarmIntent ? previous?.alarmWords && !previous.answered && previous.grants.get('set_alarm')?.target === undefined && this.clock() - previous.start <= 120000 ? `${previous.alarmWords} ${words}` : words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
     if (alarmWords !== undefined) grants.set('set_alarm', {});
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
       const combined = (words.startsWith(previous.words) ? words : `${previous.words} ${words}`).replace(/(\d)\s*:\s*(\d)/g, '$1:$2');

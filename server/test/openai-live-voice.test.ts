@@ -2584,7 +2584,7 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   socket.deliver({ type: 'response.created', response: { id: 'typed_only' } });
   socket.deliver({ type: 'response.done', response: { id: 'typed_only', status: 'completed' } });
   await quiet();
-  assert.equal(completions(captured).length, 1);
+  assert.equal(completions(captured), 1);
 });
 
  test('input audio keeps the audible-output completion rule for typed text', async t => {
@@ -2595,5 +2595,5 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   socket.deliver({ type: 'response.created', response: { id: 'voice_active' } });
   socket.deliver({ type: 'response.done', response: { id: 'voice_active', status: 'completed' } });
   await quiet();
-  assert.equal(completions(captured).length, 0);
+  assert.equal(completions(captured), 0);
 });

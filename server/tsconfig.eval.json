@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["eval/**/*.ts", "test/fixtures/**/*.ts"]
+}

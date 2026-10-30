@@ -1186,7 +1186,7 @@ function assertGoogleWireContract(recording: { families: Record<string, { tools:
 test('Google child declarations match the dated recorded tools/list wire contract', () => {
   const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
   assert.equal(recording.helper, 'lux-google-mcp');
-  assert.equal(recording.version, '0.1.0');
+  assert.equal(recording.version, '0.2.0');
   assert.equal(recording.retrieved, '2026-10-30');
   assertGoogleWireContract(recording);
 });

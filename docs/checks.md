@@ -119,6 +119,13 @@ filtered on read, so removing them is an owner decision and never a check or a m
 `scripts/run-local-evals.sh` is the owner's own run and is not a check: scripted by default, `--live` only
 with `--yes`, and the full private suite never leaves the owner's machine.
 
+The eval harness is a developer tool, never a production unit. `server/eval/` has its own TypeScript
+project (`server/tsconfig.eval.json`, extending `server/tsconfig.json`) and is not in the production
+`include`, so the service build never carries it: `server/test/host.test.ts` still sees exactly the
+production roots, and `check-host.sh` excludes exactly `server/eval/` from its `console.log` scan because
+none of that code can reach the supervised stdout. That exclusion holds only while nothing production-side
+imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source imports from `server/eval/`.
+
 ## Web
 
 | Script | Covers |

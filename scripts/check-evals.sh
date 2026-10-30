@@ -16,5 +16,5 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
   exit 2
 fi
 cd "$root/server"
-"$deps/typescript/bin/tsc" -p tsconfig.json
+"$deps/typescript/bin/tsc" -p tsconfig.eval.json
 node dist/eval/selftest.js "$root"

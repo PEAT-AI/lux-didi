@@ -7,10 +7,19 @@ cd "$(dirname "$0")/.."
 # writeProtocolFrame in server/host/index.ts, and it uses process.stdout.write. A console.log in
 # server/ non-test source can reach the native supervisor's stdout after the ready frame, which
 # NativeServiceSupervisor reads as invalidOutput and restarts the service.
-console_log=$(grep -rn --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist 'console\.log(' server | grep -v '/test/' || true)
+console_log=$(grep -rn --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist 'console\.log(' server | grep -v '/test/' | grep -v '^server/eval/' || true)
 if [ -n "$console_log" ]; then
   echo 'console.log is forbidden in server/ non-test source: stdout is the supervised protocol pipe; only writeProtocolFrame may write it.' >&2
   echo "$console_log" >&2
+  exit 1
+fi
+# server/eval is excluded above because it is a developer tool, never compiled into the service
+# (its own tsconfig.eval.json): its console.log can never reach the supervised stdout.
+# The exclusion holds only while no production source imports from eval/, so gate that here.
+eval_imports=$(grep -rn --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=eval --exclude-dir=test "from '[^']*eval/" server || true)
+if [ -n "$eval_imports" ]; then
+  echo 'no production source may import from server/eval: the eval harness is a developer tool outside the service build.' >&2
+  echo "$eval_imports" >&2
   exit 1
 fi
 # Exercise the documented build producer, using the current compiler layout.

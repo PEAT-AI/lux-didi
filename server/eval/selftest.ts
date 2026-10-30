@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { installEvalGuards } from './clock.js';
 import { installModuleWatch, loadedModules, realtimeAdapterModulesLoaded } from './modules.js';
 import { loadCases, loadToolMap, runCase, runSuite, formatSummary } from './runner.js';
+import { requiredCapabilities } from './scorer.js';
+import { capabilityShipped } from './world.js';
 import { brokenPlans, scriptedProvider, type TurnPlan, type TurnProvider } from './scripted.js';
 import type { EvalCase } from './types.js';
 
@@ -14,8 +16,6 @@ const toolMapPath = join(root, 'server/eval/tool-map.json');
  * first. It is a real ported case: a scripted ask with a resolvable contact and one mail thread.
  */
 const SEED_CASE_ID = 'email-01';
-/** The four red cases that assert a clarifying or refusing answer with an empty store: testable today. */
-const EXERCISED_RED_CASES = ['email-09', 'email-10', 'mattermost-07', 'mattermost-08'];
 
 const lines: string[] = [];
 const check = (name: string, body: () => void | Promise<void>): Promise<void> =>
@@ -83,19 +83,26 @@ async function main() {
     assert.equal(suite.fail, 0, formatSummary(suite));
     assert.equal(suite.pass + suite.expectedRed, suite.total);
   });
+  // IT-R4 F1: whether a red-by-design case is exercised or parked follows the tool map, exactly as the
+  // scorer decides it, so flipping a capability to implemented cannot leave a stale expectation here.
+  const plannedFor = (entry: EvalCase): string[] =>
+    requiredCapabilities({ case: entry, toolMap }).filter(capability => !capabilityShipped(toolMap, capability));
   await check('scripted mode: a case is red only while a capability it needs is planned', async () => {
     const red = cases.filter(entry => entry.red_today);
     assert.equal(red.length, 39);
+    let parked = 0;
     for (const entry of red) {
       const run = await runCase(entry, { toolMap, provider: scriptedProvider() });
-      if (EXERCISED_RED_CASES.includes(entry.id)) {
+      const planned = plannedFor(entry);
+      if (planned.length === 0) {
         assert.equal(run.outcome.outcome, 'PASS', `${entry.id} must be exercised, not parked as red: ${run.outcome.reasons.join('; ')}`);
         continue;
       }
+      parked += 1;
       assert.equal(run.outcome.outcome, 'EXPECTED_RED', `${entry.id}: ${run.outcome.reasons.join('; ')}`);
       assert.ok((run.outcome.redReason ?? '').length > 0, `${entry.id} carries no red reason`);
     }
-    assert.equal(suite.expectedRed, 39 - EXERCISED_RED_CASES.length);
+    assert.equal(suite.expectedRed, parked);
   });
   await check('the module watch sees loads, so its silence about the adapter means something', async () => {
     const before = loadedModules().length;

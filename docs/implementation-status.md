@@ -1,6 +1,12 @@
 # Implementation status
 
-This page describes the first stable release merged by [PR #683](https://github.com/PEAT-AI/lux-didi/pull/683), commit `a256f5d64d4dba0af9855f0ef512f2a1e88e37f9`. It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
+State of the source tree at release 10.6 (main `c6262723e7d84c78dd584566812c969da94f37e8`, 2026-10-30). It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
+
+## Releases
+
+| Release | Date | What changed for the owner |
+| --- | --- | --- |
+| 10.6 | 2026-10-30 | Nothing is read before you speak, a long lookup reaches you as research instead of a lost answer, drafts and owner-only events land without sending or inviting anyone, reminders can repeat, Mattermost topics and threads can be read, and the evals run locally. |
 
 ## Available now
 

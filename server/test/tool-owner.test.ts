@@ -87,10 +87,10 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' })) };
   const signal = new AbortController().signal;
   const definitions = () => owner.definitions('run');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args = { query: 'synthetic', limit: 1 }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: 'account', resourceId: 'resource' });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,

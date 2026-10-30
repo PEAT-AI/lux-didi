@@ -456,7 +456,7 @@ function topicRow(raw: Record<string, unknown>): ChatTopicRow {
     rootId: firstText(raw, ['root_id', 'rootId', 'id']),
     author: firstText(raw, ['author', 'username']),
     createdAt: created,
-    preview: postText(raw).slice(0, 200),
+    preview: (firstText(raw, ['preview', 'message', 'text']) || postText(raw)).slice(0, 200),
     replies: Number.isSafeInteger(replies) ? replies as number : 0,
     participants,
     ...(last === '' ? {} : { lastReplyAt: last }),

@@ -806,9 +806,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               return stored as ToolCallIntent;
             });
             const finish = (response: JsonObject) => ({ status: 'completed' as const, result: store.transaction(tx => complete(call, response, ['ordinary'], tx)) });
+            // The target is derived from his words and this turn, so the peek only needs the turn: a spent
+            // grant still names its journal, and the authorize below decides whether this is its replay.
             const peek = ownerRequests.authorize(runId, name, '');
             hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
-            if (peek.code !== 'allowed' && peek.code !== 'idempotent') return finish(requestRefusal(peek.code));
+            if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
             const target = composeTarget(name, args, clientRequestId(peek.journalId));
             const ask = ownerRequests.authorize(runId, name, target);
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);

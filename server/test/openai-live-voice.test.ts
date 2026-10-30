@@ -2576,3 +2576,24 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   assert.equal(creates(opened.socket).length, initial + 1, 'no third create or watchdog retry');
   assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, 1);
 });
+
+ test('typed-only terminal response completes without output audio', async t => {
+  const { socket, session, captured } = await fakeReady(t);
+  session.sendText({ text: 'Synthetic typed ask' });
+  await quiet();
+  socket.deliver({ type: 'response.created', response: { id: 'typed_only' } });
+  socket.deliver({ type: 'response.done', response: { id: 'typed_only', status: 'completed' } });
+  await quiet();
+  assert.equal(completions(captured).length, 1);
+});
+
+ test('input audio keeps the audible-output completion rule for typed text', async t => {
+  const { socket, session, captured } = await fakeReady(t);
+  session.sendAudio({ pcm: pcm16(320), dataClass: 'public' });
+  session.sendText({ text: 'Synthetic text during voice' });
+  await quiet();
+  socket.deliver({ type: 'response.created', response: { id: 'voice_active' } });
+  socket.deliver({ type: 'response.done', response: { id: 'voice_active', status: 'completed' } });
+  await quiet();
+  assert.equal(completions(captured).length, 0);
+});

@@ -2581,8 +2581,8 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   const { socket, session, captured } = await fakeReady(t);
   session.sendText({ text: 'Synthetic typed ask' });
   await quiet();
-  socket.deliver({ type: 'response.created', response: { id: 'typed_only' } });
-  socket.deliver({ type: 'response.done', response: { id: 'typed_only', status: 'completed' } });
+  socket.deliver(delegated('response.created', { response: { id: 'typed_only' } }));
+  socket.deliver(delegated('response.done', { response: { id: 'typed_only', status: 'completed' } }));
   await quiet();
   assert.equal(completions(captured), 1);
 });
@@ -2592,8 +2592,8 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
   session.sendText({ text: 'Synthetic text during voice' });
   await quiet();
-  socket.deliver({ type: 'response.created', response: { id: 'voice_active' } });
-  socket.deliver({ type: 'response.done', response: { id: 'voice_active', status: 'completed' } });
+  socket.deliver(delegated('response.created', { response: { id: 'voice_active' } }));
+  socket.deliver(delegated('response.done', { response: { id: 'voice_active', status: 'completed' } }));
   await quiet();
   assert.equal(completions(captured), 0);
 });

@@ -363,8 +363,8 @@ test('F8: a call with no turn after a rebuild is listed in its own bucket and co
     storeA(store);
     // A rebuild drops the turn link: the call is recorded with no turn at all, so its turn_id is null.
     const orphan = (id: string, at: number): void => {
-      record(store, 'call.intent', { liveSessionId: SESSION }, { callKey: id, name: 'set_alarm', argsChars: 12, intentAt: at });
-      record(store, 'call.output_written', { liveSessionId: SESSION }, { callKey: id, outputWrittenAt: at + 30, outcome: 'refused', ms: 30, resultChars: 8 });
+      record(store, 'call.intent', { liveSessionId: SESSION, callKey: id }, { name: 'set_alarm', argsChars: 12, intentAt: at });
+      record(store, 'call.output_written', { liveSessionId: SESSION, callKey: id }, { outputWrittenAt: at + 30, outcome: 'refused', ms: 30, resultChars: 8 });
     };
     orphan('call:orphan', T0 + 3_000);
     const audit = auditA(store);

@@ -873,7 +873,7 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft through th
   f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'completed');
+  assert.equal(first.status, 'completed', first.reason);
   assert.equal(port.log.length, 1, 'one remote draft call');
   assert.match(String(first.result_json), /draft-1/);
   assert.match(String(first.result_json), /"sent":false/);
@@ -942,7 +942,7 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'cancel that meeting', 1_000);
   const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
-  assert.equal(invented.status, 'completed');
+  assert.equal(invented.status, 'completed', invented.reason);
   assert.match(String(invented.result_json), /event_not_created_here/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
   f.owner.ownerRequests.answered?.('run');

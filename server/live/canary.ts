@@ -232,6 +232,7 @@ export class InstalledCanary {
     this.live.revoke(id); canarySessions.close(id); this.#session = undefined;
   }
   #cancelAlarms(id: string): void {
+    if (!this.cancelAlarm) return;
     const rows = this.store.transaction(tx => tx.all("SELECT a.id FROM alarms a JOIN tool_calls c ON c.execution_id=a.id WHERE a.state IN ('pending','ringing') AND c.run_id=? AND json_extract(c.intent_json,'$.toolName') IN ('set_alarm','snooze_alarm')", [id]));
     for (const row of rows) this.cancelAlarm?.(String(row.id));
   }

@@ -78,7 +78,7 @@ export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetai
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
-  const canary = live ? new InstalledCanary(store, live, undefined, undefined, id => options.alarms?.scheduler.cancel(id) === true) : undefined;
+  const canary = live ? new InstalledCanary(store, live, undefined, undefined, options.alarms ? id => options.alarms!.scheduler.cancel(id) : undefined) : undefined;
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
   const alarmStreams = new Set<() => void>();

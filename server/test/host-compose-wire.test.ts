@@ -9,6 +9,7 @@ import { toolsMigrations } from '../tools/schema.js';
 import { composeMcpRuntime, type McpRuntimeComposition } from '../host/mcp.js';
 import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { COMPOSE_CONSENT } from '../tools/compose.js';
+import type { RunAcceptance } from '../tools/types.js';
 
 // W1030: every fixture, address and id below is synthetic. No real account, token or Mattermost
 // server is touched: the children are local stdio fakes that record what they were asked for.
@@ -20,8 +21,9 @@ const remember = (): { remembered: boolean; code: string } => ({ remembered: fal
 
 interface Host { dir: string; store: Store; mcp: McpRuntimeComposition; identity: { connector: string; proven: boolean; endpointId?: string }[]; pid: (id: string) => string }
 
-const endpoint = (options: { id: string; connector: string; file: string; args: string[]; pidFile?: string }) => ({
-  id: options.id, transport: 'stdio' as const, command: process.execPath, args: [options.file, ...options.args, ...(options.pidFile === undefined ? [] : [options.pidFile])],
+/** A synthetic child: its own argv (the pid file included, in the position that child reads it), then mode. */
+const endpoint = (options: { id: string; connector: string; file: string; argv: string[] }) => ({
+  id: options.id, transport: 'stdio' as const, command: process.execPath, args: [options.file, ...options.argv],
   env: { HOME: join(tmpdir(), 'didi-compose-wire-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
   connector: options.connector, account: 'owner', resource: options.id, credentialRef: null,
   enabled: true, allowEgress: true, unknownClass: 'ordinary' as const,
@@ -53,13 +55,23 @@ const callsOf = (pidFile: string): { tool: string; args: Record<string, unknown>
   });
 };
 const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => call.tool);
-const ownerTools = (h: Host): string[] => h.mcp.owner.liveDefinitions('run-compose-wire', remember).map(tool => tool.name);
+/** The owner's tool table for one accepted synthetic run: the same call the Live host makes. */
+const ownerTools = (h: Host): string[] => {
+  const acceptance: RunAcceptance = {
+    ownerId: h.store.assistantId, actorId: 'synthetic-actor', runId: 'run-compose-wire', authorityEpoch: h.store.authorityEpoch, revision: 1,
+    route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary'] },
+    allowedClasses: ['ordinary'], connectionIds: [...h.mcp.connectionIds()],
+  };
+  h.store.transaction(tx => h.mcp.owner.snapshotRun(tx, acceptance));
+  return h.mcp.owner.liveDefinitions(acceptance.runId, remember).map(tool => tool.name);
+};
 
 /** The three endpoints a configured host needs: both google write families and the Mattermost draft. */
 const configured = (pid: (id: string) => string, mode = 'ok'): unknown[] => [
-  endpoint({ id: 'gmail_draft', connector: 'google', file: googleWriteChild, args: ['gmail_draft', mode], pidFile: pid('gmail_draft') }),
-  endpoint({ id: 'calendar_write', connector: 'google', file: googleWriteChild, args: ['calendar_write', mode], pidFile: pid('calendar_write') }),
-  endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, args: [mode], pidFile: pid('mattermost') }),
+  // google-write-child.mjs reads [family, pidFile, mode]; the Mattermost child reads [pidFile, mode].
+  endpoint({ id: 'gmail_draft', connector: 'google', file: googleWriteChild, argv: ['gmail_draft', pid('gmail_draft'), mode] }),
+  endpoint({ id: 'calendar_write', connector: 'google', file: googleWriteChild, argv: ['calendar_write', pid('calendar_write'), mode] }),
+  endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mode] }),
 ];
 
 test('W1030: the real host composition offers the four write tools when the families are configured', async t => {
@@ -158,7 +170,7 @@ test('W1030: a host with no write family answers connector_not_authorized and sp
 
 test('W1030: a connect with only the read families is the read surface it always was', async t => {
   const readChild = join(fixtures, 'google-mcp-child.mjs');
-  const h = await host(t, pid => [endpoint({ id: 'gmail', connector: 'google', file: readChild, args: ['ok'], pidFile: pid('gmail') })]);
+  const h = await host(t, pid => [endpoint({ id: 'gmail', connector: 'google', file: readChild, argv: ['ok', pid('gmail')] })]);
   const grant = h.mcp.registry.currentGrant('gmail');
   assert(grant);
   assert.deepEqual([...grant!.toolNames].sort(), [...GOOGLE_TOOLS].sort());

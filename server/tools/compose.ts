@@ -21,6 +21,7 @@ const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell)\b/
 const CALENDAR = /\b(?:calendar|schedule|book)\b/i;
 const BLOCK_VERB = /\b(?:block|add|put|reserve|hold)\b/i;
 const BLOCK_NOUN = /\b(?:hour|time|block|slot|event|meeting|gym|appointment|lunch)\b/i;
+const SCHEDULE_VERB = /\b(?:schedule|book|block|add|put|move|create|reserve|hold)\b/i;
 const CANCEL_VERB = /\b(?:cancel|delete|remove|drop|scrap)\b/i;
 const EVENT_NOUN = /\b(?:event|meeting|block|appointment|booking|lunch|gym|slot)\b/i;
 
@@ -35,7 +36,7 @@ export function composeGrantKinds(words: string): readonly ComposeGrantKind[] {
   const chat = CHAT.test(words);
   if (mail && (DRAFT_VERB.test(words) || /\bto\b/i.test(words))) kinds.push('draft_email');
   if (chat && DRAFT_VERB.test(words) && !(mail && !chat)) kinds.push('draft_chat');
-  if (CALENDAR.test(words) || (BLOCK_VERB.test(words) && BLOCK_NOUN.test(words))) kinds.push('create_event');
+  if (CALENDAR.test(words) ? SCHEDULE_VERB.test(words) : BLOCK_VERB.test(words) && BLOCK_NOUN.test(words)) kinds.push('create_event');
   if (CANCEL_VERB.test(words) && (EVENT_NOUN.test(words) || CALENDAR.test(words))) kinds.push('delete_event');
   return kinds;
 }
@@ -155,8 +156,8 @@ export function namedOthers(words: string, ownerName?: string): string[] {
  * the alarm parser's normalisation, and the model's own epoch is never used.
  */
 export function eventWindow(words: string, now: number, timeZone: string, ownerName?: string): EventWindow {
-  const start = words.search(DURATION);
-  const cleaned = (start <= 0 ? words : words.slice(0, start)).trim();
+  const match = DURATION.exec(words);
+  const cleaned = (match ? `${words.slice(0, match.index)} ${words.slice(match.index + match[0].length)}` : words).trim();
   const names = namedOthers(words, ownerName);
   const duration = durationMinutes(words) * 60000;
   const weekday = WEEKDAYS.findIndex(day => new RegExp(`\\b${day}\\b`, 'i').test(cleaned));

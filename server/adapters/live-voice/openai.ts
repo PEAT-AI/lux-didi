@@ -1592,6 +1592,8 @@ class Session implements LiveVoiceSession {
       this.continuationReceipt('failed');
       return this.continuationOutcome = 'failed';
     }
+    // Reserve locally too: another typed final may arrive before the provider acknowledges this create.
+    this.delegatedOutstanding = true;
     this.toolRounds = round;
     const now = this.clock.now();
     this.continuationTiming = { toolOutputAt: this.lastToolOutputAt ?? now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };

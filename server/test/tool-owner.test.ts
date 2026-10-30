@@ -852,12 +852,12 @@ const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
-const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>) => {
+const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>, step = 1) => {
   const grant = { tool: call.toolName, effect: 'write' as const, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId };
   if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
   const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
     registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },
-    step: 1, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'], authorize: true,
+    step, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'], authorize: true,
   });
   const record = batch.tools[0]!;
   const result = batch.bindings[0]?.result;
@@ -878,7 +878,7 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft through th
   assert.match(String(first.result_json), /draft-1/);
   assert.match(String(first.result_json), /"sent":false/);
   assert.match(String(first.result_json), /his click/);
-  const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args);
+  const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
   assert.equal(replay.status, 'completed');
   assert.equal(port.log.length, 1, 'the replay writes nothing');
   assert.match(String(replay.result_json), /draft-1/, 'the replay returns the recorded receipt');
@@ -902,17 +902,17 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' })).status, 'completed');
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' })).status, 'completed');
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
   const names = liveTools(f).map(definition => definition.name);
   assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
-  const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' });
+  const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
   assert.equal(port.log.length, 2, 'saying send it writes nothing new');
   assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
   assert.match(String(sent.result_json), /no_owner_request|his click|reply box/);
@@ -947,11 +947,11 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar tomorrow 9 gym', 2_000);
-  const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' });
+  const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
   assert.equal(created.status, 'completed');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
-  const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' });
+  const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
   assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
 });
@@ -964,7 +964,7 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
   assert.equal(first.status, 'unknown', 'a lost answer is not a success');
-  const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args);
+  const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
   assert.notEqual(retry.status, 'completed');
   assert.equal(port.log.length, 1, 'the retry never reaches the helper twice');
   assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/);
@@ -979,7 +979,7 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   assert.equal(port.log.length, 1);
   const rebuilt = f.reopen();
   rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
-  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args);
+  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
   assert.match(String(refused.result_json), /no_owner_request/);

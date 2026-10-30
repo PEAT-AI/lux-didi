@@ -2589,7 +2589,7 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
 
  test('input audio keeps the audible-output completion rule for typed text', async t => {
   const { socket, session, captured } = await fakeReady(t);
-  session.sendAudio({ pcm: pcm16(320), dataClass: 'public' });
+  session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
   session.sendText({ text: 'Synthetic text during voice' });
   await quiet();
   socket.deliver({ type: 'response.created', response: { id: 'voice_active' } });

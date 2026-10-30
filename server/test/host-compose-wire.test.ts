@@ -229,6 +229,7 @@ test('W1030: two roster names that match stay a question with their names', asyn
 test('W1030: a spoken channel resolves to its id, and two matching channels stay a question', async t => {
   const h = await host(t, pid => configured(pid));
   const draft = await h.mcp.compose.draftChat({ channel: 'Town Square', message: 'Synthetic reply', clientRequestId: 'req-channel' });
+  assert.ok(callsOf(h.pid('mattermost')).some(call => call.tool === 'mattermost_list_channels'), `channel read log: ${JSON.stringify(callsOf(h.pid('mattermost')))}`);
   assert.deepEqual(draft.state, 'done', `channel resolution outcome: ${JSON.stringify(draft)}`);
   const sent = callsOf(h.pid('mattermost')).find(call => call.tool === 'mattermost_save_draft');
   assert.deepEqual(sent!.args, { message: 'Synthetic reply', channel_id: 'chan-town' }, 'the child gets the channel id, never the spoken name');

@@ -184,16 +184,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const parsed = parsePlainAlarmTime(words, now, tz, modelAt);
   const spec = parseSeriesRule(words);
   if (!spec || parsed.status !== 'ready') return parsed;
-  // The owner's resolved wall time is the rule's time, and an ambiguous bare hour is settled on the
-  // series day rather than on today's clock, so "every Saturday at ten" means 10:00 that Saturday.
+  // The owner's resolved wall time is the rule's time. An ambiguous bare hour reads as the morning
+  // one for a series ("every Saturday at ten" is Saturday 10:00), while an evening or pm word, or a
+  // colon time, names its own meridian, so today's clock never decides a recurring wall time.
   const [, , , resolvedHour, minute] = localParts(parsed.fireAtUtc, tz) as [number, number, number, number, number, number];
-  const explicit = /\b(?:am|pm|morning|evening|tonight|night|noon|midnight)\b/i.test(words) || /\d{1,2}:\d{2}\b/.test(words);
-  const options = (explicit ? [resolvedHour] : [(resolvedHour + 12) % 24, resolvedHour])
-    .map(hour => ({ rule: { ...spec, hour, minute, tz } as SeriesRule }))
-    .map(option => ({ rule: option.rule, fireAtUtc: seriesNextFireAt(option.rule, now) }))
-    .sort((a, b) => a.fireAtUtc - b.fireAtUtc);
-  const rule = options[0]!.rule;
-  const fireAtUtc = options[0]!.fireAtUtc;
+  const explicit = /\b(?:am|pm|morning|evening|tonight|night|noon|midnight)\b/i.test(words) || /\d{1,2}:\d{2}/.test(words);
+  const rule: SeriesRule = { ...spec, hour: explicit ? resolvedHour : resolvedHour % 12, minute, tz };
+  const fireAtUtc = seriesNextFireAt(rule, now);
   const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(fireAtUtc);
   return { ...parsed, fireAtUtc, series: rule, confirmation: `Alarm set for ${dateTime} (${tz}); repeats ${seriesText(rule)}.` };
 }

@@ -3673,11 +3673,6 @@ function sourceKindOfKindName(name: string): SourceKind | null {
 
 /** ROUTE-1022: a continuation the run cannot serve says what to do next, so the model never stalls on it. */
 export const CONTINUATION_UNAVAILABLE_NOTE = 'That earlier result is no longer available. Ask a fresh research question about the same thing.';
-/**
- * G8: a direction a run cannot carry says so, instead of cancelling the run and answering from nothing. The
- * run's own findings stay in the reply beside this note.
- */
-export const DIRECTION_UNSUPPORTED_NOTE = 'This research did not read that source, so that part of the direction was not followed. Ask a fresh research question to read it.';
 
 function bodyCursor(run: RunState, key: string, offset: number, width: number): string {
   const existing = [...run.bodyCursors].find(([, page]) => page.key === key && page.offset === offset)?.[0];
@@ -5823,9 +5818,11 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       if (next === 'due') budgetSpent = true;
     } else budgetSpent = true;
   }
-  // G5: a source is named as still searching only while it is still in flight here. A read whose findings already
-  // landed is never said to be pending, whatever the snapshot taken when the early answer began still listed.
-  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source) && view.run.pending.has(source));
+  // G5: a source whose findings already landed in the ledger is never called still reading, whatever the
+  // snapshot taken when the early answer began still listed.
+  const landed = new Set<SourceKind>();
+  for (const entry of view.run.ledger.values()) landed.add(entry.source);
+  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source) && !landed.has(source));
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
   // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
   const hardStopped = budgetSpent || first.cut === true;
@@ -6175,12 +6172,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
       // G8: a direction this run can carry extends it. Cancelling the run and starting an empty one threw away
       // every finding the owner had already been promised, so the run keeps its evidence and takes the words as
-      // its next round. A direction naming a source this run never read cannot be honoured, and says so.
+      // its next round. A direction naming a source this run never read is the #654 case: it starts fresh and
+      // says so.
       const direction = call.action === 'continue' ? (call.direction ?? '').trim() : '';
-      if (direction !== '' && namesUnreadSource(priorRun, direction)) {
-        return { ...knownReply(deps.ledger, priorRun.researchId, [...priorRun.route], 'partial'), note: DIRECTION_UNSUPPORTED_NOTE };
-      }
-      const extended = direction === '' ? undefined : deps.ledger.resume(priorRun.researchId,
+      const extended = direction === '' || namesUnreadSource(priorRun, direction) ? undefined : deps.ledger.resume(priorRun.researchId,
         { direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
       if (extended === undefined) {
         // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.

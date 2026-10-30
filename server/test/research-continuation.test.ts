@@ -259,7 +259,9 @@ test('G8: a direction extends the run instead of cancelling it, and an unread so
   assert.ok(run !== undefined, 'the run the owner was already promised survives');
   assert.equal(run!.cancelled, false, 'it was never cancelled');
   assert.equal(run!.direction, 'go deeper on the lighthouse budget vote', 'the direction is the run\'s next round');
-  const refused = await runResearch(h.deps, { action: 'continue', researchId, direction: 'also check the calendar for it' }, signal());
-  assert.match(String(refused['note'] ?? ''), /did not read that source/u, 'a source this run never read is named, not silently dropped');
-  assert.equal(h.deps.ledger.find(researchId)!.cancelled, false, 'and the run is still not cancelled');
+  // A direction naming a source this run never read is the #654 case: it starts fresh and says so, rather than
+  // being served as a continuation of a run that cannot read it.
+  const other = await runResearch(h.deps, { action: 'continue', researchId, direction: 'also check the calendar for it' }, signal());
+  assert.match(String(other['note'] ?? ''), /fresh lookup, not a continuation/u, 'the one ask the run cannot honour says so');
+  assert.notEqual(String(other['researchId']), researchId, 'and it runs under its own id');
 });

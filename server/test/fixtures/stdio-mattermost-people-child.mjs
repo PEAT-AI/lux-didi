@@ -333,8 +333,10 @@ server.setRequestHandler('tools/call', async (request) => {
     return text({ total: list.length, returned: list.length, results: list });
   }
   if (name === 'mattermost_get_thread') {
+    // F5c: a thread is its root and replies, so a thread read can be checked for chronological order.
     const root = POSTS.find(post => post.id === args.post_id);
-    return text({ root: root ? serialize(root) : null, replies: [] });
+    const replies = root === undefined ? [] : [{ ...root, id: `${root.id}-reply`, timestamp: iso(root.at + 60 * 1000), message: 'synthetic thread reply' }];
+    return text({ root: root ? serialize(root) : null, replies: replies.map(serialize) });
   }
   if (name === 'mattermost_list_channels') {
     const listed = listChannels(args);

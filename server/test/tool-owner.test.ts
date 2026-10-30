@@ -898,6 +898,8 @@ test('W1030 draft_chat: a DM by person and a reply in a thread reach the draft t
   const dm = composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' });
   f.owner.journal.intent(dm);
   assert.equal((await liveExecute(f, dm, { person: 'Sam', message: 'On my way.' })).status, 'completed');
+  // A finished ask is answered before the next turn: its grant is spent, never reused.
+  f.owner.ownerRequests.answered('run');
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
   const thread = composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' });
   f.owner.journal.intent(thread);

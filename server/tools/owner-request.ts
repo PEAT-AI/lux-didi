@@ -64,6 +64,13 @@ export class OwnerRequests implements OwnerRequestPort {
     this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt, finals: 1, journalId, grants, ...(alarmWords === undefined ? {} : { alarmWords }), sources: {}, shown: [] });
   }
 
+  invalidateAlarm(session: string): void {
+    const request = this.requests.get(session);
+    if (!request) return;
+    request.grants.delete('set_alarm');
+    delete request.alarmWords;
+    if (request.pending?.kind === 'set_alarm') delete request.pending;
+  }
   answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);

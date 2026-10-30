@@ -3208,6 +3208,7 @@ export class LiveSessionOwner {
     if (ringing.some(alarm => alarm.rebuilds >= 1)) return false;
     for (const alarm of ringing) alarm.rebuilds += 1;
     handle.sessionTimer?.cancel();
+    this.#tools?.owner.ownerRequests.invalidateAlarm(handle.liveSessionId);
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
     // line names the generation it really belongs to instead of the open-time zero.

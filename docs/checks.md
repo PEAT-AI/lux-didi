@@ -189,7 +189,7 @@ your configured connectors. The example is not a real account corpus. The format
   fails the ask. No arbitrary model-provided insight ID can authorize deletion.
 
 Before any paid work, the script reads `logs/host.log` under `LUX_DIDI_DATA_DIR` (default:
-`~/Library/Application Support/ai.peat.lux-didi-operator`), using the host's structured
+`~/Library/Application Support/ai.peat.lux-didi`), using the host's structured
 start/terminal receipts. A live call is refused **even if the asks file is absent**. The
 host also checks its authoritative active-session rows, closing the preflight race.
 Only an absent asks file prints `CANARY SKIP reason=private_ask_file_absent` and exits 0.

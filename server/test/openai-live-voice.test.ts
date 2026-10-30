@@ -280,9 +280,8 @@ describe('openai gpt-live adapter', () => {
     const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
     const before = creates();
     session.sendText({ text: '[host note, not the owner] Synthetic late line.' });
-    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
-    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
-    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
+    await quiet();
+    assert.equal(f.frames.filter(frame => frame['type'] === 'response.item.create').length, 0, 'typed finals stay coalescible until outputs are supplied');
 
     for (let wait = 0; wait < 20; wait += 1) await tick();
     assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
@@ -290,6 +289,8 @@ describe('openai gpt-live adapter', () => {
     await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
     for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
     assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
+    const framed = f.frames.find(frame => frame['type'] === 'response.item.create' && JSON.stringify(frame).includes('Synthetic late line'))!;
+    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
     const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
     assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');
     session.close();
@@ -2575,4 +2576,82 @@ test('continuation active-response retry exhaustion fails on rejection, not on a
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
   assert.equal(creates(opened.socket).length, initial + 1, 'no third create or watchdog retry');
   assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, 1);
+});
+
+test('typed-only terminal response completes without output audio', async t => {
+  const { socket, session, captured } = await fakeReady(t);
+  session.sendText({ text: 'Synthetic typed ask' });
+  await quiet();
+  socket.deliver(delegated('response.created', { response: { id: 'typed_only' } }));
+  socket.deliver(delegated('response.done', { response: { id: 'typed_only', status: 'completed' } }));
+  await quiet();
+  assert.equal(completions(captured), 1);
+});
+
+test('input audio keeps the audible-output completion rule for typed text', async t => {
+  const { socket, session, captured } = await fakeReady(t);
+  session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+  session.sendText({ text: 'Synthetic text during voice' });
+  await quiet();
+  socket.deliver(delegated('response.created', { response: { id: 'voice_active' } }));
+  socket.deliver(delegated('response.done', { response: { id: 'voice_active', status: 'completed' } }));
+  await quiet();
+  assert.equal(completions(captured), 0);
+});
+
+test('three synchronous typed finals form one user message and one response', async t => {
+  const { socket, session } = await fakeReady(t);
+  const start = socket.sent.length;
+  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
+  await quiet();
+  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
+  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
+  const messages = frames.filter(frame => frame.type === 'response.item.create');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
+});
+
+test('typed finals wait for all function outputs before their single user message and continuation', async t => {
+  const { socket, session } = await fakeReady(t);
+  socket.deliver(delegated('response.created', { response: { id: 'synthetic_inflight' } }));
+  socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic_owed', name: 'research', arguments: '{}' } }));
+  socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic_owed_second', name: 'research', arguments: '{}' } }));
+  await quiet();
+  const start = socket.sent.length;
+  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
+  await quiet();
+  assert.equal(socket.sent.slice(start).length, 0);
+  socket.deliver(delegated('response.done', { response: { id: 'synthetic_inflight', status: 'completed' } }));
+  await quiet();
+  assert.equal(socket.sent.slice(start).length, 0);
+  session.sendToolResponse({ responses: [{ id: 'synthetic_owed', name: 'research', response: { ok: true } }] });
+  await quiet();
+  assert.equal(socket.sent.slice(start).map(raw => JSON.parse(raw) as { type: string }).filter(frame => frame.type === 'response.create').length, 0, 'a partial tool batch cannot create a response');
+  session.sendToolResponse({ responses: [{ id: 'synthetic_owed_second', name: 'research', response: { ok: true } }] });
+  await quiet();
+  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
+  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
+  const messages = frames.filter(frame => frame.item?.type === 'message');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
+  const output = frames.findIndex(frame => frame.item?.type === 'function_call_output');
+  assert.ok(output >= 0);
+  assert.ok(output < frames.indexOf(messages[0]!));
+  assert.ok(frames.indexOf(messages[0]!) < frames.findIndex(frame => frame.type === 'response.create'));
+});
+
+
+test('a typed final before response.created waits for the already requested response', async t => {
+  const { socket, session } = await fakeReady(t);
+  const start = socket.sent.length;
+  session.sendText({ text: 'Synthetic initial ask' });
+  await quiet();
+  session.sendText({ text: 'Synthetic follow-up' });
+  await quiet();
+  const creates = () => socket.sent.slice(start).map(raw => JSON.parse(raw) as { type: string }).filter(frame => frame.type === 'response.create').length;
+  assert.equal(creates(), 1);
+  socket.deliver(delegated('response.created', { response: { id: 'synthetic_first' } }));
+  socket.deliver(delegated('response.done', { response: { id: 'synthetic_first', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(), 2, 'the follow-up gets one response after the first has ended');
 });

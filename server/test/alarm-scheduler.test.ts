@@ -145,6 +145,6 @@ test('C-SAFETY: operator stop cancels pending and ringing alarms through schedul
   f.scheduler.set({ fireAtUtc: f.now() + 60000, tz: 'UTC', label: '', createdJournalId: 'synthetic-pending' });
   f.advance(1000); f.scheduler.recheck('timer');
   assert.equal(f.scheduler.list().find(row => row.id === ringing.id)?.state, 'ringing');
-  assert.equal(f.scheduler.cancelAll(), 2);
+  assert.equal((f.scheduler as AlarmScheduler & { cancelAll(): number }).cancelAll(), 2);
   assert.ok(f.scheduler.list().every(row => row.state === 'cancelled'));
 });

@@ -585,7 +585,8 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   assert.equal(event?.tool, 'trello_read');
   // F2: the arguments are not mutated on the way to the shape check, so the log still names every key the
   // provider sent, the empty fillers included, because those empty keys are the signal that it fills them in.
-  assert.deepEqual(event?.fields, ['view:string', 'list:string', 'query:string', 'window:string', 'card:string', 'offset:number', 'limit:number']);
+  // F3: each shape carries the string's length, never the value, so an empty filler is visible as _0.
+  assert.deepEqual(event?.fields, ['view:string_4', 'list:string_0', 'query:string_0', 'window:string_0', 'card:string_0', 'offset:number', 'limit:number']);
 });
 
 // C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema

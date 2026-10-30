@@ -4135,14 +4135,15 @@ export class LiveSessionOwner {
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   /** Replay is a delivery of the original durable receipt, never a new execution. */
   async #replayRecordedCalls(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
-    if (!this.#tools) return;
+    if (!this.#tools || !handle.host) return;
+    const host = handle.host;
     const remaining: typeof event.calls = [];
     for (const call of event.calls) {
-      const row = this.#store.transaction(tx => tx.get("SELECT * FROM tool_calls WHERE run_id=? AND call_id=? AND state!='intent'", [handle.host.runId, call.id]));
+      const row = this.#store.transaction(tx => tx.get("SELECT * FROM tool_calls WHERE run_id=? AND call_id=? AND state!='intent'", [host.runId, call.id]));
       if (!row) { remaining.push(call); continue; }
       const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
       if (stored.toolName !== call.name) { remaining.push(call); continue; }
-      const gate = await this.#tools.owner.resultGate.authorize({ ...handle.host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
+      const gate = await this.#tools.owner.resultGate.authorize({ ...host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
         contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
       const response: JsonObject = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
       const responses = [{ id: call.id, name: call.name, response }];

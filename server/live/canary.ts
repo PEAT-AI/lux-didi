@@ -87,6 +87,7 @@ export function validateCanaryAsks(value: unknown): CanaryAsk[] {
 interface CanaryState {
   id: string; deadline: number; emitted: Set<string>; acknowledged: Set<string>;
   calls: Map<string, RawCall>; turns: number; completed: number; streaming: boolean;
+  cleanup?: (() => void) | undefined;
   pending: Set<string>; step: number; completedStep: number; lastResultStep: number;
 }
 
@@ -95,9 +96,9 @@ export class CanarySessions {
   readonly #now: () => number;
   #active: CanaryState | undefined;
   constructor(now: () => number = Date.now) { this.#now = now; }
-  open(id: string): void {
+  open(id: string, cleanup?: () => void): void {
     if (this.#active) throw new Error('canary_already_live');
-    this.#active = { id, deadline: this.#now() + 350_000, emitted: new Set(), acknowledged: new Set(), calls: new Map(), turns: 0, completed: 0, streaming: false, pending: new Set(), step: 0, completedStep: 0, lastResultStep: 0 };
+    this.#active = { id, cleanup, deadline: this.#now() + 350_000, emitted: new Set(), acknowledged: new Set(), calls: new Map(), turns: 0, completed: 0, streaming: false, pending: new Set(), step: 0, completedStep: 0, lastResultStep: 0 };
   }
   close(id: string): void { if (this.#active?.id === id) this.#active = undefined; }
   isCanary(id: string): boolean { return this.#active?.id === id; }
@@ -111,8 +112,9 @@ export class CanarySessions {
     if (!state || state.id !== id) return session;
     const owner = this;
     return new Proxy(session, { get(target, property) {
+      if (property === 'close') return () => { if (owner.#active === state) state.cleanup?.(); target.close(); };
       if (property === 'events') return { async *[Symbol.asyncIterator]() {
-        for await (const event of target.events) {
+        try { for await (const event of target.events) {
           if (owner.#active === state) {
             state.step++;
             if (event.type === 'modelTurnStarted') { state.turns++; state.streaming = true; }
@@ -123,7 +125,7 @@ export class CanarySessions {
             }
           }
           yield event;
-        }
+        } } finally { if (owner.#active === state) state.cleanup?.(); }
       } };
       if (property === 'sendToolResponse') return (input: Parameters<LiveVoiceSession['sendToolResponse']>[0]) => {
         if (owner.#active === state) for (const reply of input.responses) {
@@ -243,7 +245,7 @@ export class InstalledCanary {
     if (this.#session || this.store.transaction(tx => tx.get("SELECT live_session_id FROM live_sessions WHERE lifecycle IN ('accepted','opening','active') LIMIT 1"))) throw new Error('call_live');
     const snapshot = this.live.create('ordinary', `canary:${randomUUID()}`, context);
     const id = snapshot.liveSessionId;
-    canarySessions.open(id);
+    canarySessions.open(id, () => this.#cancelAlarms(id));
     const abort = new AbortController();
     const timer = setTimeout(() => {
       this.shutdown();

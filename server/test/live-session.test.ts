@@ -2109,6 +2109,7 @@ test('a response the owner barges in on is measured on its own, so two voices ne
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
+  await ownerSpoke(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research, remember_note and the vault write.
@@ -3295,6 +3296,7 @@ test('a new Live session starts with an empty read cache', async t => {
   assert.equal(first.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   const second = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(second, 'cache-session-two');
+  await ownerSpoke(second);
   await settleLiveTool(second, 'o2', 'calendar_list_calendars', {});
   assert.equal(second.calls.filter(call => call.name === 'calendar_list_calendars').length, 1, 'the second session reads the connector afresh');
 });
@@ -4556,7 +4558,7 @@ test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', as
   let held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-first');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
   await settlePort();
@@ -4890,7 +4892,7 @@ test('a tool past the host ceiling is answered once with a timeout and one conti
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await openPort(h, 'ceiling');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   fake.emit({ type: 'toolCall', calls: [{ id: 'ceil1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(fake.toolResponses.length, 0, 'the tool has not answered on its own');
@@ -4983,7 +4985,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await openPort(h, 'ceiling-cancelled');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The provider cancels the call before the ceiling: its abort signal is set, so the host knows it never ran.
@@ -5064,7 +5066,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   await openPort(h, 'send-failed');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   const reasons = (): unknown[] => receipts.filter(record => record.event === 'live_debt').map(record => record.reason);
   fake.reportToolSend('failed');
   fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5083,7 +5085,7 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-text-only');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   fake.emit({ type: 'toolCall', calls: [{ id: 'd1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5124,7 +5126,7 @@ test('#538 R4: a response in progress holds the 8 s rung and the answer plays', 
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-answer-in-flight');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4a', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5150,7 +5152,7 @@ test('#538 R4: a response that ends without audio fires the held rung', async t 
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-even-holds');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4b', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   h.advance(7_000); scheduler.runDue(); await settlePort();
@@ -5174,7 +5176,7 @@ test('#538 R4: a session with no response announced is closed at the rung, the m
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-nothing-announced');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
@@ -5314,7 +5316,7 @@ test('S5: the orb never reads listening while a call obligation is open, whateve
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { attachment } = await openPort(h, 'orb-honest');
-  await ownerSpoke(h);
+  h.owner.text('synthetic owner turn');
   fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(h.owner.current().state, 'thinking', 'a call in flight is open work, never listening');

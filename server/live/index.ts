@@ -704,6 +704,8 @@ function stepActionOf(name: string): string {
 }
 
 interface ActiveSession {
+  /** F2: the session kind is fixed at creation, so a shutdown never has to ask a possibly closed store. */
+  sessionKind?: LiveSessionKind;
   inputFinal?: boolean;
   stopWords?: string[];
   stopInputAt?: number | undefined;
@@ -2076,6 +2078,7 @@ export class LiveSessionOwner {
     hostLogEvent(clockSync('call_open'));
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
+      sessionKind: this.#sessionKind(liveSessionId),
       generation: 0, attempts: 0, rebuilding: false, quietRebuild: false, modelTextSinceOpen: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       timeZone: this.#ownerTimeZone(),
@@ -4212,7 +4215,7 @@ export class LiveSessionOwner {
   }
 
   /** F2: only this is owner memory. Everything else is a harness session the owner never had. */
-  #ownerMemorySession(liveSessionId: string): boolean { return isOwnerMemorySession(this.#sessionKind(liveSessionId)); }
+  #ownerMemorySession(handle: ActiveSession): boolean { return isOwnerMemorySession(handle.sessionKind ?? this.#sessionKind(handle.liveSessionId)); }
 
   /**
    * W10 behaviour 1: the run freezes its connections at acceptance. Naming only the connectors that
@@ -5089,7 +5092,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       }
       // F2: only the owner's own sessions become owner memory, so a canary or typed eval session never reaches
       // the summarizer at all.
-      if (this.#ownerMemorySession(handle.liveSessionId)) attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
+      if (this.#ownerMemorySession(handle)) attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
       if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
       attempt(() => handle.consumer.close());
       handle.resolveDone();

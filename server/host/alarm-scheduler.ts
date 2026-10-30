@@ -199,7 +199,7 @@ export class AlarmSessionCoordinator {
         const row = alarmSeriesOfOccurrence(tx, id);
         return row ? seriesText(seriesRuleOf(row)) : undefined;
       });
-      const setup: import('../live/alarm-mode.js').SeriesAlarmSetup = { ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc!, ...(series ? { series } : {}) };
+      const setup: import('../live/types.js').SeriesAlarmSetup = { ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc!, ...(series ? { series } : {}) };
       const liveSessionId = this.options.open(setup, `alarm:${id}`);
       this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
       return { status: alreadyLive ? 'live' : 'created', liveSessionId };

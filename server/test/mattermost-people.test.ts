@@ -966,7 +966,7 @@ test('F5a (O-A1): a later page of a 0-hit topic read is an honest gap, never a s
   const f = await setup(t, 'people');
   const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'zzsyntheticnotopic', limit: 3, offset: 3 }));
   const calls = searches(f.calls());
-  assert.equal(calls.length, 2, 'the first page searched and fell back; the second page searched once');
+  assert.equal(calls.length, 1, 'a later page searched once: no fallback');
   const page = calls.at(-1)!;
   assert.equal(page['query'], 'zzsyntheticnotopic', 'the later page keeps the topic it was asked for');
   assert.equal(page['offset'], 3, 'and its own offset');

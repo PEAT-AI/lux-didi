@@ -1394,7 +1394,8 @@ const W5_REPLACED = [
 // C-OPENWEB8: the open_web clause adds 183 chars to the open paragraph; the frozen measure is re-pinned to it.
 // W3-R2: the settings-or-approval-location rule is a reviewed rule, so the frozen measure is re-pinned to 10_841
 // rather than any authored rule trimmed (TR-R5).
-const W5_VOICE_BEFORE = 10_841;
+// W1030: the four write abilities and their never-send, never-invite rule add 504 chars, re-pinned to 10_841 + 504.
+const W5_VOICE_BEFORE = 11_345;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1577,4 +1578,17 @@ test('C-OPEN11: generated open guidance names all five tools and the browser and
   assert.match(NAYA_OPEN_SURFACE, /native acknowledgement/);
   assert.match(NAYA_OPEN_SURFACE, /no web link.*one sentence/);
   assert.match(NAYA_OPEN_SURFACE, /no web link for that item; I can open the app home page or a web search instead/);
+});
+
+test('W1030: the four write abilities are stated once with the never-send, never-invite rule', async () => {
+  const { NAYA_TOOLS, NAYA_VOICE_TOOLS, NAYA_WRITE_SURFACE } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_VOICE_TOOLS.includes(NAYA_WRITE_SURFACE), 'the voice tools carry the write paragraph');
+  assert.ok(NAYA_TOOLS.includes(NAYA_WRITE_SURFACE), 'the full tool conduct carries the write paragraph');
+  for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
+    assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the write paragraph names ${ability}`);
+  }
+  assert.match(NAYA_WRITE_SURFACE, /Never send, never invite/u);
+  assert.match(NAYA_WRITE_SURFACE, /sending is his click/u);
+  assert.match(NAYA_WRITE_SURFACE, /another person's name goes in the description, never an invitation/u);
+  assert.doesNotMatch(NAYA_WRITE_SURFACE, /say it was sent|tell him it is posted|confirm the invitation/u);
 });

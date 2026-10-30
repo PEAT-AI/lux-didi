@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { installEvalGuards } from './clock.js';
+import { installModuleWatch, loadedModules, realtimeAdapterModulesLoaded } from './modules.js';
 import { loadCases, loadToolMap, runCase, runSuite, formatSummary } from './runner.js';
 import { brokenPlans, scriptedProvider, type TurnPlan, type TurnProvider } from './scripted.js';
 import type { EvalCase } from './types.js';
@@ -49,6 +50,7 @@ async function speechOutcome(cases: readonly EvalCase[], spoken: string, overrid
 
 async function main() {
   const guards = installEvalGuards();
+  installModuleWatch();
   const toolMap = loadToolMap(toolMapPath);
   const cases = loadCases(casesDir);
   seedCase(cases);
@@ -94,6 +96,15 @@ async function main() {
       assert.ok((run.outcome.redReason ?? '').length > 0, `${entry.id} carries no red reason`);
     }
     assert.equal(suite.expectedRed, 39 - EXERCISED_RED_CASES.length);
+  });
+  await check('the module watch sees loads, so its silence about the adapter means something', async () => {
+    const before = loadedModules().length;
+    await import('./types.js');
+    assert.ok(loadedModules().length > before || loadedModules().some(url => /eval\/types\.js$/.test(url)), 'the module watch observed nothing');
+  });
+  await check('no realtime adapter module is resolved on the scripted path', () => {
+    assert.deepEqual(realtimeAdapterModulesLoaded(), [], 'eval mode loaded a real realtime adapter');
+    assert.ok(loadedModules().length > 0, 'the module watch observed no load at all, so this assertion proves nothing');
   });
   await check('nothing is audible: every spoken frame in the whole run is recording-only', () => {
     // The sink reports a sink per spoken frame, so a frame that ever went to an audio device would carry

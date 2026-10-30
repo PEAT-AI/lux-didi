@@ -91,6 +91,9 @@ test('W1030: the real host composition offers the four write tools when the fami
   // That proof is the connector_identity line, and it names the family it proved.
   const proven = h.identity.filter(line => line.connector === 'google' && line.proven).map(line => line.endpointId).sort();
   assert.deepEqual(proven, ['calendar_write', 'gmail_draft']);
+  const mattermostGrant = h.mcp.registry.currentGrant('mattermost');
+  assert(mattermostGrant);
+  assert.deepEqual([...mattermostGrant!.toolNames].sort(), ['mattermost_list_channels', 'mattermost_save_draft', 'mattermost_whoami']);
   // A write family is not a read envelope: the granted names of that endpoint are its write family.
   const grant = h.mcp.registry.currentGrant('gmail_draft');
   assert(grant);

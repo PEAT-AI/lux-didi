@@ -156,7 +156,7 @@ import Foundation
         check(NativeActions.guidance(for: "") == "there, Chrome is not open, could you open it for me?", "a nameless account still gets a sentence")
         // A Mac without Chrome keeps opening in the default browser.
         let withoutChrome = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: false, running: false) })
-        check(await withoutChrome.perform(.openURL, target: "https://example.invalid/note").code == .opened, "no Chrome installed is the default browser, unchanged")
+        check(await withoutChrome.perform(.openURL, target: "https://docs.google.com/presentation/d/SyntheticDeck03/edit").code == .opened, "no Chrome installed is the default browser, unchanged")
         check(withChrome.calls == ["lookup com.google.Chrome", "app Google Chrome.app https://docs.google.com/presentation/d/SyntheticDeck01/edit"], "Chrome opens the deck when it is installed: \(withChrome.calls)")
         let noChrome = FakeWorkspace(chrome: nil)
         let defaultActions = NativeActions(home: home, opener: NativeActions.browserOpener(noChrome))

@@ -8078,6 +8078,9 @@ test('CB-R1(b): a file-open ask triggers no calendar digest read', async t => {
   const h = await harness(t, { tools: true, calendarDigest: {
     forStart: async () => { digestReads += 1; return { state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }; },
     refresh: () => { digestReads += 1; } } });
+  // The start read is the host's own warm step (http/server.ts calls it before it opens the call), so the
+  // test drives the same seam rather than assuming the harness does it.
+  await h.owner.prepareCalendar();
   const { session } = await attached(h, 'file-open-ask');
   assert.equal(digestReads, 1, 'the start reads the cached digest once');
   await ownerSpoke(h, 'open the synthetic deck');

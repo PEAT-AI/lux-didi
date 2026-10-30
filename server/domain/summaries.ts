@@ -1,6 +1,7 @@
 import type { SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { historyForgotten, forgetHistorySessions, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
+import { isOwnerMemorySession, liveSessionKindOf } from '../live/types.js';
 import { newId } from './util.js';
 
 /**
@@ -260,6 +261,13 @@ export function deadHostOutcome(value: unknown): boolean {
   }
 }
 
+/** F2: whether this session's rows may become owner memory: the kind is read from the session's own key. A
+ *  session with no row (a legacy or foreign store) keeps its previous behaviour. */
+export function ownerMemorySession(tx: Transaction, liveSessionId: string): boolean {
+  const row = tx.get('SELECT idempotency_key FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  return row === undefined || isOwnerMemorySession(liveSessionKindOf(String(row['idempotency_key'])));
+}
+
 export interface InjectionCandidate { id: string; liveSessionId: string; endedAt: number; summary: string; dataClass: DataClass; sourceRevision: number }
 export function summarySelection(tx: Transaction, allowedClasses: readonly DataClass[]) {
   const candidates: InjectionCandidate[] = [];
@@ -268,6 +276,9 @@ export function summarySelection(tx: Transaction, allowedClasses: readonly DataC
   if (!hasTable(tx)) return { candidates, coverage };
   for (const row of listSummaries(tx)) {
     if (row.status !== 'complete' || row.summary === null) continue;
+    // F2: a summary of a canary or typed eval session is not a candidate. The kind comes from the session's own
+    // key, so rows already in the owner's store stop reaching an opener without an owner-approved delete.
+    if (!ownerMemorySession(tx, row.liveSessionId)) continue;
     if (row.dataClass === null || row.sourceRevision === null) { coverage.legacyUnavailable++; continue; }
     const source = historySessionEvidence(tx, row.liveSessionId, eligibility);
     if (!source || source.dataClass !== row.dataClass || source.revision !== row.sourceRevision) { coverage.sourceUnavailable++; continue; }

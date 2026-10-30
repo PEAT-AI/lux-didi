@@ -47,6 +47,7 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
 import { normalizeStopSpeech, stopNameId, stopPhrase, STOP_WORD_LIMIT } from './stop-phrase.js';
+import { isOwnerMemorySession, liveSessionKindOf, ownerMemorySessionSql, type LiveSessionKind } from './types.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
@@ -170,7 +171,7 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
  * subject as well as words. Nothing here reaches host.log.
  */
 function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[] }[] {
-  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC", [assistantId]);
+  const sessions = tx.all(`SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
   const previous: ReturnType<typeof previousOpeners> = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   for (const row of sessions) {
@@ -1576,6 +1577,9 @@ export class LiveSessionOwner {
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
+    // F2: a session kind is marked at creation, and the persisted key must say the same thing, so a reader of
+    // the store can tell a canary or typed eval session from the owner's own call without extra state.
+    if (input.sessionKind !== undefined && input.sessionKind !== liveSessionKindOf(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, ...(input.alarm ? { alarm: input.alarm } : {}) });
     const now = this.#now();
@@ -4107,6 +4111,16 @@ export class LiveSessionOwner {
     return (this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[];
   }
 
+  /** F2: the kind comes from the persisted key, so a canary or typed eval session is recognised at any moment of
+   *  its life, including a terminal one, without a second piece of state to keep in step. */
+  #sessionKind(liveSessionId: string): LiveSessionKind {
+    const row = this.#store.transaction(tx => tx.get('SELECT idempotency_key FROM live_sessions WHERE live_session_id=?', [liveSessionId]));
+    return liveSessionKindOf(row === undefined ? '' : String(row['idempotency_key']));
+  }
+
+  /** F2: only this is owner memory. Everything else is a harness session the owner never had. */
+  #ownerMemorySession(liveSessionId: string): boolean { return isOwnerMemorySession(this.#sessionKind(liveSessionId)); }
+
   /**
    * W10 behaviour 1: the run freezes its connections at acceptance. Naming only the connectors that
    * have already finished their handshake drops a slow one (Google stdio, Mongoose HTTP, a source that
@@ -4946,7 +4960,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           if (alarm) hostLogEvent({ event: 'alarm_degraded', alarmId: String(alarm.id), scheduledMs: Number(alarm.fire_at_utc), actualMs: this.#now(), reason: 'provider_unavailable' });
         });
       }
-      attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
+      // F2: only the owner's own sessions become owner memory, so a canary or typed eval session never reaches
+      // the summarizer at all.
+      if (this.#ownerMemorySession(handle.liveSessionId)) attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
       if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
       attempt(() => handle.consumer.close());
       handle.resolveDone();

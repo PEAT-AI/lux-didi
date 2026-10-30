@@ -5,6 +5,7 @@ import { luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService } from '../http/live-upgrade.js';
 import type { LiveContext, LiveSessionSnapshot } from './types.js';
+import { CANARY_SESSION_KEY_PREFIX } from './types.js';
 import type { LiveVoiceSession } from '../adapters/live-voice/types.js';
 
 /** Canary evidence is deliberately independent of journal outcome labels. */
@@ -234,7 +235,9 @@ export class InstalledCanary {
     const remaining = deadline - Date.now();
     if (!Number.isFinite(deadline) || remaining <= 0 || remaining > 350_000) throw new Error('invalid_canary_deadline');
     if (this.#session || this.store.transaction(tx => tx.get("SELECT live_session_id FROM live_sessions WHERE lifecycle IN ('accepted','opening','active') LIMIT 1"))) throw new Error('call_live');
-    const snapshot = this.live.create('ordinary', `canary:${randomUUID()}`, context);
+    // F2: the canary marks its own session kind in the key it creates, so this session is never owner memory:
+    // no summary, no opener and no history. `liveSessionKindOf` reads the same prefix back from the store.
+    const snapshot = this.live.create('ordinary', `${CANARY_SESSION_KEY_PREFIX}${randomUUID()}`, context);
     const id = snapshot.liveSessionId;
     canarySessions.open(id);
     const abort = new AbortController();

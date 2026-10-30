@@ -7905,3 +7905,25 @@ test('actual InstalledCanary never-ready close releases production session and l
     host.shutdown();
   } finally { stop(); }
 });
+
+// F2: on 10-30 the owner's call opened on the canary's own thread because the canary session wrote an ordinary
+// summary row. A canary session is marked by the key it creates, so it distils nothing and offers nothing.
+test('F2: a canary session distils nothing and its summary reaches no owner opener', async t => {
+  const terminal: string[] = [];
+  const h = await harness(t, { tools: true, onSessionTerminal: liveSessionId => { terminal.push(liveSessionId); } });
+  const canary = h.owner.create({ idempotencyKey: 'canary:synthetic-canary-1', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: canary.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  await ownerSpoke(h);
+  h.owner.revoke(canary.liveSessionId);
+  assert.deepEqual(terminal, [], 'a marked canary session schedules no distillation');
+  // The three rows already in his store look like this one: a complete summary written before the mark existed.
+  h.store.transaction(tx => seedSummary(tx, canary.liveSessionId,
+    'The canary asked about the synthetic lighthouse thread.', NOW - 60_000, h.store.assistantId, NOW - 60_000));
+  const session = h.owner.create({ idempotencyKey: 'owner-after-canary', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+  assert.deepEqual((JSON.parse(String(row['memory_provenance'])) as { injectedSummaryIds: string[] }).injectedSummaryIds, [],
+    'the owner session is offered no canary summary');
+});

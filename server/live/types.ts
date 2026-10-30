@@ -133,7 +133,28 @@ export interface LiveOwnerConfig {
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
 export interface AlarmSessionSetup { readonly ownerDisplayName: string; readonly scheduledTime: string; readonly label?: string; readonly alarmId?: string; readonly ringDeadlineUtc?: number }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup }
+/** F2: how a session was started. The installed canary and any typed eval or test harness start their own
+ *  session, and such a session is never owner memory: no summary row, no opener, no earlier-conversation
+ *  injection, no history hit. The kind is marked at creation and carried by the persisted idempotency key, so
+ *  a session read back from the store still knows what it was. */
+export type LiveSessionKind = 'owner' | 'canary' | 'eval';
+/** The canary names its own key, so its kind is never guessed. */
+export const CANARY_SESSION_KEY_PREFIX = 'canary:';
+/** Key prefixes of every non-owner session: the canary first, then the typed eval and test harnesses. */
+export const NON_OWNER_SESSION_KEY_PREFIXES: readonly string[] = Object.freeze([CANARY_SESSION_KEY_PREFIX, 'eval:', 'test:']);
+/** The kind one persisted idempotency key names; anything unmarked is the owner's own call. */
+export function liveSessionKindOf(idempotencyKey: string): LiveSessionKind {
+  if (!NON_OWNER_SESSION_KEY_PREFIXES.some(prefix => idempotencyKey.startsWith(prefix))) return 'owner';
+  return idempotencyKey.startsWith(CANARY_SESSION_KEY_PREFIX) ? 'canary' : 'eval';
+}
+export function isOwnerMemorySession(kind: LiveSessionKind): boolean { return kind === 'owner'; }
+
+/** The SQL predicate that keeps a marked session out of owner memory, over an alias of `live_sessions`. */
+export function ownerMemorySessionSql(alias: string): string {
+  return NON_OWNER_SESSION_KEY_PREFIXES.map(prefix => `${alias}.idempotency_key NOT LIKE '${prefix}%'`).join(' AND ');
+}
+
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup; readonly sessionKind?: LiveSessionKind }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

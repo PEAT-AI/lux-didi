@@ -274,3 +274,15 @@ test('spontaneous calls do not wait for nonexistent owner input', async () => {
     assert.equal(requests.authorize('synthetic', 'open', 'target').code, 'no_owner_request');
   } finally { controller.abort(); }
 });
+
+test('C-SAFETY: a mail turn cannot inherit an unspent alarm grant', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'alarm-turn', 'Set an alarm in ten minutes');
+  requests.observe('s', 'mail-turn', 'Find the synthetic mail');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'mail').code, 'allowed');
+});
+test('C-SAFETY: a non-alarm finalized ask never grants set_alarm', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'mail-turn', 'Find the synthetic mail');
+  assert.notEqual(requests.authorize('s', 'set_alarm', 'mail').code, 'allowed');
+});

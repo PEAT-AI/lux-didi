@@ -8099,11 +8099,13 @@ test('F2 widening: a canary turn never seeds an owner call, even inside one conv
   const h = await harness(t);
   const turn = async (key: string, kind: 'owner' | 'canary', asked: string, answered: string) => {
     const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary', sessionKind: kind }, h.ctx);
+    // The fixture counts frames across every connection, so each call waits for its own setup frame.
+    const base = h.f.frames.length;
     const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
-    await h.f.frame(1);
+    await h.f.frame(base + 1);
     h.f.send({ setupComplete: {} });
     await attachment.ready;
-    await h.f.frame(2);
+    await h.f.frame(base + 2);
     h.f.send({ serverContent: { inputTranscription: { text: asked, finished: true } } });
     h.f.send({ serverContent: { outputTranscription: { text: answered, finished: true } } });
     await drain(h, session.liveSessionId, 2);
@@ -8121,11 +8123,12 @@ test('F2 widening: a canary turn never seeds an owner call, even inside one conv
     return conversationId;
   });
   const next = h.owner.create({ idempotencyKey: 'owner-after-canary', inputClass: 'ordinary' }, h.ctx);
+  const base = h.f.frames.length;
   const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
-  await h.f.frame(1);
+  await h.f.frame(base + 1);
   h.f.send({ setupComplete: {} });
   await attachment.ready;
-  await h.f.frame(2);
+  await h.f.frame(base + 2);
   const history = JSON.stringify(h.requests.at(-1)!.history);
   assert.equal(h.store.transaction(tx => tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [canary]))!['conversation_id'], shared,
     'the canary really was in the owner\'s conversation for this check');

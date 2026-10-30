@@ -361,8 +361,12 @@ function auditA(store: Store): CallAudit {
 test('F8: a call with no turn after a rebuild is listed in its own bucket and counted', () => {
   withStore(store => {
     storeA(store);
-    // A rebuild drops the turn link, so this call is in the store with turn_id null.
-    call(store, SESSION, null as unknown as string, 'call:orphan', 'set_alarm', 'refused', 30, T0 + 3_000);
+    // A rebuild drops the turn link: the call is recorded with no turn at all, so its turn_id is null.
+    const orphan = (id: string, at: number): void => {
+      record(store, 'call.intent', { liveSessionId: SESSION }, { callKey: id, name: 'set_alarm', argsChars: 12, intentAt: at });
+      record(store, 'call.output_written', { liveSessionId: SESSION }, { callKey: id, outputWrittenAt: at + 30, outcome: 'refused', ms: 30, resultChars: 8 });
+    };
+    orphan('call:orphan', T0 + 3_000);
     const audit = auditA(store);
     assert.equal(audit.calls.length, 4, 'the audit counts every call, not only the ones a turn claims');
     assert.deepEqual(audit.calls.filter(row => row.turnId === null).map(row => row.callKey), ['call:orphan']);

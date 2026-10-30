@@ -442,7 +442,7 @@ test('CA-R4: a finding that carries evidence counts as delivered, so the journal
   assert.equal(findingCount({ source: 'drive', text: 'Harbour review deck' }), 1);
   assert.equal(findingCount({ source: 'drive', text: '   ' }), 0, 'an empty finding is nothing');
   assert.equal(findingCount({ source: 'mail', items: [{}, {}], text: 'two' }), 2, 'structured items still count themselves');
-  assert.equal(findingCount({ source: 'mail', text: 'showing 3 of 40 messages' }), 3, 'and a page marker still wins');
+  assert.equal(findingCount({ source: 'mail', text: 'messages: 3 of 40 shown' }), 3, 'and a page marker still wins');
   // The journal head the owner reads: evidence is named, and one item is not "items".
   const findings = [{ source: 'drive', text: 'x'.repeat(9_800) }];
   const count = findings.reduce((total, finding) => total + findingCount(finding), 0);

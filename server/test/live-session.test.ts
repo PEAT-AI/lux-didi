@@ -1967,6 +1967,7 @@ test('Live keeps no background tool job and never delivers a result to an ended 
   const work = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => work });
   const { session } = await attached(h);
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.owner.revoke(session.liveSessionId);
@@ -1982,6 +1983,7 @@ test('Live awaits a slow tool call inline and never creates a background job', a
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => slow });
   await attached(h);
+  await ownerSpoke(h);
   assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
@@ -1998,6 +2000,7 @@ test('a tool batch resolving late still completes inline in the same turn', asyn
   for (const callId of ['late4500', 'late20000']) {
     const h = await harness(t, { tools: true });
     await attached(h);
+  await ownerSpoke(h);
     h.f.send({ toolCall: { functionCalls: [{ id: callId, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
     await h.f.frame(2);
     const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
@@ -2011,6 +2014,7 @@ test('F2 the live tool steps retire when the turn completes, never into the next
   const work = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => work });
   await attached(h);
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'step1', name: 'search_knowledge', args: { query: 'release freeze', limit: 1 } }] } });
   const waitFor = async (want: (steps: import('../live/types.js').LivePageProjection['steps']) => boolean): Promise<import('../live/types.js').LivePageProjection['steps']> => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -2049,6 +2053,7 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => slow });
   const { session, attachment } = await attached(h);
+  await ownerSpoke(h);
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
@@ -2108,7 +2113,8 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research, remember_note and the vault write.
   // C-OPENWEB8: open_web joins them for a map, a site or a search he names.
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['cancel_alarm', 'list_alarms', 'open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'research', 'set_alarm', 'snooze_alarm', 'stage_lux_note']);
+  // W1030: the four write tools ship beside the reads, so the frozen snapshot names them too.
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['cancel_alarm', 'create_event', 'delete_event', 'draft_chat', 'draft_email', 'list_alarms', 'open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'research', 'set_alarm', 'snooze_alarm', 'stage_lux_note']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -2142,6 +2148,7 @@ const badInsight = (h: Harness, id: string): void => {
 
 test('Live refuses undeclared tools and original-schema-invalid arguments without dispatch', async t => {
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
   await h.f.frame(2); assert.equal(h.calls.length, 0);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: RefusalShape }[] } };
@@ -2156,6 +2163,7 @@ test('Live refuses undeclared tools and original-schema-invalid arguments withou
 
 test('an invalid-arguments refusal marks the fix not for speech and names no argument value', async t => {
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  await ownerSpoke(h);
   badInsight(h, 'shape1'); await h.f.frame(2);
   const refusal = refusalAt(h, 1);
   assert.equal(refusal.error, 'invalid_arguments');
@@ -2181,6 +2189,7 @@ test('the invalid-argument retry suffix stops at the next owner turn', async t =
 
 test('three invalid calls inside one owner turn keep the stop-retrying suffix', async t => {
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  await ownerSpoke(h);
   badInsight(h, 'a1'); await h.f.frame(2);
   badInsight(h, 'a2'); await h.f.frame(3);
   badInsight(h, 'a3'); await h.f.frame(4);
@@ -2193,6 +2202,7 @@ test('Live revocation invalidates authority and discards an in-flight result', a
   const started = deferred<void>(), finish = deferred<void>();
   const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
   const { session, attachment } = await attached(h);
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'late', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await started.promise; assert.equal(h.owner.current().state, 'thinking');
   h.owner.revoke(session.liveSessionId); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
@@ -2400,6 +2410,7 @@ test('pending tool call at the resume cut gets one lost result and never dispatc
   const h = await harness(t, { tools: true, beforeGate: async () => { entered.resolve(); await release.promise; } });
   t.after(() => release.resolve());
   const { session, attachment } = await attached(h, 'resume-lost-tool');
+  await ownerSpoke(h);
   const acceptance = h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId]));
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-tool-resumption-secret' }, toolCall: { functionCalls: [{ id: 'lost-call', name: 'lux_search_knowledge', args: { query: 'test', limit: 1 } }] } });
   await entered.promise;
@@ -3129,6 +3140,7 @@ test('a pending tool call is never answered on the rebuilt socket', async t => {
   let h!: Harness;
   h = await harness(t, { tools: true, beforeTool: () => slow, socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
   const { session, attachment } = await attached(h, 'upstream-tool');
+  await ownerSpoke(h);
   const handle = 'synthetic-upstream-tool-handle';
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
   for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
@@ -3260,6 +3272,7 @@ async function settleLiveTool(h: Harness, id: string, name: string, args: unknow
 test('a replayed Live question reaches the connector once per allowlisted read', async t => {
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-replay');
+  await ownerSpoke(h);
   const channelId = 'abcdefghijklmnopqrstuvwxzy';
   await settleLiveTool(h, 'c1', 'calendar_list_calendars', {});
   await settleLiveTool(h, 'c2', 'calendar_list_calendars', {});
@@ -3277,6 +3290,7 @@ test('a replayed Live question reaches the connector once per allowlisted read',
 test('a new Live session starts with an empty read cache', async t => {
   const first = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(first, 'cache-session-one');
+  await ownerSpoke(first);
   await settleLiveTool(first, 'o1', 'calendar_list_calendars', {});
   assert.equal(first.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   const second = await harness(t, { tools: true, calendar: true, mattermost: true });
@@ -3288,6 +3302,7 @@ test('a new Live session starts with an empty read cache', async t => {
 test('a cached read expires after ten minutes even inside one session', async t => {
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-ttl');
+  await ownerSpoke(h);
   await settleLiveTool(h, 't1', 'calendar_list_calendars', {});
   assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   h.advance(10 * 60 * 1000);
@@ -3444,6 +3459,7 @@ test('a provider cancellation drops exactly the cancelled id and logs tool_cance
   const gate = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => gate });
   await attached(h, 'cancel-one');
+  await ownerSpoke(h);
   const events: { event?: string; id?: string; tool?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; id?: string; tool?: string }); } });
   try {
@@ -3469,6 +3485,7 @@ test('a provider cancellation drops exactly the cancelled id and logs tool_cance
 test('a model turn logs tool metrics, metadata only', async t => {
   const h = await harness(t, { tools: true });
   await attached(h, 'tool-metrics');
+  await ownerSpoke(h);
   const events: { event?: string; toolCallsThisTurn?: number; toolLatencyMs?: unknown[]; toolResponseWhileGenerating?: boolean }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as typeof events[number]); } });
   try {
@@ -3565,6 +3582,7 @@ test('F4: a barge-in keeps THINKING while the call is still in flight, and her a
   const started = deferred<void>(), finish = deferred<void>();
   const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
   const { session, attachment } = await attached(h, 'f4-barge');
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await started.promise;
   assert.equal(h.owner.current().state, 'thinking');
@@ -3683,6 +3701,7 @@ test('F6: three tool calls in one model message run concurrently and return thre
   const gate = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { tools: true, beforeTool: async () => { inFlight += 1; peak = Math.max(peak, inFlight); if (inFlight < 3) await gate; else release(); inFlight -= 1; } });
   await attached(h, 'parallel-tools');
+  await ownerSpoke(h);
   const events: { event?: string; peakInFlight?: unknown }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; peakInFlight?: unknown }); } });
   try {
@@ -3823,6 +3842,7 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   const scheduler = new DeadlineClock();
   const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   await attached(h);
+  await ownerSpoke(h);
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
@@ -4536,6 +4556,7 @@ test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', as
   let held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-first');
+  await ownerSpoke(h);
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
   await settlePort();
@@ -4869,6 +4890,7 @@ test('a tool past the host ceiling is answered once with a timeout and one conti
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await openPort(h, 'ceiling');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ceil1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(fake.toolResponses.length, 0, 'the tool has not answered on its own');
@@ -4961,6 +4983,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await openPort(h, 'ceiling-cancelled');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The provider cancels the call before the ceiling: its abort signal is set, so the host knows it never ran.
@@ -5041,6 +5064,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   await openPort(h, 'send-failed');
+  await ownerSpoke(h);
   const reasons = (): unknown[] => receipts.filter(record => record.event === 'live_debt').map(record => record.reason);
   fake.reportToolSend('failed');
   fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5059,6 +5083,7 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-text-only');
+  await ownerSpoke(h);
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   fake.emit({ type: 'toolCall', calls: [{ id: 'd1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5099,6 +5124,7 @@ test('#538 R4: a response in progress holds the 8 s rung and the answer plays', 
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-answer-in-flight');
+  await ownerSpoke(h);
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4a', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -5124,6 +5150,7 @@ test('#538 R4: a response that ends without audio fires the held rung', async t 
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-even-holds');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4b', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   h.advance(7_000); scheduler.runDue(); await settlePort();
@@ -5147,6 +5174,7 @@ test('#538 R4: a session with no response announced is closed at the rung, the m
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { attachment } = await openPort(h, 'debt-nothing-announced');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
@@ -5286,6 +5314,7 @@ test('S5: the orb never reads listening while a call obligation is open, whateve
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { attachment } = await openPort(h, 'orb-honest');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(h.owner.current().state, 'thinking', 'a call in flight is open work, never listening');
@@ -5401,6 +5430,7 @@ test('fluency: cached Live metadata cannot bypass suspended or revoked connector
   for (const revoked of [false, true]) {
     const h = await harness(t, { tools: true, calendar: true });
     await attached(h, `cache-authority-${revoked}`);
+  await ownerSpoke(h);
     await settleLiveTool(h, 'before', 'calendar_list_calendars', {});
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
     if (revoked) h.toolRegistry!.revoke('calendar'); else h.toolRegistry!.suspend('calendar');
@@ -5431,6 +5461,7 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     const started = deferred<void>(), finish = deferred<void>();
     const h = await harness(t, { tools: true, calendar: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
     const { session } = await attached(h, `cache-delivery-${boundary}`);
+  await ownerSpoke(h);
     await settleLiveTool(h, 'prime-calendar', 'calendar_list_calendars', {});
     await settleLiveTool(h, 'prime-calendar-small', 'calendar_list_calendars', { maxResults: 1 });
     if (boundary === 'final-microtask') {
@@ -5547,6 +5578,7 @@ test('history integration: Live canonical research reads exact sixty-day evidenc
     for (const subject of [{ kind: 'session' as const, id: 'history-source' }, { kind: 'entry' as const, id: 'history-entry' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'sensitive' }, NOW);
   });
   await attached(h, 'history-research');
+  await ownerSpoke(h);
   const reply = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
@@ -6224,6 +6256,7 @@ test('W6/H13: a segment keeps the turn it started in even when its later receipt
 test('W6/H14: a completed tool call writes its result content row through recordCallResult', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h, 'call-result-row');
+  await ownerSpoke(h);
   const callKey = scopedTraceKey(session.liveSessionId, 'e0', 'call', 'c1');
   record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: 'e0', callKey },
     { name: 'search_knowledge', argsChars: 12, intentAt: 1_700_000_000_000 });
@@ -8012,9 +8045,11 @@ test('F2: a canary session distils nothing and its summary reaches no owner open
   await ownerSpoke(h);
   h.owner.revoke(canary.liveSessionId);
   assert.deepEqual(terminal, [], 'a marked canary session schedules no distillation');
-  // The three rows already in his store look like this one: a complete summary written before the mark existed.
-  h.store.transaction(tx => seedSummary(tx, canary.liveSessionId,
-    'The canary asked about the synthetic lighthouse thread.', NOW - 60_000, h.store.assistantId, NOW - 60_000));
+  // The rows already in his store look like this one: a summary written for a canary session, which the
+  // canary's own history row marks, so it reaches no owner opener.
+  h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: canary.liveSessionId, status: 'complete',
+    summary: 'The canary asked about the synthetic lighthouse thread.', endedAt: NOW - 60_000, now: NOW - 60_000,
+    dataClass: 'ordinary', sourceRevision: 1 }));
   const session = h.owner.create({ idempotencyKey: 'owner-after-canary', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
   assert.deepEqual((JSON.parse(String(row['memory_provenance'])) as { injectedSummaryIds: string[] }).injectedSummaryIds, [],
@@ -8024,11 +8059,12 @@ test('F2: a canary session distils nothing and its summary reaches no owner open
 // CB-R1(a): the settled projection once read "findings from ;" with an empty source list. It now names the
 // sources when the findings carry them, and otherwise omits the clause instead of leaving it empty.
 test('CB-R1(a): a research projection with no named source never says findings from nothing', () => {
-  const unnamed = researchProjection({ status: 'completed', findings: [{ summary: 'synthetic item' }], note: 'two items' }, 'completed');
+  // CA-R4's findingCount counts evidence, so the source-less finding carries text and counts as delivered.
+  const unnamed = researchProjection({ status: 'completed', findings: [{ text: 'synthetic item' }], note: 'two items' }, 'completed');
   assert.equal(unnamed.includes('findings from'), false, 'no empty source list is ever spelled out');
-  assert.match(unnamed, /delivered items/, 'the count still reaches the model');
-  const named = researchProjection({ status: 'completed', findings: [{ source: 'calendar', summary: 'synthetic event' }] }, 'completed');
-  assert.match(named, /^research: completed, findings from calendar; 1 delivered items$/);
+  assert.match(unnamed, /1 delivered item/, 'the count still reaches the model');
+  const named = researchProjection({ status: 'completed', findings: [{ source: 'calendar', text: 'synthetic event' }] }, 'completed');
+  assert.match(named, /^research: completed, findings from calendar; 1 delivered item$/);
 });
 
 // CB-R1(b): a file-open ask reads no calendar. The call's own start uses the cached digest once (1015), and the

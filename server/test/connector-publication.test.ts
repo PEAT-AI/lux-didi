@@ -16,7 +16,7 @@ import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
-import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOPIC_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
@@ -433,7 +433,7 @@ test('C-CHAT: a policy may grant the person reads and the chat read, never a wri
     route: { identity: 'mattermost', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 },
   };
-  assert.deepEqual([...MATTERMOST_READ_TOOLS], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS]);
+  assert.deepEqual([...MATTERMOST_READ_TOOLS], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS]);
   assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL] } as never));
   assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS, MATTERMOST_CHAT_TOOL] } as never), 'the older child keeps the chat read');
   assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, 'mattermost_post_message'] } as never), /invalid_read_tools/u);
@@ -510,7 +510,7 @@ test('W2-R1: a release that widens inside the reviewed envelope reconnects the o
   assert.equal(after?.generation, Number(before?.generation) + 1, 'a reconciled widening is a new generation');
   assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.state, 'connected');
   assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
-    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
   // The child also publishes a write tool the envelope never carries, and the widening is not a way in.
   const grant = widened.registry.currentGrant('mattermost');
   assert.ok(grant && !grant.toolNames.includes('mattermost_post_message'));
@@ -564,7 +564,7 @@ test('W2-R1: a widening outside the reviewed envelope is never granted, in any m
   const grant = widened.registry.currentGrant('mattermost');
   assert.ok(grant && !grant.toolNames.includes('mattermost_admin_delete') && !grant.toolNames.includes('mattermost_post_message'));
   assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
-    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() });
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS, ...MATTERMOST_TOPIC_TOOLS].sort() });
 });
 
 test('C-CHAT: the install route, a new connection id for the newer child beside the disabled old one, settles from the envelope', async t => {

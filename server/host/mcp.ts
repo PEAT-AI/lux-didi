@@ -3,7 +3,7 @@ import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import { createComposeDispatch } from './compose-dispatch.js';
-import type { ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
+import type { ComposeDispatch, ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
@@ -76,6 +76,8 @@ export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
   owner: ToolsOwner;
+  /** W1030: the write surface the owner's compose tools call, built by this host, never injected. */
+  compose: ComposeDispatch;
   connectionIds(): string[];
   status(): { endpoints: (McpEndpointReport & { connector: string; retrying: boolean })[] };
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */
@@ -367,7 +369,8 @@ export async function composeMcpRuntime(options: {
   const owner = createToolsOwner({ ...(options.alarms ? { alarms: options.alarms } : {}), grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, compose, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
-    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
+    // No readable catalog means no approved family: the compose tools stay offered and answer honestly.
+    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, compose, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
@@ -934,7 +937,7 @@ export async function composeMcpRuntime(options: {
     }));
   };
   const composition: McpRuntimeComposition = {
-    registry, port: sourcePort, owner,
+    registry, port: sourcePort, owner, compose,
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
     connectionIds: () => {

@@ -303,3 +303,21 @@ test('provider readiness bound fails honestly without injecting owner text', asy
   assert.match(report.lines[0], /code=provider_not_ready ms=10000/);
   assert.equal(report.providerTurns, 0);
 });
+
+test('C-SAFETY: shutdown cancels every canary alarm, including ringing, before revocation', () => {
+  const cancelled = [];
+  let revoked = false;
+  const id = 'synthetic-canary-stop';
+  const store = { transaction: fn => fn({
+    get: () => undefined,
+    all: () => [{ id: 'synthetic-pending' }, { id: 'synthetic-ringing' }],
+  }) };
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    revoke: () => { assert.deepEqual(cancelled, ['synthetic-pending', 'synthetic-ringing']); revoked = true; },
+  };
+  const host = new InstalledCanary(store, live, undefined, undefined, alarmId => { cancelled.push(alarmId); return true; });
+  host.open([ask], { clientId: 'synthetic-owner' });
+  host.shutdown();
+  assert.equal(revoked, true);
+});

@@ -138,3 +138,13 @@ test('alarm scheduler: a queued due timer rechecks the instant after a backward 
   assert.equal(ringing.state, 'ringing');
   assert.equal(ringing.ringDeadlineUtc, deadline);
 });
+
+test('C-SAFETY: operator stop cancels pending and ringing alarms through scheduler state', t => {
+  const f = fixture(t);
+  const ringing = f.scheduler.set({ fireAtUtc: f.now() + 1000, tz: 'UTC', label: '', createdJournalId: 'synthetic-ring' });
+  f.scheduler.set({ fireAtUtc: f.now() + 60000, tz: 'UTC', label: '', createdJournalId: 'synthetic-pending' });
+  f.advance(1000); f.scheduler.recheck('timer');
+  assert.equal(f.scheduler.list().find(row => row.id === ringing.id)?.state, 'ringing');
+  assert.equal(f.scheduler.cancelAll(), 2);
+  assert.ok(f.scheduler.list().every(row => row.state === 'cancelled'));
+});

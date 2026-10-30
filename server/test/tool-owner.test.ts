@@ -947,9 +947,10 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   assert.match(String(invented.result_json), /event_not_created_here/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
   f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar tomorrow 9 gym', 2_000);
+  f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
   assert.equal(created.status, 'completed');
+  assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);

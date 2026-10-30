@@ -50,12 +50,15 @@ export class AlarmScheduler {
   }
   cancelAll(): number {
     // Stop never silently loses a series: the series rows are cancelled in the same transaction, not deleted.
-    return this.options.store.transaction(tx => {
+    const cancelled = this.options.store.transaction(tx => {
       tx.run("UPDATE alarm_series SET state='cancelled' WHERE state='active'");
       const ids = tx.all("SELECT id FROM alarms WHERE state IN ('pending','ringing')");
       for (const row of ids) tx.run("UPDATE alarms SET state='cancelled' WHERE id=?", [String(row.id)]);
       return ids.length;
     });
+    // The shell stops a ring only on a state frame, so a stop must publish the settled rows itself.
+    this.recheck('mutation');
+    return cancelled;
   }
   cancel(id: string): boolean {
     const now = this.options.clock.now();

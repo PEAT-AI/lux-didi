@@ -334,6 +334,12 @@ export function carryOccurrenceSeries(tx: Transaction, fromAlarmId: string, toAl
   if (link) linkAlarmOccurrence(tx, toAlarmId, String(link.series_id));
 }
 
+/** The series' single pending or ringing occurrence, the one "skip this Saturday" settles. */
+export function pendingOccurrenceOf(tx: Transaction, seriesId: string): string | undefined {
+  const row = tx.get("SELECT o.alarm_id FROM alarm_occurrences o JOIN alarms a ON a.id=o.alarm_id WHERE o.series_id=? AND a.state IN ('pending','ringing') ORDER BY a.fire_at_utc,o.alarm_id LIMIT 1", [seriesId]);
+  return row ? String(row.alarm_id) : undefined;
+}
+
 export function alarmSeriesRow(tx: Transaction, id: string): AlarmSeries | undefined {
   const row = tx.get(`SELECT ${SERIES_COLUMNS} FROM alarm_series WHERE id=?`, [id]);
   return row ? readSeries(row) : undefined;

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/schema.js';
-import { AlarmScheduler, type AlarmDue } from '../host/alarm-scheduler.js';
+import { AlarmScheduler, AlarmShellBridge, type AlarmDue, type AlarmShellFrame } from '../host/alarm-scheduler.js';
 import { randomUUID } from 'node:crypto';
 import { cancelAlarmSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, seriesNextFireAt } from '../tools/alarm.js';
 
@@ -257,4 +257,28 @@ test('C-RECUR: list shows the rule with its next occurrence, and stop cancels th
   assert.equal(pendingRows(f).length, 0);
   f.scheduler.recheck('wake');
   assert.equal(pendingRows(f).length, 0, 'a stopped series never materialises another occurrence');
+});
+
+test('C-RECUR: operator stop publishes the settled state so the shell stops ringing', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'synthetic-alarm-stop-'));
+  const store = new Store(dir, toolsMigrations);
+  let now = Date.parse('2026-10-28T00:00:00Z');
+  const frames: AlarmShellFrame[] = [];
+  const shell = new AlarmShellBridge();
+  const unbind = shell.bind(frame => { frames.push(frame); return true; });
+  const clock = { now: () => now, setTimeout: () => 1, clearTimeout: () => {} };
+  // The runtime wires exactly this pair: changed -> alarmShell.state(rows).
+  const scheduler = new AlarmScheduler({ store, clock, emit: () => {}, changed: rows => shell.state(rows) });
+  t.after(() => { unbind(); scheduler.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  scheduler.set({ fireAtUtc: now + 1000, tz: 'UTC', label: '', createdJournalId: 'synthetic-stop' });
+  now += 1000;
+  scheduler.recheck('timer');
+  const ringing = frames.at(-1);
+  assert.equal(ringing?.type, 'alarm_state');
+  assert.equal(ringing?.type === 'alarm_state' ? ringing.alarms[0]?.state : undefined, 'ringing');
+  frames.length = 0;
+  assert.equal((scheduler as AlarmScheduler & { cancelAll(): number }).cancelAll(), 1);
+  const settled = frames.at(-1);
+  assert.equal(settled?.type, 'alarm_state', 'the shell bridge receives a state frame on stop');
+  assert.equal(settled?.type === 'alarm_state' ? settled.alarms[0]?.state : undefined, 'cancelled', 'the frame carries the cancelled rows, so the ring stops');
 });

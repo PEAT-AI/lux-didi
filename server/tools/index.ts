@@ -24,7 +24,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
@@ -746,17 +746,19 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (name === 'cancel_alarm') {
               if (!args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
               const target = String(input.id);
-              // The owner's own words choose one occurrence ("skip this Saturday") or the whole series.
-              const targeted = alarmSeriesRow(tx, target);
-              const series = targeted ?? (parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesOfOccurrence(tx, target) : undefined);
+              // The owner's own words choose one occurrence ("skip this Saturday") or the whole series, so a
+              // series id the model picked never widens an occurrence ask into a series cancel.
+              const series = parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesRow(tx, target) ?? alarmSeriesOfOccurrence(tx, target) : undefined;
               if (series) {
                 const cancelled = cancelAlarmSeries(tx, series.id);
                 consumed = ask.journalId;
                 return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
                   say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
               }
-              if (!tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
-              materialiseSeriesOccurrence(tx, input.id!, now);
+              // One occurrence: a series id stands for that series' single pending occurrence.
+              const occurrence = alarmSeriesRow(tx, target) ? pendingOccurrenceOf(tx, target) : target;
+              if (!occurrence || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              materialiseSeriesOccurrence(tx, occurrence, now);
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, scope: 'occurrence', say: 'Alarm cancelled.' });
             }

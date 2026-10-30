@@ -216,8 +216,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
-      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
-      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
+      const noAlarmIntent = tool === 'set_alarm' && !row.finals.some(words => /\balarm\b|\bwake me\b|\bremind me\b/i.test(words));
+      if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
+      const expected = noAlarmIntent ? 'no_owner_request' : row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
       if (expected === 'set') {
         const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));

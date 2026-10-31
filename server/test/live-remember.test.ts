@@ -374,8 +374,10 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
   assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
   await assistantBlock(h, 'Those decks are open.');
   await ownerBlock(h, 'what is the weather?');
-  assert.equal((await call(h, 'open_source', { handle }))['code'], 'opened', 'a new finalized owner ask supplies fresh authority without a cue');
-  assert.equal(native.length, 3);
+  // D2 replaces the rule that any owner final re-armed an open unconditionally: a question is not an
+  // open command, so the round the previous open spent stays spent.
+  assert.equal((await call(h, 'open_source', { handle }))['code'], 'grant_spent', 'D2: a question arms no open');
+  assert.equal(native.length, 2);
   attachment.close();
 });
 

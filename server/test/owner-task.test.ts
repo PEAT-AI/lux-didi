@@ -55,6 +55,12 @@ test('D2 (h): noncommands create nothing and grant nothing', () => {
 });
 
 // D2: note, save and remember need the owner's own save cue; a bare mention is not authority.
+test('D2: a save that names the vault is the owner save cue', () => {
+  const gate = new OwnerTasks(() => 0);
+  gate.observe('s', 'j1', 'save a summary of this into Lux');
+  assert.equal(gate.authorize('s', 'lux_note', 'note').code, 'allowed');
+});
+
 test('D2 (f): a note call without an owner save cue is refused', () => {
   const gate = new OwnerTasks(() => 0);
   gate.observe('s', 'j1', 'the boiler note is in the garage folder');

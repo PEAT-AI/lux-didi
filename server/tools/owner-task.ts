@@ -63,7 +63,7 @@ const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell|sch
 const MAIL = /\b(?:e-?mails?|mails?|gmail)\b/i;
 const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack)\b/i;
 
-const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|put (?:this|it|that) in my (?:vault|notes)|belongs? in my notes|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
+const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|put (?:this|it|that) in my (?:vault|notes)|belongs? in my notes|save\b[^.!?]{0,60}\b(?:into|to)\s+(?:lux|the vault|my notes)|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
 const OPEN_VERB = /(?:^|[^a-zäöüß])(?:open|launch|show|start|öffne|starte|zeig)(?![a-zäöüß])/i;
 const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|inbox|notes|directions|terminal|finder|browser|settings)\b/i;
 const DOMAIN = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;

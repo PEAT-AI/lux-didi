@@ -163,7 +163,7 @@ enum MicWatchdogTests {
     }
 
     /// (c) The paired valid case: buffers flow from the first moment. No watchdog line, no restart,
-    /// voice processing stays on and the journal carries exactly what a start always wrote.
+    /// voice processing stays on and the start writes exactly what a start always wrote.
     private static func checkNormalStartIsUnchanged() async throws {
         let format = try format()
         let journal = NativeAudioJournal(fileURL: nil)
@@ -178,13 +178,20 @@ enum MicWatchdogTests {
         try await waitUntil("frames flow") { await sends.count > 0 }
         try await Task.sleep(for: window * 3)
         try audioRequire(stalled(journal).isEmpty, "a start with buffers never logs audio_input_stalled")
-        try audioRequire(journal.events.map(\.name) == atStart,
-                         "no line is added after start on the happy path, got \(journal.events.map(\.name))")
+        // The fake engine is a real voice-processing AVAudioEngine, and after earlier engines in this
+        // process were torn down CoreAudio posts it one configuration change, off the main thread and
+        // a few hundred ms after start (later than the old post-start observer too). The route logic
+        // must ignore it as unchanged, never rebuild or stall.
+        let after = journal.events.dropFirst(atStart.count)
+        try audioRequire(after.count <= 1 && after.allSatisfy {
+                             $0.name == "audio_route_change_ignored" && $0.fields == ["reason": "unchanged"] },
+                         "after start only an ignored unchanged route change may appear, got \(journal.events.map(\.name))")
         try audioRequire(atStart == ["audio_input_policy", "audio_owned", "audio_started", "playback_rate"]
                             || atStart == ["audio_input_policy", "audio_started", "playback_rate"],
                          "the start writes the same lines it always wrote, got \(atStart)")
-        try audioRequire(counter.starts == 1 && device.isVoiceProcessingEnabledForTesting && counter.interruptions.isEmpty,
-                         "one start, voice processing on, no interruption")
+        try audioRequire(counter.starts == 1 && counter.captures.count == 1 && device.isVoiceProcessingEnabledForTesting
+                            && counter.interruptions.isEmpty,
+                         "one start, one capture, voice processing on, no interruption")
         device.stop()
     }
 

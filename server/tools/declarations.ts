@@ -103,7 +103,7 @@ function rejectedCalls(scope: object): Map<string, string> {
  * removing that one key lets the next rule speak; the loop is bounded and a token that names no key the
  * call carries (a structural rule) ends it. A token is a rule name, never a value.
  */
-function argumentViolationsOf(tool: ToolDefinition, args: Record<string, unknown>): string[] {
+export function argumentViolationsOf(tool: { rejection?: (args: unknown) => string | undefined }, args: Record<string, unknown>): string[] {
   if (tool.rejection === undefined) return [];
   const tokens: string[] = [];
   const rest: Record<string, unknown> = { ...args };

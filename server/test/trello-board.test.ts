@@ -571,7 +571,7 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
     parameters: TRELLO_READ_PARAMETERS, validate: validateTrelloRead, execute: async () => ({ status: 'failed' as const }) };
   const owner = { journal: { intent: () => 'fresh' as const, refuse: () => ({ id: 'ref', sha256: 'a'.repeat(64) }), fail: () => ({ id: 'ref', sha256: 'a'.repeat(64) }) } as unknown as ToolCallJournal,
     resultGate: {} as unknown as ToolResultGate };
-  const events: { event?: string; tool?: string; fields?: string[] }[] = [];
+  const events: { event?: string; tool?: string; violations?: string[]; dropped?: string[] }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
     await runToolCalls(owner, [{ id: '1', name: 'trello_read', args: { view: 'list', list: '', query: '', window: '', card: '', offset: 0, limit: 10 } }], {
@@ -583,10 +583,11 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected');
   assert.equal(event?.tool, 'trello_read');
-  // F2: the arguments are not mutated on the way to the shape check, so the log still names every key the
-  // provider sent, the empty fillers included, because those empty keys are the signal that it fills them in.
-  // F3: each shape carries the string's length, never the value, so an empty filler is visible as _0.
-  assert.deepEqual(event?.fields, ['view:string_4', 'list:string_0', 'query:string_0', 'window:string_0', 'card:string_0', 'offset:number', 'limit:number']);
+  // C-ARGS: the empty fillers are dropped before validation and reported on their own event, and the
+  // refusal itself names rule tokens only: no key, no length, and never a value of his.
+  assert.deepEqual(events.find(line => line.event === 'tool_arguments_normalized')?.dropped,
+    ['list:absent', 'query:absent', 'window:absent', 'card:absent']);
+  assert.deepEqual(event?.violations, [], 'a validate-only tool names no rule, and never a value');
 });
 
 // C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema

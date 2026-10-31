@@ -65,4 +65,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
 node_test_files --test-timeout=15000 "$out/dist/test/owner-utterances.test.js" "$out/dist/test/owner-request.test.js" "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js" "$out/dist/test/lux-note.test.js"
 # The registry-wide gate composes the real live host, not only the staged tools unit.
 # Keep it on this existing CI path so every release exercises all registered tools.
-(cd "$root/server"; npm run build; node_test_files --test-timeout=30000 dist/test/tools-builtin-intent.test.js)
+(cd "$root/server"; npm run build; node_test_files --test-timeout=30000 dist/test/tools-builtin-intent.test.js dist/test/args-normalize.test.js)

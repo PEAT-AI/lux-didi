@@ -2193,14 +2193,21 @@ test('the invalid-argument retry suffix stops at the next owner turn', async t =
   attachment.close(); await attachment.done;
 });
 
-test('three invalid calls inside one owner turn keep the stop-retrying suffix', async t => {
+test('an identical invalid call is answered from the cached rejection and ends its branch', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => detachSink());
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
   await ownerSpoke(h);
   badInsight(h, 'a1'); await h.f.frame(2);
   badInsight(h, 'a2'); await h.f.frame(3);
   badInsight(h, 'a3'); await h.f.frame(4);
-  assert.doesNotMatch(refusalAt(h, 2).fixNotForSpeech!, /Stop retrying/);
-  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying this tool in this turn\./);
+  assert.equal(receipts.filter(receipt => receipt['event'] === 'tool_arguments_rejected').length, 1,
+    'the identical repeat is answered from the cache and never validated a second time');
+  for (const index of [2, 3]) {
+    assert.match(refusalAt(h, index).fixNotForSpeech!, /Invalid arguments for get_insight/, 'the cached rejection still carries the fix');
+    assert.match(refusalAt(h, index).fixNotForSpeech!, /closed until the owner adds facts/);
+  }
   attachment.close(); await attachment.done;
 });
 

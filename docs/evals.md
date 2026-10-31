@@ -150,7 +150,9 @@ Scoring has two halves:
   required phrase each fail the scenario by name.
 - The claims judge. `server/test/eval-release/judge-prompt.md` is the rubric: a claim of done, empty or sent with
   no matching receipt. `judge.ts` applies the same rubric by rule in the free modes, and `judgeRequest` is what the
-  priced path sends a judge model.
+  priced path sends a judge model. The rule's word lists are deliberately broad (`nothing`, `ready to go`,
+  `created`), so an ordinary sentence can trip a claim class: the direction is conservative, a good run can go red
+  on a phrase it did not need, and it never lets an unsupported claim through.
 
 The tool names the provider sees satisfy the provider's own rule (`^[A-Za-z][A-Za-z0-9_]{0,63}$`), so a dotted
 world name such as `calendar.read` is declared as `calendar_read` and mapped back before it reaches the world.

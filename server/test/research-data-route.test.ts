@@ -1,35 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import {
-  ResearchLedger, candidateSubs, companyMetricSubs, configuredSourcesForEndpoints, fallbackSelection, metricWindow, requiredSources,
+  ResearchLedger, candidateSubs, companyMetricSubs, companySubs, configuredSourcesForEndpoints, dataReplySubs, fallbackSelection,
+  metricWindow, requiredSources,
   researchSourcesForEndpoint, routedSelection, runResearch, shapeBlock,
   type ConfiguredEndpointStatus, type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { renderMongooseTool } from '../tools/mongoose.js';
-
-/**
- * The literal live shapes of the Mongoose data endpoint, captured 2026-10-27 00:55Z (see the fixture's
- * own provenance line). The test replays them; it never invents a schema or a row.
- */
-const HERE = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = [join(HERE, 'fixtures/mongoose-data-live.json'), join(HERE, '../../test/fixtures/mongoose-data-live.json')]
-  .find(candidate => existsSync(candidate));
-if (FIXTURE === undefined) throw new Error('mongoose-data-live fixture missing');
-const LIVE = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
-  search_fields_result: { status: string; fields: string[]; total: number; has_more: boolean; format: string };
-  run_metric_query_call: { name: string; arguments: { title: string; description: string; queryConfig: Record<string, unknown> } };
-  run_metric_query_result: Record<string, unknown>;
-  trap_observed: string;
-};
-
-/** The endpoint's own filter operator enum, from the tool list it published (captured 2026-10-27). */
-const PUBLISHED_OPERATORS: readonly string[] = (JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8')) as {
-  data: { name: string; inputSchema: { $defs: Record<string, { properties: { operator: { enum: string[] } } }> } }[];
-}).data.find(tool => tool.name === 'run_metric_query')?.inputSchema.$defs['s57dd195e34']?.properties.operator.enum ?? [];
 
 /** 26 Oct 2026, the morning after the last day the fixture loaded (25 Oct). */
 const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
@@ -58,73 +36,101 @@ function harness(execute: (subs: readonly IntentSubCall[]) => Promise<IntentSubR
   return { deps, executed };
 }
 
-/** The fake data endpoint: `search_fields` answers the live field list, `run_metric_query` the live rows. */
-function fakeDataEndpoint(calls: readonly IntentSubCall[]): Promise<IntentSubResult[]> {
-  return Promise.resolve(calls.map(call => {
-    if (call.name === 'search_fields') return sub(call.name, JSON.stringify(LIVE.search_fields_result), true, call.key);
-    if (call.name === 'run_metric_query') return sub(call.name, JSON.stringify(LIVE.run_metric_query_result), true, call.key);
+/**
+ * The fake data endpoint at the served shape: `ask_data_agent` answers with a job, `data_agent_job` reads it.
+ * `jobReplies` is the queue of job envelopes this endpoint hands back, in call order.
+ */
+function fakeDataEndpoint(jobReplies: string[]): (calls: readonly IntentSubCall[]) => Promise<IntentSubResult[]> {
+  return (calls: readonly IntentSubCall[]) => Promise.resolve(calls.map(call => {
+    // The projection is what the research layer reads, so the fake answers with the projected envelope.
+    if (call.name === 'ask_data_agent' || call.name === 'data_agent_job') {
+      const envelope = JSON.parse(jobReplies.shift() ?? JOB_ANSWERED) as Record<string, unknown>;
+      return sub(call.name, renderMongooseTool(envelope).text, true, call.key);
+    }
     return sub(call.name, '', false, call.key);
   }));
 }
 
-test('a number question runs search_fields then run_metric_query on the data endpoint', async () => {
-  const h = harness(fakeDataEndpoint);
+const JOB_RUNNING = JSON.stringify({ job_id: 'job-7', status: 'running', next_step: null, request_id: 'req-7' });
+const JOB_NEEDS_REPLY = JSON.stringify({ job_id: 'job-7', status: 'needs_reply', clarification: 'Which country do you mean?', request_id: 'req-7' });
+const JOB_ANSWERED = JSON.stringify({
+  job_id: 'job-7', status: 'answered', answer_number: 2424,
+  definition: 'daily active users on the latest loaded day', assumptions: ['one row per user per day'],
+  request_id: 'req-7',
+});
+
+test('#641: a KPI question reaches ask_data_agent verbatim and returns the job answer after a running poll', async () => {
+  const h = harness(fakeDataEndpoint([JOB_RUNNING, JOB_ANSWERED]));
+  const question = 'how many users in Indonesia yesterday';
+  const reply = await runResearch(h.deps, {
+    action: 'start',
+    question,
+    topic: 'active users Indonesia',
+    lookups: [{ source: 'data', query: 'active users Indonesia yesterday' }],
+  }, new AbortController().signal);
+  const names = h.executed.map(call => call.name);
+  assert.equal(names.includes('run_metric_query') || names.includes('search_fields'), false,
+    'the retired Lightdash field search and metric query are never dispatched');
+  assert.deepEqual(h.executed.filter(call => call.name === 'ask_data_agent')[0]?.args, { question },
+    "the owner's question goes to the agent verbatim");
+  assert.deepEqual(h.executed.filter(call => call.name === 'data_agent_job')[0]?.args, { job_id: 'job-7', op: 'get' },
+    'a running job is read again by its id');
+  const spoken = JSON.stringify(reply);
+  assert.match(spoken, /2424/u, `the job's answer reaches the reply: ${spoken}`);
+  assert.match(spoken, /daily active users on the latest loaded day/u, 'with its definition beside it');
+});
+
+test('#641: a needs_reply clarification is put back to the owner, and the answer returns to the same job', async () => {
+  const h = harness(fakeDataEndpoint([JOB_NEEDS_REPLY]));
   const reply = await runResearch(h.deps, {
     action: 'start',
     question: 'how many users in Indonesia yesterday',
     topic: 'active users Indonesia',
     lookups: [{ source: 'data', query: 'active users Indonesia yesterday' }],
   }, new AbortController().signal);
-  assert.deepEqual(h.executed.map(call => call.name), ['search_fields', 'run_metric_query'],
-    `the data read is the two calls the live endpoint answers: ${JSON.stringify(h.executed.map(call => call.name))}`);
-  const metric = h.executed.find(call => call.name === 'run_metric_query');
-  const config = (metric?.args['queryConfig'] ?? {}) as Record<string, unknown>;
-  assert.equal(config['exploreName'], 'active_users_daily', 'the published explore name, never a guess');
-  assert.deepEqual(config['metrics'], ['active_users_daily_n_active_users']);
-  assert.deepEqual(config['dimensions'], ['active_users_daily_event_date_day'], 'a count carries a date dimension');
-  const filters = (config['filters'] ?? {}) as { dimensions?: { fieldId: string; operator: string; values: unknown[] }[] };
-  const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
-  const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
-  assert.ok(country && country.operator === 'equals' && country.values.includes('Indonesia'), 'the country filter');
-  assert.ok(window && window.operator === 'inBetween', `the date window is the resolved between filter: ${JSON.stringify(window)}`);
-  assert.ok(PUBLISHED_OPERATORS.includes(window.operator),
-    `the operator the endpoint published: ${window.operator} of ${PUBLISHED_OPERATORS.join(', ')}`);
-  assert.deepEqual(window.values, ['2026-10-25', '2026-10-25'], 'yesterday, as the inclusive day the ask named');
-  assert.match(JSON.stringify(reply['findings']), /2026-10-25/u, 'the spoken result carries the latest loaded day');
-});
-
-test('an undated count is refused with count_needs_date_window, never dispatched', async () => {
-  const h = harness(fakeDataEndpoint);
-  const reply = await runResearch(h.deps, {
-    action: 'start',
-    question: 'how many users in Indonesia',
-    topic: 'active users Indonesia',
-    lookups: [{ source: 'data', query: 'active users Indonesia' }],
-  }, new AbortController().signal);
-  assert.equal(h.executed.filter(call => call.name === 'run_metric_query').length, 0,
-    'the undated all-time sum never reaches the endpoint');
   const spoken = JSON.stringify(reply);
-  assert.match(spoken, /count_needs_date_window/u, `the closed code: ${spoken}`);
-  assert.match(spoken, /ask the owner which window to use/u, 'the repair asks the owner for a window she can express');
-  assert.match(spoken, /last month/u, 'and names the windows she can use');
-  assert.match(spoken, /year to date/u);
+  assert.match(spoken, /Which country do you mean\?/u, `the clarification is said word for word: ${spoken}`);
+  const run = h.deps.ledger.find(String(reply['researchId']));
+  assert.deepEqual(run?.dataJob, { jobId: 'job-7', awaitingOwner: true }, 'the run remembers the job it owes an answer');
+  // The owner's own words are what goes back: no rephrasing, no second question to the agent.
+  assert.deepEqual(dataReplySubs('job-7', 'Indonesia'), [
+    { key: 'm0', name: 'data_agent_job', args: { job_id: 'job-7', op: 'reply', text: 'Indonesia' } },
+  ]);
 });
 
-test('the count guard refuses an undated metric query at the argument boundary', () => {
-  const dated = companyMetricSubs('active users Indonesia yesterday', 'how many users in Indonesia yesterday', NOW);
-  assert.ok('subs' in dated && dated.subs.length === 2);
-  const undated = companyMetricSubs('active users Indonesia', 'how many users in Indonesia', NOW);
-  assert.deepEqual(undated, { refusal: 'count_needs_date_window' });
+test('#641: a coverage question asks the data capability router before it reads the corpus', () => {
+  const subs = companySubs('do we have forecast coverage for rice in Indonesia', 'do we have forecast coverage for rice in Indonesia');
+  assert.equal(subs[0]?.name, 'check_data_capability', `the router is asked first: ${JSON.stringify(subs)}`);
+  assert.deepEqual(subs[0]?.args, { countries: ['Indonesia'], needs_forecast: true });
+  assert.equal(subs.at(-1)?.name, 'search', 'and the corpus read follows it');
 });
 
-test('the metric result names its latest day, not only the number', () => {
-  const projected = renderMongooseTool(LIVE.run_metric_query_result);
-  assert.match(projected.text, /2026-10-25/u, 'the rows reach the projection with their date');
-  assert.match(projected.text, /2424/u, 'and with their value');
-  const shaped = shapeBlock('company_metric', [sub('run_metric_query', projected.text)]);
-  assert.equal(shaped.source, 'data');
-  assert.match(shaped.text, /2026-10-25/u);
-  assert.match(shaped.text, /latest day loaded/u);
+test('the KPI route carries no Lightdash metric query and no field search', () => {
+  const subs = companyMetricSubs('how many active users in Indonesia yesterday').subs;
+  assert.deepEqual(subs.map(call => call.name), ['ask_data_agent']);
+  assert.equal(JSON.stringify(subs).includes('run_metric_query'), false);
+  assert.equal(JSON.stringify(subs).includes('search_fields'), false);
+});
+
+test('the job answer reaches the projection with its status, number, definition and assumptions', () => {
+  const projected = renderMongooseTool(JSON.parse(JOB_ANSWERED));
+  assert.match(projected.text, /^job job-7 status=answered/u, `the machine line leads: ${projected.text}`);
+  assert.match(projected.text, /2424/u, 'the answer number is carried');
+  assert.match(projected.text, /one row per user per day/u, 'and its assumptions');
+  const shaped = shapeBlock('company_metric', [sub('ask_data_agent', projected.text)]);
+  assert.equal(shaped.source, 'data', 'the answer is attributed to the numbers source');
+});
+
+test('a running job is never presented as an answer', () => {
+  const projected = renderMongooseTool(JSON.parse(JOB_RUNNING));
+  assert.match(projected.text, /^job job-7 status=running/u);
+  assert.doesNotMatch(projected.text, /answer_number/u, 'a running job carries no number to say');
+});
+
+test('a needs_reply job says the clarification word for word', () => {
+  const projected = renderMongooseTool(JSON.parse(JOB_NEEDS_REPLY));
+  assert.match(projected.text, /^job job-7 status=needs_reply/u);
+  assert.match(projected.text, /clarification: Which country do you mean\?/u);
 });
 
 function endpoint(id: string, state: string, reasonCode?: string): ConfiguredEndpointStatus {
@@ -203,33 +209,11 @@ test('an ambiguous month word that names no month resolves to no window, so the 
   // At base both asks were refused; a confident May or March here would be a number nobody asked for.
   assert.equal(metricWindow('how many users may we have in Indonesia', WINDOW_NOW), undefined);
   assert.equal(metricWindow('how many users march through onboarding in Indonesia', WINDOW_NOW), undefined);
-  assert.deepEqual(companyMetricSubs('active users Indonesia', 'how many users may we have in Indonesia', WINDOW_NOW),
-    { refusal: 'count_needs_date_window' });
 });
 
 test('an out-of-range day count is no window, never a silent read of today', () => {
   assert.equal(metricWindow('how many users in Indonesia last 400 days', WINDOW_NOW), undefined);
   assert.equal(metricWindow('how many users in Indonesia last 0 days', WINDOW_NOW), undefined);
-});
-
-test('the last month count is the published inBetween filter the live fixture carries', () => {
-  const subs = companyMetricSubs('active users Indonesia last month', 'how many users we had in Indonesia last month', WINDOW_NOW);
-  assert.ok('subs' in subs, 'the count is dispatched');
-  const metric = subs.subs.find(call => call.name === 'run_metric_query');
-  const config = (metric?.args['queryConfig'] ?? {}) as Record<string, unknown>;
-  const filters = (config['filters'] ?? {}) as { dimensions?: { fieldId: string; operator: string; values: unknown[] }[]; type?: string };
-  assert.equal(filters.type, 'and', 'the fixture filter shape');
-  const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
-  assert.deepEqual(country, { fieldId: 'active_users_daily_country', operator: 'equals', values: ['Indonesia'] });
-  const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
-  assert.deepEqual(window, {
-    fieldId: 'active_users_daily_event_date_day', operator: 'inBetween', values: ['2026-09-01', '2026-09-30'],
-  }, 'the September window, in the shape the endpoint published');
-});
-
-test('an undated count is the closed refusal, and nothing reaches the endpoint', () => {
-  const refused = companyMetricSubs('active users Indonesia', 'how many users in Indonesia without a date', WINDOW_NOW);
-  assert.deepEqual(refused, { refusal: 'count_needs_date_window' });
 });
 
 test('a count question naming users is routed to the data endpoint', () => {
@@ -257,12 +241,9 @@ test('the contract\'s own phrasing, "users in Indonesia last month", reaches the
     question: 'users in Indonesia last month', topic: 'users Indonesia last month', configured: ['data'],
     evidence: new Map(), nowMs: WINDOW_NOW,
   });
-  assert.deepEqual(subs.map(call => call.name), ['search_fields', 'run_metric_query'], 'the two calls the endpoint answers');
-  const config = (subs[1]?.args['queryConfig'] ?? {}) as { filters?: { dimensions?: { fieldId: string; operator: string; values: unknown[] }[] } };
-  const window = config.filters?.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
-  assert.deepEqual(window, {
-    fieldId: 'active_users_daily_event_date_day', operator: 'inBetween', values: ['2026-09-01', '2026-09-30'],
-  }, 'the September window the ask named');
+  assert.deepEqual(subs.map(call => call.name), ['ask_data_agent'], 'the one call the endpoint answers a count with');
+  assert.deepEqual(subs[0]?.args, { question: 'users in Indonesia last month' },
+    "the owner's words go to the agent verbatim, window and all");
 });
 
 test('a knowledge ask about numbers still reads knowledge, which the count route does not claim', () => {

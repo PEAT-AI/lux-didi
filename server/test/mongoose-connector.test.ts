@@ -18,6 +18,7 @@ import {
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
 import { projectMongooseResult, mongooseToolStatus, renderMongooseTool } from '../tools/mongoose.js';
+import { toolGroupNames } from '../prompt/runtime-context.js';
 import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongoosePublishedTool, mongooseSanitizeParameters } from '../connectors/mongoose.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
@@ -57,7 +58,13 @@ const READ_TEXT = JSON.stringify({
   body: 'Agri input pricing reached 41 companies in 2025.',
 });
 
-interface FixtureOptions { replies?: Record<string, string>; text?: string; status?: number }
+interface FixtureOptions {
+  replies?: Record<string, string>;
+  /** The replies one tool answers with in call order, so a clipped read can be paged by its own cursor. */
+  sequence?: Record<string, string[]>;
+  text?: string;
+  status?: number;
+}
 
 async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {}) {
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
@@ -67,7 +74,8 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params as { name: string; arguments: Record<string, unknown> };
     calls.push({ name: params.name, arguments: params.arguments });
-    const text = options.replies?.[params.name] ?? options.text ?? SEARCH_TEXT;
+    const next = options.sequence?.[params.name]?.shift();
+    const text = next ?? options.replies?.[params.name] ?? options.text ?? SEARCH_TEXT;
     return { content: [{ type: 'text', text }] } as never;
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => 's' });
@@ -228,6 +236,55 @@ test('each endpoint carries its own audience and its own token, never the other 
 
 // --- acceptance 3: search answer then read, browse lists, restricted stays restricted ---
 
+test('#643: the replaced catalogue is written once, so a second boot logs no replacement', () => {
+  const c = configDir();
+  const events: number[] = [];
+  const legacy = { schemaVersion: 1, endpoints: [{ ...mongooseEntry('knowledge'), resource: 'mongoose', url: 'https://mongoose.dev.peat-cloud.com/mcp' }] };
+  try {
+    writeFileSync(join(c.dir, 'mcp.json'), JSON.stringify(legacy), { mode: 0o600 });
+    const first = loadMcpEndpoints({ configDir: c.dir, events: event => { if (event.event === 'mongoose_catalogue_replaced') events.push(event.endpoints); } });
+    assert.equal(first.state, 'configured');
+    assert.deepEqual(events, [3], 'the legacy entry is replaced once');
+    // The replacement is on disk now: the same boot shape is no longer legacy.
+    const written = JSON.parse(readFileSync(join(c.dir, 'mcp.json'), 'utf8')) as { endpoints: { resource: string }[] };
+    assert.deepEqual(written.endpoints.map(entry => entry.resource).sort(), ['mongoose:crm', 'mongoose:data', 'mongoose:knowledge'],
+      'the three release-1023b endpoints are what the file now holds');
+    const second = loadMcpEndpoints({ configDir: c.dir, events: event => { if (event.event === 'mongoose_catalogue_replaced') events.push(event.endpoints); } });
+    assert.equal(second.state, 'configured');
+    assert.deepEqual(events, [3], 'a second boot logs no replacement at all');
+  } finally { c.close(); }
+});
+
+test('#641: a handoff outcome asks the tool its next_tool names, once, and only when this endpoint serves it', async t => {
+  const handoff = (tool: string): string => JSON.stringify({
+    outcome: 'handoff', items: [], next_cursor: null, restriction: null, request_id: 'req-h',
+    next_tool: { endpoint: 'knowledge', tool },
+  });
+  const served = await knowledge({ replies: { search: handoff('list_companies'), list_companies: JSON.stringify({ outcome: 'evidence', items: [] }) } });
+  t.after(() => served.f.close());
+  t.after(() => served.a.adapter.close());
+  const followed = await served.reader.searchCompany({ query: 'which company is this' });
+  assert.equal(followed.state, 'completed');
+  assert.deepEqual(served.f.calls.map(call => call.name), ['search', 'list_companies'], 'the named tool is asked once');
+  assert.equal((followed.state === 'completed' ? followed.followUp?.tool : undefined), 'list_companies');
+  const outside = await knowledge({ replies: { search: handoff('get_company') } });
+  t.after(() => outside.f.close());
+  t.after(() => outside.a.adapter.close());
+  const stood = await outside.reader.searchCompany({ query: 'which company is this' });
+  assert.equal(stood.state, 'completed');
+  assert.deepEqual(outside.f.calls.map(call => call.name), ['search'], 'a name outside the envelope is not dispatched');
+  assert.equal(stood.state === 'completed' ? stood.followUp : 'refused', undefined,
+    'no follow-up is invented for a tool this endpoint cannot ask');
+});
+
+test('#623: the persona group tables are exactly the served per-endpoint envelopes', async () => {
+  // The prompt module keeps its own copy of these names so the prompt build stays free of the MCP stack;
+  // this is the parity check that keeps the two from drifting.
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.knowledge]), ['company knowledge']);
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.data]), ['company numbers']);
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.crm]), ['customers']);
+});
+
 test('a company question runs search mode answer then read on the top ref and renders a source card', async t => {
   const k = await knowledge({ replies: { search: SEARCH_TEXT, read: READ_TEXT } });
   t.after(() => k.f.close());
@@ -244,6 +301,58 @@ test('a company question runs search mode answer then read on the top ref and re
   if (!projected.ok) return;
   assert.match(projected.projection.text, /Agri input pricing/);
   assert.match(projected.projection.text, /source: https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing/);
+});
+
+/** A profile whose second section only arrives on the server's second page. */
+const FIRST_PAGE = JSON.stringify({
+  outcome: 'evidence', ref: 'item-9', depth: 'full',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: 'c1', coverage: { depth: 'full', complete: false }, restriction: null, request_id: 'req-1',
+  body: 'Section one: the company sells seed to 41 distributors.',
+});
+const SECOND_PAGE = JSON.stringify({
+  outcome: 'evidence', ref: 'item-9', depth: 'full',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: null, coverage: { depth: 'full', complete: true }, restriction: null, request_id: 'req-2',
+  body: 'Section two: the second half of the profile names the Indonesian rice programme.',
+});
+
+test('#641: a company answer in section two of a long profile is found at depth full plus one cursor', async t => {
+  const k = await knowledge({ replies: { search: SEARCH_TEXT }, sequence: { read: [FIRST_PAGE, SECOND_PAGE] } });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri input pricing profile', depth: 'full' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  // The depth ask reads at full, then follows the cursor the server returned until the coverage is complete.
+  assert.deepEqual(k.f.calls, [
+    { name: 'search', arguments: { query: 'agri input pricing profile', mode: 'answer', limit: 5 } },
+    { name: 'read', arguments: { ref: 'item-9', depth: 'full' } },
+    { name: 'read', arguments: { ref: 'item-9', depth: 'full', cursor: 'c1' } },
+  ]);
+  assert.equal(result.followUp?.pages.length, 2, 'both pages of the read are kept');
+  assert.equal(result.followUp?.omitted, undefined, 'a complete coverage is not partial');
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /Indonesian rice programme/u, `the second section reaches the answer: ${projected.projection.text}`);
+  assert.match(projected.projection.text, /Section one/u, 'and the first section is not thrown away');
+  assert.equal(projected.projection.partial, false);
+});
+
+test('#641: a clipped read that spends the page budget says so instead of reading as the whole body', async t => {
+  const clipped = JSON.parse(FIRST_PAGE) as Record<string, unknown>;
+  const k = await knowledge({ replies: { search: SEARCH_TEXT }, sequence: { read: [JSON.stringify(clipped), JSON.stringify(clipped), JSON.stringify(clipped)] } });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri input pricing' });
+  if (result.state !== 'completed') return assert.fail(`expected a completed read, got ${result.state}`);
+  assert.equal(result.followUp?.pages.length, 3, 'the page budget bounds the read');
+  assert.equal(result.followUp?.omitted, 'cursor_budget', 'and the omission is named');
+  const projected = projectMongooseResult(k.a.adapter, result);
+  if (!projected.ok) return assert.fail(projected.reason);
+  assert.match(projected.projection.text, /read_omitted: cursor_budget/u);
+  assert.equal(projected.projection.partial, true);
 });
 
 test('a listing ask runs search mode browse and reads nothing', async t => {

@@ -18,13 +18,18 @@ unsigned `mongoose-crm` disables only the CRM reads.
 A forwarded Mongoose tool reaches the planner with the input schema and description the endpoint published in its
 own MCP tool list, sanitized for the provider (integer bounds only, no keyword the provider rejects). The catalogue
 is taken at connect time; a schema that cannot be sanitized fails that connect with the closed code
-`schema_unsanitizable`, never as an empty schema. A count read (`run_metric_query`) without a date dimension and a
-date filter is refused by the host with `count_needs_date_window`, because the undated query returns an all-time sum
-rather than a user count. The count route resolves the window the ask named, from today, yesterday, last N days,
-this or last week, this or last month, a named month such as September, last N months, this or last quarter, Q1 to
-Q4, this or last year, a year, or year to date, into an inclusive start and end day, and sends it as the date
-dimension's `inBetween` filter; a window it cannot resolve is refused and the reply asks the owner, in one question,
-which of those windows to use.
+`schema_unsanitizable`, never as an empty schema. A business, KPI or metric question goes to the data endpoint's own
+agent, `ask_data_agent`, with the owner's question verbatim; its job is read with `data_agent_job` `op get` while it
+is running, and a `needs_reply` clarification is put back to the owner and answered with `op reply`. The answer's
+number or ranking travels with the definition and assumptions the endpoint returned. The Lightdash tools
+(`search_fields`, `run_metric_query`, ...) serve explores and saved charts and are not the path for a KPI question,
+which is why the count route no longer dispatches them.
+
+A company answer on the `knowledge` endpoint is one `search` in answer mode and then a `read` of the top hit's ref,
+paged by the server's own `next_cursor` until `coverage.complete` or the read page budget, and reported as partial
+with `read_omitted: cursor_budget` when the budget ends it first. A coverage question (forecast, nowcast, call-level,
+district granularity, an unfamiliar country or crop) asks `check_data_capability` first and never answers a
+capability the router reports unavailable.
 
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` is the registry. These descriptors are read-only: `ConnectorToolDeclaration.effect` is `'read'`. Do not infer that all host tools are read-only. Trello is a separate host gateway in `server/host/trello.ts`, with a privately configured board (`TRELLO_BOARD_FILE`), rather than another descriptor in this registry. Its write authority and the note-writing flows belong in [tool-owner.md](tool-owner.md).
 

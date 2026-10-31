@@ -24,6 +24,10 @@ const cases = [
   [{ code: 'opened', kind: 'url', title: 'Synthetic site' }, 'completed', undefined],
   [{ status: 'set', id: 'synthetic-alarm-id', fire_at_utc: 'synthetic-time' }, 'completed', undefined],
   [{ status: 'set' }, 'unknown', undefined],
+  // G5: a dispatched failure keeps the reason the connector gave next to the collapsed code it maps to,
+  // so `tool_call_outcome` can say whether it was an argument refusal or a grant/catalogue miss.
+  [{ status: 'failed', code: 'sdk_protocol_rejected', reason: 'invalid-arguments' }, 'failed', 'invalid-arguments'],
+  [{ status: 'failed', code: 'tool_not_granted', reason: 'not-in-envelope' }, 'failed', 'tool_not_granted'],
 ] as const;
 for (const [response, outcome, refusalCode] of cases) {
   test(`business outcome ${JSON.stringify(response)}`, () => {

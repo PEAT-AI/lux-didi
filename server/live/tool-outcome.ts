@@ -4,7 +4,10 @@ export interface ToolOutcome { outcome: ToolCallOutcome; refusalCode?: string }
 /** Business settlement only. A successful socket write is not evidence of tool success. */
 export function toolOutcomeOf(response: Readonly<Record<string, unknown>>): ToolOutcome {
   const status = response.status ?? response.state;
-  const rawCode = response.code ?? response.reason ?? response.error;
+  // G5: `sdk_protocol_rejected` is the collapsed code every non-stage dispatch failure maps to, so the
+  // original reason the connector gave is preferred over it. Without this the log cannot say whether the
+  // call was an argument-shape refusal, a grant miss or a catalogue miss.
+  const rawCode = (response.code === 'sdk_protocol_rejected' ? response.reason : undefined) ?? response.code ?? response.reason ?? response.error;
   // Codes are metadata, never arbitrary error prose or tool content.
   const code = typeof rawCode === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(rawCode)
     ? rawCode : undefined;

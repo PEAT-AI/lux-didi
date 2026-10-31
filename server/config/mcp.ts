@@ -344,7 +344,13 @@ export function loadMcpEndpoints(options: { configDir: string; events?: McpCatal
   const rawEndpoints = file['endpoints'];
   if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
-  for (const item of replaceInstalledMongoose(rawEndpoints, events)) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  const migrated = replaceInstalledMongoose(rawEndpoints, events);
+  // #643: the replacement is persisted once, so the next boot reads the release-1023b endpoints instead of
+  // replacing the same legacy entry again (87 replacement events in eight days came from not writing it).
+  if (migrated !== rawEndpoints) {
+    try { replacePrivate(configDir, endpointFile, { ...file, endpoints: migrated }, endpointLimit); } catch { /* a read-only config dir still boots on the migrated shape */ }
+  }
+  for (const item of migrated) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
   mongooseEndpointSet(endpoints);
   return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

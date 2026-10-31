@@ -381,7 +381,7 @@ test('L11-04/L8-04: the Mongoose sign-in line is tied to answers that need compa
   assert.ok(line, 'a parked sign-in still has its line');
   assert.doesNotMatch(line!, /at the start of this call/iu, `the line is never an opener obligation: ${line}`);
   assert.match(line!, /\bonly when\b[^.]*company knowledge/iu, `the line names the one case it belongs to: ${line}`);
-  assert.doesNotMatch(line!, /vault|lux knowledge|knowledge base/iu, 'and it is never the reason for a vault or knowledge base answer');
+  assert.doesNotMatch(line!, /vault|lux knowledge|knowledge base|private notes/iu, 'and it is never the reason for a vault or knowledge answer');
 });
 
 test('a parked sign-in is one short line at call start and nothing when Mongoose is fine', () => {

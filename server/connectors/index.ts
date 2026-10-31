@@ -43,8 +43,8 @@ export interface ConnectorEvidence extends SourceDispatchEvidence {
   coverage: CompletedResult['coverage'];
   projection: CompletedResult['projection'];
   response: StoredPayload;
-  /** The verified second read a reader asked for after a hit (Mongoose depth reads only). */
-  followUp?: { tool: string; decodedResult: unknown; payload: StoredPayload };
+  /** The verified second read a reader asked for after a hit (Mongoose depth reads only), paged by cursor. */
+  followUp?: { tool: string; depth?: 'summary' | 'full' | 'all' | undefined; pages: readonly { decodedResult: unknown; payload: StoredPayload }[]; omitted?: 'cursor_budget' | undefined };
 }
 export type ConnectorResult = ConnectorEvidence | { state: 'refused' | 'unknown'; reason: string };
 

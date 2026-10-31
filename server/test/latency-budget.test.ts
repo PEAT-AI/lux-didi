@@ -33,6 +33,13 @@ function hostLines(): { lines: Record<string, unknown>[]; detach: () => void } {
   return { lines, detach };
 }
 
+/** One turn of the event loop: the fake socket delivers synchronously, the adapter handles it a microtask later. */
+const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+async function until(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) await tick();
+  assert.ok(predicate(), 'the frame the replay sent reached the adapter');
+}
+
 const counted = (value: unknown): number | undefined => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
 
 /** Every segment the run reported, printed and compared: a breach fails, a pass prints the number and its budget. */
@@ -87,6 +94,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_6' } }));
   clock.advance(fake(2_000));
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_6' } }));
+  await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
 
   const names = lines.map(line => line['event']);
   for (const name of ['owner_speech_end', 'response_first_audio', 'provider_output_ack']) assert.ok(names.includes(name), `${name} reached the host log`);
@@ -138,9 +146,9 @@ test('LAT-1022: a connector request reports its own duration through the real mo
   const reader = createMongooseReader({ port: port as never, registry: { visibleTools: () => [] } as never,
     config: { endpointId: 'mongoose-knowledge', endpoint: 'knowledge', account: 'synthetic', resource: 'synthetic', schemaDigest: 'synthetic',
       generation: 1, maxSearchLimit: 5, maxListLimit: 10, queryChars: 100 } as never, now: () => clock.now() });
-  await reader.call('search', { query: 'synthetic' });
+  const result = await reader.call('search', { query: 'synthetic' });
   const request = lines.find(line => line['event'] === 'connector_request');
-  assert.ok(request !== undefined, 'the connector request reached the host log');
+  assert.ok(request !== undefined, `the connector request reached the host log (state ${String(result.state)})`);
   assert.equal(request['connector'], 'mongoose-knowledge', 'and it names the connector');
   assert.equal(request['stage'], 'call', 'and the stage it ended in');
   assert.equal(request['outcome'], 'ok', 'and the call\'s own closed state');

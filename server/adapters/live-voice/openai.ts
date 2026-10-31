@@ -561,8 +561,6 @@ class Session implements LiveVoiceSession {
       class: timing.toolCall ? 'd-chain' : timing.nudged ? 'b' : timing.firstAudioAt !== null ? 'c' : 'b-second' });
   }
 
-  private lastAnswerNow = false;
-
   /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
   private openResponseTiming(): void {
     this.logResponseFirstAudio();

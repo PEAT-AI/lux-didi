@@ -7597,16 +7597,6 @@ export class ResearchScheduler {
       return this.#drive({ ...call, researchId: id }, signal, id, reachable);
     }
     // An explicit unknown id never selects another run.
-    // C-RESEARCH #107: a continue never refuses and never starts work. It attaches to the run it names, or to
-    // the last run this session handed the model, and answers from that run's terminal result.
-    if (call.action === 'continue') {
-      const named = call.researchId !== undefined && this.#deps.ledger.find(call.researchId) !== undefined ? call.researchId : undefined;
-      const answered = named ?? this.#deps.ledger.last()?.researchId;
-      if (answered !== undefined) {
-        this.#deps.logJoined?.(answered, 'status');
-        return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));
-      }
-    }
     if (call.researchId !== undefined
       && !this.#active.has(call.researchId) && this.#deps.ledger.find(call.researchId) === undefined) {
       return Promise.resolve({ error: 'unknown_research_run' });
@@ -7627,6 +7617,16 @@ export class ResearchScheduler {
       // continue: stop the old loop, run on with a fresh budget reusing the ledger.
       this.#deps.logJoined?.(target.id, 'continue');
       return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
+    }
+    // C-RESEARCH #107: a continue never refuses and never starts work. It attaches to the run it names, or to
+    // the last run this session handed the model, and answers from that run's terminal result.
+    if (call.action === 'continue') {
+      const named = call.researchId !== undefined && this.#deps.ledger.find(call.researchId) !== undefined ? call.researchId : undefined;
+      const answered = named ?? this.#deps.ledger.last()?.researchId;
+      if (answered !== undefined) {
+        this.#deps.logJoined?.(answered, 'status');
+        return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));
+      }
     }
     // Zero or several pending runs: current behaviour.
     if (call.action === 'stop') {

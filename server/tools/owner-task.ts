@@ -249,8 +249,7 @@ export class OwnerTasks implements OwnerTaskPort {
 
   authorize(session: string, kind: ActionKind, target: string, handle?: string, callId?: string): RequestAuthorization {
     const task = this.#live(session);
-    if (kind === 'set_alarm') process.stderr.write(`P14 authorize session=${session.slice(0,8)} task=${task?.id} epoch=${task?.epoch} ops=${task ? task.operations.map(o => o.kind + ':' + o.state + '@' + (o.epoch ?? '-')).join(',') : '-'} call=${callId}\n`);
-    if (task === undefined || task.closed) return { code: 'no_owner_request' };
+    if (kind === 'set_alarm')    if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
 
@@ -417,7 +416,6 @@ export class OwnerTasks implements OwnerTaskPort {
    */
   rebuild(session: string): void {
     const task = this.#live(session);
-    process.stderr.write(`P14 rebuild session=${session.slice(0,8)} task=${task?.id} epoch=${task?.epoch}\n`);
     if (task === undefined) return;
     task.epoch += 1;
     task.operations = task.operations.filter(operation => operation.state === 'done');

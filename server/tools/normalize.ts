@@ -108,7 +108,7 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   for (const [key, value] of Object.entries(raw)) {
     const reason: DropReason | undefined = !KEY.test(key) || (shape.properties.size > 0 && !shape.properties.has(key)) ? 'undeclared'
       : reads !== undefined && !reads.has(key) ? 'not_read'
-        : value === undefined || isFiller(value) ? 'absent'
+        : value === undefined || (tool.effect !== 'write' && isFiller(value)) ? 'absent'
           : undefined;
     if (reason === undefined) { args[key] = value; continue; }
     if (reason === 'absent' && value !== undefined) fillers.push(key);
@@ -116,6 +116,7 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   }
   // A value the tool's own predicate still needs is not a filler to drop: an empty string a connector
   // requires to be present, or a key that decides which read this is. The reduced call must stay valid.
+  // A write keeps every value it was sent, because an empty one can be what he meant.
   if (fillers.length > 0 && tool.validate !== undefined && !tool.validate(args) && tool.validate(raw)) {
     for (const key of fillers) { args[key] = raw[key]; }
     const kept = new Set(fillers.map(key => `${key}:absent`));

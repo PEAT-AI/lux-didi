@@ -769,3 +769,11 @@ test('ignored alarm model time logs only a signed epoch skew', () => {
   assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, words: 'synthetic private owner words' }), undefined);
   assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, fireAtUtc: 1793343600000 }), undefined);
 });
+
+test('C-MICWATCH: live_input_dead keeps a closed shape of the session and its generation only', () => {
+  const dead = { event: 'live_input_dead', liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  assert.deepEqual(safeEvent(dead), dead);
+  assert.equal(safeEvent({ ...dead, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...dead, generation: -1 }), undefined, 'a negative generation is refused');
+  assert.equal(safeEvent({ ...dead, liveSessionId: 'not-a-session' }), undefined, 'a malformed session id is refused');
+});

@@ -56,6 +56,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
   Sources/LuxDidi/NativeLiveJournal.swift \
   Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift \
   Tests/DidiLiveTests/VoiceProcessingSnapshotTests.swift Tests/DidiLiveTests/HeadphoneRouteTests.swift \
+  Tests/DidiLiveTests/MicWatchdogTests.swift \
   "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 # Deterministic playback-scheduling schedule replay: no engine, no tap, no permission request.

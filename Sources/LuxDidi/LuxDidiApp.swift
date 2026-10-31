@@ -79,21 +79,37 @@ import WebKit
     let notifications = NativeNotifications()
     @Published private(set) var alarmCaption: String?
     private var alarmShell: NativeAlarmShell?
+    /// #107: the one user LaunchAgent that brings her back for the next due alarm.
+    private lazy var alarmRelaunch = NativeAlarmRelaunchWriter()
+    private var pendingAlarmDueMs: [Int] = []
+    /// Nothing rewrites the agent before the shell has reported the real rows once.
+    private var alarmRowsKnown = false
     private var installedCanaryWatch: Task<Void, Never>?
     private(set) var client: CompanionClient? { didSet { bindAlarmShell() } }
     private func bindAlarmShell() {
         alarmShell?.stop(); alarmShell = nil
         guard let client else { return }
+        // #107: routing reads the live session state, never capture state, so an alarm during a
+        // call arrives as the alarm-mode host note instead of a chime and a second conversation.
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
-            isCallLive: { [weak self] in self?.live?.isCapturing == true },
-            onDue: { [weak self] id in
-                guard let self else { return }
-                if self.live?.isCapturing == true { self.alarmShell?.noteLiveSession(id) }
-                else { _ = self.startLive(alarmID: id) }
-            }, onCaption: { [weak self] caption in self?.alarmCaption = caption })
+            sessionState: { [weak self] in self?.live?.state ?? .idle },
+            onDue: { [weak self] id in _ = self?.startLive(alarmID: id) },
+            onCaption: { [weak self] caption in self?.alarmCaption = caption })
+        shell.onAlarms = { [weak self] rows in
+            guard let self else { return }
+            self.pendingAlarmDueMs = rows.filter { $0.state == "pending" }.map(\.fireAtUtc)
+            self.alarmRowsKnown = true
+            self.alarmRelaunch.sync(pendingDueMs: self.pendingAlarmDueMs)
+        }
+        alarmRelaunch.onEvent = { [weak shell] event in shell?.reportRelaunch(event) }
         alarmShell = shell; shell.start()
     }
-    func stopAlarms() { alarmShell?.stop(); alarmShell = nil }
+    /// #107: a quit keeps the next alarm armed, so the agent is rewritten from the last rows and a
+    /// quit never disarms a wake-up; an empty schedule removes it.
+    func stopAlarms() {
+        if alarmRowsKnown { alarmRelaunch.rewrite(pendingDueMs: pendingAlarmDueMs) }
+        alarmShell?.stop(); alarmShell = nil
+    }
     /// The one live page-session cookie, obtained once by `bootstrap()` and
     /// handed to every page view (full window and mini orb) so a second view
     /// never revokes the first session.
@@ -384,6 +400,8 @@ import WebKit
     func startLive(pickupJobID: String? = nil, alarmID: String? = nil) -> Bool {
         guard let client else { error = "Connect the local service before starting Live voice."; return false }
         stopTrigger.clear()
+        // #107: an alarm never opens a second conversation beside one that exists.
+        if let live, NativeAlarmShell.sessionIsLive(live.state) { return false }
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
         micModeReceiptAtLiveStart()
         let conversation = liveAuthorityOwner.ownerStart {

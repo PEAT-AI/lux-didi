@@ -141,7 +141,7 @@ export function clockSync(reason: 'host_start' | 'call_open'): { event: 'clock_s
 }
 
 export const ALARM_LOG_EVENTS = ['alarm_set', 'alarm_due', 'alarm_ring_started', 'alarm_acknowledged', 'alarm_missed', 'alarm_degraded'] as const;
-export const ALARM_LOG_REASONS = ['owner_request', 'due', 'recovered', 'owner_speech', 'deadline_elapsed', 'too_late', 'shell_unreachable', 'assertion_failed', 'notifications_denied', 'live_session_no_channel', 'provider_unavailable', 'local_ring'] as const;
+export const ALARM_LOG_REASONS = ['owner_request', 'due', 'recovered', 'owner_speech', 'deadline_elapsed', 'too_late', 'shell_unreachable', 'assertion_failed', 'notifications_denied', 'notifications_not_asked', 'live_session_no_channel', 'provider_unavailable', 'local_ring'] as const;
 export type AlarmLogReason = typeof ALARM_LOG_REASONS[number];
 export interface AlarmLogEvent {
   event: typeof ALARM_LOG_EVENTS[number]; alarmId: string; scheduledMs: number; actualMs: number; reason: AlarmLogReason;

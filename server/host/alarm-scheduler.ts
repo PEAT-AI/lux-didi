@@ -146,12 +146,14 @@ export class AlarmScheduler {
   }
 }
 
-export type AlarmShellReason = 'shell_unreachable' | 'assertion_failed' | 'notifications_denied';
+export type AlarmShellReason = 'shell_unreachable' | 'assertion_failed' | 'notifications_denied' | 'notifications_not_asked';
+/** #107: the permission is reported only after it resolved, so "denied" and "not asked yet" stay distinct. */
+export type NotificationPermission = 'not_asked' | 'denied' | 'allowed';
 export type AlarmShellFrame = { type: 'alarm_due'; alarm: AlarmDue } | { type: 'alarm_state'; alarms: Alarm[] };
 /** One local shell transport, independent of the provider session and its availability. */
 export class AlarmShellBridge {
   private sender: ((frame: AlarmShellFrame) => boolean) | undefined;
-  private capabilities: { assertion: boolean; notifications: boolean } | undefined;
+  private capabilities: { assertion: boolean; notifications: boolean; notificationState?: NotificationPermission } | undefined;
   bind(sender: (frame: AlarmShellFrame) => boolean): () => void {
     this.sender = sender;
     this.capabilities = undefined;
@@ -159,14 +161,17 @@ export class AlarmShellBridge {
       if (this.sender === sender) { this.sender = undefined; this.capabilities = undefined; }
     };
   }
-  report(capabilities: { assertion: boolean; notifications: boolean }): void {
+  report(capabilities: { assertion: boolean; notifications: boolean; notificationState?: NotificationPermission }): void {
     if (this.sender) this.capabilities = capabilities;
   }
   health(): { degraded: boolean; reasons: AlarmShellReason[] } {
     if (!this.sender) return { degraded: true, reasons: ['shell_unreachable'] };
     const reasons: AlarmShellReason[] = [];
     if (!this.capabilities?.assertion) reasons.push('assertion_failed');
-    if (!this.capabilities?.notifications) reasons.push('notifications_denied');
+    if (!this.capabilities?.notifications) {
+      // Only an explicit denial is a denial: a client that reported no state has not asked yet.
+      reasons.push(this.capabilities?.notificationState === 'denied' ? 'notifications_denied' : 'notifications_not_asked');
+    }
     return { degraded: reasons.length > 0, reasons };
   }
   private send(frame: AlarmShellFrame): void {

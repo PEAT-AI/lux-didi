@@ -81,9 +81,9 @@ import { ALARM_MODE_MARKER } from './types.js';
 import type { SeriesAlarmSetup } from './types.js';
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
-  const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
+  const overview = reminder && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
   const series = input.series?.trim();
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder first, in your own words, as the first thing you say: ${JSON.stringify(reminder)}. One sentence that names ${JSON.stringify(input.ownerDisplayName)}, states ${JSON.stringify(input.scheduledTime)} and gives the reminder in your own voice, like "${input.ownerDisplayName}, it is ${input.scheduledTime}: ${reminder}".` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -1454,6 +1454,7 @@ export class LiveSessionOwner {
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
     handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
     return this.get(handle.liveSessionId);
@@ -1763,8 +1764,10 @@ export class LiveSessionOwner {
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
-      const missedNote = missedAlarms.length ? '\n\n[missed alarm] Briefly mention the missed alarm times: ' + missedAlarms.map(alarm => new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))).join(', ') + '.' : '';
+      const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
+      // #107: a missed alarm is said once, in her own words, with its time and what it was for.
+      const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '
+        + missedAlarms.map(alarm => `${new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))} ${JSON.stringify(String(alarm.label ?? ''))}`).join('; ') + '.' : '';
       for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
@@ -1784,6 +1787,8 @@ export class LiveSessionOwner {
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
     if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
+    // #107: the alarm block is in this new session's accepted prompt, so the announcement is made.
+    if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_announced', alarmId: input.alarm.alarmId, mode: 'new_session' });
     this.#armExpiry();
     return snapshot;
   }

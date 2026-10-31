@@ -51,6 +51,14 @@ test('alarm wake instruction says the reminder and requests an overview when ask
   assert.match(alarmSessionInstructions(input), /call the bank/);
   const overview = { ...input, label: 'give me an overview' };
   assert.match(alarmSessionInstructions(overview), /calendar digest/);
+  // #107: the owner's own words, the time and her name come first, before anything else she says.
+  const opening = alarmSessionInstructions(input);
+  assert.match(opening, /Synthetic Owner/);
+  assert.match(opening, /08:00/);
+  assert.match(opening, /in your own words/);
+  // #107: "brief me" and "check in" are the day-overview path too.
+  assert.match(alarmSessionInstructions({ ...input, label: 'brief me' }), /calendar digest/);
+  assert.match(alarmSessionInstructions({ ...input, label: 'check in with me' }), /calendar digest/);
 });
 
 test('alarm mode: a series occurrence carries its rule into the host note', () => {

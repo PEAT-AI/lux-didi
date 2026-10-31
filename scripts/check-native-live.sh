@@ -106,6 +106,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Sources/LuxDidi/SingleInstanceGuard.swift \
+  Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Tests/DidiLiveTests/NativeStopLatchTests.swift "$work/audio-callback-bridge.o" -o "$work/native-stop-latch"
 "$work/native-stop-latch"
 # The held-mute race (D5): a fake host delivers every session callback late. No socket,
@@ -164,14 +165,17 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
-  Sources/LuxDidi/NativeLiveJournal.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
+# #107: the alarm shell's routing, its permission honesty and its one relaunch agent. Headless:
+# a recorder instead of launchctl, a synthetic session state, and no window or audio.
+bash Tests/DidiAlarmTests/check-alarm-shell.sh
 # #619 and #620: the launch and reopen matrix, the deferred startup prompts and the orb
 # screen-change frame. Recording fakes only: no window is shown and no display is changed.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift \
+  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
   Tests/DidiLiveTests/WindowRoutingTests.swift -o "$work/window-routing-tests"
 "$work/window-routing-tests"

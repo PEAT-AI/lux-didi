@@ -86,6 +86,9 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   clock.advance(fake(120));
   const writtenAt = clock.now();
   opened.session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+  // The delegated response is still outstanding, so the continuation is deferred: its end releases the create.
+  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_2' } }));
+  await until(() => opened.socket.sent.some(frame => (JSON.parse(frame) as { type?: string }).type === 'response.create'));
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_3' } }));
 
   // A two-tool batch: one continuation answers both.
@@ -96,6 +99,8 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   await until(() => opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'call_3')));
   clock.advance(fake(60));
   opened.session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: true } }, { id: 'call_3', name: 'research', response: { ok: true } }] });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_4' } }));
+  await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_5' } }));
 
   // A silent continuation: the provider opens a response and never sends audio; the host's rung is the bound.

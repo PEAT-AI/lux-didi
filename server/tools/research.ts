@@ -4686,13 +4686,12 @@ export function dataReplySubs(jobId: string, ownerWords: string): IntentSubCall[
  * and follows the server's own cursor until the coverage is complete or the page budget ends it.
  */
 export function companySubs(query: string, question = ''): IntentSubCall[] {
-  const depth = budgetFor(question) === RESEARCH.budgets.depth ? 'full' : 'summary';
   // G2: a coverage question asks the deterministic capability router first, on the knowledge endpoint,
   // and only then reads the corpus, so an unavailable capability is never answered as if it existed.
   const coverage: IntentSubCall[] = COVERAGE_ASK.test(question)
     ? [{ key: 'cap0', name: INTERNAL.mongooseDataCapability, args: capabilityArgs(question) }]
     : [];
-  return [...coverage, { key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query), depth } }];
+  return [...coverage, { key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
 }
 
 /** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */

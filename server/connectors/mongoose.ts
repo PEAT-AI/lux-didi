@@ -415,7 +415,16 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const denied = preflight(registry, settings, envelope, tool);
       if (denied) return { state: 'refused', reason: denied };
       if (!args || typeof args !== 'object' || Array.isArray(args) || JSON.stringify(args).length > 4000) return { state: 'refused', reason: 'invalid-arguments' };
-      return dispatch(tool, args, signal);
+      // A routed research lookup names the depth it wants its own body read at. That is the host's own
+      // follow-up depth, never a published search argument, so it stays off the wire exactly as it does
+      // on the typed `search` above, and the follow-up runs here too.
+      if (tool !== 'search') return dispatch(tool, args, signal);
+      const evidence = await dispatch('search', args, signal);
+      const mode = typeof args['mode'] === 'string' ? args['mode'] : 'answer';
+      // The routed research leg reads the body behind the hit at full depth: it is the ask that has no
+      // second chance to page, and a summary that stops at the first section is the defect this fixes.
+      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, 'full', signal);
+      return evidence;
     },
   };
 }

@@ -322,6 +322,25 @@ test('#1028: a fetched knowledge entry reaches the round as its body, not its ti
   assert.match(JSON.stringify(reply['findings']), /harvested on Friday/u, 'the fetched entry body is in the round');
 });
 
+// G4: the stage-two body follows the reply budget, so a long document keeps its tail when the budget allows.
+test('#641: a knowledge body longer than the old 2000-char cut keeps its tail', async () => {
+  const TAIL = 'TAIL-MARKER-9 the end of the document';
+  const body = `### Margit Halden call notes [id 44]\n${'filler sentence. '.repeat(220)}${TAIL}`;
+  assert.ok(body.length > RESEARCH.knowledgeBodyChars, `the body is longer than the old per-hit cut: ${body.length}`);
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['knowledge', 'chat'] as readonly SourceKind[], ledger: new ResearchLedger(),
+    emit() {}, log() {}, logSource() {},
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => call.name === 'search_knowledge'
+      ? sub(call.name, '### Margit Halden call notes [id 44]\nA short summary line.', true, call.key)
+      : sub(call.name, body, true, call.key)),
+  };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what do we know about Margit Halden', lookups: [{ source: 'knowledge', query: 'Margit Halden' }],
+  }, new AbortController().signal);
+  const spoken = JSON.stringify(reply['findings']);
+  assert.match(spoken, /TAIL-MARKER-9/u, `the tail of the body survives the stage-two slice: ${spoken.slice(0, 400)}`);
+});
+
 // C-POLISH10: the knowledge leg decides an unprompted open on the ranker's score and on the hit's own title, so an
 // unrelated entry is never fetched and injected over an identity lookup.
 test('C-POLISH10: an unrelated or low-score knowledge hit is not opened, and a relevant one is', async () => {
@@ -350,6 +369,9 @@ test('C-POLISH10: an unrelated or low-score knowledge hit is not opened, and a r
   assert.equal(low.fetches, 0, 'a low-scoring hit is not opened');
   assert.equal(low.line?.['decision'], 'skipped');
   assert.equal(low.line?.['reason'], 'low_score');
+  // The ranker line the reply carries (`_confidence: ... top score: 0.11 ...`) is the one the bucket comes
+  // from; the shaped text has it stripped, so a gate reading only the text reports unknown for every ask.
+  for (const line of [low.line]) assert.equal(line?.['bucket'], 'low', `the score bucket is read: ${String(line?.['bucket'])}`);
   const unrelated = await decide(scored('0.62', '**#900** [PATTERN] Unrelated engineering note'), 'what do we know about Margit Halden');
   assert.equal(unrelated.fetches, 0, 'a hit whose title shares no content word with the ask is not opened');
   assert.equal(unrelated.line?.['reason'], 'no_overlap');

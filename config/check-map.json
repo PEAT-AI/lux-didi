@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Which check scripts cover which paths. Deliberately coarse: a change runs the union of every check whose globs match it, one at a time. The map is not a claim of exactness; scripts/check-combined-tree.sh --selftest proves every path under server/, Sources/, Tests/, web/, docs/, config/ and scripts/ matches at least one entry and that every scripts/check-*.sh is named by at least one entry.",
+  "note": "Which check scripts cover which paths. Deliberately coarse: a change runs the union of every check whose globs match it, one at a time. The map is not a claim of exactness; scripts/check-combined-tree.sh --selftest proves every path under server/, Sources/, Tests/, web/, docs/, config/ and scripts/ matches at least one entry and that every scripts/check-*.sh is named by at least one entry. Every mapped check runs with no arguments, so a check that needs an output root mints a temporary one itself instead of being named with a path.",
   "entries": [
     {
       "paths": [

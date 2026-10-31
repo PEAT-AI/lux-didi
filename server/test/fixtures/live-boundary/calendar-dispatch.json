@@ -29,11 +29,7 @@
             }
           }
         }
-      ],
-      "base": {
-        "status": "EXPECTED_RED",
-        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so every compose call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
-      }
+      ]
     },
     {
       "id": "delete-event-positive",

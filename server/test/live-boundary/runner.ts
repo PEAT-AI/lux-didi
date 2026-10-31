@@ -66,7 +66,6 @@ const isRefusal = (response: JsonObject | undefined): boolean => {
 
 /** The base reason a corpus kind is still red, so a red kind always names the defect it waits on. */
 const KIND_REASONS: Readonly<Record<string, string>> = {
-  create_event: 'compose refused at the live grant filter (server/live/index.ts:2057); C-GRANTS/D1 fix this',
   delete_event: 'compose refused at the live grant filter (server/live/index.ts:2057); C-GRANTS/D1 fix this',
   draft_email: 'compose refused at the live grant filter (server/live/index.ts:2057); C-GRANTS/D1 fix this',
   draft_chat: 'compose refused at the live grant filter (server/live/index.ts:2057); C-GRANTS/D1 fix this',

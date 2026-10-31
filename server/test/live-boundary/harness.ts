@@ -139,9 +139,9 @@ const schemas = (names: readonly string[]): { name: string; inputSchema: JsonObj
 const SYNTHETIC_PEOPLE = {
   version: 1,
   people: [
-    { id: 'synthetic-supplier', name: 'Synthetic Supplier', aliases: ['supplier', 'the synthetic supplier', 'synthetic lieferant', 'lieferant', 'synthetischer lieferant'],
+    { id: 'synthetic-supplier', name: 'Synthetic Supplier', aliases: ['supplier', 'the synthetic supplier', 'synthetic lieferant', 'lieferant', 'lieferanten', 'synthetischer lieferant', 'synthetischen lieferanten'],
       role: 'Synthetic supplier', circle: 'external', tier: 2, email: ['supplier@synthetic.example.invalid'], mattermost: 'synthetic-supplier' },
-    { id: 'synthetic-landlord', name: 'Synthetic Landlord', aliases: ['landlord', 'the synthetic landlord', 'vermieter', 'synthetischer vermieter'],
+    { id: 'synthetic-landlord', name: 'Synthetic Landlord', aliases: ['landlord', 'the synthetic landlord', 'vermieter', 'synthetischer vermieter', 'synthetischen vermieter'],
       role: 'Synthetic landlord', circle: 'external', tier: 2, email: ['landlord@synthetic.example.invalid'], mattermost: 'synthetic-landlord' },
     { id: 'synthetic-sam', name: 'Synthetic Sam', aliases: ['sam', 'synthetic sam'],
       role: 'Synthetic teammate', circle: 'project', tier: 2, email: ['sam@synthetic.example.invalid'], mattermost: 'synthetic-sam' },

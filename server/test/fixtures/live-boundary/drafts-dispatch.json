@@ -33,11 +33,7 @@
             }
           }
         }
-      ],
-      "base": {
-        "status": "EXPECTED_RED",
-        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): draft_email is answered grant_not_permitted, never reaching gmail_create_draft. C-GRANTS/D1 fix this."
-      }
+      ]
     },
     {
       "id": "draft-chat-positive",
@@ -66,11 +62,7 @@
             }
           }
         }
-      ],
-      "base": {
-        "status": "EXPECTED_RED",
-        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): draft_chat is answered grant_not_permitted, never reaching mattermost_save_draft. C-GRANTS/D1 fix this."
-      }
+      ]
     }
   ]
 }

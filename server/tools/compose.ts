@@ -2,6 +2,7 @@ import { parseAlarmTime } from './alarm.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
 import { googleConsentLine } from './google.js';
+import { peopleLookupResult } from '../people/index.js';
 
 /**
  * The write surface Naya may reach by voice: drafts that only the owner can send, and calendar
@@ -361,7 +362,7 @@ function namedRecipient(words: string): string | undefined {
   const pattern = /\b(?:to|an)\s+(?!e-?mail|mail|message|nachricht|chat|draft|entwurf)((?:(?:the|den|dem|der|die|my|meinen?|unseren?)\s+)?[^.,;:!?]{1,60}?)(?=\s+(?:about|saying|subject|telling|with|regarding|wegen|zum|zur|thema|dass|that)\b|[.,;:!?]|$)/gi;
   let named: string | undefined;
   for (const match of words.matchAll(pattern)) named = match[1]?.trim();
-  return named;
+  return named?.replace(/^(?:the|den|dem|der|die|my|meinen?|unseren?)\s+/i, '');
 }
 
 export async function runCompose(port: ComposeDispatch, name: ComposeName, args: JsonObject, context: { words: string; clientRequestId: string; now: number; timeZone: string; ownerName?: string }): Promise<ComposeOutcome> {
@@ -370,8 +371,9 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
     // #107 D-COMPOSEGATE: the recipient is the one his own words name. An address he never said is data
     // from somewhere else, so his own address or his own name is used instead, and his roster decides.
     const said = context.words.toLowerCase();
+    const named = ADDRESS_IN_WORDS.exec(context.words)?.[0] ?? namedRecipient(context.words);
     const to = said.includes(input.to.trim().toLowerCase()) ? input.to
-      : ADDRESS_IN_WORDS.exec(context.words)?.[0] ?? namedRecipient(context.words);
+      : named === undefined ? undefined : peopleLookupResult({ name: named }).people[0]?.email[0] ?? named;
     if (to === undefined) return { state: 'recipient', code: 'recipient_not_named', candidates: [] };
     return await port.draftEmail({ to, subject: input.subject, body: input.body, clientRequestId: context.clientRequestId });
   }

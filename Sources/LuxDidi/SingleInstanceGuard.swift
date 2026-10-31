@@ -51,6 +51,9 @@ enum LaunchKind: String {
     /// #619: the Dock click on a running instance. Its own kind, so native-live.log says that a
     /// reopen shows the orb and no window.
     case reopen
+    /// #107: the alarm relaunch agent brought the app back. It shows nothing and takes no focus,
+    /// and the only call it opens is the due alarm's own.
+    case alarmRelaunch = "alarm_relaunch"
 
     /// A check that cannot open its own window exits with this code so a yielded
     /// proof launch can never be mistaken for a pass.
@@ -61,6 +64,7 @@ enum LaunchKind: String {
         if arguments.contains("--installed-proof") { return .installedProof }
         if arguments.contains("--self-check") { return .selfCheck }
         if arguments.contains("--ui-proof") { return .uiProof }
+        if arguments.contains(NativeAlarmRelaunchWriter.launchArgument) { return .alarmRelaunch }
         if loginLaunch { return .loginItem }
         if arguments.contains("--install-relaunch") { return .installRelaunch }
         return .interactive
@@ -72,7 +76,7 @@ enum LaunchKind: String {
     var activates: Bool {
         switch self {
         case .interactive, .loginItem: return true
-        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen: return false
+        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen, .alarmRelaunch: return false
         }
     }
 
@@ -81,7 +85,7 @@ enum LaunchKind: String {
     var presentsOrbAtLaunch: Bool {
         switch self {
         case .interactive, .loginItem, .installRelaunch, .reopen: return true
-        case .installedProof, .selfCheck, .uiProof, .verification: return false
+        case .installedProof, .selfCheck, .uiProof, .verification, .alarmRelaunch: return false
         }
     }
 
@@ -90,7 +94,7 @@ enum LaunchKind: String {
     var presentsWindowAtLaunch: Bool {
         switch self {
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return true
-        case .interactive, .loginItem, .reopen: return false
+        case .interactive, .loginItem, .reopen, .alarmRelaunch: return false
         }
     }
 
@@ -101,7 +105,7 @@ enum LaunchKind: String {
 
     var duplicateInstanceExitCodeForYield: Int32 {
         switch self {
-        case .interactive, .loginItem, .reopen: return 0
+        case .interactive, .loginItem, .reopen, .alarmRelaunch: return 0
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return LaunchKind.duplicateInstanceExitCode
         }
     }

@@ -19,18 +19,27 @@ function parseSingleAlarmTime(input: string, now: number, tz: string, modelAt?: 
   // A recurrence phrase describes the series, never a wall time, so it leaves the time text.
   const words = stripSeriesWords(input);
   // Labels come from owner input, not the model's arguments.
-  const trailing = /\b(?:and\s+((?:give|tell|show|read)\b.*)|that\s+(.+))$/i.exec(words);
+  const trailing = /\b(?:and\s+((?:give|tell|show|read|brief|talk)\b.*)|that\s+(.+))$/i.exec(words);
   const reminder = /\bremind me\b/i.test(words)
     ? /\bto\s+(?!(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)(.+)$/i.exec(words) : null;
-  const labelMatch = trailing ?? reminder;
-  const label = (trailing ? trailing[1] ?? trailing[2] : reminder?.[1])?.trim() ?? '';
-  const timeWords = labelMatch ? words.slice(0, labelMatch.index) : words;
+  // #107: a check-in or a talk-about ask carries its subject; a brief ask carries none.
+  const about = /\b(?:check(?:ing)?\s+in(?:\s+with\s+me)?|tell\s+me|talk\s+to\s+me)\b[^]*?\babout\s+(.+)$/i.exec(words);
+  const brief = /\b(?:brief\s+me|(?:give\s+me\s+(?:a|an|the)\s+)?(?:briefing|rundown|overview))\b/i.exec(words);
+  // A tail clause owns everything after it; an about or brief clause is lifted out so the clock words survive.
+  const tail = trailing ?? reminder;
+  const label = tail
+    ? ((trailing ? trailing[1] ?? trailing[2] : reminder?.[1]) ?? '').trim()
+    : (about?.[1] ?? brief?.[0] ?? '').trim();
+  const timeWords = tail ? words.slice(0, tail.index)
+    : about ? words.slice(0, about.index + about[0].length - (about[1] as string).length)
+    : brief ? words.slice(0, brief.index) + ' ' + words.slice(brief.index + brief[0].length) : words;
   let text = timeWords.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
   text = text.replace(/\b(?:um|uh|like|so)\b|\s-\s/g, ' ').replace(/(\d)\s*:\s*(\d)/g, '$1:$2')
     .replace(/\b([ap]m)(?:\s+\1)+\b/g, '$1').replace(/\bfor\s+(today|tomorrow|tonight)\b/g, '$1')
     .replace(/\b(\d{1,2})\s+([ap]m)\s+(\d{1,2})\b/g, '$1:$3 $2')
     .replace(/\bin\s+(?:an?|one)\s+hour\b/g, 'in one hour');
-  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\bremind me\b/g, ' ').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
+  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\bremind me\b/g, ' ')
+    .replace(/\bcheck\s+in(?:\s+with\s+me)?\b/g, ' ').replace(/\b(?:tell\s+me|talk\s+to\s+me)\b/g, ' ').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
   text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
   const named: Record<string, string> = { 'utc time': 'UTC', 'gmt time': 'UTC', 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
   const zonePattern = /\b(singapore time|new york time|utc time|gmt time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;

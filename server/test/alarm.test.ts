@@ -282,3 +282,28 @@ test('C-RECUR: a non-recurring ask keeps its one-shot instant', () => {
   if (oneShot.status === 'ready') assert.equal(oneShot.series, undefined);
   assert.equal(parseSeriesRule('set an alarm on Monday at ten'), undefined);
 });
+
+// #107: the owner's own wake-up, brief and check-in words carry their label and their clock.
+test('#107 the owner phrasing that must reach the alarm block', () => {
+  const now_ = Date.parse('2026-10-28T02:00:00Z');
+  const wake = parseAlarmTime('wake up at 10:30 and remind me to go to sport', now_, tz);
+  assert.equal(wake.status, 'ready');
+  if (wake.status === 'ready') {
+    assert.equal(wake.label, 'go to sport');
+  }
+  const brief = parseAlarmTime('wake me at 7 and brief me', now_, tz);
+  assert.equal(brief.status, 'ready');
+  if (brief.status === 'ready') assert.match(brief.label, /brief/);
+  const checkIn = parseAlarmTime('check in with me in an hour about the deck', now_, tz);
+  assert.equal(checkIn.status, 'ready');
+  if (checkIn.status === 'ready') {
+    assert.equal(checkIn.label, 'the deck');
+    assert.equal(checkIn.fireAtUtc, now_ + 3_600_000);
+  }
+  const tell = parseAlarmTime('tell me about the deck at 7', now_, tz);
+  if (tell.status === 'ready') assert.equal(tell.label, 'the deck');
+  const talk = parseAlarmTime('talk to me about the deck at 7', now_, tz);
+  if (talk.status === 'ready') assert.equal(talk.label, 'the deck');
+  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
+  if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.label, /brief/);
+});

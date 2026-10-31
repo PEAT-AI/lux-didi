@@ -151,8 +151,9 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
-  await owner('wake me in one minute');
+  await owner('remind me in one minute to check the deck');
   assert.match(await call('set_alarm'), /Alarm set/);
+  assert.equal(rows().filter(row => row.state === 'pending')[0].label, 'check the deck');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 1320000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
@@ -163,6 +164,30 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   sessionId = afterMissed.body.data.liveSessionId;
   peer = await attach(sessionId);
   assert.match(JSON.stringify(f.frames.slice(missedSetupStart).find(frame => frame.setup)), /missed alarm/i);
+  assert.match(JSON.stringify(f.frames.slice(missedSetupStart).find(frame => frame.setup)), /deck/, 'a missed alarm says what it was for');
+  await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
+  // #107: the missed alarm was mentioned once, so the next session's opening stays quiet about it.
+  const afterMention = await post('/api/v1/live-sessions', { inputClass: 'ordinary' }, 'synthetic-after-mention');
+  assert.equal(afterMention.status, 200, JSON.stringify(afterMention.body));
+  const mentionStart = f.frames.length;
+  const mentionPeer = await attach(afterMention.body.data.liveSessionId);
+  assert.doesNotMatch(JSON.stringify(f.frames.slice(mentionStart).find(frame => frame.setup)), /missed alarm/i);
+  await post(`/api/v1/live-sessions/${afterMention.body.data.liveSessionId}/revoke`, {}); mentionPeer.terminate();
+  // #107: with no call open, a labelled alarm comes back as her own spoken opening, not a chime.
+  const labelAlarm = 'synthetic-labelled-alarm';
+  host.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,'UTC','go to sport','pending','synthetic')", [labelAlarm, now + 60000]));
+  now += 60000;
+  await post('/api/v1/alarms/recheck', { reason: 'wake' });
+  await post('/api/v1/alarms/shell', { assertion: true, notifications: false, notificationState: 'not_asked' });
+  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' });
+  assert.equal(labelled.status, 201, JSON.stringify(labelled.body));
+  const labelStart = f.frames.length;
+  sessionId = labelled.body.data.liveSessionId;
+  peer = await attach(sessionId);
+  const opening = JSON.stringify(f.frames[labelStart]);
+  assert.match(opening, /\[alarm mode\]/, 'the first provider frame is the alarm opening');
+  assert.match(opening, /go to sport/, 'the opening carries the owner label');
+  assert.match(opening, /in your own words/, 'the opening asks for the reminder first, in her own voice');
   await owner('wake me in one minute');
   assert.match(await call('set_alarm'), /Alarm set/);
   const outageAlarm = rows().find(row => row.state === 'pending');
@@ -194,6 +219,11 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(rows().find(row => row.id === 'operator-pending').state, 'cancelled');
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
+  // #107: the alarm block reaching the provider is its own event, and each route names its mode.
+  assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'in_call'), 'the live call announcement is recorded');
+  assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'new_session'), 'the new session announcement is recorded');
+  // #107: an unresolved permission is never reported as a denial.
+  assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'notifications_not_asked'), 'not asked stays distinct from denied');
   // #751: one start line per host start, and it carries the pending count only, never a label or a time.
   const started = log.filter(row => row.event === 'alarm_scheduler_started');
   assert.equal(started.length, 1, 'one alarm_scheduler_started line at start');

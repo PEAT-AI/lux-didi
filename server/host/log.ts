@@ -192,7 +192,7 @@ const isSafeMembers = (value: unknown, allowed: readonly string[]): value is str
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
-const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
+const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification', 'alarm_relaunch'];
 /** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
 const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError', 'Unknown'];
 
@@ -221,6 +221,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || !ALARM_LOG_REASONS.some(reason => reason === value.reason)) return;
     return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason };
 
+  }
+  if (value.event === 'alarm_announced') {
+    // #107: the alarm block reached the provider. The proof that she was asked to speak, and how.
+    if (!closedKeys(value, ['alarmId', 'event', 'mode'])) return;
+    if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
+    if (value.mode !== 'new_session' && value.mode !== 'in_call') return;
+    return { event: 'alarm_announced', alarmId: value.alarmId, mode: value.mode };
+  }
+  if (value.event === 'alarm_relaunch_scheduled') {
+    // #107: the one relaunch agent is armed for the next due time, in seconds from now.
+    if (!closedKeys(value, ['dueInS', 'event'])) return;
+    if (!Number.isSafeInteger(value.dueInS) || (value.dueInS as number) < 0) return;
+    return { event: 'alarm_relaunch_scheduled', dueInS: value.dueInS };
+  }
+  if (value.event === 'alarm_relaunch_removed') {
+    // #107: nothing is pending, so the relaunch agent is gone.
+    if (!closedKeys(value, ['event'])) return;
+    return { event: 'alarm_relaunch_removed' };
   }
   if (value.event === 'tool_diagnostic_capture') {
     const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];

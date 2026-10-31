@@ -27,7 +27,7 @@ The shell immediately plays a short chime through the existing cached connecting
 
 ### Alarm speech, release 10.4
 
-A due alarm uses Naya's normal live persona, memory, calendar digest and research tools, with an alarm block appended to the normal instructions. She opens by name and time, says the stored reminder first, and gives a short day overview when the reminder requests an overview, briefing, rundown or what's on. An alarm does not receive the normal fresh-opening direction.
+A due alarm uses Naya's normal live persona, memory, calendar digest and research tools, with an alarm block appended to the normal instructions. She opens with the owner's name, the time and the reminder in her own words first ("Rob, it is 10:30, time for sport"), and gives a short day overview when the reminder asks for a brief, briefing, overview, rundown, check-in or what's on. The label comes from the owner's own words: "remind me to go to sport" stores `go to sport`, "brief me" and "give me a briefing" store a brief, and "check in with me in an hour about the deck" stores `the deck` on a relative alarm. An alarm does not receive the normal fresh-opening direction.
 
 With no live call, the shell starts an alarm call. During an existing call it routes the alarm into that call immediately as a host note, with no competing chime. When an alarm call becomes live, any fallback chime stops. The notification fallback has the default sound. No sleeping-Mac guarantee is made.
 
@@ -41,9 +41,28 @@ The menu bar shows `Alarm 08:00` for the next active alarm. `!` marks failed pow
 
 If the shell is unreachable, notification permission is denied or the power assertion fails when setting, the tool receipt says the alarm is committed but may not ring and gives the reason. Even a healthy receipt never promises that a sleeping Mac or closed lid will ring.
 
+## Waking a quit app (10.7)
+
+While any alarm is pending the app keeps exactly one user LaunchAgent,
+`~/Library/LaunchAgents/ai.peat.lux-didi.alarm.plist`. Its `StartCalendarInterval` is the next due
+time minus 60 seconds, and its program is `open -g -a <app> --args --alarm-relaunch`: it opens the app
+in the background and never steals focus. The agent is rewritten on every alarm change and again on
+quit, and removed when nothing is pending. `launchctl bootstrap` and `bootout` run through an
+injected runner, so tests use a temporary domain and never touch the real one.
+
+A launch with `--alarm-relaunch` logs `launch_kind alarm_relaunch`, shows no window and takes no
+focus, starts the host, and opens a live session only for the due alarm. Display sleep is fine:
+the wake timer fires while the display is off. A closed lid or a manual sleep still blocks it, as
+does a shutdown, and the agent cannot bring back a Mac that is not awake at the due time.
+
+In a live call the alarm is never a chime and never a second conversation: the shell reads the
+conversation's own state, and a session that is connecting, listening, speaking, muted, paused or
+rebuilding receives the existing alarm-mode host note inside that call. Only an app with no session
+opens one for the alarm.
+
 ## Diagnostics and verification
 
-Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_acknowledged`, `alarm_missed` and `alarm_degraded`. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
+Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_announced`, `alarm_acknowledged`, `alarm_missed`, `alarm_relaunch_scheduled`, `alarm_relaunch_removed` and `alarm_degraded`. `alarm_announced` carries `alarmId` and `mode` (`new_session` or `in_call`) and is written when the alarm block reaches the provider, which is the only proof that she was asked to speak. `alarm_degraded` with reason `notifications_not_asked` stays distinct from `notifications_denied`: the shell reports the permission only after the request resolved. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
 
 `bash scripts/check-host.sh` compiles a temporary shell on macOS without launching it and runs the synthetic alarm matrix against an offline-packed host. The matrix uses a stub clock, fake provider and fake shell; no real audio or accounts are used. `bash scripts/check-live-session.sh` runs the parser, authority, storage, scheduler and log tests; `bash scripts/check-native-live.sh` exercises injected power, notification and audio-output policy. `bash scripts/check-docs.sh` verifies public documentation and prompt surfaces.
 

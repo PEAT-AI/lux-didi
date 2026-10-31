@@ -5,11 +5,15 @@ import UserNotifications
 
 /// A provider-independent local subscription. It never selects a device or writes system volume.
 @MainActor final class NativeAlarmShell {
-    private struct Frame: Decodable { let type: String; let alarm: ShellAlarm?; let alarms: [ShellAlarm]? }
+    struct Frame: Decodable { let type: String; let alarm: ShellAlarm?; let alarms: [ShellAlarm]? }
+
+    /// #107: the shell reports the permission it observed, never one it assumed.
+    enum NotificationPermission: String { case notAsked = "not_asked", denied, allowed }
     private let authority: (origin: URL, request: NativeLiveRequestBuilder)
     private let ring: ConnectingRing
     private let onDue: (String) -> Void
-    private let isCallLive: () -> Bool
+    /// #107: alarm routing reads the conversation's session state, never capture state.
+    private let sessionState: () -> NativeLiveConversation.State
     private let onCaption: (String?) -> Void
     private var task: Task<Void, Never>?
     private var stopped = false
@@ -17,8 +21,11 @@ import UserNotifications
     private var epoch: String?
     private var alarms: [ShellAlarm] = []
     private var notificationsAllowed = false
+    private var notificationState: NotificationPermission = .notAsked
     private var permissionRequested = false
     private var attempted = Set<String>()
+    /// #107: every alarm mutation reaches the relaunch agent through this one callback.
+    var onAlarms: (([ShellAlarm]) -> Void)?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let session = URLSession(configuration: .ephemeral)
     private lazy var policy = AlarmShellPolicy(acquire: { [weak self] in
@@ -34,9 +41,9 @@ import UserNotifications
     })
 
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), ring: ConnectingRing,
-         isCallLive: @escaping () -> Bool = { false },
+         sessionState: @escaping () -> NativeLiveConversation.State = { .idle },
          onDue: @escaping (String) -> Void, onCaption: @escaping (String?) -> Void) {
-        self.authority = authority; self.ring = ring; self.isCallLive = isCallLive; self.onDue = onDue; self.onCaption = onCaption
+        self.authority = authority; self.ring = ring; self.sessionState = sessionState; self.onDue = onDue; self.onCaption = onCaption
     }
     func start() {
         guard task == nil, !stopped else { return }
@@ -80,40 +87,57 @@ import UserNotifications
         }
         observers.append((center, token))
     }
-    private func receive(_ frame: Frame) {
+    func receive(_ frame: Frame) {
         guard !stopped else { return }
         if let rows = frame.alarms {
             alarms = rows
+            onAlarms?(rows)
             policy.apply(rows, notificationsAllowed: notificationsAllowed)
             onCaption(policy.caption)
             let deadlines = rows.filter { $0.state == "ringing" }.compactMap(\.ringDeadlineUtc)
             if let deadline = deadlines.max() { ring.startAlarm(deadlineMs: deadline) } else { ring.stopAlarm() }
-            report()
+            // #107: the permission is reported only after it resolved, so a guess is never sent.
             if !permissionRequested && rows.contains(where: { $0.state == "pending" || $0.state == "ringing" }) {
                 permissionRequested = true
                 Task { [weak self] in
                     guard let self else { return }
                     let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
                     guard !self.stopped else { return }
-                    self.notificationsAllowed = allowed
+                    self.notificationsAllowed = allowed; self.notificationState = Self.permissionState(authorized: allowed)
                     // Re-register pending rows after permission resolves, never more than one request per id.
                     self.policy.refreshNotifications(self.alarms, notificationsAllowed: self.notificationsAllowed)
                     self.onCaption(self.policy.caption); self.report()
                 }
             }
+            else { report() }
         }
         if frame.type == "alarm_due", let alarm = frame.alarm, let deadline = alarm.ringDeadlineUtc,
            deadline > Int(Date().timeIntervalSince1970 * 1000) {
-            let started: Bool
-            if Self.shouldChime(callLive: isCallLive()) { started = ring.startAlarm(deadlineMs: deadline) }
-            else { ring.stopAlarm(); started = false }
+            // #107: a live session gets the existing alarm-mode host note; nothing chimes into it.
+            let live = Self.sessionIsLive(sessionState())
+            let started = !live && ring.startAlarm(deadlineMs: deadline)
+            if live { ring.stopAlarm() }
             if attempted.insert(alarm.id).inserted {
-                if started { post("ring-started", body: ["id": alarm.id]) }
-                onDue(alarm.id)
+                if live { noteLiveSession(alarm.id) }
+                else {
+                    if started { post("ring-started", body: ["id": alarm.id]) }
+                    onDue(alarm.id)
+                }
             }
         }
     }
-    private func report() { post("shell", body: ["assertion": alarms.isEmpty || policy.assertionHeld, "notifications": notificationsAllowed]) }
+    /// #107: the report carries the permission the shell observed, never one it assumed.
+    static func shellReport(assertion: Bool, notificationsAllowed: Bool, state: NotificationPermission) -> [String: Any] {
+        ["assertion": assertion, "notifications": notificationsAllowed, "notificationState": state.rawValue]
+    }
+    private func report() {
+        post("shell", body: Self.shellReport(assertion: alarms.isEmpty || policy.assertionHeld,
+                                             notificationsAllowed: notificationsAllowed, state: notificationState))
+    }
+    /// #107: the host log carries the relaunch agent's state, armed for the next due time.
+    func reportRelaunch(dueInS: Int?) {
+        post("relaunch", body: dueInS.map { ["action": "scheduled", "dueInS": $0] } ?? ["action": "removed"])
+    }
     func noteLiveSession(_ id: String) {
         // Route the occurrence into the live call without a competing chime.
         post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()])
@@ -124,7 +148,12 @@ import UserNotifications
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Task { _ = try? await session.data(for: request) }
     }
-    static func shouldChime(callLive: Bool) -> Bool { !callLive }
+    /// #107: the conversation is live in every state but idle, ended and failed, so an alarm that
+    /// arrives while she is thinking or speaking stays inside that call.
+    static func sessionIsLive(_ state: NativeLiveConversation.State) -> Bool {
+        state != .idle && state != .ended && state != .failed
+    }
+    static func permissionState(authorized: Bool) -> NotificationPermission { authorized ? .allowed : .denied }
     static func notificationContent() -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = "Alarm"; content.body = "Your alarm is due."

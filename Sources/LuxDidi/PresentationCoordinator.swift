@@ -10,7 +10,7 @@ extension LaunchKind {
     var activation: LaunchActivation {
         switch self {
         case .interactive, .loginItem, .installRelaunch, .reopen: return .regular
-        case .installedProof, .selfCheck, .uiProof, .verification: return .accessory
+        case .installedProof, .selfCheck, .uiProof, .verification, .alarmRelaunch: return .accessory
         }
     }
     /// The policy for `NSApp.setActivationPolicy`, set once at launch and never

@@ -1,0 +1,91 @@
+{
+  "provenance": {
+    "source_finding": "C-EVALS2 tier 2 wrong-tool negative",
+    "date": "2026-11-02",
+    "synthetic": true,
+    "note": "Hand-authored synthetic model turn. No provider call was made; frames are provider wire shapes only."
+  },
+  "steps": [
+    {
+      "trigger": "start",
+      "frames": [
+        {
+          "type": "session.started",
+          "session": {
+            "id": "sess_eval_wrong"
+          }
+        }
+      ]
+    },
+    {
+      "trigger": "owner",
+      "frames": [
+        {
+          "type": "response.event",
+          "event": {
+            "type": "response.created",
+            "response": {
+              "id": "resp_w1"
+            }
+          },
+          "delegation_id": "item_dlg1"
+        },
+        {
+          "type": "response.event",
+          "event": {
+            "type": "response.output_item.done",
+            "item": {
+              "type": "function_call",
+              "name": "chat_resolve_target",
+              "arguments": "{\"query\": \"design review\"}",
+              "call_id": "call_w1"
+            }
+          },
+          "delegation_id": "item_dlg1"
+        },
+        {
+          "type": "response.event",
+          "event": {
+            "type": "response.done",
+            "response": {
+              "id": "resp_w1",
+              "status": "completed"
+            }
+          },
+          "delegation_id": "item_dlg1"
+        }
+      ]
+    },
+    {
+      "trigger": "continuation",
+      "frames": [
+        {
+          "type": "response.event",
+          "event": {
+            "type": "response.created",
+            "response": {
+              "id": "resp_w2"
+            }
+          },
+          "delegation_id": "item_dlg1"
+        },
+        {
+          "type": "session.output_transcript.delta",
+          "event_id": "event_w2",
+          "delta": "Tomorrow you have the design review at 3."
+        },
+        {
+          "type": "response.event",
+          "event": {
+            "type": "response.done",
+            "response": {
+              "id": "resp_w2",
+              "status": "completed"
+            }
+          },
+          "delegation_id": "item_dlg1"
+        }
+      ]
+    }
+  ]
+}

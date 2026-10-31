@@ -1,0 +1,21 @@
+{
+  "provenance": {
+    "source_finding": "C-EVALS2 tier 3 post-call review, synthetic session capture",
+    "date": "2026-11-02",
+    "synthetic": true,
+    "note": "Hand-written metadata-only host-log capture. No owner words, no third party, no provider payload."
+  },
+  "events": [
+    { "event": "tool_call_outcome", "callKey": "call_01", "tool": "calendar_list", "outcome": "completed", "ms": 412,
+      "args": { "query": "standup with Acme" } },
+    { "event": "tool_call_outcome", "callKey": "call_02", "tool": "mail_send", "outcome": "failed", "refusalCode": "provider_timeout", "ms": 8000 },
+    { "event": "live_tool_refused", "sequence": 2, "tool": "vault_write", "reason": "no_owner_input" },
+    { "event": "tool_call_outcome", "callKey": "call_03", "tool": "drive_read", "outcome": "blocked", "refusalCode": "grant_missing" },
+    { "event": "tool_classified_failure", "connector": "google", "proven": true, "code": "auth_expired" },
+    { "event": "live_claim_without_call", "sequence": 3, "ms": 1200 },
+    { "event": "live_dead_air", "deadAirMs": 4200 },
+    { "event": "live_dead_air", "deadAirMs": 1500 },
+    { "event": "live_recovery", "path": "resume", "attempt": 1, "code": "upstream_drop", "cause": "transport" },
+    { "event": "live_turn_open", "msSinceLastModelAudio": 2300 }
+  ]
+}

@@ -180,6 +180,62 @@ import Foundation
         check(!gate.changed("1;main") && !gate.changed("1;main"), "an unchanged screen state is not written again")
         check(gate.changed("2;main"), "a change is written")
         check(gate.changed("1;main"), "and so is the change back")
+
+        // ORB-107: a press on the orb is never a command. A tap under the drag band writes one
+        // orb_click_ignored receipt and does nothing else; a drag still moves the panel.
+        func pressEvent(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                               windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!
+        }
+        let orb = MiniOrbHitView()
+        var ignored = 0
+        var moves = 0
+        orb.onIgnoredClick = { ignored += 1 }
+        orb.moveOnDrag = { _ in moves += 1 }
+        orb.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
+        orb.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 22, y: 21)))
+        check(ignored == 1 && moves == 0,
+              "a 2 pt press on the mini orb writes orb_click_ignored and moves nothing")
+        orb.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
+        orb.mouseDragged(with: pressEvent(.leftMouseDragged, NSPoint(x: 60, y: 40)))
+        orb.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 60, y: 40)))
+        check(moves == 1 && ignored == 1, "a drag still moves the orb and writes no ignore receipt")
+        check(MiniOrbFrameStore.persistsFrame(userDragging: true)
+            && !MiniOrbFrameStore.persistsFrame(userDragging: false),
+              "the remembered frame still comes from a drag and from nothing else")
+        check(MiniOrbPressPolicy.isTap(down: NSPoint(x: 20, y: 20), up: NSPoint(x: 23, y: 21), dragged: false)
+            && !MiniOrbPressPolicy.isTap(down: NSPoint(x: 20, y: 20), up: NSPoint(x: 26, y: 20), dragged: false)
+            && !MiniOrbPressPolicy.isTap(down: NSPoint(x: 20, y: 20), up: NSPoint(x: 20, y: 20), dragged: true),
+              "the tap band stays the 4 pt one and a drag is never a tap")
+
+        // Right Command still connects: the hotkey tap is the presence machine's own toggle.
+        var opened = 0
+        let hotkey = NativePresence(effects: PresenceEffects(openSession: { _ in opened += 1 }))
+        hotkey.tap(.hotkey)
+        check(opened == 1 && hotkey.state == .connecting, "a Right Command tap still opens the session")
+
+        // ORB-107: every signal that can leave the page's surface state stale re-asserts it, and the
+        // Space change arrives on the workspace centre it is really posted on.
+        let workspace = NotificationCenter()
+        let application = NotificationCenter()
+        var reasons: [MiniOrbSurfaceSignals.Reason] = []
+        let signals = MiniOrbSurfaceSignals(workspace: workspace, application: application) { reasons.append($0) }
+        signals.observe()
+        workspace.post(name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        workspace.post(name: NSWorkspace.didWakeNotification, object: nil)
+        application.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        check(reasons == [.space, .wake, .screens],
+              "a Space change, a wake and a screen change each re-assert the surface")
+        application.post(name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        check(reasons.count == 3, "the Space observer is on the workspace centre, not the default one")
+        reasons.removeAll()
+        signals.occlusionChanged(true)
+        signals.occlusionChanged(false)
+        signals.occlusionChanged(false)
+        check(reasons == [.occlusion], "an occlusion back to visible re-asserts once, and only on that edge")
+        signals.stop()
+        workspace.post(name: NSWorkspace.didWakeNotification, object: nil)
+        check(reasons == [.occlusion], "a stopped observer re-asserts nothing")
         print(failures == 0 ? "WINDOW-ROUTING TESTS PASS" : "WINDOW-ROUTING TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

@@ -465,7 +465,7 @@ test('direct owner: resolution needs no open verb and receipts retain their real
   noteModelOutput(run);
   noteOwnerWords(run, 'what time is it');
   const words = ownerWords(run);
-  assert.ok('target' in openTarget('open_source', { handle }, words), 'resolution follows the model call; OwnerRequests owns admission');
+  assert.ok('target' in openTarget('open_source', { handle }, words), 'resolution follows the model call; OwnerTasks owns admission');
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }, 'the host receipt carries the guard code');
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),

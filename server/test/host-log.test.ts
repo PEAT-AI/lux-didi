@@ -1,4 +1,4 @@
-import { OwnerRequests } from '../tools/owner-request.js';
+import { OwnerTasks } from '../tools/owner-task.js';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -738,7 +738,7 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
 
 // C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
 test('direct102: open audit reports request counts and codes, never owner or target text', () => {
-  const requests = new OwnerRequests(() => 10);
+  const requests = new OwnerTasks(() => 10);
   requests.observe('s', 'j1', 'open the synthetic pitch deck in my browser');
   const lines: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });

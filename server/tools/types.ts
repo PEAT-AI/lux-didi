@@ -106,9 +106,7 @@ export type RequestAuthorization =
   | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string; observedAt?: number }
   | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; observedAt?: number; receipt?: unknown };
 
-export interface OwnerRequestPort {
-  invalidateAlarm(session: string): void;
-  answered?(session: string, spoken?: string): void;
+export interface OwnerTaskPort {
   partial(session: string): void;
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;
@@ -128,7 +126,7 @@ export interface OwnerRequestPort {
 }
 
 export interface ToolsOwner {
-  readonly ownerRequests: OwnerRequestPort;
+  readonly ownerTasks: OwnerTaskPort;
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;

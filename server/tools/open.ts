@@ -1,4 +1,4 @@
-import type { OwnerRequestPort } from './types.js';
+import type { OwnerTaskPort } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
 import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, stripOpenLines, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
@@ -91,7 +91,7 @@ export function openDestinationClass(tool: OpenFamilyTool): OpenDestinationClass
 }
 
 /** Request audit metadata only: never target text, handles, URLs or owner words. */
-export function openAudit(input: ReturnType<OwnerRequestPort['audit']> & { refusalCode: string }): void {
+export function openAudit(input: ReturnType<OwnerTaskPort['audit']> & { refusalCode: string }): void {
   hostLogEvent({ event: 'open_audit', ...input });
 }
 

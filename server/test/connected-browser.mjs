@@ -223,7 +223,7 @@ try {
       try {
         await start(0, ownerState, mode);
         context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' });
-        const unexpected = [], ownerErrors = [], ownerConsole = [], ownerRequests = [];
+        const unexpected = [], ownerErrors = [], ownerConsole = [], ownerTasks = [];
         let paired = false;
         await context.route('**/*', route => {
           const url = new URL(route.request().url());
@@ -233,7 +233,7 @@ try {
         page = await context.newPage();
         page.on('pageerror', error => ownerErrors.push(error.message));
         page.on('console', message => { if (message.type() === 'error') ownerConsole.push({ text: message.text(), paired }); });
-        page.on('request', request => { if (request.url().includes('/api/v1')) ownerRequests.push({ path: new URL(request.url()).pathname, method: request.method() }); });
+        page.on('request', request => { if (request.url().includes('/api/v1')) ownerTasks.push({ path: new URL(request.url()).pathname, method: request.method() }); });
         await page.goto(descriptor.origin); await page.locator('#pair-code').waitFor();
         const pairing = await operator('/auth/pairing', {}, ownerState);
         // Observe exact real lifecycle responses before submitting: no late-listener race.
@@ -261,7 +261,7 @@ try {
             consentRendered: !!document.querySelector('#connected-consent'),
             available: document.querySelector('#connected-draft') !== null,
           }));
-          console.error('CONSENT-MISSING', JSON.stringify({ mode, api: { status: status.model, route: route.status }, seen, ownerErrors, ownerConsole, ownerRequests }));
+          console.error('CONSENT-MISSING', JSON.stringify({ mode, api: { status: status.model, route: route.status }, seen, ownerErrors, ownerConsole, ownerTasks }));
         }
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
@@ -283,7 +283,7 @@ try {
         assert.deepEqual(unexpected, []); assert.deepEqual(ownerErrors, []);
         assert.ok(ownerConsole.filter(event => !event.paired).every(event => event.text.includes('401 (Unauthorized)')), `only the expected unauthenticated pairing response is allowed before pairing: ${JSON.stringify(ownerConsole.filter(event => !event.paired))}`);
         assert.deepEqual(ownerConsole.filter(event => event.paired), []);
-        const posts = ownerRequests.filter(request => request.method === 'POST');
+        const posts = ownerTasks.filter(request => request.method === 'POST');
         assert.deepEqual(posts.map(request => request.path).sort(), ['/api/v1/auth/pair', '/api/v1/conversation-selection/clear'], JSON.stringify(posts));
         assert.deepEqual((await api('/sessions')).items, [], 'owner presentation must not save a local session or entry');
         steps.push(`${mode} observed-posts=${JSON.stringify(posts)} pairing-clear-status=200 no-saved-sessions=true`);

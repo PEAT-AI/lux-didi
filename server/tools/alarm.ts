@@ -198,6 +198,8 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
 export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;
 export type AlarmToolName = typeof ALARM_NAMES[number];
 export const ALARM_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'owner-alarms' } as const;
+/** D3: a recurrence the owner never said is dropped, never applied, and the result says so. */
+export const RECURRENCE_NOT_ASKED = 'Recurrence not applied: the owner did not ask for one.';
 export interface AlarmArguments { id?: string; fire_at_utc?: number; kind?: SeriesKind; weekdays?: number[] }
 const WEEKDAY_LIMIT = 7;
 export function validateAlarmArguments(args: unknown): args is AlarmArguments {

@@ -375,7 +375,7 @@ test('direct102 real host: any deck selects the top shown result from this reque
   const second = shapeDriveFile({ name: 'Second synthetic deck', webViewLink: 'https://drive.google.com/file/d/synthetic-second/view' });
   const secondHandle = second.text.match(/open: (L[0-9]+)/)![1]!;
   const shown = exposeToolResults([{ name: 'drive_search_files', response: { text: `${first.text}\n${second.text}` } }]);
-  const requests = h.tools!.owner.ownerRequests;
+  const requests = h.tools!.owner.ownerTasks;
   requests.shown(session.liveSessionId, requests.currentId(session.liveSessionId)!, shown);
   const opened = await call(h, 'open_source', { handle: secondHandle });
   assert.equal(opened['code'], 'opened', JSON.stringify(opened));
@@ -409,7 +409,7 @@ test('hear104 typed owner input grants an open through the live text entry point
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
   h.owner.text('open example.com');
-  const ask = h.tools!.owner.ownerRequests.authorize(session.liveSessionId, 'open', 'https://example.com/');
+  const ask = h.tools!.owner.ownerTasks.authorize(session.liveSessionId, 'open', 'https://example.com/');
   assert.equal(ask.code, 'allowed');
   assert.match(ask.words ?? '', /open example\.com/);
   attachment.close();

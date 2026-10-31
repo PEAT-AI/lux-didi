@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { beginHandleSession, endHandleSession, exposeHandles, withOpenHandles } from '../tools/open-handles.js';
-import { OwnerRequests, requestRefusal } from '../tools/owner-request.js';
+import { OwnerTasks, requestRefusal } from '../tools/owner-task.js';
 import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
 
@@ -12,7 +12,7 @@ const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-uttera
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
 for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' / ')}`, async () => {
-  const owner = new OwnerRequests(() => 0);
+  const owner = new OwnerTasks(() => 0);
   const observe: (session: string, journalId: string, words: string, at?: number) => void = owner.observe.bind(owner);
   row.finals.forEach((words, i) => {
     observe('synthetic', `final-${i}`, words, (row.now ?? now) + (row.finalOffsetsMs?.[i] ?? 0));
@@ -49,7 +49,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
 });
 
 test('a completed answer cannot authorize a spontaneous new action', () => {
-  const owner = new OwnerRequests(() => 0);
+  const owner = new OwnerTasks(() => 0);
   owner.observe('synthetic', 'final', 'at seven am');
   owner.answered('synthetic');
   assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'no_owner_request');

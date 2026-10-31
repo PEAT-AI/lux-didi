@@ -756,7 +756,7 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
-  f.owner.ownerRequests.answered?.('run', 'How long should the block be?');
+  f.owner.ownerTasks.answered?.('run', 'How long should the block be?');
   f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
   assert.equal(created.status, 'completed');
@@ -1005,14 +1005,14 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
-  f.owner.ownerRequests.answered?.('run');
+  f.owner.ownerTasks.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
   const names = liveTools(f).map(definition => definition.name);
   assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
-  f.owner.ownerRequests.answered?.('run');
+  f.owner.ownerTasks.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
   const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
   assert.equal(port.log.length, 2, 'saying send it writes nothing new');
@@ -1048,12 +1048,12 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   assert.match(String(invented.result_json), /event_not_created_here/);
   assert.match(String(invented.result_json), /in this session/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
-  f.owner.ownerRequests.answered?.('run');
+  f.owner.ownerTasks.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
   assert.equal(created.status, 'completed');
   assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
-  f.owner.ownerRequests.answered?.('run');
+  f.owner.ownerTasks.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
@@ -1067,7 +1067,7 @@ test('W1030 delete_event: a block the owner names is removed only when this sess
   const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
   assert.equal(removed.status, 'completed');
   assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
-  f.owner.ownerRequests.answered?.('run');
+  f.owner.ownerTasks.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j2', 'cancel that meeting', 2_000);
   const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
   assert.equal(none.status, 'completed');

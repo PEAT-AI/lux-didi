@@ -98,7 +98,6 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   }
   await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
     const args = { fire_at_utc: alarmNow + 1000 };
-    owner.ownerRequests.answered!(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
     const definition = live.find(tool => tool.name === 'set_alarm')!;
     const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
@@ -126,7 +125,6 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   ];
   for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask', 'cue-free ask'] as const) {
     await t.test(`${entry.name}: ${mode}`, async () => {
-      owner.ownerRequests.answered?.(session.liveSessionId);
       noteModelOutput(session.liveSessionId);
       if (mode !== 'no ask') {
         noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
@@ -153,7 +151,6 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;
   // A5: three owner asks share one unfinished answer, but not an open receipt.
-  owner.ownerRequests.answered!(session.liveSessionId);
   const urls: unknown[] = [];
   t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return 'opened' as const; });
   const cases = [
@@ -244,13 +241,12 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.after(() => { if (oldTZ === undefined) delete process.env.TZ; else process.env.TZ = oldTZ; });
   for (const row of corpus.filter(row => row.call.tool === 'set_alarm' || row.call.tool.startsWith('open_'))) {
     await t.test(`wire corpus ${row.id}`, async () => {
-      owner.ownerRequests.release(session.liveSessionId);
+      owner.ownerTasks.release(session.liveSessionId);
       alarmNow = row.now ?? Date.UTC(2026, 9, 30, 6);
       for (const [i, words] of row.finals.entries()) {
         owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, alarmNow + (row.finalOffsetsMs?.[i] ?? 0));
         if (row.clarifyAfter?.includes(i)) {
-          owner.ownerRequests.clarify(session.liveSessionId, 'set_alarm', 'missing_time');
-          owner.ownerRequests.answered?.(session.liveSessionId);
+          owner.ownerTasks.clarify(session.liveSessionId, 'set_alarm', 'missing_time');
         }
       }
       alarmNow += row.toolDelayMs ?? 0;
@@ -426,7 +422,7 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   f.send({ setupComplete: {} });
   await attachment.ready;
   await f.frame(2);
-  const granted = () => owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio').code;
+  const granted = () => owner.ownerTasks.authorize(session.liveSessionId, 'create_event', 'cardio').code;
   f.send({ serverContent: { inputTranscription: { text: 'put cardio in my calendar at 11', finished: true } } });
   assert.ok(await settled(() => granted() === 'allowed'), `the ask grants before any question: ${granted()}`);
   f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true }, generationComplete: true, turnComplete: true } });
@@ -434,8 +430,8 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   const afterQuestion = granted();
   f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
   const allowed = await settled(() => granted() === 'allowed');
-  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion}); ask=${JSON.stringify(owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio'))} current=${String(owner.ownerRequests.currentId(session.liveSessionId))}`);
-  assert.equal(owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
+  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion}); ask=${JSON.stringify(owner.ownerTasks.authorize(session.liveSessionId, 'create_event', 'cardio'))} current=${String(owner.ownerTasks.currentId(session.liveSessionId))}`);
+  assert.equal(owner.ownerTasks.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
 });
 
 // #797: the retry claim is only checkable after a refused write, and a call that did happen silences it.

@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
 import { hostLogEvent } from './host-events.js';
+import { ownerKindOf } from './owner-task.js';
+import type { OwnerTaskPort } from './types.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Internal reads remain dispatchable by research, not directly callable by the voice model.
@@ -69,6 +71,8 @@ export interface ToolCallsContext {
   signals?: ReadonlyMap<string, AbortSignal>;
   /** Text's gate runs on the complete continuation in the next loop iteration. */
   authorize?: boolean;
+  /** D2: owner-task operations. A write tool runs only on one of the owner's own bounded operations. */
+  ownerTasks?: OwnerTaskPort;
 }
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
@@ -172,6 +176,13 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {
             record.reason = 'grant_not_permitted'; return;
+          }
+          // D2: the catalogue exposes every supported tool, so a write's authority is the owner's own
+          // bounded operation, checked here at the one grant point. Each refusal names its layer.
+          const operationKind = ownerKindOf(tool.name);
+          if (operationKind !== undefined && ctx.ownerTasks !== undefined) {
+            const operation = ctx.ownerTasks.authorize(host.runId, operationKind, '');
+            if (operation.code !== 'allowed' && operation.code !== 'idempotent') { record.reason = `operation_${operation.code}`; return; }
           }
           if (!await ctx.authority.isCurrent(host, tool, signal)) { record.reason = 'stale_or_revoked_authority'; return; }
           if (signal.aborted || ctx.control.signal.aborted) throw new Interrupted('cancelled');

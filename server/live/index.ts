@@ -1,6 +1,6 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
-import { requestRefusal } from '../tools/owner-request.js';
+import { requestRefusal } from '../tools/owner-task.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -473,8 +473,6 @@ export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_
 export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
-/** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault']]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
@@ -758,9 +756,6 @@ interface ActiveSession {
   /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
   claimText: string; claimTimer?: { cancel: () => void } | undefined;
   claimToolSeen: boolean; claimCorrected: boolean;
-  /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
-   *  provider opens a model turn, which can arrive after the transcript in the same batch. */
-  answeredWords?: string | undefined;
   /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
   claimWriteRefused: boolean;
   inputJournalId?: number;
@@ -2054,7 +2049,7 @@ export class LiveSessionOwner {
       if (!saved) throw new LiveError('invalidated');
       registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim), (tx, id, args) => this.#stageComposedNote(tx, id, args, stageHandle), this.#composedNotes()).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && OWNER_WRITE_RESOURCES.get(tool.name) === tool.resourceId && tool.accountId === 'gateway:live-voice').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+        grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const deadLine = this.#deadLineBefore(liveSessionId);
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
@@ -2182,7 +2177,7 @@ export class LiveSessionOwner {
   /** A direct owner save freezes and authorizes one remote write, without a confirmation stage. */
   #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject | (() => Promise<JsonObject>) {
     void handle;
-    const requests = this.#tools?.owner.ownerRequests;
+    const requests = this.#tools?.owner.ownerTasks;
     const target = sha256(canonicalJSON(args));
     const request = requests?.authorize(liveSessionId, 'lux_note', target);
     if (!request || request.code === 'no_owner_request' || request.code === 'request_expired' || request.code === 'grant_spent') return requestRefusal(request?.code ?? 'no_owner_request');
@@ -2650,7 +2645,6 @@ export class LiveSessionOwner {
   #resetClaimCheck(handle: ActiveSession): void {
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false;
-    handle.answeredWords = undefined;
   }
 
   /**
@@ -3330,7 +3324,7 @@ export class LiveSessionOwner {
     if (ringing.some(alarm => alarm.rebuilds >= 1)) return false;
     for (const alarm of ringing) alarm.rebuilds += 1;
     handle.sessionTimer?.cancel();
-    this.#tools?.owner.ownerRequests.invalidateAlarm(handle.liveSessionId);
+    // D2: a rebuild keeps the owner task, its operations and its ledger; nothing is invalidated here.
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
     // line names the generation it really belongs to instead of the open-time zero.
@@ -4004,9 +3998,6 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
-          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
-          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, handle.answeredWords);
-          handle.answeredWords = undefined;
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
           this.#logVoiceProfile(handle, generation);
@@ -4093,8 +4084,6 @@ export class LiveSessionOwner {
           const said = stripNonLexicalTags(event.text);
           if (said.trim() && handle.pendingCallIds.size === 0) handle.lookupAckAt = this.#now();
           countTurnScript(handle, said);
-          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
-          handle.answeredWords = `${handle.answeredWords ?? ''} ${said}`.slice(-400);
           handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
@@ -4337,8 +4326,8 @@ export class LiveSessionOwner {
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
-      const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
-      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
+      const requestId = this.#tools!.owner.ownerTasks.currentId(handle.liveSessionId);
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass], ownerTasks: this.#tools!.owner.ownerTasks });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
         this.#tools!.owner.releaseEvidence(host.runId, [...raw.bindings, ...authorized.bindings]);
@@ -4366,7 +4355,7 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : closed ?? (record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused');
-        if (ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId ?? '');
+        if (ok) this.#tools!.owner.ownerTasks.source(handle.liveSessionId, stepSourceOf(call.name), requestId ?? '');
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
@@ -4394,9 +4383,9 @@ export class LiveSessionOwner {
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
-        const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        const requestId = this.#tools!.owner.ownerTasks.currentId(handle.liveSessionId);
         const result = await this.#researchWeb!.search(request);
-        if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
+        if (result.ok) this.#tools!.owner.ownerTasks.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;
       } } }),
       emit: progress => {
@@ -4748,7 +4737,7 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      ownerRequestId = this.#tools.owner.ownerRequests.currentId(handle.liveSessionId);
+      ownerRequestId = this.#tools.owner.ownerTasks.currentId(handle.liveSessionId);
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(call.id), tool: call.name });
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -4806,7 +4795,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
-          step: useStep, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
+          step: useStep, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass], ownerTasks: this.#tools!.owner.ownerTasks });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
@@ -5004,7 +4993,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           const shown = exposeToolResults(responses);
-          if (ownerRequestId) this.#tools?.owner.ownerRequests.shown(handle.liveSessionId, ownerRequestId, shown);
+          if (ownerRequestId) this.#tools?.owner.ownerTasks.shown(handle.liveSessionId, ownerRequestId, shown);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
@@ -5051,7 +5040,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
       if (event.type === 'inputTranscription' && !event.finished && text) {
         noteOwnerPartial(handle.liveSessionId, text);
-        if (transcription?.finalOrigin !== 'typed') this.#tools?.owner.ownerRequests.partial(handle.liveSessionId);
+        if (transcription?.finalOrigin !== 'typed') this.#tools?.owner.ownerTasks.partial(handle.liveSessionId);
       }
       const mono = hostMonotonicMs();
       tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',

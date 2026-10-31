@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
-import { liveMigrations, validateLiveProfile } from '../live/index.js';
+import { claimsWithoutCall, liveMigrations, validateLiveProfile } from '../live/index.js';
 import { composeLive } from '../host/live.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
@@ -395,3 +395,57 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
     assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
   }
 });
+
+/** #795/#797: settle the host's own async work without a timer, then ask. */
+const settled = async (until: () => boolean): Promise<boolean> => {
+  for (let attempt = 0; attempt < 400 && !until(); attempt++) await new Promise<void>(resolve => setImmediate(resolve));
+  return until();
+};
+
+// #795: the clarify-then-answer shape on the real call path. The model answers his calendar ask with a
+// question, so the live call site hands that answer to the owner request and his one-line reply keeps the
+// write grant. Without the question in that call, the same reply carries nothing (the paired case below).
+test('#795 the live call site keeps a calendar grant across the question the model asked back', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-clarify-'));
+  const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+  const f = await fixture(t);
+  const registry = new McpRegistry();
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
+  t.after(() => port.close());
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (id, signal) => lookup?.(id, signal) ?? null });
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic' } });
+  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
+    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
+  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
+  const session = service.create('ordinary', randomUUID(), context);
+  const attachment = service.attach(session.liveSessionId, context);
+  await f.frame(1);
+  f.send({ setupComplete: {} });
+  await attachment.ready;
+  await f.frame(2);
+  const granted = () => owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio').code;
+  f.send({ serverContent: { inputTranscription: { text: 'put cardio in my calendar at 11', finished: true } } });
+  await settled(() => granted() === 'allowed');
+  f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true } } });
+  f.send({ serverContent: { turnComplete: true } });
+  await settled(() => granted() === 'no_owner_request');
+  f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
+  const allowed = await settled(() => granted() === 'allowed');
+  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()}`);
+  assert.equal(owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
+});
+
+// #797: the retry claim is only checkable after a refused write, and a call that did happen silences it.
+for (const [said, writeRefused, toolSeen, flagged] of [
+  ['I tried again and it still did not go through.', true, false, true],
+  ['Let me retry that, still nothing.', false, false, false],
+  ['I retried it and it went through.', true, true, false],
+  ['It is still on your calendar.', true, false, false],
+  ['Let me check your calendar.', true, false, true],
+] as const) {
+  test(`#797 "${said}" refused=${writeRefused} callSeen=${toolSeen} -> ${flagged ? 'flagged' : 'left alone'}`, () => {
+    assert.equal(claimsWithoutCall({ text: said, writeRefused, toolSeen }), flagged);
+  });
+}

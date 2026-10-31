@@ -97,9 +97,20 @@ function shapeOf(value: unknown): string {
   if (Array.isArray(value)) return `array_${value.length}`;
   return jsonTypeOf(value);
 }
+/** #798: a finite number or a boolean cannot be his words, so a refused call may name that value back. */
+const SCALAR_VALUE = /^-?\d{1,15}(?:\.\d{1,9})?$/;
+function failedScalar(value: unknown): string | undefined {
+  if (typeof value === 'boolean') return `boolean=${value}`;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return SCALAR_VALUE.test(String(value)) ? `number=${String(value)}` : undefined;
+}
 function logArgumentsRejected(name: string, args: unknown): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
-  const fields = Object.keys(record).slice(0,24).map(key => `${/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key'}:${shapeOf(record[key])}`);
+  const fields = Object.keys(record).slice(0,24).map(key => {
+    const named = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key';
+    const scalar = failedScalar(record[key]);
+    return `${named}:${scalar ?? shapeOf(record[key])}`;
+  });
   hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields, reason: args === null || typeof args !== 'object' || Array.isArray(args) ? 'arguments_not_object' : 'schema_validation_failed' });
 }
 /** The one line the model may speak when a call is refused for its arguments: owner-facing, no host prose. */

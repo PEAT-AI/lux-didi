@@ -286,6 +286,17 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
 
+// #798: a refused write may name the scalar it refused, because a number or a boolean cannot be his words.
+test('#798 tool_arguments_rejected admits a key:number=value and a key:boolean=value, never free text', () => {
+  const line = (fields: string[]) => ({ event: 'tool_arguments_rejected', tool: 'create_event', fields, reason: 'schema_validation_failed' });
+  assert.deepEqual(safeEvent(line(['duration_minutes:number=1.5', 'all_day:boolean=true'])), line(['duration_minutes:number=1.5', 'all_day:boolean=true']));
+  assert.deepEqual(safeEvent(line(['summary:string_15', 'duration_minutes:number'])), line(['summary:string_15', 'duration_minutes:number']));
+  assert.equal(safeEvent(line(['summary:string=cardio with Zara'])), undefined, 'a text value is never admitted');
+  assert.equal(safeEvent(line(['summary:string_99999999'])), undefined, 'a length stays bounded');
+  assert.equal(safeEvent(line(['duration_minutes:number=1e400'])), undefined, 'only a plain decimal number is admitted');
+  assert.equal(safeEvent(line(['all_day:boolean=yes'])), undefined, 'a boolean is true or false');
+});
+
 test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {
   const claim = { event: 'live_claim_without_call', sequence: 7, ms: 3_000 };
   assert.deepEqual(safeEvent(claim), claim, 'the turn sequence and the bound are the whole line');

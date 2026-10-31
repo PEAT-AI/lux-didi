@@ -720,6 +720,24 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 
+// #798: a refused write keeps the scalar the validator refused, by field name, so the bad length is
+// recoverable after the call is gone. A text value still travels as its length alone.
+test('#798 a refused write logs its failing number by field name and never its text', async () => {
+  const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
+  const write = errorTool({ name: 'create_event', effect: 'write', validate: () => false });
+  try {
+    await runToolCalls(owner, [{ id: '1', name: 'create_event', args: { summary: 'cardio with Zara', duration_minutes: 1.5, all_day: true } }], errorContext(write) as never);
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
+  assert.equal(event.tool, 'create_event');
+  assert.ok(event.fields.includes('duration_minutes:number=1.5'), `the refused scalar is recoverable: ${event.fields.join(',')}`);
+  assert.ok(event.fields.includes('all_day:boolean=true'), `the refused switch is recoverable: ${event.fields.join(',')}`);
+  assert.ok(event.fields.includes('summary:string_15'), 'a text value is still only its length');
+  assert.doesNotMatch(JSON.stringify(event), /Zara/, 'no free text reaches the log');
+});
+
 
 async function receivedOwnerFixture(t: TestContext) {
   const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });

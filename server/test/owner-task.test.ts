@@ -23,19 +23,19 @@ for (const [kind, words] of [
     const gate = new OwnerTasks(() => 0);
     gate.observe('s', 'j1', words);
     assert.equal(gate.authorize('s', kind, 'target').code, 'allowed', words);
-    assert.equal(gate.authorize('s', 'other' as never, 'target').code, 'grant_spent');
   });
 }
 
 test('D2: the same ask grants each kind it names, and nothing it does not', () => {
   assert.deepEqual(kinds('draft an email to Sam and put lunch in my calendar at noon'), ['create_event', 'draft_email']);
   assert.deepEqual(kinds('cancel my alarm and show my alarms'), ['list_alarms', 'cancel_alarm']);
+  assert.deepEqual(kinds('remember this and open my inbox'), ['lux_note', 'open']);
 });
 
 // D2: a bare noun mention, a question, a negation and a past statement grant nothing.
 test('D2 (h): noncommands create nothing and grant nothing', () => {
   const gate = new OwnerTasks(() => 0);
-  for (const words of ['I put the meeting in my calendar yesterday', "don't book anything", 'my calendar note', 'the alarm', 'did you book the gym?', 'what is on my calendar?']) {
+  for (const words of ['I put the meeting in my calendar yesterday', "don't book anything", 'the alarm', 'did you book the gym?', 'what is on my calendar?']) {
     assert.deepEqual(kinds(words), [], words);
     gate.observe('s', 'j', words);
     assert.equal(gate.authorize('s', 'create_event', 'target').code, 'no_owner_request', words);

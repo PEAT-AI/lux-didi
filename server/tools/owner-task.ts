@@ -33,6 +33,8 @@ const QUOTED = /["“”„'][^"“”„']{0,200}["“”„']/g;
 const NEGATION = /\b(?:don['’]?t|do not|never|no need|stop|nicht|kein(?:e|en|em)?|bloß nicht)\b/i;
 const QUESTION = /^\s*(?:what|when|where|who|which|how|why|did|do|does|can|could|should|would|is|are|was|were|kannst|kann|was|wann|wo|wer|wie|warum|hast du|gibt es)\b|\?\s*$/i;
 const CANCEL_TASK = /\b(?:forget it|never mind|nevermind|scratch that|cancel that|stop that|abbrechen|vergiss (?:es|das))\b/i;
+/** "I put the meeting in my calendar yesterday" reports the past; it asks for nothing. */
+const PAST_STATEMENT = /\b(?:i|we)\s+(?:already\s+)?(?:put|added|scheduled|booked|cancell?ed|moved|sent|drafted|wrote|created|set|had|habe|hab|hatte)\b/i;
 const AMEND = /\b(?:make it|change it|move it|push it|shift it|instead|rather|not that|amend|correct that|mach(?:e)? es|verschieb|änder)\b/i;
 
 const SET_VERB = /\b(?:set|put|make|create|add|schedule|wake|remind|take|weck|erinner|stell|trag)\b/i;
@@ -54,9 +56,14 @@ const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell|sch
 const MAIL = /\b(?:e-?mails?|mails?|gmail)\b/i;
 const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack)\b/i;
 
-const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that) (?:as a )?note|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
-const OPEN_VERB = /\b(?:open|launch|show|start|öffne|starte|zeig)\b/i;
-const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|terminal|finder|browser|settings)\b/i;
+const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|belongs? in my notes|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
+const OPEN_VERB = /(?:^|[^a-zäöüß])(?:open|launch|show|start|öffne|starte|zeig)(?![a-zäöüß])/i;
+const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|inbox|notes|directions|terminal|finder|browser|settings)\b/i;
+const DOMAIN = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
+const FIND = /\b(?:find|search for|look up)\b/i;
+/** A named destination ("Calculator", "Synthetic Park") is the owner pointing at what to open. */
+const namedDestination = (spoken: string): boolean =>
+  /^(?:[\p{L}][\p{L}\d'’-]*)(?:\s+[\p{L}][\p{L}\d'’-]*){0,3}$/u.test(spoken.replace(/\bplease\b/gi, '').trim());
 
 const NUMBER_WORDS: Record<string, number> = {
   a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -79,7 +86,7 @@ export function ownerDurationMinutes(words: string): number | undefined {
 /** D2: the deterministic reading of one merged owner ask, one command construction per kind. */
 export function ownerCommands(words: string): OwnerCommand[] {
   const spoken = words.replace(QUOTED, ' ').replace(/\s+/g, ' ').trim();
-  if (!spoken || NEGATION.test(spoken) || QUESTION.test(spoken)) return [];
+  if (!spoken || NEGATION.test(spoken) || QUESTION.test(spoken) || PAST_STATEMENT.test(spoken)) return [];
   const fields = (): OwnerFields => ({
     ...(ownerDurationMinutes(spoken) !== undefined ? { durationMinutes: ownerDurationMinutes(spoken)! } : {}),
     recurrenceAsked: RECURRENCE.test(spoken),
@@ -89,7 +96,7 @@ export function ownerCommands(words: string): OwnerCommand[] {
   const add = (kind: ActionKind, cue: boolean): void => { if (cue) commands.push({ kind, fields: fields(), amendment, words: spoken }); };
   add('set_alarm', (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken));
   add('list_alarms', LIST_VERB.test(spoken) && ALARM.test(spoken));
-  add('cancel_alarm', CANCEL_VERB.test(spoken) && ALARM.test(spoken) && !LIST_VERB.test(spoken.replace(CANCEL_VERB, '')));
+  add('cancel_alarm', CANCEL_VERB.test(spoken) && ALARM.test(spoken));
   add('snooze_alarm', SNOOZE.test(spoken) && ALARM.test(spoken));
   add('create_event', CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken) || CREATE_AMEND.test(spoken)));
   add('delete_event', CANCEL_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)));
@@ -97,7 +104,7 @@ export function ownerCommands(words: string): OwnerCommand[] {
   add('draft_chat', DRAFT_VERB.test(spoken) && CHAT.test(spoken) && !(MAIL.test(spoken) && !CHAT.test(spoken)));
   // Note, save and remember need the owner's own save cue: a bare noun mention grants nothing.
   add('lux_note', SAVE_CUE.test(spoken) && !/^.*\bremember me\b.*$/i.test(spoken));
-  add('open', OPEN_VERB.test(spoken) && OPEN_NOUN.test(spoken));
+  add('open', OPEN_VERB.test(spoken) || OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken));
   return commands;
 }
 

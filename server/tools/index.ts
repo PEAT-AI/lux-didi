@@ -933,7 +933,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // model is told the reason the call was refused.
           const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
           const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
-            : !eligible ? requestRefusal(authorization.code)
+            : !eligible ? (process.stderr.write(`HDBG open ${JSON.stringify(args)} top=${String(top)} code=${authorization.code}\n`), requestRefusal(authorization.code))
             : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
             : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
             : { code, say: 'The host could not confirm that the target opened.' };

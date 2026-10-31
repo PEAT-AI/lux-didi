@@ -435,7 +435,7 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   const afterQuestion = granted();
   f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
   const allowed = await settled(() => granted() === 'allowed');
-  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion})`);
+  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion}); ask=${JSON.stringify(owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio'))} current=${String(owner.ownerRequests.currentId(session.liveSessionId))}`);
   assert.equal(owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
 });
 

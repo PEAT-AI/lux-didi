@@ -7630,7 +7630,8 @@ export class ResearchScheduler {
     // C-RESEARCH #107: a continue never starts work. With no running job to attach to, it returns the terminal
     // result of the last run this session handed the model, so a poll can never open a second operation.
     if (call.action === 'continue') {
-      const answered = this.#deps.ledger.last()?.researchId;
+      const named = call.researchId !== undefined && this.#deps.ledger.find(call.researchId) !== undefined ? call.researchId : undefined;
+      const answered = named ?? this.#deps.ledger.last()?.researchId;
       if (answered !== undefined) {
         this.#deps.logJoined?.(answered, 'status');
         return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));

@@ -96,9 +96,11 @@ import UserNotifications
             onCaption(policy.caption)
             let deadlines = rows.filter { $0.state == "ringing" }.compactMap(\.ringDeadlineUtc)
             if let deadline = deadlines.max() { ring.startAlarm(deadlineMs: deadline) } else { ring.stopAlarm() }
-            // #107: the permission is reported only after it resolved, so a guess is never sent.
+            // #107: the permission is never a guess: the pending state is reported as not_asked
+            // while the request runs, and the resolved state replaces it.
             if !permissionRequested && rows.contains(where: { $0.state == "pending" || $0.state == "ringing" }) {
                 permissionRequested = true
+                report()
                 Task { [weak self] in
                     guard let self else { return }
                     let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true

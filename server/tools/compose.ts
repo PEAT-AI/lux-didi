@@ -103,7 +103,7 @@ export function resolveRecipient(words: string, candidates: readonly RecipientCa
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 const NUMBERS: Readonly<Record<string, number>> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, twenty: 20, thirty: 30, forty: 40, fifty: 50 };
-const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i;
+const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)(\s+and\s+a?\s*half)?\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i;
 
 export type EventWindow =
   | { status: 'ready'; startUtc: number; endUtc: number; timeZone: string; names: string[] }
@@ -124,9 +124,11 @@ function zonedInstant(year: number, month: number, day: number, hour: number, mi
 function durationMinutes(words: string): number {
   const match = DURATION.exec(words);
   if (!match) return 60;
-  const unit = match[2]!.toLowerCase();
+  const unit = match[3]!.toLowerCase();
   const raw = match[1]!.toLowerCase().replace(/\s+/g, ' ');
-  const amount = raw === 'half an' || raw.startsWith('half') ? 0.5 : NUMBERS[raw] ?? Number(raw);
+  const base = raw === 'half an' || raw.startsWith('half') ? 0.5 : NUMBERS[raw] ?? Number(raw);
+  // "one and a half hours" is a length he said, so the half is part of it.
+  const amount = match[2] === undefined ? base : base + 0.5;
   if (!Number.isFinite(amount) || amount <= 0) return 60;
   const minutes = unit.startsWith('h') ? amount * 60 : amount;
   return Math.min(Math.max(Math.round(minutes), 5), 720);

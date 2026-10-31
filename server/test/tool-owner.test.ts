@@ -744,7 +744,7 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   assert.equal(created.status, 'completed');
   assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
-  assert.match(String(created.result_json), /"attendees":0/, 'nobody is invited');
+  assert.match(String(created.result_json), /"attendees":0/, String(created.result_json));
   assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
   const [start, end] = port.log[0]!.split(':').slice(1, 3).map(Number) as [number, number];
   assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
@@ -757,7 +757,7 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
   assert.match(String(refused.result_json), /rule_mismatch/);
-  assert.match(String(refused.result_json), /without kind and weekdays omitted/);
+  assert.match(String(refused.result_json), /without kind and weekdays omitted/, String(refused.result_json));
   assert.match(String(refused.result_json), /fixNotForSpeech/);
   const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 1);
   assert.equal(set.status, 'completed');

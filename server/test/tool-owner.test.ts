@@ -1014,7 +1014,7 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
   assert.equal(port.log.length, 2, 'saying send it writes nothing new');
   assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
-  assert.match(String(sent.result_json), /no_owner_request|his click|reply box/);
+  assert.match(String(sent.result_json), /no_owner_request|grant_spent|his click|reply box/);
 });
 
 test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {

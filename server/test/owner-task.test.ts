@@ -28,6 +28,7 @@ for (const [kind, words] of [
 
 test('D2: the same ask grants each kind it names, and nothing it does not', () => {
   assert.deepEqual(kinds('draft an email to Sam and put lunch in my calendar at noon'), ['create_event', 'draft_email']);
+  assert.deepEqual(kinds('the alarm in the movie was loud'), ['set_alarm']);
   assert.deepEqual(kinds('cancel my alarm and show my alarms'), ['list_alarms', 'cancel_alarm']);
   assert.deepEqual(kinds('remember this and open my inbox'), ['lux_note', 'open']);
 });

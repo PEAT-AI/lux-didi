@@ -44,7 +44,7 @@ const ALARM = /\b(?:alarms?|wecker)\b/i;
 /** RULING G-R1: every wake-up phrasing the owner uses reads as one set_alarm construction:
  *  "wake up at 10:30 and remind me to go to sport", "wake me at 7 and brief me",
  *  "check in with me in an hour about X", "in 20 minutes remind me", "weck mich um 7", "erinner mich". */
-const WAKE = /\b(?:wake (?:me|up)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
+const WAKE = /\b(?:wake me|wake up(?!\s+me)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
 const LIST_VERB = /\b(?:list|show|what|which|any|read)\b/i;
 const CANCEL_VERB = /\b(?:cancel|cancel(?:l)?ed|stop|delete|remove|clear|kill|turn off|abbrechen|ausmachen|löschen|stopp)\b/i;
 const SNOOZE = /\b(?:snooze|schlummern|nochmal (?:wecken|klingeln))\b/i;
@@ -62,7 +62,7 @@ const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a 
 const OPEN_VERB = /(?:^|[^a-zäöüß])(?:open|launch|show|start|öffne|starte|zeig)(?![a-zäöüß])/i;
 const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|inbox|notes|directions|terminal|finder|browser|settings)\b/i;
 const DOMAIN = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
-const FIND = /\b(?:find|search for|look up)\b/i;
+const FIND = /\b(?:find|search (?:the web )?for|search the web|look up)\b/i;
 /** A named destination ("Calculator", "Synthetic Park") is the owner pointing at what to open. */
 const namedDestination = (spoken: string): boolean =>
   /^\p{Lu}[\p{L}\d'’-]*(?:\s+\p{Lu}[\p{L}\d'’-]*){0,3}$/u.test(spoken.replace(/\bplease\b/gi, '').trim());
@@ -96,7 +96,8 @@ export function ownerCommands(words: string): OwnerCommand[] {
   const amendment = AMEND.test(spoken) || (!CREATE_VERB.test(spoken) && OWNER_TIME_ONLY.test(spoken));
   const commands: OwnerCommand[] = [];
   const add = (kind: ActionKind, cue: boolean): void => { if (cue) commands.push({ kind, fields: fields(), amendment, words: spoken }); };
-  add('set_alarm', (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken));
+  add('set_alarm', (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken)
+    || (ALARM.test(spoken) && !LIST_VERB.test(spoken) && !CANCEL_VERB.test(spoken) && !SNOOZE.test(spoken)));
   add('list_alarms', LIST_VERB.test(spoken) && ALARM.test(spoken));
   add('cancel_alarm', CANCEL_VERB.test(spoken) && ALARM.test(spoken));
   add('snooze_alarm', SNOOZE.test(spoken) && ALARM.test(spoken));
@@ -106,7 +107,10 @@ export function ownerCommands(words: string): OwnerCommand[] {
   add('draft_chat', DRAFT_VERB.test(spoken) && CHAT.test(spoken) && !(MAIL.test(spoken) && !CHAT.test(spoken)));
   // Note, save and remember need the owner's own save cue: a bare noun mention grants nothing.
   add('lux_note', SAVE_CUE.test(spoken) && !/^.*\bremember me\b.*$/i.test(spoken));
-  add('open', OPEN_VERB.test(spoken) || OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken));
+  const otherAsk = (CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)))
+    || (DRAFT_VERB.test(spoken) && (MAIL.test(spoken) || CHAT.test(spoken))) || SAVE_CUE.test(spoken)
+    || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken);
+  add('open', OPEN_VERB.test(spoken) || ((!otherAsk) && (OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken))));
   return commands;
 }
 
@@ -174,7 +178,7 @@ export class OwnerTasks implements OwnerTaskPort {
       // for kinds the task has not seen; the new final alone is read for amendments and new asks.
       const seen = new Set(previous.operations.map(operation => operation.kind));
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)));
-      this.#apply(previous, ownerCommands(words));
+      if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) this.#apply(previous, ownerCommands(words));
       return;
     }
     const task: OwnerTask = {
@@ -191,7 +195,6 @@ export class OwnerTasks implements OwnerTaskPort {
       const open = task.operations.filter(operation => operation.kind === command.kind && operation.state !== 'done');
       const amendable = open.at(-1);
       if (amendable !== undefined && command.amendment) { amendable.fields = command.fields; continue; }
-      if (amendable !== undefined) continue;
       task.operations.push({ operationId: `op-${++task.sequence}`, kind: command.kind, fields: command.fields, state: 'open' });
     }
   }

@@ -15,6 +15,7 @@ import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { COMPOSE_IDENTITY, draftChatResult, draftEmailResult } from '../tools/compose.js';
+import { ALARM_IDENTITY } from '../tools/alarm.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
@@ -719,6 +720,25 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 
+// #798: a refused write keeps the scalar the validator refused, by field name, so the bad length is
+// recoverable after the call is gone. A text value still travels as its length alone.
+test('#798 a refused write logs its failing number by field name and never its text', async () => {
+  const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
+  const write = errorTool({ name: 'create_event', effect: 'write', validate: () => false });
+  try {
+    await runToolCalls(owner, [{ id: '1', name: 'create_event', args: { summary: 'cardio with Zara', duration_minutes: 1.5, all_day: true } }], errorContext(write) as never);
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
+  assert.equal(event.tool, 'create_event');
+  assert.ok(event.fields.includes('duration_minutes:number=1.5'), `the refused scalar is recoverable: ${event.fields.join(',')}`);
+  assert.ok(event.fields.includes('all_day:boolean=true'), `the refused switch is recoverable: ${event.fields.join(',')}`);
+  assert.ok(event.fields.some(field => /^summary:string_\d+$/.test(field)), `a text value is still only its length: ${event.fields.join(',')}`);
+  assert.doesNotMatch(JSON.stringify(event), /Zara/, 'no free text reaches the log');
+});
+
+
 async function receivedOwnerFixture(t: TestContext) {
   const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });
   const f = await fixture(t, { result: { content: [{ type: 'text', text: raw }] } });
@@ -729,6 +749,38 @@ async function receivedOwnerFixture(t: TestContext) {
   const cursor = (root.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.equal(typeof cursor, 'string');
   return { ...f, raw, host, dispatch, root, cursor: cursor as string };
 }
+
+// #795: the model asked how long the block should be, so his one-word answer arrives as its own owner
+// final with no scheduling verb in it. The ask's own grant is what authorizes the one write, once.
+test('#795 a calendar ask answered after a question writes one owner-only block through the production path', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
+  f.owner.ownerRequests.answered?.('run', 'How long should the block be?');
+  f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
+  const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
+  assert.equal(created.status, 'completed');
+  assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
+  assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
+  assert.match(String(created.result_json), /"attendees":0/, String(created.result_json));
+  assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
+  const [start, end] = port.log[0]!.split(':').slice(1, 3).map(Number) as [number, number];
+  assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
+});
+
+// #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
+test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
+  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+  const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
+  assert.match(String(refused.result_json), /rule_mismatch/);
+  assert.match(String(refused.result_json), /call set_alarm once more[^"]*kind and weekdays omitted/, String(refused.result_json));
+  assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
+  assert.match(String(refused.result_json), /fixNotForSpeech/);
+  const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 2);
+  assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
+});
 
 test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
   const f = await receivedOwnerFixture(t);
@@ -899,8 +951,10 @@ const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
-const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>, step = 1) => {
-  const grant = { tool: call.toolName, effect: 'write' as const, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId };
+type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
+const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ExecutableCall, args: Record<string, unknown>, step = 1) => {
+  const effect = liveTools(f).find(tool => tool.name === call.toolName)?.effect ?? 'write';
+  const grant = { tool: call.toolName, effect, accountId: call.accountId, resourceId: call.resourceId };
   if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
   const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
     registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },

@@ -792,7 +792,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     // F3: key:shape, where a shape is a type and, for a string or an array, its length. Never a value.
-    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)(_\d{1,7})?$/;
+    // #798: a number or a boolean cannot hold his words, so a refused write may name that one value back
+    // (`duration_minutes:number=1.5`); a text field still travels as its length alone.
+    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(?:(?:string|number|boolean|array|object|null|undefined)(_\d{1,7})?|number=-?\d{1,15}(?:\.\d{1,9})?|boolean=(?:true|false))$/;
     if (!token(value.tool)) return;
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
@@ -1130,6 +1132,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
     return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
       muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
+  }
+  if (value.event === 'live_input_dead') {
+    // C-MICWATCH 4: a provider session expired with zero owner audio, so the call ended instead of rebuilding.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation)) return;
+    return { event: 'live_input_dead', liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age, connection generation and whether

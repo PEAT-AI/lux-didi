@@ -286,6 +286,17 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
 
+// #798: a refused write may name the scalar it refused, because a number or a boolean cannot be his words.
+test('#798 tool_arguments_rejected admits a key:number=value and a key:boolean=value, never free text', () => {
+  const line = (fields: string[]) => ({ event: 'tool_arguments_rejected', tool: 'create_event', fields, reason: 'schema_validation_failed' });
+  assert.deepEqual(safeEvent(line(['duration_minutes:number=1.5', 'all_day:boolean=true'])), line(['duration_minutes:number=1.5', 'all_day:boolean=true']));
+  assert.deepEqual(safeEvent(line(['summary:string_15', 'duration_minutes:number'])), line(['summary:string_15', 'duration_minutes:number']));
+  assert.equal(safeEvent(line(['summary:string=cardio with Zara'])), undefined, 'a text value is never admitted');
+  assert.equal(safeEvent(line(['summary:string_99999999'])), undefined, 'a length stays bounded');
+  assert.equal(safeEvent(line(['duration_minutes:number=1e400'])), undefined, 'only a plain decimal number is admitted');
+  assert.equal(safeEvent(line(['all_day:boolean=yes'])), undefined, 'a boolean is true or false');
+});
+
 test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {
   const claim = { event: 'live_claim_without_call', sequence: 7, ms: 3_000 };
   assert.deepEqual(safeEvent(claim), claim, 'the turn sequence and the bound are the whole line');
@@ -757,4 +768,12 @@ test('ignored alarm model time logs only a signed epoch skew', () => {
   }
   assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, words: 'synthetic private owner words' }), undefined);
   assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, fireAtUtc: 1793343600000 }), undefined);
+});
+
+test('C-MICWATCH: live_input_dead keeps a closed shape of the session and its generation only', () => {
+  const dead = { event: 'live_input_dead', liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  assert.deepEqual(safeEvent(dead), dead);
+  assert.equal(safeEvent({ ...dead, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...dead, generation: -1 }), undefined, 'a negative generation is refused');
+  assert.equal(safeEvent({ ...dead, liveSessionId: 'not-a-session' }), undefined, 'a malformed session id is refused');
 });

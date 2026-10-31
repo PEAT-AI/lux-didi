@@ -108,7 +108,7 @@ export type RequestAuthorization =
 
 export interface OwnerRequestPort {
   invalidateAlarm(session: string): void;
-  answered?(session: string): void;
+  answered?(session: string, spoken?: string): void;
   partial(session: string): void;
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;

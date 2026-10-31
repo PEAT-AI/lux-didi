@@ -1,11 +1,12 @@
 # Implementation status
 
-State of the source tree at release 10.6.1 (main `912246fbe0769831e5c3ad66529a455c138d605c`, 2026-10-31). It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
+State of the source tree at release 10.6.2 (main `028301069e21e25874b6a65f114ef8f60246669b`, 2026-10-31). It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
 
 ## Releases
 
 | Release | Date | What changed for the owner |
 | --- | --- | --- |
+| 10.6.2 | 2026-10-31 | Calendar events and drafts survive Naya's follow-up question; one-time alarms no longer pick up an invented repeat; she no longer claims a retry she never made; when the Mac's microphone path is stuck she retries without voice processing or tells you, instead of ringing in a loop. |
 | 10.6.1 | 2026-10-31 | Email and chat drafts and owner-only calendar events can now really be asked for in a call, a spoken name or channel is matched before anything is written, a detail she cannot use is explained instead of asking you to authorize, and a wake-up ask spoken across two turns sets the alarm again. |
 | 10.6 | 2026-10-30 | Nothing is read before you speak, a long lookup reaches you as research instead of a lost answer, drafts and owner-only events land without sending or inviting anyone, reminders can repeat, Mattermost topics and threads can be read, and the evals run locally. |
 

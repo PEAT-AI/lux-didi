@@ -48,6 +48,8 @@ interface DrivenSession {
   live(): void;
   /** C-CONTINUITY R-08: the outcome the session settles with, so a test can hand it a transport receipt. */
   die(drop?: { errorKind: string; closeCode: number | null; closeReason: string; bufferedAmount: number; writesFailed: number; sessionMs: number }): void;
+  /** C-MICWATCH: the provider closes the live session as expired, the recoverable `session_timeout` it reports. */
+  expire(): void;
 }
 
 /** A port whose every open can be made to die before its ready event, which is the failure at issue (#525). */
@@ -102,6 +104,7 @@ function drivenPort() {
         live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
         die: drop => { rejectReady(new Error('provider setup refused'));
           resolveDone({ status: 'failed', code: 'transport_error', recoverable: true, ...(drop === undefined ? {} : { upstream: drop }) }); end(); },
+        expire: () => { resolveDone({ status: 'failed', code: 'session_timeout', recoverable: true }); end(); },
       });
       openedAt.push(sessions.length);
       return session;
@@ -611,4 +614,56 @@ test('C-RECOVERY (b)/F1: an open that dies before ready still advances the ladde
   const codes = h.receipts.filter(entry => entry['event'] === 'live_recovery').map(entry => entry['code']);
   assert.ok(codes.includes('open_refused'), `a refused open is still a refusal: ${codes}`);
   assert.ok(codes.includes('open_failed'), `a socket that died before ready is a failure, not a refusal: ${codes}`);
+});
+
+test('C-MICWATCH (e): a provider session that expires with zero owner audio ends audio_input_dead, never rebuilds', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'mic-dead', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  // The microphone never delivered a frame, and the provider closes the session as expired.
+  first.expire();
+  await flush();
+  for (let round = 0; round < 4; round += 1) await h.advance(10_000);
+  assert.equal(h.port.opens, 1, 'no rebuild opens a second provider session');
+  const end = await ended(t, attachment as never);
+  assert.deepEqual(end.terminal, { state: 'failed', code: 'audio_input_dead' }, 'the call ends with the named code');
+  assert.equal(end.terminalFrame, true, 'and the terminal frame reaches the client, so the orb leaves live');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'live_recovery').length, 0, 'no recovery attempt is logged');
+  const dead = h.receipts.filter(entry => entry['event'] === 'live_input_dead');
+  assert.equal(dead.length, 1, 'one receipt names the guard');
+  assert.deepEqual(Object.keys(dead[0]!).sort(), ['event', 'generation', 'liveSessionId'], 'metadata only: the session and its generation');
+  assert.equal(dead[0]!['liveSessionId'], created.liveSessionId);
+  // The next call starts clean: no dropped-line mark rides into its seed.
+  const next = h.owner.create({ idempotencyKey: 'mic-dead-next', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await sessionAt(h, 1);
+  assert.equal((h.port.requests.at(-1)!.history ?? []).some(turn => turn.text === LIVE_DROPPED_LINE_MARK), false, 'the next call is not told the line dropped');
+  h.owner.revoke(next.liveSessionId);
+});
+
+test('C-MICWATCH (e) control: a provider session that expires after owner audio still rebuilds as today', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'mic-alive', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  attachment.sendAudio({ pcm: new Uint8Array(640) });
+  first.expire();
+  await flush();
+  const next = await sessionAt(h, 1);
+  assert.ok(next, 'the expired session is rebuilt');
+  next!.live();
+  await flush();
+  assert.ok(!h.owner.get(created.liveSessionId).terminal, 'the call is up, never settled');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'live_input_dead').length, 0, 'the guard never fires once owner audio arrived');
+  const opened = h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened');
+  assert.equal(opened.length, 1, 'today\'s recovery reopens it once');
+  assert.equal(opened[0]!['reason'], 'session_timeout', 'for the expiry');
+  h.owner.revoke(created.liveSessionId);
 });

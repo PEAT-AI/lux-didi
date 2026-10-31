@@ -141,6 +141,9 @@ enum State: String, CaseIterable {
         device.onInterruption = { [weak self] failure in
             guard let self else { return }
             self.logCaptureInterruption(failure)
+            // MW-R1: a microphone that stayed dead through the watchdog's restart ends failed; a restart
+            // would only ring into the same dead input. Every other capture failure keeps its restart.
+            let inputDead = self.device.inputStallFailed
             // A stop cycle already recorded means the owner asked for it: never an automatic restart.
             let live = !self.endRecorded
             let token = self.generation &+ 1
@@ -151,7 +154,7 @@ enum State: String, CaseIterable {
             guard self.generation == token else { return }
             // #613: a stop that landed inside the await voids the restart, exactly as the 60 s window does,
             // and either way the owner is told to start again himself.
-            guard live, self.latch.allowsRestart(seenEpoch: seenEpoch), self.claimAutomaticRestart() else {
+            guard live, !inputDead, self.latch.allowsRestart(seenEpoch: seenEpoch), self.claimAutomaticRestart() else {
                 self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
                 self.state = .failed
                 return

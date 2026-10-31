@@ -568,6 +568,24 @@ export function announcesLookup(text: string): boolean {
   return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }
 /**
+ * #797: a retry claim names a second attempt. It is the same empty promise as a lookup claim, but only after
+ * a write this owner turn was refused, because that is the only case where the host has a receipt to check
+ * it against. "again", "still", "retried" and "tried once more", and nothing new is spoken for it.
+ */
+const RETRY_CLAIM = /\b(?:i|i've|i'd|i'll|let me)\b[^.!?]*\b(?:again|still|retried|tried once more|retry)\b|\b(?:retried|tried once more|try again)\b/i;
+export function claimsRetryWithoutCall(text: string, writeRefused: boolean): boolean {
+  return writeRefused && RETRY_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
+}
+/**
+ * C-TURN8 with #797: whether this response promised work the host can hold it to, given what the turn has
+ * already done. A call anywhere in the turn settles the promise, so `toolSeen` silences every form.
+ */
+export function claimsWithoutCall(input: { text: string; writeRefused: boolean; toolSeen: boolean }): boolean {
+  if (input.toolSeen) return false;
+  return announcesLookup(input.text) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(input.text)
+    || claimsRetryWithoutCall(input.text, input.writeRefused);
+}
+/**
  * C-TURN8: no tool that reads or writes the owner's own data runs before his first word. Research keeps its own
  * gate in `#researchBatch`; every other owner-data call is refused by `#toolBatch`, before any argument check,
  * with the same shape and the same closed reason. Saves keep their own later gates once he has spoken
@@ -740,6 +758,11 @@ interface ActiveSession {
   /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
   claimText: string; claimTimer?: { cancel: () => void } | undefined;
   claimToolSeen: boolean; claimCorrected: boolean;
+  /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
+   *  provider opens a model turn, which can arrive after the transcript in the same batch. */
+  answeredWords?: string | undefined;
+  /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
+  claimWriteRefused: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -2089,7 +2112,7 @@ export class LiveSessionOwner {
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
-      claimText: '', claimToolSeen: false, claimCorrected: false,
+      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2626,7 +2649,8 @@ export class LiveSessionOwner {
   /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
   #resetClaimCheck(handle: ActiveSession): void {
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false;
+    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false;
+    handle.answeredWords = undefined;
   }
 
   /**
@@ -2635,7 +2659,7 @@ export class LiveSessionOwner {
    * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
-    const claim = announcesLookup(handle.claimText) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(handle.claimText);
+    const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
@@ -3466,6 +3490,13 @@ export class LiveSessionOwner {
     // recovery lines read their cause and their socket close code and reason off a receipt instead of a guess. A
     // reopen with no outcome behind it (a mute, a provider window) clears a spent one rather than inheriting it.
     handle.adapterOutcome = outcome;
+    // C-MICWATCH 4: the provider expired a session that never heard the owner's microphone. A rebuild would ring
+    // again into the same dead input, so the call ends by name and the next call starts clean.
+    if (outcome?.code === 'session_timeout' && outcome.recoverable === true && outcome.upstream === undefined && handle.ownerAudioCalls === 0) {
+      hostLogEvent({ event: 'live_input_dead', liveSessionId: handle.liveSessionId, generation: handle.generation });
+      this.#settle(handle, { state: 'failed', code: 'audio_input_dead' }, false, 'ended', null);
+      return false;
+    }
     const now = this.#now();
     // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
     // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model
@@ -3973,7 +4004,9 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
-          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId);
+          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
+          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, handle.answeredWords);
+          handle.answeredWords = undefined;
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
           this.#logVoiceProfile(handle, generation);
@@ -4060,6 +4093,8 @@ export class LiveSessionOwner {
           const said = stripNonLexicalTags(event.text);
           if (said.trim() && handle.pendingCallIds.size === 0) handle.lookupAckAt = this.#now();
           countTurnScript(handle, said);
+          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
+          handle.answeredWords = `${handle.answeredWords ?? ''} ${said}`.slice(-400);
           handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
@@ -4910,6 +4945,13 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         responses[index] = { id: call.id, name: call.name, response: { error: 'tool_result_denied' } };
         projections[index] = { name: call.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
       }
+    }
+    // #797: a write the host refused is this turn's own receipt, so a retry claim later in the turn has
+    // something to be checked against. The flag is per owner turn and never reads anything she said.
+    for (const [index, call] of event.calls.entries()) {
+      const response = (responses[index]?.response ?? {}) as JsonObject;
+      if ((response['error'] !== undefined || response['status'] === 'refused')
+        && handle.registry.find(tool => tool.name === call.name)?.effect === 'write') handle.claimWriteRefused = true;
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;

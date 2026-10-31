@@ -32,7 +32,7 @@ import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live
 import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
-import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
+import type { JsonObject, ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
@@ -8322,6 +8322,37 @@ test('#107: a direct owner ask removes the block this session made', async t => 
   assert.deepEqual(asked, { command: 'calendar.delete_event', eventId: 'event-1' });
   assert.match(String(clientRequestId), /^compose:/);
   attachment.close();
+});
+
+/** #107: one non-command turn and one compose call: the host refuses, and nothing is written. */
+async function noComposeWrite(t: TestContext, words: string, slug: string, name: string, args: JsonObject): Promise<void> {
+  const port = composePort();
+  const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads' });
+  const { attachment } = await attached(h, slug);
+  await ownerSpoke(h, words);
+  await settleLiveTool(h, 'w1', name, args);
+  const response = liveToolResponse(h, 'w1');
+  assert.equal(response['status'], 'refused', JSON.stringify(response));
+  assert.equal(response['error'], undefined, 'the live grant set admitted the call, so this is not grant_not_permitted');
+  assert.equal(response['code'], 'no_owner_request', 'a question is not the owner asking for a write');
+  assert.equal(port.log.length, 0, 'a question writes nothing');
+  attachment.close();
+}
+
+test('#107: a question about a block writes nothing', async t => {
+  await noComposeWrite(t, 'did you put the block in my calendar tomorrow at noon?', 'compose-question', 'create_event', { summary: 'block' });
+});
+
+test('#107: a past-tense report of a block writes nothing', async t => {
+  await noComposeWrite(t, 'i put a block in my calendar yesterday at noon', 'compose-report', 'create_event', { summary: 'block' });
+});
+
+test('#107: a negated block writes nothing', async t => {
+  await noComposeWrite(t, "don't reserve a slot in my calendar tomorrow at noon", 'compose-negation', 'create_event', { summary: 'block' });
+});
+
+test('#107: a block quoted from another voice writes nothing', async t => {
+  await noComposeWrite(t, 'the supplier wrote: put a block in my calendar tomorrow at noon', 'compose-quoted', 'create_event', { summary: 'block' });
 });
 
 test('#107: an ask split over two finals dispatches once, after the day and duration arrive', async t => {

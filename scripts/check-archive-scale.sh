@@ -12,8 +12,8 @@ export ARCHIVE_SCALE_OUTPUT="${ARCHIVE_SCALE_OUTPUT:-/Users/rob/.lux/reports/lux
 # Never turn a setup failure into an apparently empty/green benchmark.
 node --input-type=module - "$root" "$out" <<'NODE'
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const [root, out] = process.argv.slice(2);
 assert.ok(Number(process.versions.node.split('.')[0]) >= 26, 'archive-scale requires Node >=26');
@@ -36,16 +36,30 @@ if (!existsSync(join(deps, 'typescript/bin/tsc')) || !existsSync(join(deps, '@ty
   run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], yard);
   deps = join(yard, 'node_modules');
 }
-mkdirSync(join(out, 'source/adapters/model'), { recursive: true });
-mkdirSync(join(out, 'source/tools'), { recursive: true });
-for (const dir of ['chat', 'domain', 'runtime', 'contracts', 'prompt']) cpSync(join(root, 'server', dir), join(out, 'source', dir), { recursive: true });
-for (const file of readdirSync(join(root, 'server/adapters/model'))) {
-  if (file.endsWith('.ts')) cpSync(join(root, 'server/adapters/model', file), join(out, 'source/adapters/model', file));
+// The staged tree resolves its bare package imports (the MCP client the connector registry builds)
+// through the same node_modules the repository itself compiles against.
+symlinkSync(deps, join(out, 'node_modules'));
+// Stage the import closure of the modules the measurement contract loads, so the isolated copy
+// compiles without a hand-kept list that goes stale the moment an import is added. A stale list
+// fails TS2307 here instead of measuring anything.
+const roots = ['runtime/store.ts', 'runtime/outbox.ts', 'domain/facade.ts', 'chat/index.ts', 'chat/context.ts', 'prompt/index.ts'];
+const staged = new Set();
+const pending = roots.map(file => join(root, 'server', file));
+while (pending.length) {
+  const file = pending.pop();
+  if (staged.has(file) || !existsSync(file)) continue;
+  staged.add(file);
+  const target = join(out, 'source', file.slice(join(root, 'server').length));
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(file, target);
+  for (const [, spec] of readFileSync(file, 'utf8').matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/gu)) {
+    const base = resolve(dirname(file), spec).replace(/\.js$/u, '');
+    for (const candidate of [`${base}.ts`, join(base, 'index.ts')]) {
+      if (existsSync(candidate)) { pending.push(candidate); break; }
+    }
+  }
 }
-// adapters/model/loop.ts imports ../../tools/declarations.js; stage it and the modules it imports
-// (normalize.js, host-events.js) so the isolated copy compiles instead of failing TS2307.
-cpSync(join(root, 'server/tools/declarations.ts'), join(out, 'source/tools/declarations.ts'));
-cpSync(join(root, 'server/tools/normalize.ts'), join(out, 'source/tools/normalize.ts'));
+assert.ok(staged.size > roots.length, 'the measured modules import more than themselves');
 // NodeNext must compile as the canonical ESM service, not CommonJS.
 cpSync(join(root, 'server/package.json'), join(out, 'package.json'));
 const files = [];

@@ -32,6 +32,10 @@ find server -mindepth 1 -maxdepth 1 -type d \
   -exec cp -R {} "$out/source/" \;
 find server -mindepth 1 -maxdepth 1 -type f -name '*.ts' -exec cp {} "$out/source/" \;
 cp server/test/dispatch-gate.test.ts "$out/source/test/"
+# eval/sink.ts imports ../test/fixtures/fake-live-voice.js, which imports only the live-voice
+# adapter index already staged above, so the fixture closes the tree's import graph.
+mkdir -p "$out/source/test/fixtures"
+cp server/test/fixtures/fake-live-voice.ts "$out/source/test/fixtures/"
 ln -s "$deps" "$out/node_modules"
 printf '{"type":"module"}\n' > "$out/package.json"
 staged=()

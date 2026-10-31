@@ -1,0 +1,121 @@
+{
+  "about": "D7: an ask split across three owner finals is one ask; filler and a clarifying question do not close it.",
+  "scenarios": [
+    {
+      "id": "split-three-finals",
+      "why": "Verb, day and duration arrive as three separate finals; the operation is the union of his own words.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Put a block in my calendar",
+        "tomorrow at three",
+        "for an hour."
+      ],
+      "steps": [
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic block",
+            "duration_minutes": 60
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic block"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "split-final refusal: at the base the ask never reaches a granted write, because every compose call is refused at the live grant filter, and no interpreter merges his three finals into one operation (D2). C-GRANTS/D2 fix this."
+      }
+    },
+    {
+      "id": "filler-mid-ask",
+      "why": "The model's filler and a turnComplete mid-ask must not close the owner's task.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Block an hour tomorrow at three"
+      ],
+      "steps": [
+        {
+          "filler": "Mm-hm, one moment."
+        },
+        {
+          "ownerFinal": "for the synthetic review."
+        },
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic review",
+            "duration_minutes": 60
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic review"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so the call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
+      }
+    },
+    {
+      "id": "clarify-then-answer",
+      "why": "The model asks which day; the owner answers; the operation is still the same one, built from his own words.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Put a block in my calendar for an hour."
+      ],
+      "steps": [
+        {
+          "modelText": "Which day should I put that block on?"
+        },
+        {
+          "ownerFinal": "Friday, at ten."
+        },
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic block",
+            "duration_minutes": 60
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic block"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so the call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
+      }
+    }
+  ]
+}

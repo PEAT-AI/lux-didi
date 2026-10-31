@@ -1,0 +1,354 @@
+{
+  "about": "D7: filler and cross-intent arguments for every read tool, and a rejected lookup never narrated as empty.",
+  "scenarios": [
+    {
+      "id": "read-filler-argument-1-research",
+      "why": "A filler argument from another intent is not read by research and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "research",
+          "args": {
+            "action": "start",
+            "question": "synthetic bridge",
+            "topic": "synthetic bridge",
+            "sources": "knowledge"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "knowledge",
+              "tool": "search_knowledge",
+              "absentKeys": []
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-2-get_insight",
+      "why": "A filler argument from another intent is not read by get_insight and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "get_insight",
+          "args": {
+            "ids": [
+              1
+            ],
+            "calendarId": "primary"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "knowledge",
+              "tool": "get_insight",
+              "absentKeys": [
+                "calendarId"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-3-search_knowledge",
+      "why": "A filler argument from another intent is not read by search_knowledge and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "search_knowledge",
+          "args": {
+            "query": "synthetic bridge",
+            "limit": 3,
+            "threadId": "post_synthetic_1"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "knowledge",
+              "tool": "search_knowledge",
+              "absentKeys": [
+                "threadId"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-4-gmail_search_messages",
+      "why": "A filler argument from another intent is not read by gmail_search_messages and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "gmail_search_messages",
+          "args": {
+            "q": "synthetic invoice",
+            "calendarId": "primary"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "mail",
+              "tool": "gmail_search_messages",
+              "absentKeys": [
+                "calendarId"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-5-gmail_read_message",
+      "why": "A filler argument from another intent is not read by gmail_read_message and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "gmail_read_message",
+          "args": {
+            "id": "msg_synthetic_1",
+            "format": "full",
+            "query": "synthetic"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "mail",
+              "tool": "gmail_read_message",
+              "absentKeys": []
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-6-calendar_list_events",
+      "why": "A filler argument from another intent is not read by calendar_list_events and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "calendar_list_events",
+          "args": {
+            "calendarId": "primary",
+            "q": "synthetic invoice"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_list_events",
+              "absentKeys": [
+                "q"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-7-calendar_list_calendars",
+      "why": "A filler argument from another intent is not read by calendar_list_calendars and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "calendar_list_calendars",
+          "args": {
+            "calendarId": "primary"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_list_calendars",
+              "absentKeys": [
+                "calendarId"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-8-mattermost_search",
+      "why": "A filler argument from another intent is not read by mattermost_search and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "mattermost_search",
+          "args": {
+            "terms": "synthetic bridge",
+            "q": "synthetic invoice"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "chat",
+              "tool": "mattermost_search",
+              "absentKeys": [
+                "q"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "read-filler-argument-9-mattermost_list_channels",
+      "why": "A filler argument from another intent is not read by mattermost_list_channels and must never reach the connector.",
+      "families": [
+        "calendar",
+        "mail",
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data and tell me what it says."
+      ],
+      "steps": [
+        {
+          "tool": "mattermost_list_channels",
+          "args": {
+            "calendarId": "primary"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "chat",
+              "tool": "mattermost_list_channels",
+              "absentKeys": [
+                "calendarId"
+              ]
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no per-intent normalizer at the base (D5): a key the chosen intent does not read is forwarded to the connector instead of being dropped, and a non-empty wrong value is not named in a violation list. C-ARGS fixes this."
+      }
+    },
+    {
+      "id": "rejected-lookup-not-narrated-empty",
+      "why": "A rejected lookup followed by model speech claiming the mailbox is empty must be flagged, not said.",
+      "families": [
+        "mail",
+        "knowledge"
+      ],
+      "finals": [
+        "Is there anything in my mail about the synthetic invoice?"
+      ],
+      "steps": [
+        {
+          "tool": "gmail_read_message",
+          "args": {
+            "format": "full"
+          },
+          "expect": {
+            "refused": {
+              "code": "invalid_arguments"
+            }
+          }
+        },
+        {
+          "modelText": "There is nothing in your mail about the synthetic invoice.",
+          "expect": {
+            "flagged": true
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "D5 claim guard absent: the base logs no flag when the model narrates 'nothing' after a rejected call, so the host cannot say its own line. C-ARGS fixes this."
+      }
+    }
+  ]
+}

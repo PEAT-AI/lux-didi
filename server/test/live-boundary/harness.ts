@@ -14,6 +14,9 @@ import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveC
 import { Store } from '../../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../../tools/index.js';
 import type { WebEvidence, WebSearchPort } from '../../tools/web-search.js';
+import { attachHostLogSink } from '../../tools/host-events.js';
+import { TrelloBoard, type TrelloTransport } from '../../tools/trello.js';
+import { trelloSchemas } from '../../adapters/trello/client.js';
 import { fakeLiveVoicePort, type FakeLiveVoice } from '../fixtures/fake-live-voice.js';
 
 /**
@@ -51,6 +54,8 @@ export interface BoundaryOptions {
   families?: readonly FixtureId[];
   /** `owner-trusted-reads` is the host's own mode; `explicit` withholds the write grants. */
   grantMode?: 'explicit' | 'owner-trusted-reads';
+  /** Bind the owner's Trello board service over a recording fake transport, so a trello write can land. */
+  trello?: boolean;
   /** The web answer the research tool's web pass returns, so an injection can arrive as a web result. */
   researchWeb?: WebSearchPort;
 }
@@ -69,9 +74,20 @@ export interface Boundary {
   turnComplete(): Promise<void>;
   /** One model tool call; resolves with the response the provider was handed, if any. */
   toolCall(name: string, args: JsonObject, id?: string): Promise<JsonObject | undefined>;
+  /**
+   * One model tool call that may legitimately stay unanswered (a staged note answers across turns).
+   * Bounded: it returns undefined rather than waiting on a response that never comes.
+   */
+  maybeToolCall(name: string, args: JsonObject, id?: string): Promise<JsonObject | undefined>;
+  /** The host's own log events, so a scenario can assert on a decision the session made, not on a proxy. */
+  readonly events: readonly Record<string, unknown>[];
   /** Every tool response the provider received, flattened, in the order it was answered. */
   toolResponses(): readonly { id: string; name: string; response: JsonObject }[];
   dispatched(connector: BoundaryConnector, tool: string): readonly ConnectorCall[];
+  /** The model's own speech (no audio), as the provider would deliver it. */
+  emitTurnText(text: string): Promise<void>;
+  /** The provider call id of the last model tool call, so a scenario can replay it. */
+  lastCallId(): string | undefined;
   /** The provider dropped the line; the host rebuilds and opens a second provider session. */
   rebuild(timeLeftMs?: number): Promise<void>;
   advance(ms: number): Promise<void>;
@@ -191,6 +207,8 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
     byUrl.set(fixture.endpoint.url, transport);
   }
 
+  const events: Record<string, unknown>[] = [];
+  const detachLog = attachHostLogSink({ event: raw => { events.push(raw as Record<string, unknown>); } });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -200,11 +218,13 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   }) as typeof fetch;
 
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 1 << 20 }) });
+  const trello = options.trello === true ? fakeTrello(calls) : undefined;
   let owner: LiveSessionOwner | undefined;
   const toolOwner = createToolsOwner({
     store, ownerId: store.assistantId, registry, port,
     ...(options.grantMode === 'explicit' ? {} : { grantMode: 'owner-trusted-reads' as const }),
     lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? null,
+    ...(trello ? { trello } : {}),
   });
   const bounds = { maxQueryChars: 200, maxSearchLimit: 20, maxGetIds: 3, maxEntityBytes: 8192, maxResultBytes: 8192 };
   const families = options.families ?? DEFAULT_FAMILIES;
@@ -235,6 +255,7 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   await drain();
 
   const close = async (): Promise<void> => {
+    detachLog();
     globalThis.fetch = originalFetch;
     await owner!.shutdown();
     for (const { sdk, transport } of servers) { await transport.close(); await sdk.close(); }
@@ -245,9 +266,10 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
 
   const emit = async (event: Record<string, unknown>): Promise<void> => { fake.emit(event as never); await drain(); };
   const latestRequest = (): FakeLiveVoice['requests'][number] => fake.requests[fake.requests.length - 1]!;
+  let lastCallId: string | undefined;
 
   return {
-    store, owner, fake, calls,
+    store, owner, fake, calls, events,
     get requests() { return fake.requests; },
     declarations: () => (latestRequest().tools ?? []).map(tool => tool.name),
     ownerFinal: async text => { await emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); },
@@ -256,12 +278,26 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
     toolCall: async (name, args, id) => {
       const before = fake.toolResponses.flat().length;
       const callId = id ?? `call-${randomUUID()}`;
+      lastCallId = callId;
       await emit({ type: 'toolCall', calls: [{ id: callId, name, args }] });
       await until(() => fake.toolResponses.flat().length > before, `a tool response for ${name}`);
       return fake.toolResponses.flat().find(response => response.id === callId)?.response;
     },
+    maybeToolCall: async (name, args, id) => {
+      const callId = id ?? `call-${randomUUID()}`;
+      lastCallId = callId;
+      await emit({ type: 'toolCall', calls: [{ id: callId, name, args }] });
+      for (let index = 0; index < 60; index += 1) {
+        const answered = fake.toolResponses.flat().find(response => response.id === callId);
+        if (answered) return answered.response;
+        await tick();
+      }
+      return undefined;
+    },
     toolResponses: () => fake.toolResponses.flat(),
     dispatched: (connector, tool) => calls.filter(call => call.connector === connector && call.tool === tool),
+    emitTurnText: async text => { await emit({ type: 'modelText', text, thought: false }); },
+    lastCallId: () => lastCallId,
     rebuild: async timeLeftMs => {
       const before = fake.sessionsOpened;
       await emit({ type: 'goAway', timeLeftMs: timeLeftMs ?? 5_000 });
@@ -290,4 +326,27 @@ async function until(condition: () => boolean, label: string): Promise<void> {
 export function webAnswer(text: string, source = { title: 'Synthetic web result', url: 'https://synthetic.example/article' }): WebSearchPort {
   const evidence: WebEvidence = { answer: text, claims: [{ text, sourceIndexes: [0] }], sources: [source], retrievedAt: '2026-10-31T09:00:00Z' };
   return { search: async () => ({ ok: true, evidence }) };
+}
+
+/** The owner's board service over a recording transport: no REST, no key, one entry per dispatched call. */
+function fakeTrello(records: ConnectorCall[]): TrelloBoard {
+  const boardId = 'aabbccddeeff001122334455';
+  const board = { id: boardId, name: 'Synthetic Board', closed: false };
+  const lists = [{ id: '11223344556677889900aabb', name: 'Backlog', closed: false }, { id: '223344556677889900aabbcc', name: 'Done', closed: false }];
+  const transport: TrelloTransport = {
+    tools: async () => ({ ok: true, value: trelloSchemas() }),
+    call: async (tool, args) => {
+      records.push({ connector: 'trello', tool, args });
+      if (tool === 'trelloReadMember') return { ok: true, value: { id: '3344556677889900aabbccdd', username: 'synthetic', fullName: 'Synthetic Owner' } };
+      if (tool === 'trelloReadBoard') return { ok: true, value: { boards: [board] } };
+      if (tool === 'trelloReadList') return { ok: true, value: { lists } };
+      if (tool === 'trelloReadCard') return { ok: true, value: { cards: [] } };
+      if (tool === 'trelloWriteCard') {
+        const card = { id: '445566778899aabbccddeeff', name: String(args['name'] ?? 'Synthetic card'), listId: lists[0]!.id, closed: false, desc: '', due: null, dueComplete: false, labels: [] };
+        return { ok: true, value: { ...card, card, cards: [card] } };
+      }
+      return { ok: true, value: {} };
+    },
+  };
+  return new TrelloBoard({ transport, signedIn: () => true, boardName: 'Synthetic Board', timeZone: 'UTC', now: () => SYNTHETIC_NOW });
 }

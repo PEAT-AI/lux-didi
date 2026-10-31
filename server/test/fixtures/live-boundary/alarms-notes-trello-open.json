@@ -1,0 +1,156 @@
+{
+  "about": "D7: a positive dispatch for the alarm, note, trello and open kinds.",
+  "scenarios": [
+    {
+      "id": "set-alarm-positive",
+      "why": "The owner asks for an alarm; the host reads his own words and the alarm is set from the session's ask.",
+      "finals": [
+        "Set an alarm for 7 tomorrow morning."
+      ],
+      "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "cancel-alarm-positive",
+      "why": "The same ask kind answers a cancel, and the cancel path is the host's, not the model's.",
+      "finals": [
+        "Cancel my alarm for tomorrow morning."
+      ],
+      "steps": [
+        {
+          "tool": "cancel_alarm",
+          "args": {},
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "snooze-alarm-positive",
+      "why": "A snooze is a write on the alarm the host already holds.",
+      "finals": [
+        "Snooze that alarm for ten minutes."
+      ],
+      "steps": [
+        {
+          "tool": "snooze_alarm",
+          "args": {},
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "note-save-positive",
+      "why": "A save-cued note must stage the owner's own words. It stages locally, so the connector is never called; the model's reply is delivered on a later turn, which the corpus measures.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "Save a note: the synthetic bridge reopens on Monday."
+      ],
+      "steps": [
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "noDispatch": true
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "trello-write-positive",
+      "why": "A trello write is granted at the base, so the board service must receive the created card.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard",
+              "args": {
+                "action": "create",
+                "name": "Synthetic card"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "open-positive",
+      "why": "An owner-asked open is authorized and dispatched to the host's own open path; this lane binds no native open client, so the tool reports that it could not confirm the open.",
+      "finals": [
+        "Open the synthetic calculator app."
+      ],
+      "steps": [
+        {
+          "tool": "open_app",
+          "args": {
+            "name": "SyntheticCalc"
+          },
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    }
+  ]
+}

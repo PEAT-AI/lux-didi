@@ -1,0 +1,170 @@
+{
+  "about": "D7: a provider rebuild before, during and after a dispatch changes no decision, and a replay never writes twice.",
+  "scenarios": [
+    {
+      "id": "rebuild-before-dispatch",
+      "why": "The line drops before the model calls the tool; the rebuilt session still dispatches one write.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "rebuild": true
+        },
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard"
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "rebuild-during-dispatch",
+      "why": "The line drops while the write is being read back; the receipt is kept, and the write is not repeated.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard"
+            }
+          }
+        },
+        {
+          "rebuild": true
+        },
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "sameCallId": true,
+          "expect": {
+            "dispatched": {
+              "connector": "trello",
+              "tool": "trelloWriteCard",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "rebuild-after-dispatch",
+      "why": "The model repeats the identical call after the rebuild under the same provider call id; the receipt answers it.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard"
+            }
+          }
+        },
+        {
+          "rebuild": true
+        },
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "sameCallId": true,
+          "expect": {
+            "dispatched": {
+              "connector": "trello",
+              "tool": "trelloWriteCard",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "replay-new-call-id",
+      "why": "D4: a replay under a NEW provider call id returns the receipt and never mutates twice.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard"
+            }
+          }
+        },
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatched": {
+              "connector": "trello",
+              "tool": "trelloWriteCard",
+              "count": 1
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "no operation ledger at the base: the idempotency key is the provider call id and the execution id, so a replay under a new call id is a second dispatch (D4). C-GRANTS/D4 fix this."
+      }
+    }
+  ]
+}

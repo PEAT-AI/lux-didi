@@ -18,6 +18,8 @@ Native audio belongs to `AudioOwner` in `Sources/LuxDidi/AudioOwner.swift`. A mu
 
 ## Keys and menus
 
+Quit and Start are reachable from anywhere, without activating the app first: the status item is created at launch with a fixed positive length, and a symbol that resolves to no image falls back to the text title `N` rather than staying blank. Its menu is assigned to the item at setup, so one click opens it while another app is frontmost; nothing on that path waits for activation. Every status click (`status_click hit=button|other`), menu open (`menu_open_requested`, `menu_opened`), menu action (`menu_item item=quit|start|stop|mute|show`) and quit stage (`quit_stage stage= ms=`, `quit_forced stage=`) goes to `native-live.log`, not to os Logger only. A quit is bounded: the ordered shutdown finishes in well under 1.5 s, and the three second `NativeQuitDeadline` is the safety net for a wedged stage, never the normal path.
+
 `Sources/LuxDidi/SingleKeyTrigger.swift` owns the bare Right Command gesture. Holding it or combining it with another key must not steal ordinary Command shortcuts. Input Monitoring is a macOS permission separate from microphone access, and the menu reports when the single-key path cannot run.
 
 `Sources/LuxDidi/NativeShortcuts.swift` owns registered window and Live chords. The current controls include Control Option Space for the orb, Control Option Shift Space for the full window, Control Option Shift L for Live, and Control Option Shift M for mute. Keep menu labels and conflict reporting in sync with the registration owner; do not hardcode another shortcut table in a web component.

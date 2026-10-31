@@ -188,6 +188,33 @@ test('canonical compiler emits every published production unit and no unpublishe
   assert.doesNotMatch(producer, /\.host-build-|"extends"|"include"/, 'the wrapper must not substitute a divergent compiler config');
 });
 
+test('#644: a launch kind posted after the ready frame is written to host.log after host_started', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-launch-kind-'));
+  const host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  const lines = async () => (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+  try {
+    assert.equal((await lines())[0]?.event, 'host_started');
+    // The native app's own launch receipt path: posted once the host has answered, so it lands after
+    // host_started rather than before it, which is what #644 lost.
+    const response = await fetch(`${host.descriptor.origin}/api/v1/diagnostics/client`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'launch_kind', kind: 'login_item', autoConnects: false, windowShown: false }),
+    });
+    assert.equal(response.status, 204);
+    const written = await lines();
+    const started = written.findIndex(line => line.event === 'host_started');
+    // The shipped schema nests a client receipt under client_diagnostic, closed set in routes.ts and
+    // validated in log.ts, so this is the line the app's launch kind reaches host.log on.
+    const launch = written.findIndex(line => line.event === 'client_diagnostic'
+      && (line.diagnostic as Record<string, unknown> | undefined)?.event === 'launch_kind');
+    assert.ok(started >= 0, 'the host wrote its own start line');
+    assert.ok(launch > started, 'launch_kind reaches host.log after host_started, so a launch kind is recorded rather than inferred');
+    assert.deepEqual(written[launch]!.diagnostic, {
+      event: 'launch_kind', kind: 'login_item', autoConnects: false, windowShown: false });
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });

@@ -128,9 +128,15 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       const session = (await saved.json()).data;
       const recalled = await fetch(`${ready.origin}/api/v1/sessions/${session.id}`, { headers, signal: AbortSignal.timeout(3000) });
       assert.equal(recalled.status, 200); assert.equal((await recalled.json()).data.session.title, title);
+      // C-QUIT 2: the stop request is the shutdown and the exit. A host that leaves one handle
+      // referenced would keep running after every receipt is written, so Quit would end in the
+      // native app's forced path instead of the clean one.
+      const stopAt = Date.now();
       process.child.stdin.end();
       const result = await process.closed;
       assert.deepEqual(result, { code: 0, signal: null, stdout: line + '\n', stderr: '' });
+      const stopMs = Date.now() - stopAt;
+      assert.ok(stopMs < 1500, `the host exits on its own stop request, in ${stopMs} ms, inside the Quit budget`);
       await assert.rejects(fetch(ready.origin + '/api/v1/status', { headers, signal: AbortSignal.timeout(3000) }));
       // A closed host leaves no descriptor naming it behind.
       await assert.rejects(readFile(join(dataDir, 'host-runtime.json')), /ENOENT/);

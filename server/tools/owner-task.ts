@@ -22,6 +22,7 @@ export interface OwnerOperation {
 interface OwnerTask {
   id: string; journalId: string; words: string; start: number; observedAt: number; observedMono: number; finals: number;
   operations: OwnerOperation[]; sequence: number; closed: boolean;
+  openGrant: boolean; openReceipts: Map<string, unknown>;
   shown: { handle: string; kind: string }[]; sources: Record<string, number>;
 }
 
@@ -187,25 +188,24 @@ export class OwnerTasks implements OwnerTaskPort {
       const seen = new Set(previous.operations.map(operation => operation.kind));
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
       if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {
-        const commands = ownerCommands(words);
-        this.#apply(previous, commands, words);
-        this.#armOpen(previous, commands, words);
+        this.#apply(previous, ownerCommands(words), words);
+        this.#armOpen(previous, words);
       }
       return;
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, shown: [], sources: {},
+      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {},
     };
-    const commands = ownerCommands(words);
-    this.#apply(task, commands, words);
-    this.#armOpen(task, commands, words);
+    this.#apply(task, ownerCommands(words), words);
+    this.#armOpen(task, words);
     this.tasks.set(session, task);
   }
 
   /** One operation per kind: further owner words amend it, they never open a second one. */
   #apply(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
     for (const command of commands) {
+      if (command.kind === 'open') continue;
       const open = task.operations.filter(operation => operation.kind === command.kind && operation.state !== 'done');
       const amendable = open.at(-1);
       // While an operation of this kind is open, the owner's further words amend it: a restarted
@@ -215,18 +215,26 @@ export class OwnerTasks implements OwnerTaskPort {
     }
   }
 
-  /** Opening a window is local and the target is picked from what his own reads exposed, so the
-   *  owner's words are the authority for exactly one open, spent by its committed success. */
-  #armOpen(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
-    if (commands.some(command => command.kind === 'open')) return;
+  /**
+   * Opening a window is local, leaves the machine and sends nothing, and the target is picked from
+   * what the owner's own reads exposed. So each of his finals is one open, spent by its committed
+   * success and never re-spent on a second target.
+   */
+  #armOpen(task: OwnerTask, words: string): void {
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
-    task.operations.push({ operationId: `op-${++task.sequence}`, kind: 'open', fields: { recurrenceAsked: false }, words, state: 'open' });
+    task.openGrant = true;
   }
 
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
+    if (kind === 'open') {
+      const receipt = task.openReceipts.get(target);
+      if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
+      if (task.openGrant) return { ...common, code: 'allowed' };
+      return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
+    }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     // Opening a window the owner can see is local and target-selected from what his own reads
     // exposed, so any words of his task authorize it; nothing leaves the machine and nothing sends.
@@ -251,7 +259,7 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || task.id !== requestId) return { code: 'no_owner_request' };
     // An open the owner's words already authorize has no bounded operation to journal: he is only
     // selecting a window, so the same grant point decides and nothing is written down as consumed.
-    if (operation === undefined) return this.authorize(session, kind, target);
+    if (kind === 'open' || operation === undefined) return this.authorize(session, kind, target);
     const authorization = this.authorize(session, kind, target);
     if (authorization.code !== 'allowed' && authorization.code !== 'idempotent') return authorization;
     // D4: the intent is journaled before dispatch, keyed by the task and the operation.
@@ -276,6 +284,7 @@ export class OwnerTasks implements OwnerTaskPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
+    if (kind === 'open') { task.openReceipts.set(target, receipt); task.openGrant = false; return; }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

@@ -34,10 +34,12 @@ test('D2: the same ask grants each kind it names, and nothing it does not', () =
   // D2: the owner's own words select exactly one local window; a spent open needs new words.
   const gate = new OwnerTasks(() => 0);
   gate.observe('s', 'j1', 'this is the synthetic item');
-  const first = gate.authorize('s', 'open', 'file-1');
-  assert.equal(first.code, 'allowed');
+  assert.equal(gate.authorize('s', 'open', 'file-1').code, 'allowed');
   gate.commit('s', 'open', 'file-1', { status: 'opened' }, gate.currentId('s')!);
-  assert.equal(gate.authorize('s', 'open', 'file-2').code, 'grant_spent');
+  assert.equal(gate.authorize('s', 'open', 'file-2').code, 'grant_spent', 'a second target needs new words');
+  const replay = gate.authorize('s', 'open', 'file-1');
+  assert.equal(replay.code, 'idempotent');
+  assert.deepEqual(replay.code === 'idempotent' ? replay.receipt : undefined, { status: 'opened' });
   gate.observe('s', 'j2', 'that file please');
   assert.equal(gate.authorize('s', 'open', 'file-2').code, 'allowed');
 });

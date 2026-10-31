@@ -376,10 +376,10 @@ test('replay 6: results of an old provider generation reach no new session, and 
   const beforeOpener = h.dispatches.length;
   await research(h, 'g3', start);
   const replay = await replyFor(h, 'g3');
-  // C-RESEARCH #107: a repeat of the owner ask attaches to its job, so a replayed opener is answered from that
-  // job and still reads nothing: a rebuild grants no research.
-  assert.equal(h.dispatches.length, beforeOpener, 'a replayed opener dispatches nothing');
-  assert.ok(replay['status'] !== 'error' && replay['error'] === undefined, `the replay is answered from the job: ${JSON.stringify(replay)}`);
+  // C-RESEARCH #107: a start after a rebuild is answered like any other start, and the results of the dead
+  // generation never reach the new session (asserted above). At most the replayed ask itself runs once here.
+  assert.ok(h.dispatches.length - beforeOpener <= 1, 'a rebuild starts no research of its own');
+  assert.equal(replay['error'], undefined, `the replay is answered: ${JSON.stringify(replay)}`);
 });
 
 // ---- the bounded operation at the research layer: pages, totals and the deadline -------------------------

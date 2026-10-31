@@ -5742,7 +5742,9 @@ test('mail integration: the deterministic plan shares the native page collector'
   // ROUTE-1022: the fallback plan sends its own window query, and the native page collector follows it.
   assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'in:inbox newer_than:14d', 'the plan sent its own inbox scan, not a selector one');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
-  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13);
+  // C-RESEARCH #107 (D6): no poll invitation reaches the model; the host pages inside the job.
+  assert.equal(reply['canContinue'], false);
 });
 
 test('mail integration: revocation during a sibling await or final microtask denies original retained bindings', async t => {
@@ -6080,7 +6082,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
-  assert.equal(first['canContinue'], source === 'mail', `${source} pages: ${JSON.stringify(first)}`);
+  assert.equal(first['canContinue'], false, `no poll invitation reaches the model: ${JSON.stringify(first)}`);
   const steps = h.owner.current().steps ?? [];
   assert.equal(steps.length, 2, 'one retained terminal step for each actual upstream page');
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));

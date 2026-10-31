@@ -61,7 +61,7 @@ async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: '
   const envelope = connectionEnvelope('mattermost', { resource: RESOURCE });
   const names = (grant ?? (list => list))(envelope.filter(name => published.includes(name)));
   registry.approve({ endpointId: 'mattermost', schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
-  const reader = createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names: [...names, ...composedGrantedNames('mattermost', names)] } });
+  const reader = createMattermostReader({ port: adapter, registry, now: () => FIXTURE_NOW, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names: [...names, ...composedGrantedNames('mattermost', names)] } });
   const calls = (): Call[] => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Call) : [];
   return { adapter, registry, reader, calls, published, names, dir, config, discovery };
 }
@@ -304,7 +304,7 @@ test('C-CHAT (L4-04, L4-11): attention reads the conversations that moved, newes
   for (const args of searches(calls).filter(args => String(args['query']).startsWith('from:') || String(args['query']).startsWith('@'))) {
     assert.equal(args['mode'], 'keyword');
     assert.equal(args['sort'], 'newest');
-    assert.equal(args['from_date'], daysAgo(7));
+    assert.equal(args['from_date'], fixtureDaysAgo(7));
   }
   assert.ok(view.items.some(item => item.reason === 'dm' && item.author === 'ada.moss'));
   assert.equal(view.missing, undefined);

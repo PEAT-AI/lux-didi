@@ -16,7 +16,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -464,7 +464,30 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
-/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
+/** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
+export const DEAD_AIR_CONTINUATION_MS = 2_500;
+/** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
+export const CONTINUATION_RE_REQUEST_NOTE = 'The lookup has finished. Answer the owner now from the results you already have. Do not look anything else up.';
+
+
+/**
+ * C-RESEARCH #107: the one place a research provider read is charged. The ceiling belongs to the owner task on
+ * the admission object, so it is shared by every connector and a provider rebuild cannot refill it. Reads past
+ * the ceiling are never dispatched and come back as a cut read that names its cause.
+ */
+export function budgetedReads(
+  admission: { takeReads(count: number): number },
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+): (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]> {
+  return async (subs, signal) => {
+    const allowed = admission.takeReads(subs.length);
+    if (allowed >= subs.length) return execute(subs, signal);
+    const kept = allowed === 0 ? [] : await execute(subs.slice(0, allowed), signal);
+    const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false,
+      text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
+    return [...kept, ...cut];
+  };
+}/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
@@ -2425,8 +2448,11 @@ export class LiveSessionOwner {
    * was. Only the first audible frame, an owner barge-in or the turn's end clears it, and while it runs the response
    * watchdog stays out of its silence so one silence never has two timers on it.
    */
+  /** C-RESEARCH #107 (#719): one continuation re-request per debt clock, so a mute provider is not looped. */
+  readonly #continuationReRequested = new WeakSet<ActiveSession>();
   #armDebt(handle: ActiveSession, outputs: LiveToolResponse[], reason: 'tool_output' | 'recreate'): void {
     if (this.#settled(handle)) return;
+    this.#continuationReRequested.delete(handle);
     handle.debtOutputs = outputs;
     // #656: a clock that stood down for a tool call in flight re-anchors on that call's own output, so the model gets
     // the same eight seconds to speak its result as any other tool output. Every other output leaves a running clock
@@ -2564,6 +2590,17 @@ export class LiveSessionOwner {
     if (!postToolNoOutput && step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
       handle.debtDeferred = true;
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
+      return;
+    }
+    // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
+    // inside the rung, instead of being waited out to a dead-air rebuild.
+    if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
+      this.#continuationReRequested.add(handle);
+      try {
+        const ask = handle.session.sendText;
+        if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
+      } catch { /* a closed transport settles on its own */ }
+      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
@@ -4399,6 +4436,7 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
+    const budgetedExecute = budgetedReads(handle.researchAdmission, execute);
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
@@ -4411,12 +4449,17 @@ export class LiveSessionOwner {
       queryContext: () => handle.researchQueryContext ?? '',
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(handle), execute,
+      unavailableNow: () => this.#unreachableSources(handle), execute: budgetedExecute,
+      // C-RESEARCH #107: the web read path asks the same job ceiling the connector gate takes from.
+      readsLeft: () => handle.researchAdmission.readsLeft(),
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
         const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        // C-RESEARCH #107: a web read is a provider read, so it is charged to the same job ceiling. The engine
+        // asks `readsLeft` first, so a read past the ceiling is never dispatched and never reported as an outage.
+        handle.researchAdmission.takeReads(1);
         const result = await this.#researchWeb!.search(request);
         if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;
@@ -4491,6 +4534,10 @@ export class LiveSessionOwner {
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
         response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
+      } else if (verdict !== undefined && verdict.attach === true && handle.researchAdmission.deliveredReply() !== undefined) {
+        // C-RESEARCH #107: a paraphrase or repeat of this job's own owner ask returns the job's terminal result
+        // instead of starting a second operation, so it dispatches nothing and spends no budget.
+        response = { ...handle.researchAdmission.deliveredReply()!, repeat: true };
       } else {
         const firstStep = handle.toolStep;
         // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.
@@ -4518,6 +4565,8 @@ export class LiveSessionOwner {
       // C-CONTINUITY T-11: every research result enters this voice session here, so the reply cap is applied
       // once, centrally, after the envelope is final: a deadline partial and a resumed run obey it too.
       response = capVoiceReply(response, handle.voicePages);
+      // C-RESEARCH #107: the host owns paging inside the job, so the model is never handed a poll invitation.
+      if (response['canContinue'] === true) response = { ...response, canContinue: false };
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {

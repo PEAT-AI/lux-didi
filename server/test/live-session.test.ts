@@ -54,7 +54,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -5677,7 +5677,9 @@ test('mail integration: exact native query pages and retained remainder reach la
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
-  const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
+  const first = last(); assert.equal(first['error'], undefined);
+  // C-RESEARCH #107: the model is never invited to poll; the host owns paging inside the job.
+  assert.equal(first['canContinue'], false, 'no poll invitation reaches the model');
   const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
   assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
   const sourceCalls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(sourceCalls.length, 2);
@@ -5747,7 +5749,9 @@ test('mail integration: the deterministic plan shares the native page collector'
   // ROUTE-1022: the fallback plan sends its own window query, and the native page collector follows it.
   assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'in:inbox newer_than:14d', 'the plan sent its own inbox scan, not a selector one');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
-  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13);
+  // C-RESEARCH #107 (D6): no poll invitation reaches the model; the host pages inside the job.
+  assert.equal(reply['canContinue'], false);
 });
 
 test('mail integration: revocation during a sibling await or final microtask denies original retained bindings', async t => {
@@ -5800,7 +5804,8 @@ test('mail integration: an unused cursor keeps its original message coordinates 
 // continuation this reader already used is the other end.
 const pageStep = (response: Record<string, unknown>, used: Set<string>): Record<string, unknown> | undefined => {
   const page = response['pageCursor'];
-  const cursor = page !== undefined ? String(page) : response['canContinue'] === true && response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
+  // C-RESEARCH #107 (D6): the model is never handed a poll invitation, so the cursor alone says more is left.
+  const cursor = page !== undefined ? String(page) : response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
   if (cursor === undefined || used.has(cursor)) return undefined;
   used.add(cursor);
   return page !== undefined ? { pageCursor: cursor } : { cursor };
@@ -6084,7 +6089,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
-  assert.equal(first['canContinue'], source === 'mail', `${source} pages: ${JSON.stringify(first)}`);
+  assert.equal(first['canContinue'], false, `no poll invitation reaches the model: ${JSON.stringify(first)}`);
   const steps = h.owner.current().steps ?? [];
   assert.equal(steps.length, 2, 'one retained terminal step for each actual upstream page');
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));
@@ -7531,12 +7536,12 @@ test('research admission names its closed reason and admits a paging continue of
     assert.equal(typeof ADMISSION_DIRECTIVES[reason], 'string');
   }
   assert.notEqual(ADMISSION_DIRECTIVES['turn_spent'], ADMISSION_DIRECTIVES['no_turn_since_result'], 'a refusal is distinguishable from a block');
-  // A continue made after an own-results delivery, with the grant still unspent, is the no_turn_since_result case.
+  // C-RESEARCH #107: a continue after a delivery attaches to the current job, so it is admitted, never refused.
   const second = new ResearchAdmission();
   second.ownerTurn();
   assert.deepEqual(second.admit('continue', true), { admitted: true }, 'the own-results continue spends no owner turn');
   second.delivered('run-2');
-  assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
+  assert.deepEqual(second.admit('continue'), { admitted: true }, 'a continue on the current job is never refused');
 });
 
 // R9-W5: the own-results allowance belongs to an owner turn, never to the session.
@@ -7547,7 +7552,8 @@ test('research own-results continue allowance renews on each owner turn', () => 
     assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
     admission.delivered(`synthetic-${turn}`);
     assert.deepEqual(admission.admit('continue', true), { admitted: true });
-    assert.equal(admission.admit('continue', true).admitted, false);
+    // C-RESEARCH #107 (D6): the allowance is no longer a loop guard; every continue attaches to the job.
+    assert.deepEqual(admission.admit('continue', true), { admitted: true }, 'a second continue attaches, never refused');
   }
 });
 
@@ -7905,7 +7911,7 @@ test('confirmation targets the alarm announced most recently by time after a rea
 });
 
 
-test('SI-R2: post-tool no-item signal fires the existing dead-air rung at five seconds', async t => {
+test('SI-R2 (#719): post-tool no-item signal re-requests the answer before the dead-air rung', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-silence-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -7925,9 +7931,17 @@ test('SI-R2: post-tool no-item signal fires the existing dead-air rung at five s
   h.advance(1);
   fake.emit(portEvent({ type: 'interactionStatus', value: 'post_tool_no_output' }));
   await settlePort();
+  // C-RESEARCH #107 (#719): a settled batch with a silent continuation is re-requested before the rung, so
+  // the owner is not waited out to a dead-air rebuild.
+  assert.equal(fake.texts.length, 1, `the silent continuation is re-requested exactly once: ${JSON.stringify(fake.texts)}`);
+  assert.match(fake.texts[0]!, /Answer the owner now from the results you already have/u, 'the re-request reaches the provider');
+  assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 0, 'the rung waits for the re-requested answer');
+  h.advance(DEAD_AIR_CONTINUATION_MS); scheduler.runDue(); await settlePort();
+  // The re-requested response is in flight, so the rung's own grace runs before it nudges.
+  h.advance(DEAD_AIR_RESPONSE_GRACE_MS); scheduler.runDue(); await settlePort();
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge');
   assert.equal(nudges.length, 1);
-  assert.equal(nudges[0]!['elapsedMs'], 5_000);
+  assert.equal(nudges[0]!['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung keeps its eight-second base after the re-request');
   h.advance(3_000); scheduler.runDue(); await settlePort();
   assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 1, 'the old eight-second timer is retired');
   attachment.close();

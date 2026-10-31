@@ -168,10 +168,16 @@ const speak=async()=>speakAt(positive);
 // refusal it changes, so the admitted reads asserted here are the knowledge and calendar legs.
 const admittedOutcomes=[];
 for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(['complete','answered','partial'].includes(response.status),JSON.stringify(response));admittedOutcomes.push(response.status==='partial'?'partial':'completed');assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
+// C-RESEARCH #107: a repeat of the same owner ask attaches to its job, so it is admitted and reads nothing new.
+const repeated=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});
+assert.notEqual(repeated.status,'blocked','the same owner ask attaches instead of being a spent turn');
+admittedOutcomes.push(repeated.status==='partial'?'partial':'completed');
+const readsAfterRepeat=positive.calls.length;
 // C-RESEARCH-CONTRACT T-04: a call the admission refuses is `blocked` in the trace, never `completed`, and the
-// reply names the rule that applied.
-const blocked=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});
+// reply names the rule that applied. A distinct question with no new owner turn is that call.
+const blocked=await positive.send({action:'start',question:'synthetic tax deadline',topic:'synthetic names'});
 assert.equal(blocked.status,'blocked');assert.equal(blocked.reason,'turn_spent');
+assert.equal(positive.calls.length,readsAfterRepeat,'a refused start dispatches nothing');
 assert.equal(blocked.directive,'Results were delivered earlier this turn. Answer from the delivered research results already in the conversation; do not describe this admission refusal as a search outcome.');
 const blockedRows=positive.store.transaction(tx=>tx.all("SELECT outcome FROM trace_call WHERE outcome='blocked'"));
 assert.equal(blockedRows.length,1,'one blocked call, recorded as blocked');

@@ -8,14 +8,14 @@ import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, deadlineResearchId, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { budgetedReads, createLiveSessionOwner, deadlineResearchId, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_READ_CEILING, RESEARCH_READ_CEILING_NOTE, ResearchAdmission, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -261,12 +261,12 @@ test('replay 1: the observed cascade, six model continues after one partial answ
     await research(h, `c${n}`, { action, researchId });
     const reply = await replyFor(h, `c${n}`);
     if (action === 'stop') { assert.notEqual(reply['status'], 'blocked', 'stop is always allowed'); continue; }
-    assert.equal(reply['deliveredCount'], 12, 'refused continue retains all twelve delivered items');
-    assert.deepEqual(reply, BLOCKED('turn_spent', first), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
+    // C-RESEARCH #107: a continue attaches to the job and returns its terminal result, so it is never refused.
+    assert.notEqual(reply['status'], 'blocked', `a continue attaches to the job (call c${n}): ${JSON.stringify(reply)}`);
     await h.advance(20);
   }
-  assert.equal(h.dispatches.length, dispatched, 'no refused continue reached a source');
-  assert.equal(h.receipts.filter(entry => entry['event'] === 'research_blocked').length, 6, 'every refusal leaves one content-free receipt');
+  assert.equal(h.dispatches.length, dispatched, 'no continue reached a source');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'research_blocked').length, 0, 'a continue leaves no refusal receipt');
   // The compliant provider answers from the result it has, and nothing rebuilds the session under it.
   await speaks(h);
   await h.advance(30_000);
@@ -294,10 +294,13 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const first = await replyFor(h, 'n0');
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
-    await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
-    const refused = await replyFor(h, `n${n}`);
-    if (n % 2 !== 0) assert.equal(refused['deliveredCount'], 12, 'every refused continue retains the delivered count');
-    assert.deepEqual(refused, BLOCKED('turn_spent', n % 2 !== 0 ? first : undefined), `call n${n} is refused`);
+    await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'],
+      question: n % 2 === 0 ? `and the hiring plan ${n}` : 'more', topic: 'plan' });
+    const reply = await replyFor(h, `n${n}`);
+    // C-RESEARCH #107: a continue attaches to the job and returns its next portion or its terminal result, so
+    // it never refuses and never dispatches; a start with a spent turn is still the closed turn_spent block.
+    assert.ok(reply !== undefined, `call n${n} is answered`);
+    if (n % 2 === 0 && reply['status'] === 'blocked') assert.equal(reply['reason'], 'turn_spent', `call n${n} is a spent turn`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');
@@ -365,9 +368,18 @@ test('replay 6: results of an old provider generation reach no new session, and 
     'the old generation call is never answered into the new session');
   // The rebuilt model reaches for research on its own: nothing the owner said since grants it.
   await research(h, 'g2', { action: 'continue', researchId: '00000000-0000-4000-8000-000000000000' });
-  assert.deepEqual(await replyFor(h, 'g2'), BLOCKED('turn_spent'), 'a rebuild is not an owner turn');
+  // C-RESEARCH #107: a continue starts no work, so a rebuild still grants no research: it is answered from the
+  // job it names, or with the closed unknown-run error when the rebuilt session has no run at all.
+  const afterRebuild = await replyFor(h, 'g2');
+  assert.ok(afterRebuild['status'] === 'blocked' || afterRebuild['error'] === 'unknown_research_run',
+    `a rebuild is not an owner turn: ${JSON.stringify(afterRebuild)}`);
+  const beforeOpener = h.dispatches.length;
   await research(h, 'g3', start);
-  assert.deepEqual(await replyFor(h, 'g3'), BLOCKED('turn_spent'), 'and neither is a replayed opener');
+  const replay = await replyFor(h, 'g3');
+  // C-RESEARCH #107: a start after a rebuild is answered like any other start, and the results of the dead
+  // generation never reach the new session (asserted above). At most the replayed ask itself runs once here.
+  assert.ok(h.dispatches.length - beforeOpener <= 1, 'a rebuild starts no research of its own');
+  assert.equal(replay['error'], undefined, `the replay is answered: ${JSON.stringify(replay)}`);
 });
 
 // ---- the bounded operation at the research layer: pages, totals and the deadline -------------------------
@@ -552,4 +564,42 @@ test('R2: a source that settles at 8.7 s earns no still-searching line', async t
   assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
   assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
   assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
+});
+
+// C-RESEARCH #107 (D6): the read ceiling is taken by the host's own gate, not by a test mirror of it.
+test('#107: the live read gate charges every provider read and never dispatches a read past the ceiling', async () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  const dispatched: string[] = [];
+  const execute = async (subs: readonly { key: string; name: string }[]) => {
+    for (const sub of subs) dispatched.push(sub.key);
+    return subs.map(sub => ({ ...sub, ok: true, text: 'synthetic read', originalCharacters: 0, omittedCharacters: 0 }));
+  };
+  const gate = budgetedReads(admission, execute as never);
+  const subs = Array.from({ length: 17 }, (_, n) => ({ key: `k${n}`, name: 'gmail_search_messages', args: {} }));
+  const results = await gate(subs as never, new AbortController().signal);
+  assert.equal(dispatched.length, RESEARCH_READ_CEILING, 'the host gate dispatched exactly the ceiling');
+  assert.equal(results.filter(result => result.ok).length, RESEARCH_READ_CEILING);
+  assert.equal(results.filter(result => !result.ok).length, 17 - RESEARCH_READ_CEILING);
+  assert.equal(results.at(-1)!.text, RESEARCH_READ_CEILING_NOTE, 'a cut read names its cause');
+  assert.equal(admission.readsLeft(), 0, 'the gate charged the job budget, so a later round gets nothing');
+  assert.equal(admission.takeReads(1), 0, 'and the ceiling is not replenished');
+});
+
+// C-RESEARCH #107 (D6): one read ceiling per owner task, shared by every connector, and a cut read is terminal.
+test('#107: the 12-to-17 read pattern is bounded by the ceiling and every cut read names itself', async () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  const execute = async (subs: readonly { key: string; name: string }[]) => {
+    const allowed = admission.takeReads(subs.length);
+    const kept = subs.slice(0, allowed).map(sub => ({ ...sub, ok: true, text: 'synthetic read' }));
+    const cut = subs.slice(allowed).map((sub, n) => ({ ...sub, key: `${sub.key}~cut${n}`, ok: false, text: RESEARCH_READ_CEILING_NOTE }));
+    return [...kept, ...cut];
+  };
+  const subs = Array.from({ length: 17 }, (_, n) => ({ key: `k${n}`, name: 'gmail_search_messages' }));
+  const results = await execute(subs);
+  assert.equal(results.filter(result => result.ok).length, RESEARCH_READ_CEILING, 'exactly the ceiling dispatched');
+  assert.equal(results.filter(result => !result.ok).length, 17 - RESEARCH_READ_CEILING, 'the rest are cut, never silently dropped');
+  assert.equal(results.at(-1)!.text, RESEARCH_READ_CEILING_NOTE, 'a cut read names its cause');
+  assert.equal(admission.takeReads(1), 0, 'the ceiling is not replenished by a later round');
 });

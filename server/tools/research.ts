@@ -332,7 +332,7 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window', 'read_ceiling'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
@@ -2468,6 +2468,8 @@ export interface ResearchDeps {
   calendarDigest?: (() => string | undefined) | undefined;
   /** WEB: the public web read. Present means the web part is configured; absent means it is not offered. */
   web?: WebSearchPort | undefined;
+  /** C-RESEARCH #107: the job's remaining provider reads, so a web read past the ceiling is never dispatched. */
+  readsLeft?: (() => number) | undefined;
   /**
    * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
    * once instead of spending its deadline on sub-calls that cannot reach a stopped connector. P5: an
@@ -3005,7 +3007,7 @@ export function clip(text: string, max: number): string {
  */
 
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window' | 'read_ceiling';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -3024,6 +3026,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
+  // C-RESEARCH #107: the task's own read ceiling stopped this source before it was read.
+  read_ceiling: label => `${label} was cut by this task's read ceiling before I read it`,
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
   timed_out: (label, source) => `${label} did not answer within ${Math.round(RESEARCH.sourceDeadline[source] / 1000)} seconds`,
   still_reading: label => `I am still reading ${label}`,
@@ -3051,6 +3055,7 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
   // #635: a timeout says it timed out, whatever the connector called it.
+  if (text === 'read_ceiling') return 'read_ceiling';
   if (/timeout|timed_out/u.test(text)) return 'timed_out';
   if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
   return 'provider_failed';
@@ -5357,6 +5362,10 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
     if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
     const query = bound.query;
     const readStarted = now();
+    if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+      run.unavailableReasons.set('web', 'read_ceiling');
+      return { plan };
+    }
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
     recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
@@ -6780,6 +6789,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               const readStarted = now();
               const bound = bindResearchQuery(String(call.args['query'] ?? ''), `${deps.queryContext?.() ?? ownerWords} ${[...run.evidence.values()].join(' ')}`);
               if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
+              if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+                run.unavailableReasons.set('web', 'read_ceiling');
+                return empty;
+              }
               const outcome = await deps.web!.search({ query: bound.query, signal: readSignal, deadlineMs: webDeadlineMs(bound.query) });
               recordWebRead(deps, run, bound.query, outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
@@ -7682,6 +7695,15 @@ export class ResearchScheduler {
       this.#deps.logJoined?.(target.id, 'continue');
       return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
     }
+    // C-RESEARCH #107: a continue that names no run attaches to the job this session already answered from,
+    // so it returns that job's next portion or its cached terminal result instead of opening a new operation.
+    if (call.action === 'continue' && call.researchId === undefined) {
+      const answered = this.#deps.ledger.last()?.researchId;
+      if (answered !== undefined) {
+        this.#deps.logJoined?.(answered, 'status');
+        return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));
+      }
+    }
     // Zero or several pending runs: current behaviour.
     if (call.action === 'stop') {
       const run = this.#deps.ledger.stop(call.researchId);
@@ -7778,7 +7800,8 @@ export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonO
 }
 export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
-export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
+/** C-RESEARCH #107: `attach` says the call joins the job that already owns this owner question. */
+export type AdmissionVerdict = { admitted: true; attach?: boolean } | { admitted: false; reason: AdmissionBlockReason };
 
 /**
  * C-LIVE behaviour 1: each finalized owner turn grants one research operation. `start` or an admitted `continue`
@@ -7786,6 +7809,26 @@ export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: A
  * the owner's own finalized words call `ownerTurn`: transcripts in progress, her audio, host nudges, rebuilds and
  * tool results grant nothing. One instance lives for the whole live session, across provider generations.
  */
+/** C-RESEARCH #107: the provider-read ceiling for one owner task, one budget shared by every connector. */
+export const RESEARCH_READ_CEILING = 12;
+/** C-RESEARCH #107: the one line a source reads when the task's read ceiling stopped it before it was read. */
+export const RESEARCH_READ_CEILING_NOTE = 'research read ceiling reached for this task: this source was cut before it was read';
+/** C-RESEARCH #107: the host assigns a question its identity from the owner's words, never from the model's. */
+export function ownerQuestionKey(question: string): string { return [...questionTerms(question)].sort().join(' '); }
+/**
+ * C-RESEARCH #107: a model paraphrase of the same owner ask attaches to the same job. The shorter term set must
+ * be fully contained and may differ by one word, so "Acme Seeds revenue" never attaches to "who owns Acme Seeds".
+ */
+export function sameOwnerQuestion(a: string, b: string): boolean {
+  const left = questionTerms(a);
+  const right = questionTerms(b);
+  if (left.size === 0 || right.size === 0) return left.size === right.size;
+  const smaller = left.size <= right.size ? left : right;
+  const larger = smaller === left ? right : left;
+  for (const term of smaller) if (!larger.has(term)) return false;
+  return larger.size - smaller.size <= 1;
+}
+
 export class ResearchAdmission {
   #turns = 0;
   #grant: number | undefined;
@@ -7799,7 +7842,32 @@ export class ResearchAdmission {
   #answered = false;
   /** #1028 behaviour 3: the questions this owner turn already started, so two different asks both run. */
   #starts: string[] = [];
-  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: the one host-owned job the current owner question owns, stable across a provider rebuild. */
+  #job: { id: string; key: string; question: string } | undefined;
+  #jobs = 0;
+  /** C-RESEARCH #107: provider reads this job has spent, shared across every connector. */
+  #reads = 0;
+  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; this.#job = undefined; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: a new owner question opens a job with a fresh read budget inside the ceiling. */
+  #openJob(question: string): void {
+    this.#jobs += 1;
+    this.#job = { id: `job-${this.#jobs}`, key: ownerQuestionKey(question), question };
+    this.#reads = 0;
+  }
+  /** C-RESEARCH #107: the job the current owner question owns; a rebuild never reopens or replaces it. */
+  jobId(): string | undefined { return this.#job?.id; }
+  jobQuestion(): string | undefined { return this.#job?.question; }
+  /**
+   * C-RESEARCH #107: take provider reads from this job's ceiling. The ceiling is one budget shared by every
+   * connector, it outlives a provider rebuild (this object does) and only a new owner question refills it.
+   */
+  takeReads(count: number): number {
+    const allowed = Math.max(0, Math.min(count, RESEARCH_READ_CEILING - this.#reads));
+    this.#reads += allowed;
+    return allowed;
+  }
+  readsLeft(): number { return Math.max(0, RESEARCH_READ_CEILING - this.#reads); }
+  readsSpent(): number { return this.#reads; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
@@ -7811,28 +7879,33 @@ export class ResearchAdmission {
     if (action === 'continue' && sameRun) return { admitted: true };
     if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    // C-RESEARCH #107: a continue attaches to the job that is already running (the scheduler waits for it) or
+    // returns that job's cached terminal result. It starts no work, spends no grant and is never refused.
+    if (action === 'continue') return { admitted: true };
     // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
-    if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
-    if (action === 'start') {
-      // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
-      // two research operations. A third, a repeat of the same question, a start after this turn's answer
-      // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
-      const asked = question.trim().toLowerCase();
-      const distinct = asked !== '' && !metaOnlyQuestion(asked);
-      if (this.#grant === this.#turns) {
-        this.#starts.push(distinct ? asked : '');
-        this.#grant = undefined;
-        return { admitted: true };
-      }
-      if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
-        return { admitted: false, reason: 'turn_spent' };
-      }
-      this.#starts.push(asked);
+    if (this.#answered) return { admitted: false, reason: 'answer_already_given' };
+    const asked = question.trim().toLowerCase();
+    const distinct = asked !== '' && !metaOnlyQuestion(asked);
+    // C-RESEARCH #107: a model paraphrase of this job's own owner ask attaches to that job, not a new one.
+    if (this.#job !== undefined && distinct && sameOwnerQuestion(question, this.#job.question)
+      && (this.#grant !== this.#turns || this.#starts.includes(asked) || this.#starts.length >= 2)) {
+      return { admitted: true, attach: true };
+    }
+    // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
+    // two research operations. A third, a repeat of the same question, a start after this turn's answer
+    // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
+    if (this.#grant === this.#turns) {
+      this.#starts.push(distinct ? asked : '');
+      this.#grant = undefined;
+      if (distinct) this.#openJob(question);
       return { admitted: true };
     }
-    if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
-    if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
-    this.#grant = undefined;
+    if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
+      return { admitted: false, reason: 'turn_spent' };
+    }
+    this.#starts.push(asked);
+    // C-RESEARCH #107: a different ask in the same turn is its own job, with its own read budget.
+    if (distinct) this.#openJob(question);
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */

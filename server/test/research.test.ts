@@ -2306,7 +2306,7 @@ test('#1028: a name heard one slip away resolves to the name the owner owns', ()
   }, 'a question naming none of her names is left exactly as it was spoken');
 });
 
-test('#1028: one owner turn opens two different asks and refuses a repeat or a third', () => {
+test('#1028: one owner turn opens two different asks, attaches a repeat to its job and refuses a third', () => {
   const admission = new ResearchAdmission();
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
@@ -2315,7 +2315,8 @@ test('#1028: one owner turn opens two different asks and refuses a repeat or a t
   const repeat = new ResearchAdmission();
   repeat.ownerTurn();
   assert.deepEqual(repeat.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
-  assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, "the same question again is the turn's one ask");
+  // C-RESEARCH #107 (D6): a repeat of the same owner ask attaches to its job instead of spending a second turn.
+  assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: true, attach: true }, "the same question again attaches to its job");
 });
 
 test('W5-R1: settled calendar and knowledge answer at 1 s while web stays pending', async () => {

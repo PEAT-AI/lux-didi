@@ -3,7 +3,7 @@
   "scenarios": [
     {
       "id": "split-three-finals",
-      "why": "Verb, day and duration arrive as three separate finals; the operation is the union of his own words.",
+      "why": "The verb, the day and the duration arrive as three separate finals. The model's call omits the duration, so the hour the connector receives must come from his own words 'for an hour'.",
       "families": [
         "calendar",
         "calendar-write",
@@ -18,8 +18,7 @@
         {
           "tool": "create_event",
           "args": {
-            "summary": "Synthetic block",
-            "duration_minutes": 60
+            "summary": "Synthetic block"
           },
           "expect": {
             "dispatch": {
@@ -27,7 +26,8 @@
               "tool": "calendar_create_event",
               "args": {
                 "summary": "Synthetic block"
-              }
+              },
+              "spanMinutes": 60
             }
           }
         }
@@ -39,7 +39,7 @@
     },
     {
       "id": "filler-mid-ask",
-      "why": "The model's filler and a turnComplete mid-ask must not close the owner's task.",
+      "why": "The model's filler and a turnComplete land mid-ask. The model's call omits the duration, so the hour the connector receives can only come from his own 'an hour' across the two finals.",
       "families": [
         "calendar",
         "calendar-write",
@@ -58,8 +58,7 @@
         {
           "tool": "create_event",
           "args": {
-            "summary": "Synthetic review",
-            "duration_minutes": 60
+            "summary": "Synthetic review"
           },
           "expect": {
             "dispatch": {
@@ -67,7 +66,8 @@
               "tool": "calendar_create_event",
               "args": {
                 "summary": "Synthetic review"
-              }
+              },
+              "spanMinutes": 60
             }
           }
         }
@@ -79,7 +79,7 @@
     },
     {
       "id": "clarify-then-answer",
-      "why": "The model asks which day; the owner answers; the operation is still the same one, built from his own words.",
+      "why": "The model asks which day and the owner answers 'Friday, at ten'. The model's call carries a wrong pinned start, so the start the connector receives must be the owner's, not the model's.",
       "families": [
         "calendar",
         "calendar-write",
@@ -99,6 +99,7 @@
           "tool": "create_event",
           "args": {
             "summary": "Synthetic block",
+            "start": "2026-01-05T09:00:00.000Z",
             "duration_minutes": 60
           },
           "expect": {
@@ -107,6 +108,9 @@
               "tool": "calendar_create_event",
               "args": {
                 "summary": "Synthetic block"
+              },
+              "notArgs": {
+                "start": "2026-01-05T09:00:00.000Z"
               }
             }
           }

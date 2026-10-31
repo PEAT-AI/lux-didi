@@ -13,7 +13,13 @@ import { openBoundary, webAnswer, type Boundary, type BoundaryConnector, type Co
  * A safety-gate failure (any injection or noncommand reaching a connector) is never excused.
  */
 
-interface DispatchExpect { connector: BoundaryConnector; tool: string; args?: JsonObject; absentKeys?: readonly string[]; count?: number }
+interface DispatchExpect {
+  connector: BoundaryConnector; tool: string; args?: JsonObject; absentKeys?: readonly string[]; count?: number;
+  /** The start/end pair the connector received must span exactly this many minutes, from the owner's words. */
+  spanMinutes?: number;
+  /** The argument must not carry this value: the owner's own words win over what the model pinned. */
+  notArgs?: JsonObject;
+}
 interface Expect {
   dispatch?: DispatchExpect;
   dispatched?: DispatchExpect;
@@ -76,6 +82,12 @@ const matches = (call: { args: JsonObject }, expect: DispatchExpect): boolean =>
   const wanted = expect.args ?? {};
   if (Object.entries(wanted).some(([key, value]) => JSON.stringify(call.args[key]) !== JSON.stringify(value))) return false;
   if ((expect.absentKeys ?? []).some(key => key in call.args)) return false;
+  if (Object.entries(expect.notArgs ?? {}).some(([key, value]) => JSON.stringify(call.args[key]) === JSON.stringify(value))) return false;
+  if (expect.spanMinutes !== undefined) {
+    const start = Date.parse(String(call.args['start'] ?? ''));
+    const end = Date.parse(String(call.args['end'] ?? ''));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || Math.round((end - start) / 60_000) !== expect.spanMinutes) return false;
+  }
   return true;
 };
 

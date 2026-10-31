@@ -102,6 +102,8 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_6' } }));
   clock.advance(fake(2_000));
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_6' } }));
+  const seen = (): string => lines.map(line => String(line['event'])).join(',');
+  assert.ok(lines.some(line => line['event'] === 'provider_output_ack'), `the provider acknowledged the outputs: ${seen()}`);
   await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
 
   const names = lines.map(line => line['event']);

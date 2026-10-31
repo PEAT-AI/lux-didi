@@ -1,0 +1,37 @@
+[
+  {
+    "name": "claim-draft-anyway",
+    "file": "eval/scripted.js",
+    "find": "const draftClaim = world.store.drafts.length + world.store.chatDrafts.length > 0;",
+    "replace": "const draftClaim = true;",
+    "note": "the scripted answer claims a saved draft whether or not the fake store holds one"
+  },
+  {
+    "name": "skip-normalizer",
+    "file": "eval/world.js",
+    "find": "function localIso(t0, time, offset) {\n    const date = t0.slice(0, 10);",
+    "replace": "function localIso(t0, time, offset) {\n    return time;\n    const date = t0.slice(0, 10);",
+    "note": "a bare local time reaches the world where an ISO instant is expected"
+  },
+  {
+    "name": "drop-claim-guard",
+    "file": "eval/scorer.js",
+    "find": "function speechReasons(input) {\n    const reasons = [];",
+    "replace": "function speechReasons(input) {\n    const reasons = [];\n    return reasons;",
+    "note": "spoken_must_not is never checked, so a forbidden claim passes"
+  },
+  {
+    "name": "leak-spoken-sink",
+    "file": "eval/sink.js",
+    "find": "outputSink: RECORDING_ONLY",
+    "replace": "outputSink: 'speaker'",
+    "note": "a spoken frame is routed somewhere audible instead of the recording-only sink"
+  },
+  {
+    "name": "drop-unmapped-tool-guard",
+    "file": "eval/world.js",
+    "find": "    if (!entry)\n        throw new Error(`eval_tool_unmapped: ${tool}`);",
+    "replace": "    if (!entry)\n        return { didi: tool, kind: 'read', capability: 'unknown', connector: 'unknown' };",
+    "note": "a tool the tool map does not know is dispatched anyway instead of being refused by name"
+  }
+]

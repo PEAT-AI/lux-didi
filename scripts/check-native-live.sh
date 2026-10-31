@@ -168,6 +168,9 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
   Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
+# #107: the alarm shell's routing, its permission honesty and its one relaunch agent. Headless:
+# a recorder instead of launchctl, a synthetic session state, and no window or audio.
+bash Tests/DidiAlarmTests/check-alarm-shell.sh
 # #619 and #620: the launch and reopen matrix, the deferred startup prompts and the orb
 # screen-change frame. Recording fakes only: no window is shown and no display is changed.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \

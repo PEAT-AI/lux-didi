@@ -300,10 +300,13 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
     assert.equal(checkIn.label, 'the deck');
     assert.equal(checkIn.fireAtUtc, now_ + 3_600_000);
   }
-  const tell = parseAlarmTime('tell me about the deck at 7', now_, tz);
-  if (tell.status === 'ready') assert.equal(tell.label, 'the deck');
-  const talk = parseAlarmTime('talk to me about the deck at 7', now_, tz);
-  if (talk.status === 'ready') assert.equal(talk.label, 'the deck');
+  for (const ask of ['wake me at 7 and tell me about the deck', 'wake me at 7 and talk to me about the deck',
+    'check in with me at 7 about the deck']) {
+    const subject = parseAlarmTime(ask, now_, tz);
+    assert.equal(subject.status, 'ready', ask);
+    if (subject.status === 'ready') assert.equal(subject.label, 'the deck', ask);
+  }
   const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
-  if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.label, /brief/);
+  assert.equal(standaloneBrief.status, 'ready');
+  if (standaloneBrief.status === 'ready') assert.equal(standaloneBrief.label, 'brief me');
 });

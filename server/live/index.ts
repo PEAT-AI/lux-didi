@@ -4895,7 +4895,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
         // G-R12: a refusal answers with the plain closed code as both `code` and `reason`, so the model
         // never narrates a result it never got (D5); the layered reason stays in `error`.
-        const refused = completed ? accepted.response : record?.status === 'refused' ? refusedPayload(reason) : refusalResponse(reason);
+        const refused = completed ? accepted.response : record?.status === 'refused' ? (invalidArgumentsResponse(reason) ?? refusedPayload(reason)) : refusalResponse(reason);
         return { id: call.id, name: call.name, response: refused };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.
@@ -4966,7 +4966,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });
       }
       if (handle.pendingCallIds.has(id)) publish('toolResult', { ...projection, status, ...(handle.bargeInCallIds.has(id) ? { code: 'after_barge_in' } : {}) });
-      if (process.env['LUX_RESP_DEBUG'] === '1') process.stderr.write(`RESP ${id} ${JSON.stringify(responses[index]?.response)}\n`);
+      process.stderr.write(`RESP ${id} ${JSON.stringify(responses[index]?.response)}\n`);
       this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;

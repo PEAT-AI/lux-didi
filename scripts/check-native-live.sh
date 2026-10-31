@@ -186,6 +186,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift \
+  Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
   Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
   Tests/DidiLiveTests/QuitSurfaceTests.swift -o "$work/quit-surface-tests"

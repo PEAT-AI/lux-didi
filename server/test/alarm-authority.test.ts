@@ -36,7 +36,9 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   assert.equal(parsed.status, 'ready');
   gate.commit('s', 'set_alarm', 'alarm', { status: 'set' });
   assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'grant_spent');
-  mono = 600001;
+  // D2 replaces the two minute window: the ask stands for ten minutes after his LAST final (mono 100000),
+  // so only then does the task end and the receipt stop replaying.
+  mono = 100000 + 600001;
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
 });
 

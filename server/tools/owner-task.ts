@@ -21,7 +21,7 @@ export interface OwnerOperation {
 }
 interface OwnerTask {
   id: string; journalId: string; words: string; start: number; observedAt: number; observedMono: number; finals: number;
-  operations: OwnerOperation[]; sequence: number; closed: boolean;
+  operations: OwnerOperation[]; sequence: number; closed: boolean; openArmed: number;
   shown: { handle: string; kind: string }[]; sources: Record<string, number>;
 }
 
@@ -184,14 +184,20 @@ export class OwnerTasks implements OwnerTaskPort {
       for (const operation of previous.operations) if (operation.state !== 'done') operation.words = `${operation.words} ${words}`.trim();
       const seen = new Set(previous.operations.map(operation => operation.kind));
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
-      if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) this.#apply(previous, ownerCommands(words), words);
+      if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {
+        this.#apply(previous, ownerCommands(words), words);
+        // The owner named a thing without an open verb: he is still selecting a window, and his own
+        // words are the authority for exactly one local open.
+        if (ownerCommands(words).every(command => command.kind !== 'open')) previous.openArmed++;
+      }
       return;
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, shown: [], sources: {},
+      operations: [], sequence: 0, closed: false, openArmed: 0, shown: [], sources: {},
     };
     this.#apply(task, ownerCommands(words), words);
+    if (ownerCommands(words).every(command => command.kind !== 'open')) task.openArmed++;
     this.tasks.set(session, task);
   }
 
@@ -211,12 +217,10 @@ export class OwnerTasks implements OwnerTaskPort {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
-    const age = this.clock() - task.start;
-    if (age < 0 || age > OWNER_TASK_IDLE_MS) return { ...common, code: 'request_expired' };
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     // Opening a window the owner can see is local and target-selected from what his own reads
     // exposed, so any words of his task authorize it; nothing leaves the machine and nothing sends.
-    if (operation === undefined) return kind === 'open' && task.words.trim().length > 0
+    if (operation === undefined) return kind === 'open' && task.openArmed > 0
       && !NEGATION.test(task.words) && !CANCEL_TASK.test(task.words)
       ? { ...common, code: 'allowed' } : { ...common, code: 'no_owner_request' };
     const bounded = { ...common, words: operation.words };
@@ -264,6 +268,7 @@ export class OwnerTasks implements OwnerTaskPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
+    if (kind === 'open') { task.openArmed = Math.max(0, task.openArmed - 1); return; }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

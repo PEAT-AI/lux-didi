@@ -133,8 +133,8 @@ test('C-RECUR M2: skip this Saturday with a series id cancels only that occurren
 
 test('C-RECUR M2: stop the Saturday cardio reminders with an occurrence id cancels the series', async t => {
   const h = await cancelHarness(t);
-  await h.cancel({ id: h.occurrenceId }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
-  assert.equal(h.series().state, 'cancelled', 'the owner said the reminders, so the series is cancelled, not deleted');
+  const stopped = await h.cancel({ id: h.occurrenceId }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
+  assert.equal(h.series().state, 'cancelled', `the owner said the reminders, so the series is cancelled, not deleted: ${JSON.stringify(stopped)}`);
   assert.equal(h.series().pending, 0, 'no occurrence is left behind');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1, 'the cancelled series row is kept');
 });

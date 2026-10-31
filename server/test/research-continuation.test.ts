@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchAdmission, ResearchLedger, RESEARCH, RESEARCH_READ_CEILING, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
+import { ResearchAdmission, ResearchLedger, RESEARCH, RESEARCH_READ_CEILING, sameOwnerQuestion, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
 import { answersTheAsk } from '../live/index.js';
 import type { IntentSubResult } from '../tools/intent.js';
 import { lateCommentarySilence } from '../live/index.js';
@@ -372,4 +372,19 @@ test('#107: a rebuild mid-job keeps the job and does not refill its read budget'
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start', false, false, 'and what about the roadmap'), { admitted: true });
   assert.equal(admission.readsLeft(), RESEARCH_READ_CEILING, 'a new owner question gets fresh budget inside the ceiling');
+});
+
+// C-RESEARCH #107 (R-R2): identity must not merge a distinct owner question into the running job.
+test('#107: a distinct question that shares a topic is not the same owner ask', () => {
+  assert.equal(sameOwnerQuestion('who owns Acme Seeds', 'Acme Seeds revenue'), false,
+    'a topic word in common is not the same ask');
+  assert.equal(sameOwnerQuestion('what changed in the release notes', 'what has changed in the release notes?'), true,
+    'a reworded repeat of the same ask is the same ask');
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
+  const job = admission.jobId();
+  assert.deepEqual(admission.admit('start', false, false, 'Acme Seeds revenue'), { admitted: true },
+    'a distinct question is admitted as its own ask, never as an attach');
+  assert.notEqual(admission.jobId(), job, 'the distinct question opens its own job');
 });

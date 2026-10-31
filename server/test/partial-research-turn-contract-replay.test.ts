@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, deadlineResearchId, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { budgetedReads, createLiveSessionOwner, deadlineResearchId, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -564,6 +564,26 @@ test('R2: a source that settles at 8.7 s earns no still-searching line', async t
   assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
   assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
   assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
+});
+
+// C-RESEARCH #107 (D6): the read ceiling is taken by the host's own gate, not by a test mirror of it.
+test('#107: the live read gate charges every provider read and never dispatches a read past the ceiling', async () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  const dispatched: string[] = [];
+  const execute = async (subs: readonly { key: string; name: string }[]) => {
+    for (const sub of subs) dispatched.push(sub.key);
+    return subs.map(sub => ({ ...sub, ok: true, text: 'synthetic read', originalCharacters: 0, omittedCharacters: 0 }));
+  };
+  const gate = budgetedReads(admission, execute as never);
+  const subs = Array.from({ length: 17 }, (_, n) => ({ key: `k${n}`, name: 'gmail_search_messages', args: {} }));
+  const results = await gate(subs as never, new AbortController().signal);
+  assert.equal(dispatched.length, RESEARCH_READ_CEILING, 'the host gate dispatched exactly the ceiling');
+  assert.equal(results.filter(result => result.ok).length, RESEARCH_READ_CEILING);
+  assert.equal(results.filter(result => !result.ok).length, 17 - RESEARCH_READ_CEILING);
+  assert.equal(results.at(-1)!.text, RESEARCH_READ_CEILING_NOTE, 'a cut read names its cause');
+  assert.equal(admission.readsLeft(), 0, 'the gate charged the job budget, so a later round gets nothing');
+  assert.equal(admission.takeReads(1), 0, 'and the ceiling is not replenished');
 });
 
 // C-RESEARCH #107 (D6): one read ceiling per owner task, shared by every connector, and a cut read is terminal.

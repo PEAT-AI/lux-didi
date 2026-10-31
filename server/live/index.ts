@@ -468,7 +468,26 @@ export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
 export const DEAD_AIR_CONTINUATION_MS = 2_500;
 /** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
 export const CONTINUATION_RE_REQUEST_NOTE = 'The lookup has finished. Answer the owner now from the results you already have. Do not look anything else up.';
-/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
+
+
+/**
+ * C-RESEARCH #107: the one place a research provider read is charged. The ceiling belongs to the owner task on
+ * the admission object, so it is shared by every connector and a provider rebuild cannot refill it. Reads past
+ * the ceiling are never dispatched and come back as a cut read that names its cause.
+ */
+export function budgetedReads(
+  admission: { takeReads(count: number): number },
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+): (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]> {
+  return async (subs, signal) => {
+    const allowed = admission.takeReads(subs.length);
+    if (allowed >= subs.length) return execute(subs, signal);
+    const kept = allowed === 0 ? [] : await execute(subs.slice(0, allowed), signal);
+    const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false,
+      text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
+    return [...kept, ...cut];
+  };
+}/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
@@ -4397,16 +4416,7 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
-    // C-RESEARCH #107: the read ceiling is taken from the job the admission owns, so it is shared by every
-    // connector and a provider rebuild (which recreates this scheduler, not the admission) cannot refill it.
-    const budgetedExecute: typeof execute = async (subs, signal) => {
-      const allowed = handle.researchAdmission.takeReads(subs.length);
-      if (allowed >= subs.length) return execute(subs, signal);
-      const kept = subs.slice(0, allowed);
-      const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false, text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
-      const results = kept.length === 0 ? [] : await execute(kept, signal);
-      return [...results, ...cut];
-    };
+    const budgetedExecute = budgetedReads(handle.researchAdmission, execute);
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
@@ -4425,6 +4435,9 @@ export class LiveSessionOwner {
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
         const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        // C-RESEARCH #107: a web read is a provider read, so it is charged to the same job ceiling before it
+        // dispatches; a cut web read is a failed read, never an uncharged one.
+        if (handle.researchAdmission.takeReads(1) === 0) return { ok: false, code: 'web_unavailable' as const };
         const result = await this.#researchWeb!.search(request);
         if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;

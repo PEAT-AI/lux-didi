@@ -7738,13 +7738,18 @@ export const RESEARCH_READ_CEILING = 12;
 export const RESEARCH_READ_CEILING_NOTE = 'research read ceiling reached for this task: this source was cut before it was read';
 /** C-RESEARCH #107: the host assigns a question its identity from the owner's words, never from the model's. */
 export function ownerQuestionKey(question: string): string { return [...questionTerms(question)].sort().join(' '); }
-/** C-RESEARCH #107: a model paraphrase of the same owner ask attaches to the same job. */
+/**
+ * C-RESEARCH #107: a model paraphrase of the same owner ask attaches to the same job. The shorter term set must
+ * be fully contained and may differ by one word, so "Acme Seeds revenue" never attaches to "who owns Acme Seeds".
+ */
 export function sameOwnerQuestion(a: string, b: string): boolean {
   const left = questionTerms(a);
   const right = questionTerms(b);
   if (left.size === 0 || right.size === 0) return left.size === right.size;
-  const shared = [...right].filter(word => left.has(word)).length;
-  return shared / Math.max(left.size, right.size) >= 0.6;
+  const smaller = left.size <= right.size ? left : right;
+  const larger = smaller === left ? right : left;
+  for (const term of smaller) if (!larger.has(term)) return false;
+  return larger.size - smaller.size <= 1;
 }
 
 export class ResearchAdmission {
@@ -7822,7 +7827,8 @@ export class ResearchAdmission {
       return { admitted: false, reason: 'turn_spent' };
     }
     this.#starts.push(asked);
-    if (this.#job === undefined) this.#openJob(question);
+    // C-RESEARCH #107: a different ask in the same turn is its own job, with its own read budget.
+    if (distinct) this.#openJob(question);
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */

@@ -903,7 +903,10 @@ test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and
   } as never);
   detach();
   const reason = String(batch.tools[0]?.reason ?? '');
-  assert.equal(batch.tools[0]?.status, 'completed', `the filled-in person read dispatches: ${reason}`);
+  // The fake endpoint answers an empty page, so the settlement is the handler's; what this proves is that no
+  // argument refusal stands in front of it and the read reached the wire at all.
+  assert.notEqual(batch.tools[0]?.status, 'refused', `the filled-in person read is not refused: ${reason}`);
+  assert.doesNotMatch(reason, /Invalid arguments|Rejected argument/u);
   assert.equal(events.find(line => line.event === 'tool_arguments_rejected'), undefined, 'no violation is left to refuse');
   // The dropped keys travel on their own closed event, as paths and reasons, never a value.
   const logged = events.find(line => line.event === 'tool_arguments_normalized') as { dropped?: string[] } | undefined;

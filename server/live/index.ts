@@ -395,6 +395,12 @@ const researchCallFacts = (calls: { name: string; args: JsonObject }[]):
   };
 };
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
+/** G-R12: the one model-facing refusal payload: a closed code the model can read and speak to. */
+export const refusedPayload = (why: string): JsonObject => {
+  const plain = why.replace(/^operation_/, '');
+  return { status: 'refused', code: plain, reason: plain, executed: false, error: why };
+};
+
 export const refusedResponse = (response: JsonObject): boolean => {
   if (typeof response['error'] === 'string' && response['error'] !== '') return true;
   const status = response['status'];
@@ -4861,7 +4867,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
       // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed
       // spoken line, so the model can never read the host's guidance aloud; every other refusal stays a code.
-      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? { error: why };
+      // G-R12: every refused call answers with the plain closed code as both `code` and `reason`, so the
+      // model never narrates a result it did not get (D5); the layered reason stays in `error`.
+      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? refusedPayload(why);
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }

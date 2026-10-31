@@ -302,10 +302,11 @@ function turn(store: Store, session: string, turnId: string, index: number, open
   record(store, 'turn.opened', { liveSessionId: session, turnId }, { origin: 'owner', turnIndex: index, openedAt, monoMs: index * 1_000 });
 }
 
-function call(store: Store, session: string, turnId: string, callKey: string, name: string, outcome: 'completed' | 'refused' | 'blocked', ms: number, at: number): void {
-  record(store, 'call.intent', { liveSessionId: session, turnId, callKey }, { name, argsChars: 24, intentAt: at });
-  record(store, 'call.executed', { liveSessionId: session, turnId, callKey }, { executedAt: at + 1 });
-  record(store, 'call.output_written', { liveSessionId: session, turnId, callKey }, { outputWrittenAt: at + ms, outcome, ms, resultChars: 8 });
+function call(store: Store, session: string, turnId: string | null, callKey: string, name: string, outcome: 'completed' | 'refused' | 'blocked' | 'failed', ms: number, at: number, refusalCode?: string): void {
+  const ids = { liveSessionId: session, ...(turnId === null ? {} : { turnId }), callKey };
+  record(store, 'call.intent', ids, { name, argsChars: 24, intentAt: at });
+  record(store, 'call.executed', ids, { executedAt: at + 1 });
+  record(store, 'call.output_written', ids, { outputWrittenAt: at + ms, outcome, ms, resultChars: 8, ...(refusalCode === undefined ? {} : { refusalCode }) });
 }
 
 function audible(store: Store, session: string, turnId: string, playbackKey: string, at: number): void {
@@ -392,6 +393,67 @@ test('F8: a call with no turn after a rebuild is listed in its own bucket and co
     const text = renderCallAudit(audit);
     assert.match(text, /after rebuild, no turn calls=1/u);
     assert.match(text, /call:orphan set_alarm/u);
+  });
+});
+
+// #107: the store writes a real refusal as outcome 'failed' with the code in trace_call.outcome_code, so the
+// code decides the count whatever the outcome string says, and an outcome that names no code is 'uncoded'.
+test('C-AUDIT107: a failed call is counted by its refusal code, whatever its outcome', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:grant', 'gmail_send', 'failed', 20, T0 + 1_000, 'grant_not_permitted');
+    call(store, SESSION, 't1', 'call:args-1', 'calendar_list_events', 'failed', 30, T0 + 2_000, 'invalid_arguments');
+    call(store, SESSION, 't1', 'call:args-2', 'calendar_list_events', 'failed', 31, T0 + 3_000, 'invalid_arguments');
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([]));
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, invalid_arguments: 2 });
+    assert.match(renderCallAudit(audit), /refusals by code grant_not_permitted=1 invalid_arguments=2/u);
+  });
+});
+
+test('C-AUDIT107: a call with no turn is a row of the call table with turn -', () => {
+  withStore(store => {
+    storeA(store);
+    record(store, 'call.intent', { liveSessionId: SESSION, callKey: 'call:orphan' }, { name: 'set_alarm', argsChars: 12, intentAt: T0 + 3_000 });
+    record(store, 'call.output_written', { liveSessionId: SESSION, callKey: 'call:orphan' }, { outputWrittenAt: T0 + 3_030, outcome: 'refused', ms: 30, resultChars: 8 });
+    const text = renderCallAudit(auditA(store));
+    const [table] = text.split('after rebuild');
+    assert.match(table!, /^- call:orphan set_alarm /mu, 'the call table itself, not only the orphan bucket');
+  });
+});
+
+test('C-AUDIT107: a session with calls and no turn row is in the summary, and its calls are counted', () => {
+  withStore(store => {
+    // No turn.opened row names this session: only the call itself says the session happened.
+    call(store, SESSION, 't-missing', 'call:no-turn-row', 'research', 'failed', 50, T0 + 1_000, 'invalid_arguments');
+    const summary = buildAuditSummary(readOf(store), scanOf([]), T0 - 1);
+    assert.equal(summary.sessions, 1);
+    assert.deepEqual(summary.callsPerTool, { research: 1 });
+    assert.deepEqual(summary.refusalsByCode, { invalid_arguments: 1 });
+  });
+});
+
+test('C-AUDIT107: an absent refusal measurement prints missing, a present empty one prints none', () => {
+  withStore(store => {
+    // No call in the window: the store carries no refusal data at all, which is not the same as zero refusals.
+    assert.match(renderAuditSummary(buildAuditSummary(readOf(store), scanOf([]), T0 - 1)), /refusals by code missing/u);
+  });
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:ok-only', 'research', 'completed', 10, T0 + 1_000);
+    assert.match(renderAuditSummary(buildAuditSummary(readOf(store), scanOf([]), T0 - 1)), /refusals by code none/u);
+  });
+});
+
+test('C-AUDIT107: tool failures are grouped by tool, outcome and code', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:grant', 'gmail_send', 'failed', 20, T0 + 1_000, 'grant_not_permitted');
+    call(store, SESSION, 't1', 'call:args-1', 'calendar_list_events', 'failed', 30, T0 + 2_000, 'invalid_arguments');
+    call(store, SESSION, 't1', 'call:args-2', 'calendar_list_events', 'failed', 31, T0 + 3_000, 'invalid_arguments');
+    const text = renderCallAudit(buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([])));
+    assert.match(text, /tool failures by tool and code/u);
+    assert.match(text, /calendar_list_events failed invalid_arguments 2/u);
+    assert.match(text, /gmail_send failed grant_not_permitted 1/u);
   });
 });
 

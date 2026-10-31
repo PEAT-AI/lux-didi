@@ -1,0 +1,252 @@
+{
+  "version": 1,
+  "note": "Which check scripts cover which paths. Deliberately coarse: a change runs the union of every check whose globs match it, one at a time. The map is not a claim of exactness; scripts/check-combined-tree.sh --selftest proves every path under server/, Sources/, Tests/, web/, docs/, config/ and scripts/ matches at least one entry and that every scripts/check-*.sh is named by at least one entry.",
+  "entries": [
+    {
+      "paths": [
+        "server/eval/**",
+        "server/test/eval-release/**"
+      ],
+      "checks": [
+        "scripts/check-evals.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/prompt/**",
+        "server/people/**",
+        "server/tools/**",
+        "server/adapters/live-voice/**",
+        "server/host/log.ts",
+        "server/host/events.ts"
+      ],
+      "checks": [
+        "scripts/check-prompt.sh",
+        "scripts/check-live-voice.sh",
+        "scripts/check-live-session.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/adapters/model/**",
+        "server/contracts/**"
+      ],
+      "checks": [
+        "scripts/check-model.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/host/**",
+        "server/http/**",
+        "server/index.ts",
+        "server/runtime/**"
+      ],
+      "checks": [
+        "scripts/check-host.sh",
+        "scripts/check-host-entry.sh",
+        "scripts/check-service.sh",
+        "scripts/check-connected.sh",
+        "scripts/check-archive-scale.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/http/**"
+      ],
+      "checks": [
+        "scripts/check-api-response.sh",
+        "scripts/check-live-gateway.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/domain/**"
+      ],
+      "checks": [
+        "scripts/check-domain.sh",
+        "scripts/check-memory-context.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/memory/**"
+      ],
+      "checks": [
+        "scripts/check-memory-context.sh",
+        "scripts/check-knowledge-connector.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/live/**"
+      ],
+      "checks": [
+        "scripts/check-live-session.sh",
+        "scripts/check-live-gateway.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/chat/**"
+      ],
+      "checks": [
+        "scripts/check-chat.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/config/**"
+      ],
+      "checks": [
+        "scripts/check-provider-config.sh",
+        "scripts/check-credential-binding.sh",
+        "scripts/check-tool-owner.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/connectors/**"
+      ],
+      "checks": [
+        "scripts/check-google-connector.sh",
+        "scripts/check-company-connectors.sh",
+        "scripts/check-knowledge-connector.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/adapters/mcp/**"
+      ],
+      "checks": [
+        "scripts/check-mcp.sh",
+        "scripts/check-mcp-stdio.sh",
+        "scripts/check-mcp-config.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/tools/**"
+      ],
+      "checks": [
+        "scripts/check-dispatch-gate.sh",
+        "scripts/check-chat.sh",
+        "scripts/check-mcp.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/test/**",
+        "server/test"
+      ],
+      "checks": [
+        "scripts/check-evals.sh",
+        "scripts/check-host.sh",
+        "scripts/check-prompt.sh",
+        "scripts/check-live-gateway.sh",
+        "scripts/check-live-session.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/test/sensitivity/**"
+      ],
+      "checks": [
+        "scripts/check-test-sensitivity.sh"
+      ]
+    },
+    {
+      "paths": [
+        "Sources/**",
+        "Tests/**"
+      ],
+      "checks": [
+        "scripts/check-native-live.sh",
+        "scripts/check-native-conversation.sh",
+        "scripts/check-macos-install.sh",
+        "scripts/check-install-smoke.sh",
+        "scripts/check-installed-alarm.sh",
+        "scripts/check-installed-connectors.sh",
+        "scripts/check-installed-open-web.sh",
+        "scripts/check-pending-request.sh",
+        "scripts/check-package.sh"
+      ]
+    },
+    {
+      "paths": [
+        "Sources/**",
+        "web/**"
+      ],
+      "checks": [
+        "scripts/check-selected-memory-ui.sh",
+        "scripts/check-asset-bundle.sh"
+      ]
+    },
+    {
+      "paths": [
+        "web/**"
+      ],
+      "checks": [
+        "scripts/check-web-unit.sh",
+        "scripts/check-selected-memory-ui.sh",
+        "scripts/check-asset-bundle.sh"
+      ]
+    },
+    {
+      "paths": [
+        "docs/**"
+      ],
+      "checks": [
+        "scripts/check-docs.sh"
+      ]
+    },
+    {
+      "paths": [
+        "scripts/**",
+        "config/**"
+      ],
+      "checks": [
+        "scripts/check-docs.sh",
+        "scripts/check-combined-tree.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/trace/**"
+      ],
+      "checks": [
+        "scripts/check-prompt.sh",
+        "scripts/check-host.sh",
+        "scripts/check-api-response.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/services/**"
+      ],
+      "checks": [
+        "scripts/check-domain.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/adapters/trello/**",
+        "server/adapters/lux-write/**"
+      ],
+      "checks": [
+        "scripts/check-prompt.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/*",
+        "server/*.json",
+        "server/*.ts"
+      ],
+      "checks": [
+        "scripts/check-package.sh",
+        "scripts/check-evals.sh"
+      ]
+    }
+  ]
+}

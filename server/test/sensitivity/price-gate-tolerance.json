@@ -1,0 +1,36 @@
+{
+  "name": "price-gate-tolerance",
+  "target": "dist",
+  "production": "server/test/eval-release/plan.ts",
+  "compiled": "dist/test/eval-release/plan.js",
+  "build": [
+    "tsconfig.eval.json"
+  ],
+  "mutant": {
+    "find": "    if (delta > PRICE_CONFIRM_TOLERANCE) {",
+    "replace": "    if (false) {",
+    "note": "the 20 percent comparison is removed, so any confirmation buys a real run"
+  },
+  "command": [
+    "node",
+    "--test",
+    "--test-name-pattern",
+    "a confirmation outside the tolerance refuses",
+    "dist/test/eval-release/price.test.js"
+  ],
+  "workdir": ".",
+  "env": {
+    "DIDI_EVAL_SOURCE_ROOT": "server"
+  },
+  "test": {
+    "file": "server/test/eval-release/price.test.ts",
+    "name": "a confirmation outside the tolerance refuses"
+  },
+  "note": "escaped class (b): the price gate test has to execute the gate, not the exit code of the CLI",
+  "assets": [
+    [
+      "server/test/eval-release/judge-prompt.md",
+      "dist/test/eval-release/judge-prompt.md"
+    ]
+  ]
+}

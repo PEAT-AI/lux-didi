@@ -28,3 +28,7 @@ node dist/eval/selftest.js "$root"
 node --test --test-timeout=30000 dist/test/eval-release/*.test.js
 # C-EVALS2 honesty probe (a): every known mutation must make the suite it guards fail. --no-build: tsc just ran.
 bash "$root/scripts/eval-mutation-probe.sh" --no-build
+# C-EVALS3: the combined-tree gate and the sensitivity runner test their own fixtures here, so a gate
+# that cannot see a break is caught in the eval self-test rather than at a release.
+bash "$root/scripts/check-combined-tree.sh" --selftest
+bash "$root/scripts/check-test-sensitivity.sh" --selftest

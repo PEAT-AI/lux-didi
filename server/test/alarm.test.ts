@@ -306,6 +306,16 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
     assert.equal(subject.status, 'ready', ask);
     if (subject.status === 'ready') assert.equal(subject.label, 'the deck', ask);
   }
+  // A stated clock after the subject belongs to the alarm, never to the label.
+  for (const ask of ['tell me about the deck at 9', 'talk to me about the deck at 9',
+    'check in with me at 7 about the deck']) {
+    const clocked = parseAlarmTime(ask, now_, tz);
+    assert.equal(clocked.status, 'ready', ask);
+    if (clocked.status === 'ready') {
+      assert.equal(clocked.label, 'the deck', ask);
+      assert.doesNotMatch(clocked.label, /\d|\bat\b|\bin\b/, ask);
+    }
+  }
   const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
   assert.equal(standaloneBrief.status, 'ready');
   if (standaloneBrief.status === 'ready') assert.equal(standaloneBrief.label, 'brief me');

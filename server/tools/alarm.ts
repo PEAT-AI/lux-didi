@@ -23,11 +23,11 @@ function parseSingleAlarmTime(input: string, now: number, tz: string, modelAt?: 
   const reminder = /\bremind me\b/i.test(words)
     ? /\bto\s+(?!(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)(.+)$/i.exec(words) : null;
   // #107: a check-in or a talk-about ask carries its subject; a brief ask carries none.
-  const about = /\b(?:check(?:ing)?\s+in(?:\s+with\s+me)?|tell\s+me|talk\s+to\s+me)\b[^]*?\b(about\s+(.+))$/i.exec(words);
+  const about = /\b(?:check(?:ing)?\s+in(?:\s+with\s+me)?|tell\s+me|talk\s+to\s+me)\b[^]*?\b(about\s+(.+?))(?=\s+(?:at|in|on|for)\s+|\s*$)/i.exec(words);
   const brief = /\b(?:brief\s+me|(?:give\s+me\s+(?:a|an|the)\s+)?(?:briefing|rundown|overview))\b/i.exec(words);
   // A subject clause names the label, never the clock: the time words survive around it.
   const label = (about ? about[2] : trailing ? trailing[1] ?? trailing[2] : reminder ? reminder[1] : brief?.[0])?.trim() ?? '';
-  const ask = about ? words.slice(0, about.index + about[0].length - (about[1] as string).length)
+  const ask = about ? words.slice(0, about.index + about[0].length - (about[1] as string).length) + ' ' + words.slice(about.index + about[0].length)
     : trailing ? words.slice(0, trailing.index)
     : reminder ? words.slice(0, reminder.index).replace(/\bremind me\b/gi, ' ')
     : brief ? words.slice(0, brief.index) + ' ' + words.slice(brief.index + brief[0].length) : words;

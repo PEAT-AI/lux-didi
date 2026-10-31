@@ -186,7 +186,11 @@ export class OwnerTasks implements OwnerTaskPort {
       // A split ask may carry its verb, its day and its length in different finals: an operation still
       // open keeps collecting the owner's words, and the merged ask is read for kinds this task has
       // not seen yet. The new final alone is read for amendments and for a further ask of one kind.
-      for (const operation of previous.operations) if (operation.state !== 'done') operation.words = `${operation.words} ${words}`.trim();
+      for (const operation of previous.operations) {
+        if (operation.state === 'done') continue;
+        // The same final can arrive twice (a duplicated transcription); his words join only once.
+        if (!operation.words.trimEnd().endsWith(words.trim())) operation.words = `${operation.words} ${words}`.trim();
+      }
       const seen = new Set(previous.operations.map(operation => operation.kind));
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
       if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {

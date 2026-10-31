@@ -289,8 +289,12 @@ export class OwnerTasks implements OwnerTaskPort {
     // An empty target is the grant-point probe: it asks only whether the owner's operation exists,
     // and the handler decides replay against spent with its own canonical target.
     if (target === '') return { ...bounded, code: 'allowed' };
-    // A done operation is spent: only the same host execution replays (handled above).
-    if (operation.state === 'done') return { ...bounded, code: 'grant_spent' };
+    if (operation.state === 'done') {
+      const entry = this.ledger.get(`${task.id}:${operation.operationId}`);
+      return operation.target === target && entry?.receipt !== undefined
+        ? { ...bounded, code: 'idempotent', receipt: entry.receipt }
+        : { ...bounded, code: 'grant_spent' };
+    }
     if (operation.state === 'claimed') return { ...bounded, code: 'grant_spent' };
     return { ...bounded, code: 'allowed' };
   }

@@ -6519,25 +6519,27 @@ const emptyClaimSetup = async (t: TestContext) => {
     .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
   const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
   const settled = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'toolResult');
+  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
   assert.ok(turnOpen(), 'the owner turn is open before she answers it');
-  return { h, session, advance, corrections, counted, settled };
+  return { h, session, advance, corrections, counted, settled, armed };
 };
 
 test('an empty-result claim after a refused read is corrected once, in the guard its own words', async t => {
-  const { h, session, advance, corrections, counted, settled } = await emptyClaimSetup(t);
+  const { h, session, advance, corrections, counted, settled, armed } = await emptyClaimSetup(t);
   // The read the model will claim an empty result over: its arguments are refused, so nothing ran.
   badInsight(h, 'refused-read');
   for (let attempt = 0; attempt < 300 && !settled(); attempt++) await tick();
   assert.ok(settled(), 'the refused read settled before she speaks about it');
   h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
+  assert.ok(armed(), 'the empty-result claim armed the guard');
   await advance(3_000);
   assert.equal(corrections().length, 1, 'the claim over a read that never ran is corrected once');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /nothing ran, so there is no result/);
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'and the guard counts it with its bound');
   h.owner.revoke(session.liveSessionId);
-  assert.fail(JSON.stringify((await import('../live/index.js')).ARGS_DEBUG()));
 });
 
 test('the same words after a read that really ran are never corrected', async t => {
@@ -6546,6 +6548,7 @@ test('the same words after a read that really ran are never corrected', async t 
   h.f.send({ toolCall: { functionCalls: [{ id: 'real-read', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } });
   for (let attempt = 0; attempt < 300 && !h.owner.current().entries.some(entry => entry.kind === 'toolResult'); attempt++) await tick();
   h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 40; attempt++) await tick();
   await advance(3_000);
   assert.equal(corrections().length, 0, 'a real empty result is never called a claim');
   h.owner.revoke(session.liveSessionId);

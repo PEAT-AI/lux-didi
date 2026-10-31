@@ -201,7 +201,7 @@ test('#644: a launch kind posted after the ready frame is written to host.log af
       headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ event: 'launch_kind', kind: 'login_item', autoConnects: false, windowShown: false }),
     });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 204);
     const written = await lines();
     const started = written.findIndex(line => line.event === 'host_started');
     const launch = written.findIndex(line => line.event === 'launch_kind');

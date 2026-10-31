@@ -255,7 +255,12 @@ export function draftFixtures(review: PostcallReview): DraftFixture[] {
 
 export interface WrittenReview { readonly report: string; readonly drafts: readonly string[] }
 
-/** Write the report and one draft per finding class under `outDir`, which must live outside the repository. */
+/**
+ * Write the report and one draft per finding class under `outDir`. The caller chooses it: this module does not
+ * police the path, and the two shipped callers pass a git-ignored folder (`server/eval-out/postcall` by hand,
+ * `<dataDir>/postcall` from the host, and `dataDir` is outside the worktree). Nothing here writes into the
+ * repository on its own.
+ */
 export function writeReview(review: PostcallReview, outDir: string): WrittenReview {
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   const report = join(outDir, 'postcall-report.txt');

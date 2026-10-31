@@ -959,6 +959,14 @@ struct RootView: View {
         Task {
             if launchKind.presentsOrbAtLaunch { _ = coordinator.presentMini(trigger: .other) }
             if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
+            // ORB-107: a login launch presented the orb on 10-31 and it never animated, so the
+            // page kept a hidden surface. One re-assert two seconds in settles it either way.
+            if launchKind == .loginItem {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    self?.reassertSurface(.launch)
+                }
+            }
             await model.refreshNotificationCapability(for: .launch)
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
@@ -1416,21 +1424,33 @@ struct RootView: View {
     private func orderOutFullWindow() {
         window?.orderOut(nil)
     }
-    /// M3-R2: the one native toggle behind the orb click and the Right Command tap.
-    /// P1 points both at `NativePresence.togglePresence`; until then the same three
-    /// steps run through the existing bridge commands, so this is a thin call and no
-    /// new audio code.
-    private func applyPresenceStep(_ step: PresenceStep) {
-        switch step {
-        case .connect: if model.live?.isCapturing != true {
-            // Q4-R5: an orb press starts the session, so the receipt names `orb` and not a chord.
-            model.recordSurfaceReceipt(["event": "mini_start", "trigger": SurfaceTrigger.orb.rawValue])
-            model.handleBridgeCommand(.start)
-        }
-        case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
-        case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
-        }
-        // M3-R5: muting takes the pill off the screen and unmuting brings it back.
+    /// ORB-107: nothing behind an orb click. The Right Command tap is the presence machine's own
+    /// toggle (NativeShortcuts.bindRightCommandKey), and the menu items stay the only other ways
+    /// in, so the three-step press wiring that used to run through the bridge is gone.
+    ///
+    /// ORB-107: one signal says the page may still believe its surface is hidden. The re-assert
+    /// bypasses the visibility dedupe and writes the same `surface_visible` receipt the sync does,
+    /// so the log shows which reason asked.
+    private func reassertSurface(_ reason: MiniOrbSurfaceSignals.Reason) {
+        let generation = coordinator.generation
+        let fullVisible = coordinator.fullShown && window?.isVisible == true && window?.isMiniaturized == false
+        let miniVisible = coordinator.miniShown && miniPanel?.isVisible == true
+        model.shell?.reassertSurfaceVisible(fullVisible, generation: generation)
+        miniShell?.reassertSurfaceVisible(miniVisible, generation: generation)
+        let recipient = fullVisible ? model.shell : miniVisible ? miniShell : nil
+        model.recordSurfaceReceipt(surfaceVisibleReceipt(recipient: recipient, fullVisible: fullVisible,
+                                                         miniVisible: miniVisible, reason: reason.rawValue))
+    }
+
+    /// ORB-107: the closed surface_visible shape, one line per sync and per re-assert.
+    private func surfaceVisibleReceipt(recipient: CompanionWeb?, fullVisible: Bool, miniVisible: Bool,
+                                       reason: String = "sync") -> [String: Any] {
+        ["event": "surface_visible",
+         "visible": fullVisible || miniVisible,
+         "generation": Int(coordinator.generation),
+         "attempt": recipient?.surfaceAttempt ?? 0,
+         "recipient": fullVisible ? "full" : miniVisible ? "mini" : "none",
+         "reason": reason]
     }
 
     private func presentMiniThroughCoordinator(trigger: SurfaceTrigger) -> MiniPresentOutcome {
@@ -1458,9 +1478,10 @@ struct RootView: View {
                     }
                     shell = mini
                     if miniPanel == nil {
-                        miniPanel = MiniOrbPanel(web: mini.webView, onStep: { [weak self] step in self?.applyPresenceStep(step) },
+                        miniPanel = MiniOrbPanel(web: mini.webView,
                             onExpand: { [weak self] in self?.miniOrb.openFullInterface() },
                             onReceipt: { [weak self] record in self?.model.appendPresenceReceipt(record) })
+                        miniPanel?.onSurfaceReassert = { [weak self] reason in self?.reassertSurface(reason) }
                         miniPanel?.pushPresence(presence.state, muted: presence.mutedHeld)
                     }
                     miniPanel?.onVisibilityChanged = { [weak self] in self?.syncPresentedSurface() }
@@ -1533,6 +1554,8 @@ struct RootView: View {
                     recipient.publishOrb(script, generation: generation, completion: completion)
                 })
         } else { model.bridge.orbPublication.select(nil, generation: generation, evaluate: nil) }
+        model.recordSurfaceReceipt(surfaceVisibleReceipt(recipient: recipient, fullVisible: fullVisible,
+                                                         miniVisible: miniVisible))
     }
 
     @discardableResult

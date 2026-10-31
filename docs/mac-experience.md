@@ -12,6 +12,8 @@ Naya's resting surface is the floating orb. The full window is optional: it show
 
 `PresenceState` in `Sources/LuxDidi/NativePresence.swift` defines `cold`, `connecting`, `live` and `hotMuted`. A tap starts from cold, can cancel connection, and toggles mute/resume while connected. The control should reflect the actual transition, not optimistically show a live microphone before the owner is ready.
 
+The orb is never touch-sensitive. A click on it starts nothing and stops nothing; it writes one `orb_click_ignored` receipt so a regression shows in the log, and a press that moved is still the drag that places the orb. The only ways to start or stop a call are the bare Right Command tap and the explicit menu items (status menu, Dock menu, window pill). The page's surface visibility is re-asserted after an occlusion that ends, a wake, a screen change, a Space change and once two seconds after a login launch, because one missed visibility signal used to leave a still orb.
+
 Native audio belongs to `AudioOwner` in `Sources/LuxDidi/AudioOwner.swift`. A muted icon without capture shutdown is not a successful mute; a system-wide audio change is not an acceptable implementation shortcut.
 
 ## Keys and menus

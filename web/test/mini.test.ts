@@ -199,13 +199,16 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
   const { stage, pill } = fakePill('listening');
   const published: OrbVisual[] = [];
   const queued: Array<() => void> = [];
-  const listeners = new Map<string, () => void>();
-  const globals = globalThis as { window?: unknown; didiNativeSurfaceVisible?: boolean };
+  const globals = globalThis as { window?: unknown; document?: unknown; didiNativeSurfaceVisible?: boolean };
   const savedWindow = globals.window;
+  const savedDocument = globals.document;
+  const listeners = new Map<string, () => void>();
   globals.window = {
     addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
     removeEventListener: (name: string) => listeners.delete(name),
   };
+  const page = { hidden: false, addEventListener: () => undefined, removeEventListener: () => undefined };
+  globals.document = page;
   let clock = 0;
   const stop = startMiniOrbVisuals({
     doc: {
@@ -224,10 +227,12 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
       assert.ok(next, 'the loop always holds a scheduled tick');
       next();
     };
-    globals.didiNativeSurfaceVisible = false;
+    // WebKit hides the page, so one tick must not be the last one.
+    page.hidden = true;
     tick(16);
     assert.equal(published.length, 0, 'a hidden surface paints nothing');
     assert.equal(queued.length, 1, 'the hidden loop keeps one cheap tick scheduled, so it cannot stop for good');
+    page.hidden = false;
     globals.didiNativeSurfaceVisible = true;
     listeners.get('didi-surface-visibility')?.();
     assert.equal(published.length, 1, 'the native re-assert paints on the spot');
@@ -237,6 +242,7 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
   } finally {
     stop();
     globals.window = savedWindow;
+    globals.document = savedDocument;
     delete globals.didiNativeSurfaceVisible;
   }
 });

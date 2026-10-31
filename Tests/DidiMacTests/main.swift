@@ -639,7 +639,6 @@ expect(behavior.contains(.stationary) == false, "the mini panel moves with its S
 // strand it off screen. The notification is posted to the panel; no display is changed.
 var orbScreenReceipts = 0
 let screenPanel = MiniOrbPanel(web: WKWebView(frame: .zero), frameKey: "DidiMiniOrbFrame.screenChangeTest",
-                               onStep: { _ in },
                                onReceipt: { record in
                                    if record["event"] as? String == "orb_screen_parameters" { orbScreenReceipts += 1 }
                                })

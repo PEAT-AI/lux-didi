@@ -51,6 +51,9 @@ enum PageRoute {
     let webView: WKWebView
     private(set) var surfaceGeneration: UInt64 = 0
     private(set) var surfaceVisible = false
+    /// ORB-107: a re-assert is a new attempt, so the dedupe below cannot swallow the one write
+    /// that tells a page it is visible again. The receipt prints it.
+    private(set) var surfaceAttempt = 0
     private var visibilityAppliedAttempt: Int?
     var onStateChanged: (() -> Void)?
     @Published private(set) var state: PageState = .unavailable { didSet { onStateChanged?() } }
@@ -131,12 +134,20 @@ enum PageRoute {
     }
 
     func setSurfaceVisible(_ visible: Bool, generation: UInt64) {
-        if surfaceVisible == visible, surfaceGeneration == generation, visibilityAppliedAttempt == attempt { return }
+        if surfaceVisible == visible, surfaceGeneration == generation,
+           visibilityAppliedAttempt == surfaceAttempt { return }
         surfaceGeneration = generation
         surfaceVisible = visible
         guard state == .ready, route.approves(descriptor, webView.url) else { return }
-        visibilityAppliedAttempt = attempt
+        visibilityAppliedAttempt = surfaceAttempt
         webView.evaluateJavaScript("if(window.didiSetSurfaceVisible){window.didiSetSurfaceVisible(\(visible),\(generation))}else{window.didiNativeSurfaceVisible=\(visible)}", completionHandler: nil)
+    }
+
+    /// ORB-107: the app asks for the same visibility again after a wake, a Space change, a screen
+    /// change, an occlusion that ends or a login launch. The new attempt is what makes it land.
+    func reassertSurfaceVisible(_ visible: Bool, generation: UInt64) {
+        surfaceAttempt += 1
+        setSurfaceVisible(visible, generation: generation)
     }
 
     func publishOrb(_ script: String, generation: UInt64, completion: @escaping @MainActor () -> Void) {

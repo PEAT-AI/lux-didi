@@ -187,18 +187,18 @@ import Foundation
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                                windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!
         }
-        let orb = MiniOrbHitView()
+        let hitView = MiniOrbHitView()
         var ignored = 0
         var moves = 0
-        orb.onIgnoredClick = { ignored += 1 }
-        orb.moveOnDrag = { _ in moves += 1 }
-        orb.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
-        orb.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 22, y: 21)))
+        hitView.onIgnoredClick = { ignored += 1 }
+        hitView.moveOnDrag = { (_: NSEvent) in moves += 1 }
+        hitView.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
+        hitView.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 22, y: 21)))
         check(ignored == 1 && moves == 0,
               "a 2 pt press on the mini orb writes orb_click_ignored and moves nothing")
-        orb.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
-        orb.mouseDragged(with: pressEvent(.leftMouseDragged, NSPoint(x: 60, y: 40)))
-        orb.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 60, y: 40)))
+        hitView.mouseDown(with: pressEvent(.leftMouseDown, NSPoint(x: 20, y: 20)))
+        hitView.mouseDragged(with: pressEvent(.leftMouseDragged, NSPoint(x: 60, y: 40)))
+        hitView.mouseUp(with: pressEvent(.leftMouseUp, NSPoint(x: 60, y: 40)))
         check(moves == 1 && ignored == 1, "a drag still moves the orb and writes no ignore receipt")
         check(MiniOrbFrameStore.persistsFrame(userDragging: true)
             && !MiniOrbFrameStore.persistsFrame(userDragging: false),

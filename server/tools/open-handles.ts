@@ -106,18 +106,21 @@ export function homeDestination(app: HomeApp): { url: string; kind: OpenKind } |
 const handles = new Map<string, OpenHandle>();
 /** Open2: a minted handle is openable only once its `open:` line reached the model in this session. */
 const exposed = new Set<string>();
+/** When each exposed handle was handed to the model, in one monotonic order per process. */
+const exposedAt = new Map<string, number>();
+let exposureCount = 0;
 let session: string | undefined;
 let minted = 0;
 
 /** One registry per Live session: a new session drops every handle the last one minted. */
 export function beginHandleSession(runId: string): void {
   if (session === runId) return;
-  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = runId; accountUnknownLogged = false;
+  handles.clear(); exposed.clear(); exposedAt.clear(); mintedLines.clear(); minted = 0; session = runId; accountUnknownLogged = false;
 }
 
 export function endHandleSession(runId: string): void {
   if (session !== runId) return;
-  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = undefined; accountUnknownLogged = false;
+  handles.clear(); exposed.clear(); exposedAt.clear(); mintedLines.clear(); minted = 0; session = undefined; accountUnknownLogged = false;
 }
 
 /** A handle resolves only when its line was in the text the model was actually given. */
@@ -137,12 +140,20 @@ export function exposeHandles(text: string): void {
   for (const line of mintedLines) {
     if (!text.includes(line) && !text.includes(JSON.stringify(line).slice(1, -1))) continue;
     const handle = /^open: (L[0-9]{1,4}) = /.exec(line)?.[1];
-    if (handle !== undefined && handles.has(handle)) exposed.add(handle);
+    if (handle !== undefined && handles.has(handle)) { exposed.add(handle); exposedAt.set(handle, ++exposureCount); }
   }
 }
 
 /** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */
 const OPEN_LINE = /^\s*open: L[0-9]{1,4}(?:\s*=|\s|$)/;
+/** The order in which windows were handed to the model, so a read can be told from an earlier one. */
+export function exposureStamp(): number { return exposureCount; }
+
+/** When this window was handed to the model, or undefined when it never was. */
+export function exposedHandleStamp(handle: string): number | undefined {
+  return exposed.has(handle) ? exposedAt.get(handle) : undefined;
+}
+
 /** Every handle this session handed the model, in exposure order: the windows it may be asked to open. */
 export function exposedHandles(): { handle: string; kind: string }[] {
   const shown: { handle: string; kind: string }[] = [];

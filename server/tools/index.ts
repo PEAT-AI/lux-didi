@@ -917,7 +917,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const top = anyKinds.length ? ownerTasks.topShown(runId, anyKinds) : undefined;
           const effectiveArgs = top ? { ...args, handle: top } : args;
           const requestTarget = JSON.stringify(effectiveArgs);
-          let authorization = ownerTasks.authorize(runId, 'open', requestTarget);
+          // The handle is the target selector the owner saw in a shown read, so the port sees it too.
+          let authorization = ownerTasks.authorize(runId, 'open', requestTarget,
+            typeof (effectiveArgs as JsonObject)['handle'] === 'string' ? String((effectiveArgs as JsonObject)['handle']) : undefined);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
           const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
           const refused = 'target' in resolved ? undefined : resolved.code;

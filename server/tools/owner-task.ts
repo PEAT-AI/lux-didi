@@ -234,17 +234,20 @@ export class OwnerTasks implements OwnerTaskPort {
     task.openGrant = true; task.openReceipts.clear();
   }
 
-  authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
+  authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
       // An empty target is the grant-point probe: it asks whether any open authority exists, and the
       // handler decides replay against spent with its own canonical target.
-      if (target === '') return { ...common, code: task.openGrant || task.openReceipts.size > 0 ? 'allowed' : 'no_owner_request' };
+      if (target === '') return { ...common, code: task.openGrant || task.openReceipts.size > 0 || task.shown.some(shown => shown.handle === handle) ? 'allowed' : 'no_owner_request' };
       const receipt = task.openReceipts.get(target);
       if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
-      if (task.openGrant) return { ...common, code: 'allowed' };
+      // One ask may open each window it exposes: a handle this ask showed is a target the owner saw.
+      if (task.openGrant || (handle !== undefined && handle !== '' && task.shown.some(shown => shown.handle === handle))) {
+        return { ...common, code: 'allowed' };
+      }
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
@@ -265,13 +268,13 @@ export class OwnerTasks implements OwnerTaskPort {
     return { ...bounded, code: 'allowed' };
   }
 
-  claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization {
+  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string): RequestAuthorization {
     const task = this.#live(session);
     const operation = task?.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (task === undefined || task.id !== requestId) return { code: 'no_owner_request' };
     // An open the owner's words already authorize has no bounded operation to journal: he is only
     // selecting a window, so the same grant point decides and nothing is written down as consumed.
-    if (kind === 'open' || operation === undefined) return this.authorize(session, kind, target);
+    if (kind === 'open' || operation === undefined) return this.authorize(session, kind, target, handle);
     const authorization = this.authorize(session, kind, target);
     if (authorization.code !== 'allowed' && authorization.code !== 'idempotent') return authorization;
     // D4: the intent is journaled before dispatch, keyed by the task and the operation.

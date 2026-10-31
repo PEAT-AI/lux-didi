@@ -111,8 +111,8 @@ export interface OwnerTaskPort {
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;
   observe(session: string, journalId: string, words: string, observedAt?: number): void;
-  authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
-  claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization;
+  authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization;
+  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string): RequestAuthorization;
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void;
   clarify(session: string, kind: ActionKind, field: string): void;

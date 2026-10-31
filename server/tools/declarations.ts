@@ -184,7 +184,8 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           const operationKind = ownerKindOf(tool.name);
           if (operationKind !== undefined) {
             if (ctx.ownerTasks === undefined) { record.reason = 'operation_not_configured'; return; }
-            const operation = ctx.ownerTasks.authorize(host.runId, operationKind, '');
+            const handle = typeof (call.args as JsonObject)['handle'] === 'string' ? String((call.args as JsonObject)['handle']) : undefined;
+            const operation = ctx.ownerTasks.authorize(host.runId, operationKind, '', handle);
             if (operation.code !== 'allowed' && operation.code !== 'idempotent') { record.reason = `operation_${operation.code}`; return; }
           }
           if (!await ctx.authority.isCurrent(host, tool, signal)) { record.reason = 'stale_or_revoked_authority'; return; }

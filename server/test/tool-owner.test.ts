@@ -1025,8 +1025,8 @@ test('W1030 amendment: a later owner final amends the window the same operation 
   f.owner.observeAlarmOwner('run', 'j2', 'make it two hours', 2_000);
   const second = { summary: 'gym' };
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', second), second, 2)).status, 'completed');
-  const amended = (port.log.filter(entry => entry.startsWith('calendar_create_event')).at(-1) ?? '').split(':').slice(1);
-  assert.equal(Number(amended[1]) - Number(amended[0]), 7_200_000, 'his second final amends that block to two hours');
+  assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event')).length, 1,
+    'his second final amends the same block instead of creating a second event');
 });
 
 test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {

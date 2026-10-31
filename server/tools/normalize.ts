@@ -102,36 +102,51 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   if (!isRecord(raw)) return { args: {}, dropped: [] };
   const shape = declaredShape(tool);
   const reads = readSet(tool, raw);
+  const rejection = tool.rejection;
   const args: Record<string, unknown> = {};
   const dropped: string[] = [];
-  const fillers = new Set<string>();
   for (const [key, value] of Object.entries(raw)) {
-    const reason: DropReason | undefined = !KEY.test(key) || (shape.properties.size > 0 && !shape.properties.has(key)) ? 'undeclared'
-      : reads !== undefined && !reads.has(key) ? 'not_read'
-        : value === undefined ? 'absent'
-          : undefined;
-    if (reason === undefined) {
-      args[key] = value;
-      if (tool.effect !== 'write' && isFiller(value)) fillers.add(key);
-      continue;
+    if (value === undefined) { dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:absent`); continue; }
+    args[key] = value;
+  }
+  // The keys the chosen intent does not read: the matrix mirrors the tool's own per-intent refusal.
+  if (reads !== undefined) {
+    for (const key of Object.keys(args)) {
+      if (reads.has(key)) continue;
+      delete args[key];
+      dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:not_read`);
     }
-    dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:${reason}`);
+  }
+  // A key the tool never declares is dropped only where the tool itself calls it unknown, so a validator
+  // that accepts a wider research-time shape keeps the keys it reads and the declaration still counts them.
+  const unknownKey = (value: Record<string, unknown>): boolean => {
+    const token = rejection?.(value);
+    return typeof token === 'string' && token.endsWith(':unknown_key');
+  };
+  if (shape.properties.size > 0 && unknownKey(args)) {
+    for (let step = 0; step < 24 && unknownKey(args); step++) {
+      const offender = Object.keys(args).find(key => !shape.properties.has(key));
+      if (offender === undefined) break;
+      const without: Record<string, unknown> = { ...args };
+      delete without[offender];
+      if (unknownKey(without)) break;
+      delete args[offender];
+      dropped.push(`${KEY.test(offender) ? offender : 'invalid_key'}:undeclared`);
+    }
   }
   // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a
   // value, which its own refusal names (`query:empty`, `people:min2`). A tool that never refuses the
   // empty value keeps it, because it may be the very thing the reader needs present, and a write keeps
   // every value it was sent. Only a filler is ever removed here, never a real value of a key it reads.
-  const rejection = tool.rejection;
-  if (rejection !== undefined) {
+  if (rejection !== undefined && tool.effect !== 'write') {
     const seen = new Set<string>();
     for (let step = 0; step < 24; step++) {
       const token = rejection(args);
       if (token === undefined || seen.has(token)) break;
       seen.add(token);
       const field = token.slice(0, token.indexOf(':'));
-      if (!fillers.has(field)) break;
+      if (!(field in args) || !isFiller(args[field]) || field === token) break;
       delete args[field];
-      fillers.delete(field);
       dropped.push(`${field}:absent`);
     }
   }

@@ -519,7 +519,9 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   assert.deepEqual(kept.args, { query: '', limit: 5 }, 'a filler no rule refuses stays as it was sent');
   assert.deepEqual(kept.dropped, []);
   const own = normalizeArguments({ name: 'trello_read', effect: 'read', parameters: { type: 'object', properties: { view: {}, card: {}, offset: {} } } },
-    { view: 'list', card: {}, offset: 0 });
-  assert.deepEqual(own.args, { view: 'list', card: {}, offset: 0 }, 'a validate-only tool keeps its fillers');
-  assert.deepEqual(own.dropped, []);
+    { view: 'list', card: {}, offset: 0, wider: 'kept' });
+  assert.deepEqual(own.args, { view: 'list', card: {}, offset: 0, wider: 'kept' }, 'a validate-only tool keeps its fillers and its wider keys');
+  assert.deepEqual(own.dropped, [], 'and nothing is dropped without a rule of the tool to say so');
+  // The one tool that calls an undeclared key unknown has it dropped, and the count is on the closed event.
+  assert.deepEqual(normalizeArguments(declaration, { intent: 'overview', query: 'synthetic', wider: 'x' }).dropped, ['wider:undeclared']);
 });

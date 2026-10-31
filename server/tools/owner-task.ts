@@ -34,7 +34,8 @@ const NEGATION = /\b(?:don['’]?t|do not|never|no need|stop|nicht|kein(?:e|en|e
 /** A question about something grants nothing; a modal request ("can you put an alarm at 07:45")
  *  is the owner asking for the thing, so the command constructions still read it. */
 const QUESTION = /^\s*(?:what|when|where|who|which|how|why|did|do|does|was|were|have|has|had|is|are|hast du|gibt es|was|wann|wo|wer|wie|warum)\b/i;
-const CANCEL_TASK = /\b(?:forget it|never mind|nevermind|scratch that|cancel that|stop that|abbrechen|vergiss (?:es|das))\b/i;
+/** Cancelling the ASK ("cancel that", "forget it") is not cancelling the owner's event. */
+const CANCEL_TASK = /\b(?:forget it|never mind|nevermind|scratch that|cancel (?:that|it)|stop that|abbrechen|vergiss (?:es|das))\b(?!\s+\w)/i;
 /** "I put the meeting in my calendar yesterday" reports the past; it asks for nothing. */
 const PAST_STATEMENT = /\b(?:i|we)\s+(?:already\s+)?(?:put|added|scheduled|booked|cancell?ed|moved|sent|drafted|wrote|created|set|had|habe|hab|hatte)\b/i;
 const AMEND = /\b(?:make it|change it|move it|push it|shift it|instead|rather|not that|amend|correct that|mach(?:e)? es|verschieb|änder)\b/i;

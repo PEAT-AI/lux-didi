@@ -110,6 +110,23 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
     }
   });
+  // D3: recurrence is the owner's authority. A rule the model added is dropped, the one-time alarm
+  // he asked for is set, and the result says which part of the call was not used.
+  await t.test('D3: a model-added recurrence is dropped and the one-time alarm says so', async () => {
+    const args = { kind: 'daily' };
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'wake me at 11', alarmNow);
+    const definition = live.find(tool => tool.name === 'set_alarm')!;
+    const intent: ToolCallIntent = { executionId: 'run:d3:0', toolName: 'set_alarm', runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
+      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+    owner.journal.intent(intent);
+    const outcome = await definition.execute(args, { ...intent, signal });
+    assert.equal(outcome.status, 'completed');
+    const row = outcome.status === 'completed'
+      ? store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE result_id=?', [outcome.result.id])) : undefined;
+    assert.match(String(row?.['result_json']), /not_applied/, String(row?.['result_json']));
+    assert.match(String(row?.['result_json']), /the owner did not ask/, String(row?.['result_json']));
+    assert.equal(store.transaction(tx => tx.all('SELECT id FROM alarm_series')).length, 0, 'a one-time ask never writes a series');
+  });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);
   t.after(() => endHandleSession(session.liveSessionId));

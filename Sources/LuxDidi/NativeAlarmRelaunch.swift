@@ -130,6 +130,6 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
         """
     }
 
-    /// A launch that carries the argument exists only to announce the alarm it was armed for.
-    nonisolated static var launchKind: String { "alarm_relaunch" }
+    // A launch that carries the argument exists only to announce the alarm it was armed for,
+    // and it logs the name `LaunchKind.alarmRelaunch`.
 }

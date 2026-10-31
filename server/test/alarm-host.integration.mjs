@@ -98,10 +98,11 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('set an alarm');
   assert.match(await call('set_alarm'), /missing_time/);
   assert.equal(rows().length, 0);
-  now += 120001;
+  now += 600001;
   assert.match(await call('set_alarm'), /missing_time/, 'wall-clock movement cannot expire a monotonic request');
-  mono += 120001;
-  assert.match(await call('set_alarm'), /request_expired/);
+  mono += 600001;
+  // D2: ten minutes of owner silence ends the task, so the ask is gone rather than merely expired.
+  assert.match(await call('set_alarm'), /no_owner_request/);
   await owner('wake me');
   assert.match(await call('set_alarm'), /missing_time/);
   await owner('in one minute');

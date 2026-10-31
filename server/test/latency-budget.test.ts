@@ -143,6 +143,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
     deadAirRungMs: fake(2_000),
   };
   const printed = judge(segments);
+  process.stdout.write(`${printed.join(' ')}\n`);
   assert.ok(printed.length === 5, 'every budgeted segment was judged');
   // LAT-1022: the slowed fake is the gate's own proof: the same replay must breach, or the eval proves nothing.
   if (SLOW) assert.fail('a slowed fake must breach a budget, and every segment passed');

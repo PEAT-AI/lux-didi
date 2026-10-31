@@ -753,6 +753,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               return complete(call as ToolCallIntent, response, ['ordinary'], tx);
             };
             const ask = ownerTasks.authorize(runId, name, requestTarget, undefined, context.executionId);
+            process.stderr.write(`EXDBG ${name} exec=${context.executionId} code=${ask.code}\n`);
             hostLogEvent({ event: 'alarm_audit', ...ownerTasks.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));

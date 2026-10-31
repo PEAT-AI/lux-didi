@@ -178,7 +178,6 @@ export class OwnerTasks implements OwnerTaskPort {
     this.pendingFinal.delete(session);
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.#live(session);
-    process.stderr.write(`OBSDBG j=${journalId} words=${JSON.stringify(words.slice(0,60))} ops=${previous ? previous.operations.map(o => o.kind + ':' + o.state).join(',') : '-'}\n`);
     if (previous?.journalId === journalId) return;
     if (previous !== undefined) {
       if (CANCEL_TASK.test(words)) { previous.closed = true; previous.operations = []; previous.words = words; previous.journalId = journalId; return; }
@@ -413,7 +412,6 @@ export class OwnerTasks implements OwnerTaskPort {
    * never authorize, and keeps the task, its ledger and the receipts of what already ran.
    */
   rebuild(session: string): void {
-    process.stderr.write(`RBDBG session=${session.slice(0,8)} task=${this.#live(session)?.id}\n`);
     const task = this.#live(session);
     if (task === undefined) return;
     task.operations = []; task.openGrant = false; task.openSpent = false; task.shown = []; task.openReceipts.clear();

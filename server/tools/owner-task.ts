@@ -16,7 +16,7 @@ import type { ActionKind, OwnerTaskPort, RequestAuthorization } from './types.js
 export interface OwnerFields { durationMinutes?: number; recurrenceAsked: boolean }
 export interface OwnerCommand { kind: ActionKind; fields: OwnerFields; amendment: boolean; words: string }
 export interface OwnerOperation {
-  operationId: string; kind: ActionKind; fields: OwnerFields;
+  operationId: string; kind: ActionKind; fields: OwnerFields; words: string;
   state: 'open' | 'claimed' | 'done'; target?: string; receipt?: unknown;
 }
 interface OwnerTask {
@@ -110,8 +110,9 @@ export function ownerCommands(words: string): OwnerCommand[] {
   add('lux_note', SAVE_CUE.test(spoken) && !/^.*\bremember me\b.*$/i.test(spoken));
   const otherAsk = (CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)))
     || (DRAFT_VERB.test(spoken) && (MAIL.test(spoken) || CHAT.test(spoken))) || SAVE_CUE.test(spoken)
-    || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken) || ALARM.test(spoken);
-  add('open', (!otherAsk) && (OPEN_VERB.test(spoken) || OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken)));
+    || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken);
+  add('open', !ALARM.test(spoken) && (OPEN_VERB.test(spoken)
+    || (!otherAsk && (OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken)))));
   return commands;
 }
 
@@ -175,50 +176,53 @@ export class OwnerTasks implements OwnerTaskPort {
       previous.observedAt = observedAt; previous.observedMono = this.clock();
       previous.finals++;
       previous.closed = false;
-      // A split ask may carry its verb and its object in different finals, so the merged ask is read
-      // for kinds the task has not seen; the new final alone is read for amendments and new asks.
+      // A split ask may carry its verb, its day and its length in different finals: an operation still
+      // open keeps collecting the owner's words, and the merged ask is read for kinds this task has
+      // not seen yet. The new final alone is read for amendments and for a further ask of one kind.
+      for (const operation of previous.operations) if (operation.state !== 'done') operation.words = `${operation.words} ${words}`.trim();
       const seen = new Set(previous.operations.map(operation => operation.kind));
-      this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)));
-      if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) this.#apply(previous, ownerCommands(words));
+      this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
+      if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) this.#apply(previous, ownerCommands(words), words);
       return;
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
       operations: [], sequence: 0, closed: false, shown: [], sources: {},
     };
-    this.#apply(task, ownerCommands(words));
+    this.#apply(task, ownerCommands(words), words);
     this.tasks.set(session, task);
   }
 
   /** One operation per kind: further owner words amend it, they never open a second one. */
-  #apply(task: OwnerTask, commands: readonly OwnerCommand[]): void {
+  #apply(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
     for (const command of commands) {
       const open = task.operations.filter(operation => operation.kind === command.kind && operation.state !== 'done');
       const amendable = open.at(-1);
       if (amendable !== undefined && command.amendment) { amendable.fields = command.fields; continue; }
-      task.operations.push({ operationId: `op-${++task.sequence}`, kind: command.kind, fields: command.fields, state: 'open' });
+      task.operations.push({ operationId: `op-${++task.sequence}`, kind: command.kind, fields: command.fields, words, state: 'open' });
     }
   }
 
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
-    const common = { id: task.id, words: kind === 'set_alarm' || kind === 'lux_note' || kind === 'create_event' ? task.words : task.words, journalId: task.journalId, observedAt: task.observedAt };
+    const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     const age = this.clock() - task.start;
     if (age < 0 || age > OWNER_TASK_IDLE_MS) return { ...common, code: 'request_expired' };
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return { ...common, code: 'no_owner_request' };
+    const bounded = { ...common, words: operation.words };
     const entry = this.ledger.get(`${task.id}:${operation.operationId}`);
     // An empty target is the grant-point probe: it asks only whether the owner's operation exists,
     // and the handler decides replay against spent with its own canonical target.
-    if (target === '') return { ...common, code: 'allowed' };
+    if (target === '') return { ...bounded, code: 'allowed' };
     if (operation.state === 'done') {
       return operation.target === target && entry?.receipt !== undefined
-        ? { ...common, code: 'idempotent', receipt: entry.receipt }
-        : { ...common, code: 'grant_spent' };
+        ? { ...bounded, code: 'idempotent', receipt: entry.receipt }
+        : { ...bounded, code: 'grant_spent' };
     }
-    if (operation.state === 'claimed') return { ...common, code: 'grant_spent' };
-    return { ...common, code: 'allowed' };
+    if (operation.state === 'claimed') return { ...bounded, code: 'grant_spent' };
+    return { ...bounded, code: 'allowed' };
   }
 
   claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization {

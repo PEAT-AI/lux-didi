@@ -255,6 +255,7 @@ export class OwnerTasks implements OwnerTaskPort {
       // A retry inside the same owner final replays; once he says something new, the target is asked
       // for again and opens again (G-R3: the retry is the same task, not a new ask).
       const spent = task.openReceipts.get(key);
+      process.stderr.write(`OPENDBG key=${key} target=${target.slice(0,80)} journal=${task.journalId} spent=${spent ? spent.journalId : '-'} shown=${task.shown.map(e => e.handle).join(',')}\n`);
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle);
       // Neither named by him nor shown by a read of this task: that needs new owner words.

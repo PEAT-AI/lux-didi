@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ActionKind, OwnerTaskPort, RequestAuthorization } from './types.js';
-import { exposedHandleStamp, exposedHandles, exposureStamp } from './open-handles.js';
+import { exposedHandles } from './open-handles.js';
 
 /**
  * D2: the owner's task, and the bounded operations it grants.
@@ -27,7 +27,7 @@ interface OwnerTask {
   shown: { handle: string; kind: string; seq: number }[]; sources: Record<string, number>;
   /** A counter of the reads this task exposed, and its value at the last successful open: a window
    *  exposed after that open answers his next ask to open. */
-  exposure: number; openSeq: number; openStamp: number;
+  exposure: number; openSeq: number;
 }
 
 /** A task with no owner final for this long is over; the owner has moved on. */
@@ -206,7 +206,7 @@ export class OwnerTasks implements OwnerTaskPort {
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {}, exposure: 0, openSeq: 0, openStamp: 0,
+      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {}, exposure: 0, openSeq: 0,
     };
     this.#apply(task, ownerCommands(words), words);
     this.#armOpen(task, ownerCommands(words), words);
@@ -267,11 +267,7 @@ export class OwnerTasks implements OwnerTaskPort {
       const spent = task.openReceipts.get(key);
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       // A window the model was handed after the last open answers his ask to open what he showed.
-      // A window the model was handed after the last open answers his next ask to open; one it already
-      // knew when he last opened does not, and still needs new words.
-      const stamp = selector === undefined || selector === '' ? undefined : exposedHandleStamp(selector);
-      const shown = (stamp !== undefined && stamp > task.openStamp)
-        || (selector !== undefined && selector !== '' && task.shown.some(entry => entry.handle === selector && entry.seq > task.openSeq));
+      const shown = selector !== undefined && selector !== '' && task.shown.some(entry => entry.handle === selector && entry.seq > task.openSeq);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
@@ -329,7 +325,7 @@ export class OwnerTasks implements OwnerTaskPort {
     if (kind === 'open') {
       const selector = handle !== undefined && handle !== '' ? handle : /^\{"handle":"(L[0-9]{1,4})"\}$/.exec(target)?.[1];
       task.openReceipts.set(selector !== undefined && selector !== '' ? `handle:${selector}` : `target:${target}`, { journalId: task.journalId, receipt });
-      task.openGrant = false; task.openSeq = task.exposure; task.openStamp = exposureStamp(); return;
+      task.openGrant = false; task.openSeq = task.exposure; return;
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;

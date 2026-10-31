@@ -3,6 +3,9 @@
 # timings through the real host path, and every host-side segment is judged against config/latency-budgets.json.
 # It prints each segment with its budget, and it fails only on a breach, a missing segment or a missing receipt.
 # The last step is the gate's own proof: the same replay with every fake slowed must breach.
+#
+# The eval reads the built host path under dist/ and is itself plain TypeScript run through node's own type
+# stripping, so it needs no entry in server/tsconfig.json and no build-time coupling to the suite.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
@@ -12,7 +15,7 @@ trap 'rm -rf "$work"' EXIT
 cd server
 npm run build >"$work/build.log" 2>&1 || { cat "$work/build.log" >&2; exit 1; }
 run() {
-  node --test --test-reporter=tap --test-timeout=20000 dist/test/latency-budget.test.js "$@"
+  node --test --test-reporter=tap --test-timeout=20000 test/latency-budget.test.ts "$@"
 }
 
 echo "latency budget, normal fakes"

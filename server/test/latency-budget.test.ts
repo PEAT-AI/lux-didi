@@ -10,10 +10,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createMongooseReader } from '../connectors/mongoose.js';
-import { safeEvent } from '../host/log.js';
-import { attachHostLogSink } from '../tools/host-events.js';
-import { FakeClock, fakeReady, pcm16 } from './openai-live-voice-fixture.js';
+import { createMongooseReader } from '../dist/connectors/mongoose.js';
+import { safeEvent } from '../dist/host/log.js';
+import { attachHostLogSink } from '../dist/tools/host-events.js';
+import { FakeClock, fakeReady, pcm16 } from '../dist/test/openai-live-voice-fixture.js';
 
 type Segment = 'speechEndToCreateMs' | 'createToFirstAudioMs' | 'toolOutputToCreateMs' | 'providerOutputAckMs' | 'connectorRequestMs' | 'deadAirRungMs';
 const budgets = JSON.parse(readFileSync(join(process.cwd(), '..', 'config', 'latency-budgets.json'), 'utf8')) as

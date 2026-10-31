@@ -946,7 +946,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // receipt to replay: the owner's words opened one attempt, not a retryable grant.
           else if (dispatched) ownerTasks.spend(runId, 'open');
           // A dispatch the host made and could not confirm spends the owner's round just the same.
-          if (dispatched !== undefined) ownerTasks.spend(runId, 'open');
+          if (dispatched !== undefined && code !== 'opened') ownerTasks.spend(runId, 'open');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a

@@ -955,9 +955,10 @@ struct RootView: View {
         model.notifications.onLiveCall = { [weak self] jobID in
             self?.show(); self?.model.pickUpLiveCall(jobID)
         }
-        alarmObservation = model.$alarmCaption.sink { [weak self] caption in
-            guard let self else { return }
-            self.statusItem.button?.title = AlarmShellPolicy.menuTitle(alarmCaption: caption, pendingCall: !self.model.pendingLiveCalls.isEmpty)
+        alarmObservation = model.$alarmCaption.sink { [weak self] _ in
+            // C-QUIT 1: the caption is part of the item's appearance, so it is re-applied through the
+            // one path that keeps the image or the fallback title, never written over it alone.
+            MainActor.assumeIsolated { self?.updateLiveStatus() }
         }
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
             self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
@@ -1132,15 +1133,18 @@ struct RootView: View {
         let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         if let button = statusItem.button {
+            // C-QUIT 1: this is the one place that applies the item's look, and the caption, the badge
+            // and the image are decided together, so a later live update cannot leave a blank item.
+            let key = presentation.symbol + ":" + presentation.text
+            if statusImages[key] == nil {
+                statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+            }
+            let resolved = StatusItemPresentation.resolve(symbol: statusImages[key])
             quietStatusItem.update(symbol: presentation.symbol, text: presentation.text,
-                title: AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall),
+                title: StatusItemPresentation.title(preferred: AlarmShellPolicy.menuTitle(
+                    alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall), image: resolved.image),
                 currentTitle: button.title, currentToolTip: button.toolTip,
-                image: { key in
-                    if statusImages[key] == nil {
-                        statusImages[key] = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
-                    }
-                    button.image = statusImages[key]
-                }, setTitle: { button.title = $0 }, toolTip: {
+                image: { _ in button.image = resolved.image }, setTitle: { button.title = $0 }, toolTip: {
                     button.toolTip = $0
                     button.setAccessibilityLabel($0)
                 })

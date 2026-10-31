@@ -437,6 +437,12 @@ enum StatusItemPresentation {
         guard let symbol else { return Resolved(image: nil, title: fallbackTitle, state: .fallback) }
         return Resolved(image: symbol, title: "", state: .ok)
     }
+    /// Every later update makes the same decision, so a live state change cannot leave the item blank:
+    /// an alarm caption or live badge outranks the letter, and the letter appears only with no image.
+    static func title(preferred: String, image: NSImage?) -> String {
+        if !preferred.isEmpty { return preferred }
+        return image == nil ? fallbackTitle : ""
+    }
     @MainActor static func state(button: NSStatusBarButton?) -> StatusSurfaceReceipt {
         guard let button else {
             return StatusSurfaceReceipt(event: .statusItemState,

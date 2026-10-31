@@ -49,6 +49,13 @@ import Foundation
         check(missing.image == nil && missing.state == .fallback && missing.title == StatusItemPresentation.fallbackTitle,
               "a nil symbol falls back to the text title instead of a blank, unclickable item")
         check(StatusItemPresentation.length > 0, "the status item length is a fixed positive width")
+        let liveImage = NSImage(size: NSSize(width: 16, height: 16))
+        check(StatusItemPresentation.title(preferred: "", image: liveImage).isEmpty,
+              "with an image the item shows the image alone, no letter beside it")
+        check(StatusItemPresentation.title(preferred: "", image: nil) == StatusItemPresentation.fallbackTitle,
+              "a later live update with no image still carries the fallback letter instead of going blank")
+        check(StatusItemPresentation.title(preferred: "\u{2022}", image: nil) == "\u{2022}",
+              "an alarm caption or live badge outranks the fallback letter")
 
         let target = FakeTarget()
         let menu = NSMenu()

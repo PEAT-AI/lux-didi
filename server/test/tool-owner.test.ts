@@ -15,6 +15,7 @@ import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { COMPOSE_IDENTITY, draftChatResult, draftEmailResult } from '../tools/compose.js';
+import { ALARM_IDENTITY } from '../tools/index.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
@@ -752,11 +753,12 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
 test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
-  const refused = await liveExecute(f, composeCall(f, 'run:1:0', 'set_alarm', { kind: 'daily' }), { kind: 'daily' }, 1);
+  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+  const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
   assert.match(String(refused.result_json), /rule_mismatch/);
   assert.match(String(refused.result_json), /without kind and weekdays omitted/);
   assert.match(String(refused.result_json), /fixNotForSpeech/);
-  const set = await liveExecute(f, composeCall(f, 'run:1:1', 'set_alarm', {}), {}, 1);
+  const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 1);
   assert.equal(set.status, 'completed');
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/);
 });

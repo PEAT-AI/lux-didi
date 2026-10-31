@@ -4867,9 +4867,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
       // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed
       // spoken line, so the model can never read the host's guidance aloud; every other refusal stays a code.
-      // G-R12: every refused call answers with the plain closed code as both `code` and `reason`, so the
-      // model never narrates a result it did not get (D5); the layered reason stays in `error`.
-      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? refusedPayload(why);
+      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? { error: why };
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
@@ -4895,7 +4893,10 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
-        return { id: call.id, name: call.name, response: completed ? accepted.response : refusalResponse(reason) };
+        // G-R12: a refusal answers with the plain closed code as both `code` and `reason`, so the model
+        // never narrates a result it never got (D5); the layered reason stays in `error`.
+        const refused = completed ? accepted.response : record?.status === 'refused' ? refusedPayload(reason) : refusalResponse(reason);
+        return { id: call.id, name: call.name, response: refused };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];
@@ -4965,6 +4966,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });
       }
       if (handle.pendingCallIds.has(id)) publish('toolResult', { ...projection, status, ...(handle.bargeInCallIds.has(id) ? { code: 'after_barge_in' } : {}) });
+      if (process.env['LUX_RESP_DEBUG'] === '1') process.stderr.write(`RESP ${id} ${JSON.stringify(responses[index]?.response)}\n`);
       this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;

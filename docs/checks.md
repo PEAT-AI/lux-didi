@@ -269,3 +269,13 @@ was said in, so travel or a host timezone change never moves it. The stop
 endpoint above also cancels every active series: it cancels the series row
 (never a silent row delete) together with the ringing and pending occurrences,
 so a stopped series is gone from `list_alarms` until the owner asks again.
+
+### Latency budget
+
+`scripts/check-latency-budget.sh` replays a plain turn, a one-tool turn, a two-tool batch and a silent
+continuation through the real host path, with a fake realtime transport and a fake connector carrying
+recorded synthetic timings, and judges every host-side segment against `config/latency-budgets.json`.
+Each budget is the recon's measured p50 for that segment plus a margin and says so in its `basis`. The
+eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
+receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
+itself a failure. No network, no model, well under two minutes.

@@ -464,6 +464,10 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
+/** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
+export const DEAD_AIR_CONTINUATION_MS = 2_500;
+/** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
+export const CONTINUATION_RE_REQUEST_NOTE = 'The lookup has finished. Answer the owner now from the results you already have. Do not look anything else up.';
 /** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
@@ -2407,8 +2411,11 @@ export class LiveSessionOwner {
    * was. Only the first audible frame, an owner barge-in or the turn's end clears it, and while it runs the response
    * watchdog stays out of its silence so one silence never has two timers on it.
    */
+  /** C-RESEARCH #107 (#719): one continuation re-request per debt clock, so a mute provider is not looped. */
+  readonly #continuationReRequested = new WeakSet<ActiveSession>();
   #armDebt(handle: ActiveSession, outputs: LiveToolResponse[], reason: 'tool_output' | 'recreate'): void {
     if (this.#settled(handle)) return;
+    this.#continuationReRequested.delete(handle);
     handle.debtOutputs = outputs;
     // #656: a clock that stood down for a tool call in flight re-anchors on that call's own output, so the model gets
     // the same eight seconds to speak its result as any other tool output. Every other output leaves a running clock
@@ -2546,6 +2553,19 @@ export class LiveSessionOwner {
     if (!postToolNoOutput && step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
       handle.debtDeferred = true;
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
+      return;
+    }
+    // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
+    // inside the rung, instead of being waited out to a dead-air rebuild.
+    if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
+      this.#continuationReRequested.add(handle);
+      let requested = false;
+      try {
+        const ask = handle.session.sendText;
+        if (typeof ask === 'function') { ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) }); requested = true; }
+      } catch { requested = false; }
+      hostLogEvent({ event: 'live_continuation_re_request', requested });
+      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');

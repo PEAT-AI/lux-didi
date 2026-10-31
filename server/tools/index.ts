@@ -783,7 +783,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');
-            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) return finish({ status: 'refused', reason: 'rule_mismatch', fixNotForSpeech: 'He said no repeat: call set_alarm once more for the same time with kind and weekdays omitted.' });
+            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) {
+              // A recurrence he never said spends nothing: the ask stands, so the retry this response names
+              // is the one-time alarm he asked for.
+              ownerRequests.failed(runId, name, requestTarget, ask.id);
+              return finish({ status: 'refused', reason: 'rule_mismatch', fixNotForSpeech: 'He said no repeat: call set_alarm once more for the same time with kind and weekdays omitted.' });
+            }
             if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });

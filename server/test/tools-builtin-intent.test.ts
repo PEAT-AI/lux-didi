@@ -432,6 +432,7 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true } } });
   f.send({ serverContent: { turnComplete: true } });
   await settled(() => granted() === 'no_owner_request');
+  owner.ownerRequests.answered(session.liveSessionId, 'How long should the block be?');
   const afterQuestion = granted();
   f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
   const allowed = await settled(() => granted() === 'allowed');

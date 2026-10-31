@@ -385,7 +385,12 @@ export class OwnerTasks implements OwnerTaskPort {
     const operation = task?.operations.filter(candidate => candidate.kind === kind).at(-1);
     return {
       ownerFinals: task?.finals ?? 0, requestAgeMs: task ? Math.max(0, Math.round(this.clock() - task.start)) : 0,
-      grantKind: kind, grantState: task === undefined ? 'absent' : operation === undefined ? 'absent' : operation.state,
+      grantKind: kind,
+      // An open is the round the task armed, not an operation: it is available while the round is
+      // unspent, spent once it opened something, and absent before any of his words armed it.
+      grantState: task === undefined ? 'absent'
+        : kind === 'open' ? (task.openGrant ? 'available' : task.openReceipts.size > 0 ? 'spent' : 'absent')
+        : operation === undefined ? 'absent' : operation.state,
     };
   }
 

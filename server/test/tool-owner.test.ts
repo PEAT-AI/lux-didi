@@ -932,8 +932,9 @@ const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
-const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ReturnType<typeof composeCall>, args: Record<string, unknown>, step = 1) => {
-  const grant = { tool: call.toolName, effect: 'write' as const, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId };
+type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
+const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ExecutableCall, args: Record<string, unknown>, step = 1) => {
+  const grant = { tool: call.toolName, effect: 'write' as const, accountId: call.accountId, resourceId: call.resourceId };
   if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
   const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
     registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },

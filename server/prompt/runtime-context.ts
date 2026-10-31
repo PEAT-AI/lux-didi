@@ -120,6 +120,21 @@ function label(y: number, m: number, d: number): string {
   return `${ymd({ y, m, d })} (${shortWeekdays[date.getUTCDay()]!})`;
 }
 
+/**
+ * #623: the group one Mongoose read tool belongs to, keyed on the endpoint whose catalogue serves it, so
+ * the persona is told she has company knowledge, numbers and customers from the served names themselves.
+ */
+const MONGOOSE_KNOWLEDGE_TOOLS: readonly string[] = ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started', 'check_data_capability'];
+const MONGOOSE_DATA_TOOLS: readonly string[] = ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields', 'ask_data_agent', 'data_agent_job'];
+const MONGOOSE_CRM_TOOLS: readonly string[] = ['get_company', 'list_inbound_leads', 'list_inbound_lead_events', 'summarize_email_engagements'];
+
+function mongooseToolGroup(name: string): string | undefined {
+  if (MONGOOSE_KNOWLEDGE_TOOLS.includes(name)) return 'company knowledge';
+  if (MONGOOSE_DATA_TOOLS.includes(name)) return 'company numbers';
+  if (MONGOOSE_CRM_TOOLS.includes(name)) return 'customers';
+  return undefined;
+}
+
 /** The human group names a set of granted tool names makes available. */
 export function toolGroupNames(toolNames: readonly string[]): string[] {
   const groups: string[] = [];
@@ -129,11 +144,11 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
-    else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');
+    else if (name === 'search_knowledge' || name === 'get_insight') add("Rob's private notes");
     else if (name === 'remember_note') add('memory');
-    else if (name.startsWith('ask_mongoose') || name.startsWith('search_mongoose') || name.startsWith('get_knowledge_item') || name.startsWith('read_knowledge_body')) add('company knowledge');
+    else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }
     // L8-10: the web read is a research source, so the session's own list names it when it can run.
-    else if (name === 'web_search') add('web search');
+    if (name === 'web_search') add('web search');
   }
   return groups;
 }
@@ -142,7 +157,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
 export function connectorGroupNames(connector: string): string[] {
   if (connector === 'google') return ['calendar', 'mail'];
   if (connector === 'mattermost') return ['team chat'];
-  if (connector === 'lux-knowledge') return ['knowledge base'];
+  if (connector === 'lux-knowledge') return ["Rob's private notes"];
   if (connector === 'mongoose') return ['company knowledge'];
   return [connector];
 }

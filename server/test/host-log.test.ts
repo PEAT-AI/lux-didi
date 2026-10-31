@@ -286,15 +286,22 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
 
-// #798: a refused write may name the scalar it refused, because a number or a boolean cannot be his words.
-test('#798 tool_arguments_rejected admits a key:number=value and a key:boolean=value, never free text', () => {
-  const line = (fields: string[]) => ({ event: 'tool_arguments_rejected', tool: 'create_event', fields, reason: 'schema_validation_failed' });
-  assert.deepEqual(safeEvent(line(['duration_minutes:number=1.5', 'all_day:boolean=true'])), line(['duration_minutes:number=1.5', 'all_day:boolean=true']));
-  assert.deepEqual(safeEvent(line(['summary:string_15', 'duration_minutes:number'])), line(['summary:string_15', 'duration_minutes:number']));
-  assert.equal(safeEvent(line(['summary:string=cardio with Zara'])), undefined, 'a text value is never admitted');
-  assert.equal(safeEvent(line(['summary:string_99999999'])), undefined, 'a length stays bounded');
-  assert.equal(safeEvent(line(['duration_minutes:number=1e400'])), undefined, 'only a plain decimal number is admitted');
-  assert.equal(safeEvent(line(['all_day:boolean=yes'])), undefined, 'a boolean is true or false');
+// C-ARGS: one line per rejected call, a `path:keyword` token per violation, together, never a value.
+test('C-ARGS tool_arguments_rejected carries path and keyword per violation and never a value', () => {
+  const line = (violations: string[]) => ({ event: 'tool_arguments_rejected', tool: 'mattermost_chat', violations, reason: 'schema_validation_failed' });
+  assert.deepEqual(safeEvent(line(['limit:range', 'from_date:format'])), line(['limit:range', 'from_date:format']), 'every violation is on the one line');
+  assert.deepEqual(safeEvent(line([])), line([]), 'a shape-only refusal names no rule');
+  assert.equal(safeEvent(line(['from_date:yesterday'])), undefined, 'a value is never admitted in the keyword place');
+  assert.equal(safeEvent(line(['limit:1e400'])), undefined, 'a number is not a keyword');
+  assert.equal(safeEvent(line(['summary:cardio with Zara'])), undefined, 'free text is refused');
+  assert.equal(safeEvent({ ...line(['limit:range']), fields: ['limit:number'] }), undefined, 'the shape-only key list is gone');
+});
+test('C-ARGS tool_arguments_normalized carries the dropped keys and a closed reason, never a value', () => {
+  const line = { event: 'tool_arguments_normalized', tool: 'mattermost_chat', dropped: ['channel:not_read', 'post_id:absent', 'zzz:undeclared'] };
+  assert.deepEqual(safeEvent(line), line);
+  assert.equal(safeEvent({ ...line, dropped: ['channel:maya'] }), undefined, 'a value is not a reason');
+  assert.equal(safeEvent({ ...line, dropped: ['channel:'] }), undefined, 'a reason is never empty');
+  assert.equal(safeEvent({ ...line, tool: 'mattermost chat' }), undefined);
 });
 
 test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {
@@ -776,4 +783,27 @@ test('C-MICWATCH: live_input_dead keeps a closed shape of the session and its ge
   assert.equal(safeEvent({ ...dead, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...dead, generation: -1 }), undefined, 'a negative generation is refused');
   assert.equal(safeEvent({ ...dead, liveSessionId: 'not-a-session' }), undefined, 'a malformed session id is refused');
+});
+
+// LAT-1022: the company-numbers source is a real SourceKind, and the closed set here had lost it. One source
+// outside the set refused the whole line, so every run receipt naming an unread `data` source was dropped
+// silently while research_source kept firing: four days of run-level latency with no run line at all.
+test('LAT-1022: a run receipt naming the company-numbers source still reaches host.log', () => {
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, unchecked: ['data'] }), { ...run, unchecked: ['data'] }, 'an unread company-numbers source is a source');
+  const read = { ...run, sources: [{ kind: 'data', disposition: 'completed', latencyMs: 40 }] };
+  assert.deepEqual(safeEvent(read), read, 'a company-numbers read is named in the run receipt');
+});
+
+// LAT-1022: a source receipt carries its own start instant, so two reads of one run can be proven to overlap
+// from the log alone. A count only, on the clock its `ms` was measured on.
+test('LAT-1022: a research_source receipt carries its start instant', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, startedAt: 1_700_000_000_000 }), { ...source, startedAt: 1_700_000_000_000 }, 'the start instant is kept');
+  assert.equal(safeEvent({ ...source, startedAt: 12.5 }), undefined, 'a fractional instant is refused');
+  assert.equal(safeEvent({ ...source, startedAt: -1 }), undefined, 'a negative instant is refused');
 });

@@ -1,0 +1,211 @@
+{
+  "about": "D7: one owner question, a start, then repeated continues as one host job; a 12-to-17-call turn.",
+  "scenarios": [
+    {
+      "id": "research-start-and-continues",
+      "why": "The owner's one question starts one job; each continue attaches to it instead of spending the turn's budget.",
+      "researchWeb": true,
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "What is the state of the synthetic bridge, and when did each synthetic decision land?"
+      ],
+      "steps": [
+        {
+          "tool": "research",
+          "args": {
+            "action": "start",
+            "question": "What is the state of the synthetic bridge?",
+            "topic": "synthetic bridge",
+            "sources": "knowledge"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "research budget at the base is spent per turn: every continue after the first answer is admitted false with reason turn_spent (server/tools/research.ts admission), so a start plus repeated continues cannot run as one host-owned job. C-RESEARCH/D6 fix this."
+      }
+    },
+    {
+      "id": "research-twelve-call-turn",
+      "why": "A turn with twelve research calls is one job, accounted once, and never replenished by a rebuild.",
+      "researchWeb": true,
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "Work through the synthetic bridge history for me, every change, then tell me."
+      ],
+      "steps": [
+        {
+          "tool": "research",
+          "args": {
+            "action": "start",
+            "question": "Work through the synthetic bridge history.",
+            "topic": "synthetic bridge",
+            "sources": "knowledge"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "research budget at the base is spent per turn: every continue after the first answer is admitted false with reason turn_spent (server/tools/research.ts admission), so a start plus repeated continues cannot run as one host-owned job. C-RESEARCH/D6 fix this."
+      }
+    }
+  ]
+}

@@ -199,8 +199,8 @@ export const RESEARCH = Object.freeze({
    */
   knowledgeQueryTerms: 10,
   /**
-   * K2: a search snippet stays short, and the body a hit is opened for is shown at three thousand
-   * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
+   * K2: a search snippet stays short. 3r K1: the body the search asks for is this window, the server's
+   * default, so a hit arrives as text the owner can be read without a get_insight round trip.
    */
   knowledgeBodyChars: 2_000,
   /**
@@ -332,7 +332,7 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window', 'read_ceiling'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
@@ -345,6 +345,9 @@ function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory';
 
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+  /** LAT-1022: the read's start instant on the same monotonic clock `ms` was measured on, so two sources of
+   *  one run can be proven to overlap from the log alone. A count, never a query. */
+  startedAt?: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
   plan?: 'knowledge_only' | 'named_sources';
   deadlineMs: number;
@@ -1938,8 +1941,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
     const words = asked !== '' ? asked : (topicText ?? '').trim();
     if (words === '' || !config.configured.includes('data')) return [];
-    const metric = companyMetricSubs(words, config.question, config.nowMs ?? Date.now());
-    return 'refusal' in metric ? [] : metric.subs;
+    const metric = companyMetricSubs(config.question ?? words);
+    return metric.subs;
   }
   if (kind === 'company_search') {
     // #639: the company read is the typed lookup's own read, on the topic's words and its mode, so the
@@ -1947,7 +1950,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
     const words = asked !== '' ? asked : (topicText ?? '').trim();
     if (words === '' || !config.configured.includes('mongoose')) return [];
-    return companySubs(words);
+    return companySubs(words, config.question ?? '');
   }
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
@@ -2100,6 +2103,8 @@ export interface RunState {
   previousCallAt?: number;
   /** #575: finding texts this session already delivered, shared by every run of the session. */
   deliveredFindings: Set<string>;
+  /** G2: the data agent job this run opened, so a `needs_reply` clarification is answered in the same task. */
+  dataJob?: { jobId: string; awaitingOwner: boolean } | undefined;
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>; historyMore: Set<string>;
@@ -2466,6 +2471,8 @@ export interface ResearchDeps {
   calendarDigest?: (() => string | undefined) | undefined;
   /** WEB: the public web read. Present means the web part is configured; absent means it is not offered. */
   web?: WebSearchPort | undefined;
+  /** C-RESEARCH #107: the job's remaining provider reads, so a web read past the ceiling is never dispatched. */
+  readsLeft?: (() => number) | undefined;
   /**
    * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
    * once instead of spending its deadline on sub-calls that cannot reach a stopped connector. P5: an
@@ -3003,7 +3010,7 @@ export function clip(text: string, max: number): string {
  */
 
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window' | 'read_ceiling';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -3022,6 +3029,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
+  // C-RESEARCH #107: the task's own read ceiling stopped this source before it was read.
+  read_ceiling: label => `${label} was cut by this task's read ceiling before I read it`,
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
   timed_out: (label, source) => `${label} did not answer within ${Math.round(RESEARCH.sourceDeadline[source] / 1000)} seconds`,
   still_reading: label => `I am still reading ${label}`,
@@ -3049,6 +3058,7 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
   // #635: a timeout says it timed out, whatever the connector called it.
+  if (text === 'read_ceiling') return 'read_ceiling';
   if (/timeout|timed_out/u.test(text)) return 'timed_out';
   if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
   return 'provider_failed';
@@ -3464,6 +3474,14 @@ function metricRowLines(text: string): string[] {
 
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'company_metric') {
+    // G2: the data agent answers with a job. Its own status line leads, and the number, ranking,
+    // definition and assumptions travel exactly as the endpoint returned them, never recomputed here.
+    const job = results.filter(result => result.ok && /^job \S+ status=/mu.test(result.text));
+    if (job.length > 0) {
+      const lines = job.flatMap(result => result.text.split('\n').filter(line => line.trim() !== ''));
+      const answer = lines.length > 1 ? clip(lines.slice(1).join(' '), RESEARCH.openedBodyChars) : '';
+      return { text: `${SOURCE_LABEL.data}: ${[lines[0]!, answer].filter(value => value !== '').join(' | ')}`, source: 'data', lines, total: lines.length };
+    }
     // W3: a number never travels alone. The newest dated row leads, so the answer says "about 2,400 on
     // 25 October, the latest day loaded" instead of a figure with no day under it.
     const lines = results.filter(result => result.ok).flatMap(result => metricRowLines(result.text));
@@ -3689,7 +3707,11 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.mailRead: return 'mail';
     case HISTORY_IDENTITY.name: return 'memory';
     case INTERNAL.mongooseSearch: return 'mongoose';
-    // W3: the data endpoint's two reads belong to the numbers source, never to company knowledge.
+    // G2: the knowledge endpoint's capability router answers a company question.
+    case INTERNAL.mongooseDataCapability: return 'mongoose';
+    // G2: the data endpoint's agent and its job read belong to the numbers source, never to company knowledge.
+    case INTERNAL.askDataAgent:
+    case INTERNAL.dataAgentJob:
     case INTERNAL.mongooseSearchFields:
     case INTERNAL.mongooseMetricQuery: return 'data';
     case INTERNAL.driveSearch:
@@ -4515,18 +4537,23 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
 }
 
 /**
- * W3-R1: the count metrics the data endpoint serves, in the published shape the live fixture carries.
- * A metric question is one `search_fields` for the field names and one `run_metric_query` for the rows.
+ * G2: the coverage words the data endpoint's capability router answers before any other read: an
+ * unfamiliar country, a district granularity, a forecast or nowcast, a call-level question, an unsupported
+ * crop, or a company the corpus does not know. The brief names them from the served shape's own list.
  */
-const COMPANY_METRICS: readonly {
-  words: RegExp; exploreName: string; metric: string; dateField: string; countryField: string;
-}[] = [{
-  words: /\b(?:active users?|users?|dau|daily active|monthly active)\b/iu,
-  exploreName: 'active_users_daily',
-  metric: 'active_users_daily_n_active_users',
-  dateField: 'active_users_daily_event_date_day',
-  countryField: 'active_users_daily_country',
-}];
+const COVERAGE_ASK = /\b(?:forecast|nowcast|call[- ]level|calls?\b|district|admin[- ]level|sub-?district|crop|coverage|available|unfamiliar|do (?:we|you) (?:have|cover))\b/iu;
+
+/** The one capability question the router takes, built only from what the owner's own words name. */
+function capabilityArgs(question: string): JsonObject {
+  const country = metricCountryOf(question);
+  return {
+    ...(country === undefined ? {} : { countries: [country] }),
+    ...(/\bforecast/iu.test(question) ? { needs_forecast: true } : {}),
+    ...(/\bnowcast/iu.test(question) ? { needs_nowcast: true } : {}),
+    ...(/\bcalls?\b|call[- ]level/iu.test(question) ? { needs_call_history: true } : {}),
+    ...(/\bdistrict|admin[- ]level/iu.test(question) ? { admin_level: 'district' } : {}),
+  };
+}
 
 /** The country the owner named, spelled as the owner spelled it, or none when the ask names no place. */
 function metricCountryOf(question: string): string | undefined {
@@ -4648,43 +4675,31 @@ export function metricWindow(question: string, nowMs: number): MetricWindow | un
 }
 
 /**
- * W3-R1: the data read of one count question. `search_fields` names the fields, `run_metric_query` asks
- * for the rows, both in the exact published argument shape of the live fixture. A count with no date
- * dimension and no date filter is refused here with the closed code, never dispatched as an all-time sum.
+ * G2: the data read of one business, KPI or metric question. The served shape has one entry point,
+ * `ask_data_agent`, which takes the owner's question verbatim; the retired Lightdash field search and
+ * metric query are not on this route at all, so there is no fallback for them to answer from.
  */
-export function companyMetricSubs(query: string, question: string, nowMs: number): { subs: IntentSubCall[] } | { refusal: 'count_needs_date_window' } {
-  const metric = COMPANY_METRICS.find(entry => entry.words.test(query) || entry.words.test(question)) ?? COMPANY_METRICS[0]!;
-  const window = metricWindow(question, nowMs);
-  if (window === undefined) return { refusal: 'count_needs_date_window' };
-  const country = metricCountryOf(question);
-  const where = country ?? 'all countries';
-  const dimensions = [
-    ...(country === undefined ? [] : [{ fieldId: metric.countryField, operator: 'equals', values: [country] }]),
-    { fieldId: metric.dateField, operator: 'inBetween', values: [window.start, window.end] },
-  ];
-  return { subs: [
-    { key: 'm0', name: INTERNAL.mongooseSearchFields, args: { patterns: [query.trim()], exploreName: metric.exploreName } },
-    { key: 'm1', name: INTERNAL.mongooseMetricQuery, args: {
-      title: `${where} daily active users ${window.start} to ${window.end}`,
-      description: `Daily active users ${country === undefined ? '' : `in ${country} `}per day from ${window.start} to ${window.end}.`,
-      queryConfig: {
-        exploreName: metric.exploreName,
-        metrics: [metric.metric],
-        dimensions: [metric.dateField],
-        filters: { dimensions, type: 'and' },
-        sorts: [{ fieldId: metric.dateField, descending: true }],
-        limit: 10,
-      },
-    } },
-  ] };
+export function companyMetricSubs(question: string): { subs: IntentSubCall[] } {
+  return { subs: [{ key: 'm0', name: INTERNAL.askDataAgent, args: { question } }] };
+}
+
+/** G2: the owner's own answer to a `needs_reply` clarification, sent back to the job that asked for it. */
+export function dataReplySubs(jobId: string, ownerWords: string): IntentSubCall[] {
+  return [{ key: 'm0', name: INTERNAL.dataAgentJob, args: { job_id: jobId, op: 'reply', text: ownerWords } }];
 }
 
 /**
  * The company lookup: one search, and for a question one read of the top hit's ref, so the finding
- * carries the entity behind the answer instead of a title alone.
+ * carries the entity behind the answer instead of a title alone. A depth ask reads that body at full depth
+ * and follows the server's own cursor until the coverage is complete or the page budget ends it.
  */
-function companySubs(query: string): IntentSubCall[] {
-  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
+export function companySubs(query: string, question = ''): IntentSubCall[] {
+  // G2: a coverage question asks the deterministic capability router first, on the knowledge endpoint,
+  // and only then reads the corpus, so an unavailable capability is never answered as if it existed.
+  const coverage: IntentSubCall[] = COVERAGE_ASK.test(question)
+    ? [{ key: 'cap0', name: INTERNAL.mongooseDataCapability, args: capabilityArgs(question) }]
+    : [];
+  return [...coverage, { key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
 }
 
 /** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */
@@ -4771,14 +4786,15 @@ function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedRea
 function routedReadUnfiltered(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
-  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
+  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query, context.question) };
   if (lookup.source === 'data') {
-    // W3-R1: the numbers source is the data endpoint's field search and one metric query. A count with
-    // no date window settles refused under its own closed code and the one-line repair.
-    const metric = companyMetricSubs(query, context.question, context.now());
-    return 'refusal' in metric
-      ? { source: 'data', kind: 'company_metric', subs: [], unresolved: true, reason: metric.refusal }
-      : { source: 'data', kind: 'company_metric', subs: metric.subs };
+    // G2: the numbers source is the data endpoint's own agent, on the owner's question verbatim, and
+    // its job read when the agent asks something back.
+    const pending = context.run.dataJob;
+    if (pending?.awaitingOwner === true) {
+      return { source: 'data', kind: 'company_metric', subs: dataReplySubs(pending.jobId, context.question) };
+    }
+    return { source: 'data', kind: 'company_metric', subs: companyMetricSubs(context.question).subs };
   }
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
@@ -4850,6 +4866,9 @@ interface RoutedOutcome {
   bodyOnly?: boolean;
   lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
+  /** LAT-1022: the instant this read was dispatched on the run's clock, captured once and passed to the
+   *  receipt. The receipt's start is this value, never a duration subtracted from the clock afterwards. */
+  startedAt?: number;
   /** E5: the mail queries this read ran, so the receipt carries their shape and the reply their words. */
   mail?: MailQueryInfo;
   /** Release 4: the pages this read lost after it had already delivered, so the receipt says partial. */
@@ -5349,6 +5368,10 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
     if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
     const query = bound.query;
     const readStarted = now();
+    if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+      run.unavailableReasons.set('web', 'read_ceiling');
+      return { plan };
+    }
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
     recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
@@ -5658,7 +5681,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
     for (const outcome of batch) {
       logLookup({
-        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
+        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }), ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
@@ -5706,7 +5729,11 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   try {
     try {
       await Promise.all([...groups.values()].map(async plans => {
+        // LAT-1022: one clock read at dispatch, stamped on every read this group sends, so the source receipt's
+        // start instant is the one the read really had.
+        const dispatchedAt = now();
         const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
+        for (const outcome of batch) outcome.startedAt ??= dispatchedAt;
         record(batch);
         outcomes.push(...batch);
         // #621: a source that matched nothing gets exactly one broadened retry inside this same call, so the
@@ -5714,7 +5741,9 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const retryPlans = broadenedPlans(run, plans, readContext);
         if (retryPlans !== undefined && batch.every(outcome => outcome.outcome === 'empty')) {
           run.retried.add(retryPlans[0]!.read.source as SourceKind);
+          const retriedAt = now();
           const retried = await routedGroup(deps, run, retryPlans, { question, configured, unavailable, unavailableReason, signal, now });
+          for (const outcome of retried) outcome.startedAt ??= retriedAt;
           record(retried);
           outcomes.push(...retried);
         }
@@ -6083,9 +6112,12 @@ function hitTitleWords(line: string): string[] {
  * C-POLISH10: whether the leg may open one hit's body without being asked. An unprompted open costs a round trip,
  * so it takes a hit the ranker scored at or above the floor AND whose title or tags share a content word with the
  * ask; the decision is reported as closed fields, a bucket and a reason, never the ask or the title.
+ * The score is the ranker's own, taken from the confidence the shape carried off the reply header
+ * (`_confidence: medium · mode: reranked · top score: 0.37 · relevant candidate: yes_`). The shaped text has
+ * that line stripped, so parsing the text alone left every real decision at bucket=unknown.
  */
-function autopenVerdict(text: string, ask: string, candidates: readonly string[]): { ids: string[]; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
-  const confidence = knowledgeConfidenceOf(text.split('\n'));
+function autopenVerdict(text: string, carried: KnowledgeConfidence | undefined, ask: string, candidates: readonly string[]): { ids: string[]; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
+  const confidence = carried ?? knowledgeConfidenceOf(text.split('\n'));
   const scored = Number(confidence?.top ?? '');
   const bucket = Number.isFinite(scored) && scored > 0
     ? (scored >= 0.6 ? 'high' : scored >= RESEARCH.knowledgeAutopenScore ? 'medium' : 'low')
@@ -6100,6 +6132,48 @@ function autopenVerdict(text: string, ask: string, candidates: readonly string[]
   });
   if (ids.length === 0) return { ids: [], bucket, reason: 'no_overlap' };
   return { ids, bucket };
+}
+
+/**
+ * G2: the one line a data agent job answers with, read back off its own projection. An ask without the line
+ * is not a job and is left exactly as it arrived.
+ */
+const DATA_JOB_LINE = /^job (\S+) status=(running|needs_reply|answered|failed)\b/mu;
+
+function dataJobOf(text: string): { jobId: string; status: 'running' | 'needs_reply' | 'answered' | 'failed' } | undefined {
+  const match = DATA_JOB_LINE.exec(text);
+  if (match?.[1] === undefined) return undefined;
+  return { jobId: match[1], status: match[2] as 'running' | 'needs_reply' | 'answered' | 'failed' };
+}
+
+/**
+ * G2: the data endpoint's agent answers with a job. A job still running is read again inside the same round
+ * and inside the source budget; a job waiting on the owner is remembered on the run, so the owner's next
+ * words go back to it with `op reply` instead of the question being asked from scratch.
+ */
+async function withDataAgentJob(
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+  run: RunState, results: readonly IntentSubResult[], signal: AbortSignal,
+  boundMs: number = RESEARCH.knowledgeReadMs,
+): Promise<IntentSubResult[]> {
+  const asked = results.find(result => result.ok && (result.name === INTERNAL.askDataAgent || result.name === INTERNAL.dataAgentJob));
+  if (asked === undefined) return [...results];
+  const first = dataJobOf(asked.text);
+  if (first === undefined) return [...results];
+  const deadline = Date.now() + boundMs;
+  let current = asked;
+  // `op get` waits up to 25 s on the server; two reads cover a job that was still running on the first.
+  for (let attempt = 0; attempt < 2 && dataJobOf(current.text)?.status === 'running'; attempt += 1) {
+    if (Date.now() >= deadline) break;
+    const next = await execute([{ key: asked.key, name: INTERNAL.dataAgentJob, args: { job_id: first.jobId, op: 'get' } }], signal);
+    const page = next[0];
+    if (page === undefined || !page.ok) break;
+    current = { ...page, key: asked.key };
+  }
+  const settled = dataJobOf(current.text);
+  if (settled?.status === 'needs_reply') run.dataJob = { jobId: settled.jobId, awaitingOwner: true };
+  else if (settled !== undefined) run.dataJob = undefined;
+  return results.map(result => (result === asked ? current : result));
 }
 
 /**
@@ -6119,7 +6193,7 @@ async function withFullEntries(
   if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
   // C-POLISH10: an open nobody asked for is decided here, on the ranker's score and on the hit's own title, so an
   // unrelated entry is never opened and injected. The line carries the decision and a bucket, never the words.
-  const verdict = autopenVerdict(searched.text, question, knowledgeReadIds(searched.text, asked));
+  const verdict = autopenVerdict(searched.text, searched.knowledgeConfidence, question, knowledgeReadIds(searched.text, asked));
   hostLogEvent({ event: 'knowledge_autopen', decision: verdict.ids.length > 0 ? 'opened' : 'skipped', bucket: verdict.bucket, reason: verdict.reason ?? 'none' });
   if (verdict.ids.length === 0) return [...results];
   const ids = verdict.ids;
@@ -6145,7 +6219,15 @@ async function withFullEntries(
         bodies.set(open, `${bodies.get(open)!}\n${line.trim()}`);
       }
     }
-    for (const [id, body] of bodies) bodies.set(id, body.slice(0, RESEARCH.knowledgeBodyChars));
+    // Budget item G4: the stage-two body follows the reply budget, never a per-hit cut below what the
+    // reply can still carry. A long document keeps its tail while readReplyChars is left; the last entry
+    // that overruns is cut at the remaining budget and says so with the existing cut line.
+    let remaining = RESEARCH.readReplyChars;
+    for (const [id, body] of bodies) {
+      const keep = Math.min(body.length, Math.max(0, remaining));
+      bodies.set(id, body.slice(0, keep));
+      remaining -= keep;
+    }
     if (bodies.size === 0) { run.knowledgeFetchCut = true; return [...results]; }
     const enriched = searched.text.split('\n').map(line => {
       const id = hitIdOf(line);
@@ -6335,6 +6417,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // C-DEPTH item 3 (W10-R7): this is the one place every read passes through, so the summaries are enriched
       // with the full bodies of the hits that matter here, batched once, inside the same round.
       results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
+      // G2: a data agent job still running is read again here, and a job waiting on the owner is remembered
+      // for the rest of this task, before the reply and the progress steps read the findings.
+      results = await withDataAgentJob(executeSource, run, results, progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = [...await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat)];
@@ -6646,13 +6731,16 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const startSources = allSources.filter(source => !unavailable.includes(source));
           const deadSources = allSources.filter(source => unavailable.includes(source));
           const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
+          // LAT-1022: the instant this read was asked for, read once, so a source that never ran still names the
+          // start it was given instead of a second clock read.
+          const unavailableAt = now();
           for (const source of startSources) {
             first.reading.add(source);
           }
           for (const source of deadSources) {
             run.unavailableReasons.set(source, unavailableReason(source));
             run.sourcesFailed.add(source);
-            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
+            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, startedAt: unavailableAt, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
           }
           if (startSources.length === 0) return;
           // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
@@ -6716,6 +6804,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               const readStarted = now();
               const bound = bindResearchQuery(String(call.args['query'] ?? ''), `${deps.queryContext?.() ?? ownerWords} ${[...run.evidence.values()].join(' ')}`);
               if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
+              if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+                run.unavailableReasons.set('web', 'read_ceiling');
+                return empty;
+              }
               const outcome = await deps.web!.search({ query: bound.query, signal: readSignal, deadlineMs: webDeadlineMs(bound.query) });
               recordWebRead(deps, run, bound.query, outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
@@ -6848,6 +6940,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
+              startedAt: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? knowledgeStartedAt : at,
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
               ...(part.source === 'chat' ? chatReceiptField(served, part.results) : {}),
@@ -7618,6 +7711,15 @@ export class ResearchScheduler {
       this.#deps.logJoined?.(target.id, 'continue');
       return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
     }
+    // C-RESEARCH #107: a continue that names no run attaches to the job this session already answered from,
+    // so it returns that job's next portion or its cached terminal result instead of opening a new operation.
+    if (call.action === 'continue' && call.researchId === undefined) {
+      const answered = this.#deps.ledger.last()?.researchId;
+      if (answered !== undefined) {
+        this.#deps.logJoined?.(answered, 'status');
+        return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));
+      }
+    }
     // Zero or several pending runs: current behaviour.
     if (call.action === 'stop') {
       const run = this.#deps.ledger.stop(call.researchId);
@@ -7714,7 +7816,8 @@ export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonO
 }
 export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
-export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
+/** C-RESEARCH #107: `attach` says the call joins the job that already owns this owner question. */
+export type AdmissionVerdict = { admitted: true; attach?: boolean } | { admitted: false; reason: AdmissionBlockReason };
 
 /**
  * C-LIVE behaviour 1: each finalized owner turn grants one research operation. `start` or an admitted `continue`
@@ -7722,6 +7825,26 @@ export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: A
  * the owner's own finalized words call `ownerTurn`: transcripts in progress, her audio, host nudges, rebuilds and
  * tool results grant nothing. One instance lives for the whole live session, across provider generations.
  */
+/** C-RESEARCH #107: the provider-read ceiling for one owner task, one budget shared by every connector. */
+export const RESEARCH_READ_CEILING = 12;
+/** C-RESEARCH #107: the one line a source reads when the task's read ceiling stopped it before it was read. */
+export const RESEARCH_READ_CEILING_NOTE = 'research read ceiling reached for this task: this source was cut before it was read';
+/** C-RESEARCH #107: the host assigns a question its identity from the owner's words, never from the model's. */
+export function ownerQuestionKey(question: string): string { return [...questionTerms(question)].sort().join(' '); }
+/**
+ * C-RESEARCH #107: a model paraphrase of the same owner ask attaches to the same job. The shorter term set must
+ * be fully contained and may differ by one word, so "Acme Seeds revenue" never attaches to "who owns Acme Seeds".
+ */
+export function sameOwnerQuestion(a: string, b: string): boolean {
+  const left = questionTerms(a);
+  const right = questionTerms(b);
+  if (left.size === 0 || right.size === 0) return left.size === right.size;
+  const smaller = left.size <= right.size ? left : right;
+  const larger = smaller === left ? right : left;
+  for (const term of smaller) if (!larger.has(term)) return false;
+  return larger.size - smaller.size <= 1;
+}
+
 export class ResearchAdmission {
   #turns = 0;
   #grant: number | undefined;
@@ -7735,7 +7858,32 @@ export class ResearchAdmission {
   #answered = false;
   /** #1028 behaviour 3: the questions this owner turn already started, so two different asks both run. */
   #starts: string[] = [];
-  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: the one host-owned job the current owner question owns, stable across a provider rebuild. */
+  #job: { id: string; key: string; question: string } | undefined;
+  #jobs = 0;
+  /** C-RESEARCH #107: provider reads this job has spent, shared across every connector. */
+  #reads = 0;
+  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; this.#job = undefined; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: a new owner question opens a job with a fresh read budget inside the ceiling. */
+  #openJob(question: string): void {
+    this.#jobs += 1;
+    this.#job = { id: `job-${this.#jobs}`, key: ownerQuestionKey(question), question };
+    this.#reads = 0;
+  }
+  /** C-RESEARCH #107: the job the current owner question owns; a rebuild never reopens or replaces it. */
+  jobId(): string | undefined { return this.#job?.id; }
+  jobQuestion(): string | undefined { return this.#job?.question; }
+  /**
+   * C-RESEARCH #107: take provider reads from this job's ceiling. The ceiling is one budget shared by every
+   * connector, it outlives a provider rebuild (this object does) and only a new owner question refills it.
+   */
+  takeReads(count: number): number {
+    const allowed = Math.max(0, Math.min(count, RESEARCH_READ_CEILING - this.#reads));
+    this.#reads += allowed;
+    return allowed;
+  }
+  readsLeft(): number { return Math.max(0, RESEARCH_READ_CEILING - this.#reads); }
+  readsSpent(): number { return this.#reads; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
@@ -7747,28 +7895,33 @@ export class ResearchAdmission {
     if (action === 'continue' && sameRun) return { admitted: true };
     if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    // C-RESEARCH #107: a continue attaches to the job that is already running (the scheduler waits for it) or
+    // returns that job's cached terminal result. It starts no work, spends no grant and is never refused.
+    if (action === 'continue') return { admitted: true };
     // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
-    if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
-    if (action === 'start') {
-      // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
-      // two research operations. A third, a repeat of the same question, a start after this turn's answer
-      // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
-      const asked = question.trim().toLowerCase();
-      const distinct = asked !== '' && !metaOnlyQuestion(asked);
-      if (this.#grant === this.#turns) {
-        this.#starts.push(distinct ? asked : '');
-        this.#grant = undefined;
-        return { admitted: true };
-      }
-      if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
-        return { admitted: false, reason: 'turn_spent' };
-      }
-      this.#starts.push(asked);
+    if (this.#answered) return { admitted: false, reason: 'answer_already_given' };
+    const asked = question.trim().toLowerCase();
+    const distinct = asked !== '' && !metaOnlyQuestion(asked);
+    // C-RESEARCH #107: a model paraphrase of this job's own owner ask attaches to that job, not a new one.
+    if (this.#job !== undefined && distinct && sameOwnerQuestion(question, this.#job.question)
+      && (this.#grant !== this.#turns || this.#starts.includes(asked) || this.#starts.length >= 2)) {
+      return { admitted: true, attach: true };
+    }
+    // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
+    // two research operations. A third, a repeat of the same question, a start after this turn's answer
+    // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
+    if (this.#grant === this.#turns) {
+      this.#starts.push(distinct ? asked : '');
+      this.#grant = undefined;
+      if (distinct) this.#openJob(question);
       return { admitted: true };
     }
-    if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
-    if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
-    this.#grant = undefined;
+    if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
+      return { admitted: false, reason: 'turn_spent' };
+    }
+    this.#starts.push(asked);
+    // C-RESEARCH #107: a different ask in the same turn is its own job, with its own read budget.
+    if (distinct) this.#openJob(question);
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */

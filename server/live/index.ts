@@ -1,6 +1,7 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
+import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -16,7 +17,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -81,9 +82,9 @@ import { ALARM_MODE_MARKER } from './types.js';
 import type { SeriesAlarmSetup } from './types.js';
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
-  const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
+  const overview = reminder && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
   const series = input.series?.trim();
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder first, in your own words, as the first thing you say: ${JSON.stringify(reminder)}. One sentence that names ${JSON.stringify(input.ownerDisplayName)}, states ${JSON.stringify(input.scheduledTime)} and gives the reminder in your own voice, like "${input.ownerDisplayName}, it is ${input.scheduledTime}: ${reminder}".` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -464,7 +465,30 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
-/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
+/** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
+export const DEAD_AIR_CONTINUATION_MS = 2_500;
+/** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
+export const CONTINUATION_RE_REQUEST_NOTE = 'The lookup has finished. Answer the owner now from the results you already have. Do not look anything else up.';
+
+
+/**
+ * C-RESEARCH #107: the one place a research provider read is charged. The ceiling belongs to the owner task on
+ * the admission object, so it is shared by every connector and a provider rebuild cannot refill it. Reads past
+ * the ceiling are never dispatched and come back as a cut read that names its cause.
+ */
+export function budgetedReads(
+  admission: { takeReads(count: number): number },
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+): (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]> {
+  return async (subs, signal) => {
+    const allowed = admission.takeReads(subs.length);
+    if (allowed >= subs.length) return execute(subs, signal);
+    const kept = allowed === 0 ? [] : await execute(subs.slice(0, allowed), signal);
+    const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false,
+      text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
+    return [...kept, ...cut];
+  };
+}/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
@@ -474,7 +498,8 @@ export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault']]);
+const OWNER_WRITE_RESOURCES = new Map<string, string>([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault'],
+  ...COMPOSE_NAMES.map(name => [name, COMPOSE_IDENTITY.resourceId] as [string, string])]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
@@ -584,6 +609,17 @@ export function claimsWithoutCall(input: { text: string; writeRefused: boolean; 
   if (input.toolSeen) return false;
   return announcesLookup(input.text) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(input.text)
     || claimsRetryWithoutCall(input.text, input.writeRefused);
+}
+/**
+ * C-ARGS/D5: a turn whose lookup was rejected or failed ran nothing, so a claim that a result was empty or
+ * that nothing was found is a claim about a read that never happened. The outcome is the claim guard's own:
+ * one correction line, once, and the owner is never told an empty result stood where nothing ran.
+ */
+/** C-ARGS: the one fixed correction for an empty-result claim made over a lookup that never ran. */
+export const EMPTY_RESULT_CLAIM_LINE = 'Correction: nothing ran, so there is no result. Say plainly that the lookup was not made, and never that it came back empty.';
+export const EMPTY_RESULT_CLAIM = /\b(?:(?:came|comes|come) back empty|empty results?|(?:nothing|none) (?:was )?found|found nothing|no results?|nothing came back)\b/iu;
+export function claimsEmptyResult(text: string, lookupFailed: boolean): boolean {
+  return lookupFailed && EMPTY_RESULT_CLAIM.test(text);
 }
 /**
  * C-TURN8: no tool that reads or writes the owner's own data runs before his first word. Research keeps its own
@@ -736,6 +772,9 @@ interface ActiveSession {
   lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
+  /** LAT-1022: when the capture path declared the owner's speech over, on this host's own clock, so the final's
+   *  own line can say how long after it the transcript landed. Cleared when the turn's input starts again. */
+  speechEndAt?: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
   audioResponseId?: string | undefined;
@@ -763,6 +802,8 @@ interface ActiveSession {
   answeredWords?: string | undefined;
   /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
   claimWriteRefused: boolean;
+  /** C-ARGS: a lookup this owner turn was rejected on or failed, so an empty-result claim has nothing behind it. */
+  claimLookupFailed: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -1454,6 +1495,7 @@ export class LiveSessionOwner {
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
     handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
     return this.get(handle.liveSessionId);
@@ -1763,8 +1805,10 @@ export class LiveSessionOwner {
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
-      const missedNote = missedAlarms.length ? '\n\n[missed alarm] Briefly mention the missed alarm times: ' + missedAlarms.map(alarm => new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))).join(', ') + '.' : '';
+      const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
+      // #107: a missed alarm is said once, in her own words, with its time and what it was for.
+      const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '
+        + missedAlarms.map(alarm => `${new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))} ${JSON.stringify(String(alarm.label ?? ''))}`).join('; ') + '.' : '';
       for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
@@ -1784,6 +1828,8 @@ export class LiveSessionOwner {
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
     if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
+    // #107: the alarm block is in this new session's accepted prompt, so the announcement is made.
+    if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_announced', alarmId: input.alarm.alarmId, mode: 'new_session' });
     this.#armExpiry();
     return snapshot;
   }
@@ -2112,7 +2158,7 @@ export class LiveSessionOwner {
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
-      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false,
+      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false, claimLookupFailed: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2407,8 +2453,11 @@ export class LiveSessionOwner {
    * was. Only the first audible frame, an owner barge-in or the turn's end clears it, and while it runs the response
    * watchdog stays out of its silence so one silence never has two timers on it.
    */
+  /** C-RESEARCH #107 (#719): one continuation re-request per debt clock, so a mute provider is not looped. */
+  readonly #continuationReRequested = new WeakSet<ActiveSession>();
   #armDebt(handle: ActiveSession, outputs: LiveToolResponse[], reason: 'tool_output' | 'recreate'): void {
     if (this.#settled(handle)) return;
+    this.#continuationReRequested.delete(handle);
     handle.debtOutputs = outputs;
     // #656: a clock that stood down for a tool call in flight re-anchors on that call's own output, so the model gets
     // the same eight seconds to speak its result as any other tool output. Every other output leaves a running clock
@@ -2548,6 +2597,17 @@ export class LiveSessionOwner {
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
     }
+    // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
+    // inside the rung, instead of being waited out to a dead-air rebuild.
+    if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
+      this.#continuationReRequested.add(handle);
+      try {
+        const ask = handle.session.sendText;
+        if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
+      } catch { /* a closed transport settles on its own */ }
+      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
+      return;
+    }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
@@ -2649,7 +2709,7 @@ export class LiveSessionOwner {
   /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
   #resetClaimCheck(handle: ActiveSession): void {
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false;
+    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false; handle.claimLookupFailed = false;
     handle.answeredWords = undefined;
   }
 
@@ -2659,16 +2719,20 @@ export class LiveSessionOwner {
    * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
+    // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
+    // and the call it names did run, so the toolSeen silence does not apply to it.
+    const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
     const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
+    if (!(emptyResult || claim) || handle.claimCorrected || handle.muted || (handle.claimToolSeen && !emptyResult)) return;
     handle.claimTimer = this.#schedule(() => {
       handle.claimTimer = undefined;
-      if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
+      if (this.#settled(handle) || handle.inputFinal === false || handle.muted) return;
+      if (handle.claimToolSeen && !emptyResult) return;
       handle.claimCorrected = true;
       hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
-      try { handle.session.sendText({ text: hostNote(CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
+      try { handle.session.sendText({ text: hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
     }, CLAIM_WITHOUT_CALL_MS);
   }
 
@@ -2888,7 +2952,13 @@ export class LiveSessionOwner {
     // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
     if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }
     if (type === 'waitingForInput') { if (event.value === false) this.#armWatchdog(handle); return; }
-    if (type === 'modelTurnStarted') { this.#armWatchdog(handle); return; }
+    if (type === 'modelTurnStarted') {
+      // LAT-1022: the adapter's voice-activity end of speech is the moment this host first hears that the turn is
+      // the model's, so the final's own segment is measured from here. Both stamps are this host's clock.
+      handle.speechEndAt = Math.round(this.#now());
+      this.#armWatchdog(handle);
+      return;
+    }
     if (type === 'audio' || type === 'outputTranscription' || type === 'modelText') {
       // Output arrived, so the clock restarts; the turn stays watched only while it is still open.
       if (handle.turnCompleteSeen) this.#cancelWatchdog(handle); else this.#armWatchdog(handle);
@@ -3647,6 +3717,7 @@ export class LiveSessionOwner {
     handle.researchAdmission.ownerTurn();
     handle.inputFinalTimer?.cancel();
     handle.inputAt = this.#now();
+    handle.speechEndAt = undefined;
     handle.typedOwnerTurn = true;
     handle.inputFinal = true;
     handle.inputFinalAt = handle.inputAt;
@@ -4110,6 +4181,9 @@ export class LiveSessionOwner {
           if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
+          // LAT-1022: a new fragment means the owner is speaking again, so the last end-of-speech instant is stale
+          // and a final is never measured from the previous utterance's end.
+          handle.speechEndAt = undefined;
           handle.typedOwnerTurn = event.finalOrigin === 'typed';
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal && typeof event.text === 'string' && event.text.trim() !== '') {
@@ -4125,7 +4199,8 @@ export class LiveSessionOwner {
             handle.inputFinalAt = handle.inputAt;
             // C-LOGS11: the anchor every final-to-audio latency in this turn is measured from, recorded on the
             // line and joined to the turn by the envelope's turnId, never by a timestamp bracket.
-            hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt });
+            hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt,
+              ...(handle.speechEndAt === undefined ? {} : { msSinceSpeechEnd: Math.max(0, Math.round(handle.inputFinalAt - handle.speechEndAt)) }) });
             const finalTurn = handle.connection.turnId;
             if (finalTurn !== undefined) this.#turnOwnerFinal.set(finalTurn, handle.inputFinalAt);
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.
@@ -4377,6 +4452,7 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
+    const budgetedExecute = budgetedReads(handle.researchAdmission, execute);
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
@@ -4389,12 +4465,17 @@ export class LiveSessionOwner {
       queryContext: () => handle.researchQueryContext ?? '',
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(handle), execute,
+      unavailableNow: () => this.#unreachableSources(handle), execute: budgetedExecute,
+      // C-RESEARCH #107: the web read path asks the same job ceiling the connector gate takes from.
+      readsLeft: () => handle.researchAdmission.readsLeft(),
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
         const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
+        // C-RESEARCH #107: a web read is a provider read, so it is charged to the same job ceiling. The engine
+        // asks `readsLeft` first, so a read past the ceiling is never dispatched and never reported as an outage.
+        handle.researchAdmission.takeReads(1);
         const result = await this.#researchWeb!.search(request);
         if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;
@@ -4469,6 +4550,10 @@ export class LiveSessionOwner {
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
         response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
+      } else if (verdict !== undefined && verdict.attach === true && handle.researchAdmission.deliveredReply() !== undefined) {
+        // C-RESEARCH #107: a paraphrase or repeat of this job's own owner ask returns the job's terminal result
+        // instead of starting a second operation, so it dispatches nothing and spends no budget.
+        response = { ...handle.researchAdmission.deliveredReply()!, repeat: true };
       } else {
         const firstStep = handle.toolStep;
         // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.
@@ -4496,6 +4581,8 @@ export class LiveSessionOwner {
       // C-CONTINUITY T-11: every research result enters this voice session here, so the reply cap is applied
       // once, centrally, after the envelope is final: a deadline partial and a resumed run obey it too.
       response = capVoiceReply(response, handle.voicePages);
+      // C-RESEARCH #107: the host owns paging inside the job, so the model is never handed a poll invitation.
+      if (response['canContinue'] === true) response = { ...response, canContinue: false };
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {
@@ -4952,6 +5039,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const response = (responses[index]?.response ?? {}) as JsonObject;
       if ((response['error'] !== undefined || response['status'] === 'refused')
         && handle.registry.find(tool => tool.name === call.name)?.effect === 'write') handle.claimWriteRefused = true;
+      // C-ARGS: the same receipt for a read, because a rejected or failed lookup ran nothing at all.
+      if ((response['error'] !== undefined || response['status'] === 'refused')
+        && handle.registry.find(tool => tool.name === call.name)?.effect === 'read') handle.claimLookupFailed = true;
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;

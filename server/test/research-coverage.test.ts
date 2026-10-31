@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { shapeGcalList } from '../tools/live-shape.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
@@ -521,6 +522,47 @@ function statusFixture(): { execute: ResearchDeps['execute']; web: NonNullable<R
     }),
   };
 }
+
+
+// G4: the stage-two body follows the reply budget, so a long document keeps its tail when the budget allows.
+test('#641: a knowledge body longer than the old 2000-char cut keeps its tail', async () => {
+  const TAIL = 'TAIL-MARKER-9 the end of the document';
+  const body = `### Margit Halden call notes [id 44]\n${'filler sentence. '.repeat(220)}${TAIL}`;
+  assert.ok(body.length > RESEARCH.knowledgeBodyChars, `the body is longer than the old per-hit cut: ${body.length}`);
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => call.name === 'search_knowledge'
+      ? sub(call.name, '### Margit Halden call notes [id 44]\nA short summary line.', true, call.key)
+      : sub(call.name, body, true, call.key)),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what do we know about Margit Halden', lookups: [{ source: 'knowledge', query: 'Margit Halden' }],
+  }, new AbortController().signal);
+  const spoken = JSON.stringify(reply['findings']);
+  assert.match(spoken, /TAIL-MARKER-9/u, `the tail of the body survives the stage-two slice: ${spoken.slice(0, 400)}`);
+});
+
+// Autopen: the bucket comes from the ranker line the search reply carries, which the shaping strips from text.
+test('#641: the autopen decision reads a score bucket off the carried ranker line', async () => {
+  const lines: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') lines.push(raw as Record<string, unknown>) } });
+  const search = [
+    '# Knowledge Search',
+    '_confidence: medium \u00b7 mode: reranked \u00b7 top score: 0.11 \u00b7 relevant candidate: yes_',
+    '**#44** [MEETING] Margit Halden call notes',
+    'the vault keeps a note about socket timeouts',
+  ].join('\n');
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name,
+      call.name === 'search_knowledge' ? search : '### Margit Halden call notes [id 44] the whole entry body', true, call.key)),
+  });
+  try {
+    await runResearch(h.deps, { action: 'start', question: 'what do we know about Margit Halden', topic: 'Margit Halden' }, new AbortController().signal);
+  } finally { detach() }
+  const line = lines.find(raw => raw['event'] === 'knowledge_autopen');
+  assert.equal(line?.['decision'], 'skipped', 'a 0.11 top score is below the autopen floor');
+  assert.equal(line?.['reason'], 'low_score');
+  assert.equal(line?.['bucket'], 'low', `the bucket is the score band, never unknown: ${JSON.stringify(line ?? {})}`);
+});
 
 const STATUS_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
 const STATUS_SIGNED_OUT = () => [{ source: 'mongoose' as const, reason: 'not_signed_in' }];

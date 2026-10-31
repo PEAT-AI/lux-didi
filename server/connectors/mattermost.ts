@@ -172,7 +172,7 @@ export interface MattermostReader {
 /** W1030: a draft names a channel or a person, never both, and carries no send. */
 export interface MattermostDraftInput { channelId?: string; dmUsername?: string; rootId?: string; message: string }
 
-export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig }
+export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig; now?: (() => number) | undefined }
 
 // W1030: the endpoint's published catalog may be its reads, its draft family or both, so the known set
 // is the read envelope plus the draft envelope; which names a grant may cover stays the policy's.
@@ -567,6 +567,8 @@ function overviewOf(data: unknown, owner: string, span: string): Pick<Mattermost
 
 export function createMattermostReader(options: MattermostOptions): MattermostReader {
   const { port, registry, config } = options;
+  // #813: the attention window is measured from the clock the caller injects, never the wall clock.
+  const now = options.now ?? ((): number => Date.now());
   const settings: Settings = {
     endpointId: config.endpointId,
     account: config.account,
@@ -785,7 +787,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
-    const cutoff = Date.now() - days * DAY_MS;
+    const cutoff = now() - days * DAY_MS;
     const scored: { item: AttentionItem; at: number }[] = [];
     const seen = new Set<string>();
     const push = (reason: AttentionReason, post: ChildPost): void => {

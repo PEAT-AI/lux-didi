@@ -7,7 +7,7 @@ import Foundation
 @main struct LaunchVisibilityTests {
     private static let allKinds: [LaunchKind] = [
         .interactive, .loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification,
-        .reopen
+        .reopen, .alarmRelaunch
     ]
 
     @MainActor static func main() {
@@ -34,6 +34,11 @@ import Foundation
         check(LaunchKind.resolve(arguments: ["/app", "--installed-proof"], environment: ["LUX_VERIFICATION_GATE_ROOT": "/r"],
               loginLaunch: false) == .verification,
               "the verification environment wins over a proof argument")
+
+        // 1b. #107: the alarm relaunch agent's launch names itself and shows nothing.
+        check(LaunchKind.resolve(arguments: ["/app", "--alarm-relaunch"], environment: noEnv, loginLaunch: false) == .alarmRelaunch,
+              "the alarm argument resolves to its own launch kind")
+        check(LaunchKind.alarmRelaunch.rawValue == "alarm_relaunch", "the relaunch kind is logged as alarm_relaunch")
 
         // 2. Visibility: only an interactive launch activates.
         for kind in allKinds {
@@ -78,7 +83,7 @@ import Foundation
               "auto-connect waits for the orb page the panel hosts")
         check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: true, attempted: true) == .never,
               "a denied microphone or refused audio never retries auto-connect")
-        for kind in [LaunchKind.loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen] {
+        for kind in [LaunchKind.loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen, .alarmRelaunch] {
             check(OrbFirstAutoConnect.decide(kind: kind, serviceReady: true, pageHostable: true, attempted: false) == .never,
                   "a \(kind) launch shows the orb cold and never connects")
         }

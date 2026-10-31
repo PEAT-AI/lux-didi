@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   CALL_AUDIT_SCHEMA_VERSION, buildAuditSummary, buildCallAudit, buildCallStory, buildTimeline, listCalls, logHealth,
-  renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
+  renderAuditSummary, renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
   type CallAudit, type LogInput, type LogStream, type TimelineReport, type TraceRead,
 } from '../trace/timeline.js';
 
@@ -302,10 +302,11 @@ function turn(store: Store, session: string, turnId: string, index: number, open
   record(store, 'turn.opened', { liveSessionId: session, turnId }, { origin: 'owner', turnIndex: index, openedAt, monoMs: index * 1_000 });
 }
 
-function call(store: Store, session: string, turnId: string, callKey: string, name: string, outcome: 'completed' | 'refused' | 'blocked', ms: number, at: number): void {
-  record(store, 'call.intent', { liveSessionId: session, turnId, callKey }, { name, argsChars: 24, intentAt: at });
-  record(store, 'call.executed', { liveSessionId: session, turnId, callKey }, { executedAt: at + 1 });
-  record(store, 'call.output_written', { liveSessionId: session, turnId, callKey }, { outputWrittenAt: at + ms, outcome, ms, resultChars: 8 });
+function call(store: Store, session: string, turnId: string | null, callKey: string, name: string, outcome: 'completed' | 'refused' | 'blocked' | 'failed', ms: number, at: number, refusalCode?: string): void {
+  const ids = { liveSessionId: session, ...(turnId === null ? {} : { turnId }), callKey };
+  record(store, 'call.intent', ids, { name, argsChars: 24, intentAt: at });
+  record(store, 'call.executed', ids, { executedAt: at + 1 });
+  record(store, 'call.output_written', ids, { outputWrittenAt: at + ms, outcome, ms, resultChars: 8, ...(refusalCode === undefined ? {} : { refusalCode }) });
 }
 
 function audible(store: Store, session: string, turnId: string, playbackKey: string, at: number): void {
@@ -388,10 +389,74 @@ test('F8: a call with no turn after a rebuild is listed in its own bucket and co
     assert.equal(audit.calls.length, 4, 'the audit counts every call, not only the ones a turn claims');
     assert.deepEqual(audit.calls.filter(row => row.turnId === null).map(row => row.callKey), ['call:orphan']);
     // The refusal count carries the orphan too: one gmail grant refusal plus one orphan refusal.
-    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, missing: 1 });
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, uncoded: 1 });
     const text = renderCallAudit(audit);
     assert.match(text, /after rebuild, no turn calls=1/u);
     assert.match(text, /call:orphan set_alarm/u);
+  });
+});
+
+// #107: the store writes a real refusal as outcome 'failed' with the code in trace_call.outcome_code, so the
+// code decides the count whatever the outcome string says, and an outcome that names no code is 'uncoded'.
+test('C-AUDIT107: a failed call is counted by its refusal code, whatever its outcome', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:grant', 'gmail_send', 'failed', 20, T0 + 1_000, 'grant_not_permitted');
+    call(store, SESSION, 't1', 'call:args-1', 'calendar_list_events', 'failed', 30, T0 + 2_000, 'invalid_arguments');
+    call(store, SESSION, 't1', 'call:args-2', 'calendar_list_events', 'failed', 31, T0 + 3_000, 'invalid_arguments');
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([]));
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, invalid_arguments: 2 });
+    assert.match(renderCallAudit(audit), /refusals by code grant_not_permitted=1 invalid_arguments=2/u);
+  });
+});
+
+test('C-AUDIT107: a call with no turn is a row of the call table with turn -', () => {
+  withStore(store => {
+    storeA(store);
+    record(store, 'call.intent', { liveSessionId: SESSION, callKey: 'call:orphan' }, { name: 'set_alarm', argsChars: 12, intentAt: T0 + 3_000 });
+    record(store, 'call.output_written', { liveSessionId: SESSION, callKey: 'call:orphan' }, { outputWrittenAt: T0 + 3_030, outcome: 'refused', ms: 30, resultChars: 8 });
+    const text = renderCallAudit(auditA(store));
+    const [table] = text.split('after rebuild');
+    assert.match(table!, /^- call:orphan set_alarm /mu, 'the call table itself, not only the orphan bucket');
+  });
+});
+
+test('C-AUDIT107: a session with calls and no turn row is in the summary, and its calls are counted', () => {
+  withStore(store => {
+    // A turn opened before the window, with its call inside it: the turn row alone would drop the session.
+    turn(store, SESSION, 't-old', 1, T0 - 90_000);
+    call(store, SESSION, 't-old', 'call:in-window', 'research', 'failed', 50, T0 + 1_000, 'invalid_arguments');
+    // No turn row names this session at all: only the call itself says the session happened.
+    call(store, OTHER, null, 'call:no-turn-row', 'gmail_send', 'failed', 20, T0 + 2_000, 'grant_not_permitted');
+    const summary = buildAuditSummary(readOf(store), scanOf([]), T0 - 1_000);
+    assert.equal(summary.sessions, 2);
+    assert.deepEqual(summary.callsPerTool, { research: 1, gmail_send: 1 });
+    assert.deepEqual(summary.refusalsByCode, { invalid_arguments: 1, grant_not_permitted: 1 });
+  });
+});
+
+test('C-AUDIT107: an absent refusal measurement prints missing, a present empty one prints none', () => {
+  withStore(store => {
+    // No call in the window: the store carries no refusal data at all, which is not the same as zero refusals.
+    assert.match(renderAuditSummary(buildAuditSummary(readOf(store), scanOf([]), T0 - 1)), /refusals by code missing/u);
+  });
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:ok-only', 'research', 'completed', 10, T0 + 1_000);
+    assert.match(renderAuditSummary(buildAuditSummary(readOf(store), scanOf([]), T0 - 1)), /refusals by code none/u);
+  });
+});
+
+test('C-AUDIT107: tool failures are grouped by tool, outcome and code', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    call(store, SESSION, 't1', 'call:grant', 'gmail_send', 'failed', 20, T0 + 1_000, 'grant_not_permitted');
+    call(store, SESSION, 't1', 'call:args-1', 'calendar_list_events', 'failed', 30, T0 + 2_000, 'invalid_arguments');
+    call(store, SESSION, 't1', 'call:args-2', 'calendar_list_events', 'failed', 31, T0 + 3_000, 'invalid_arguments');
+    const text = renderCallAudit(buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([])));
+    assert.match(text, /tool failures by tool and code/u);
+    assert.match(text, /calendar_list_events failed invalid_arguments 2/u);
+    assert.match(text, /gmail_send failed grant_not_permitted 1/u);
   });
 });
 
@@ -459,10 +524,14 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
     assert.deepEqual(Object.keys((json['calls'] as Record<string, unknown>[])[0]!).sort(),
       ['callKey', 'executionMs', 'name', 'outcome', 'refusalCode', 'totalMs', 'turnId']);
     assert.deepEqual(Object.keys((json['turns'] as Record<string, unknown>[])[0]!).sort(),
-      ['finalToAudibleMs', 'finalToProviderMs', 'missingReason', 'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'turnId']);
+      // LAT-1022: the audit's per-turn segments are part of the stable shape: the speech end to the final, the
+      // final to the first create, that create to its first audio, the last tool output to the continuation's
+      // create, and every connector request the turn made.
+      ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
+        'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'refusalsByCode', 'slowestCalls', 'turnsOver4s']);
-    assert.equal(json['version'], 1);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+    assert.equal(json['version'], 2);
   });
 });
 
@@ -540,7 +609,7 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
-    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 1\)/);
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 2\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
     assert.match(text, /missing no_native_receipt/);
   } finally {

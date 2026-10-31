@@ -872,11 +872,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (name === 'delete_event') {
               const rows = store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId]));
               const created = createdEventIds(rows);
-              const named = deleteId === undefined && options.compose?.findNamedEvent !== undefined
+              // #107 CG-A2: a model-supplied id counts only when the owner's own words resolve to it
+              // through this call's calendar read, so the id is his ask's, never the model's guess.
+              const named = options.compose?.findNamedEvent !== undefined
                 ? await options.compose.findNamedEvent({ words: ask.words ?? '', clientRequestId: clientRequestId(ask.journalId) })
                 : undefined;
-              if (deleteId === undefined || !created.includes(deleteId)) {
-                if (named?.state === 'found') deleteId = named.eventId;
+              const resolved = named?.state === 'found' ? named.eventId : undefined;
+              if (deleteId === undefined || (!created.includes(deleteId) && resolved !== deleteId)) {
+                if (resolved !== undefined) deleteId = resolved;
               }
               if (deleteId === undefined) {
                 ownerRequests.failed(runId, name, target, ask.id);
@@ -1122,7 +1125,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // a copy, and the composed names are never stored in the registry grant.
               if (!grant.toolNames.includes(name) && !composedNames.includes(name)) { return { status: 'failed', code: 'not_granted' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
-              // Normalize at the boundary; the intent hash below stays over the model's original args.
+              // Normalize at the boundary. The declaration already normalized and journaled this call, so this
+              // pass is idempotent and the intent hash stays over the arguments the executor is handed.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
               if (declaration.normalize !== undefined && prepared === undefined) { return { status: 'failed' }; }
               const callArgs = prepared === undefined ? args : prepared.args;
@@ -1165,7 +1169,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 if (evidence.state === 'unknown') {
                   const code = dispatchedFailureCode(evidence.reason);
                   options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
-                  return { status: 'unknown', code };
+                  // G5: the closed code stays what the model and the gate read, and the reason the connector
+                  // gave travels beside it, so `tool_call_outcome` never loses the cause to the collapse.
+                  return { status: 'unknown', code, reason: evidence.reason };
                 }
                 if (evidence.state !== 'completed') {
                   // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
@@ -1178,7 +1184,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                     // #637: a channel the chat connector does not know is its own closed code, so the reply can
                     // say the channel is unknown; every other refusal keeps the code it had.
                     const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                    return { status: 'failed', code: failureCode };
+                    return { status: 'failed', code: failureCode, reason: 'reason' in evidence ? evidence.reason : evidence.state };
                   }
                   // A classified failure is visible: the endpoint flips to configured and the call
                   // returns the plain reason as its projection, never an empty success. A status that

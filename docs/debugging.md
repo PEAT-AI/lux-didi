@@ -53,7 +53,7 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary
 node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 ```
 
-`call --audit` prints, in order: session coverage and clock health; one row per tool call; one row per owner turn; then the aggregates. `sessions --audit-summary` prints the same aggregates across every session with a turn since the date. `--json` is the stable shape and carries its own schema number (`version`), so a reader pins a number rather than a field list.
+`call --audit` prints, in order: session coverage and clock health; one row per tool call; one row per owner turn; then the aggregates. A call the store holds without a turn row is still a row of that table, with `turn` printed as `-`. `sessions --audit-summary` prints the same aggregates across every session with a turn or a call since the date. `--json` is the stable shape and carries its own schema number (`version`), so a reader pins a number rather than a field list.
 
 | Column | Means |
 | --- | --- |
@@ -71,7 +71,7 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 | `finalToAudible` | `nativeFirstAudible - ownerFinal`: the wait until what she said reached his speaker |
 | `missing` | why a measurement is absent (`no_owner_final`, `no_provider_audio`, `no_native_receipt`) |
 
-The aggregates are the five slowest calls, the refusals counted per code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
+The aggregates are the five slowest calls, the refusals counted per code, the calls that did not complete grouped by tool, outcome and code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. A call counts as a refusal by its refusal code whatever its outcome string says, because the store records a real refusal as `failed` with the code on the row; an outcome that named no code counts as `uncoded`. Refusals print `none` only when the store carried refusal data and it was empty, and `missing` when the window or the store has none. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
 
 A missing measurement prints as `missing` or `null` and is never printed as zero, so an absent native receipt cannot read as an instant answer. A missing number is answered by a missing receipt, never by inference from a neighbour.
 
@@ -165,3 +165,22 @@ pruned, and is merged with the host's existing no-call receipts without double-c
 the larger of the two counts.
 
 Status tick regression: `bash Tests/DidiStatusTests/check-status-quiet.sh` runs headless with a base-red proof; live calls still poll every two seconds, but unchanged status fields and orb click-through do not write, and notification capability refreshes only at launch, activation or explicit permission request. Installed WindowServer rate acceptance belongs to a separately authorized owner observation, not shared-desktop UI tests.
+
+### Where a turn's time went
+
+One audit row per owner turn now carries the whole decomposition: `speechEndToFinalMs` (the capture
+path's own end of speech to the owner's final), `finalToCreateMs` (the final to the first response's
+create), `createToFirstAudioMs` (that create to the first PCM), `toolOutputToCreateMs` (the last tool
+output written to the continuation's create) and `connectorMs` (every connector request the turn made,
+from `connector_request`). `node scripts/didi-timeline call <id> --audit` prints them under a `latency`
+table; a step the turn did not take prints a dash, because an absent segment is never a zero.
+
+`response_first_audio` is the segment's own receipt: `firstItemAt` is the provider's first output-item
+envelope and `firstAudioAt` the first audible PCM. An audio-first response delivers its PCM BEFORE the
+item envelope, so `firstItemAt` can be later than `firstAudioAt` or absent; the pair is written as
+measured and never clamped. `provider_output_ack` closes the other wait: the call and the milliseconds
+between the output going out and the provider opening the response that carries it.
+
+A playback segment's `audible` instant is the native device's first audible chunk, which is the same
+chunk `received` names, so the timeline prints `same-chunk` there instead of a second stamp that would
+read as a 0 ms audio path.

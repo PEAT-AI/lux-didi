@@ -282,3 +282,41 @@ test('C-RECUR: a non-recurring ask keeps its one-shot instant', () => {
   if (oneShot.status === 'ready') assert.equal(oneShot.series, undefined);
   assert.equal(parseSeriesRule('set an alarm on Monday at ten'), undefined);
 });
+
+// #107: the owner's own wake-up, brief and check-in words carry their label and their clock.
+test('#107 the owner phrasing that must reach the alarm block', () => {
+  const now_ = Date.parse('2026-10-28T02:00:00Z');
+  const wake = parseAlarmTime('wake up at 10:30 and remind me to go to sport', now_, tz);
+  assert.equal(wake.status, 'ready');
+  if (wake.status === 'ready') {
+    assert.equal(wake.label, 'go to sport');
+  }
+  const brief = parseAlarmTime('wake me at 7 and brief me', now_, tz);
+  assert.equal(brief.status, 'ready');
+  if (brief.status === 'ready') assert.match(brief.label, /brief/);
+  const checkIn = parseAlarmTime('check in with me in an hour about the deck', now_, tz);
+  assert.equal(checkIn.status, 'ready');
+  if (checkIn.status === 'ready') {
+    assert.equal(checkIn.label, 'the deck');
+    assert.equal(checkIn.fireAtUtc, now_ + 3_600_000);
+  }
+  for (const ask of ['wake me at 7 and tell me about the deck', 'wake me at 7 and talk to me about the deck',
+    'check in with me at 7 about the deck']) {
+    const subject = parseAlarmTime(ask, now_, tz);
+    assert.equal(subject.status, 'ready', ask);
+    if (subject.status === 'ready') assert.equal(subject.label, 'the deck', ask);
+  }
+  // A stated clock after the subject belongs to the alarm, never to the label.
+  for (const ask of ['tell me about the deck at 9', 'talk to me about the deck at 9',
+    'check in with me at 7 about the deck']) {
+    const clocked = parseAlarmTime(ask, now_, tz);
+    assert.equal(clocked.status, 'ready', ask);
+    if (clocked.status === 'ready') {
+      assert.equal(clocked.label, 'the deck', ask);
+      assert.doesNotMatch(clocked.label, /\d|\bat\b|\bin\b/, ask);
+    }
+  }
+  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
+  assert.equal(standaloneBrief.status, 'ready');
+  if (standaloneBrief.status === 'ready') assert.equal(standaloneBrief.label, 'brief me');
+});

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
 import { hostLogEvent } from './host-events.js';
+import { logArgumentsNormalized, normalizeArguments } from './normalize.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Internal reads remain dispatchable by research, not directly callable by the voice model.
@@ -74,6 +75,8 @@ const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
 
 const invalidAttempts = new WeakMap<object, Map<string, number>>();
+/** C-ARGS: the rejected calls of one task scope, keyed by tool and normalized arguments. */
+const rejections = new WeakMap<object, Map<string, string>>();
 /** The closed set an error class may name in host.log: a class, never a message or a stack. */
 const HANDLER_ERROR_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError'];
 const handlerErrorClass = (error: unknown): string => {
@@ -85,50 +88,69 @@ function recordInvalidAttempt(scope: object, key: string): number {
   if (counts === undefined) { counts = new Map(); invalidAttempts.set(scope, counts); }
   const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count;
 }
-function jsonTypeOf(value: unknown): string {
-  if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
-  return typeof value;
+function logArgumentsRejected(name: string, violations: readonly string[], reason: string): void {
+  // C-ARGS: one `path:keyword` token per violation, always together, never a value.
+  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, violations: violations.slice(0, 24), reason });
 }
-/** Metadata only: top-level keys and each value's JSON type, never a value. */
-/** Metadata only: top-level keys and each value's SHAPE (a string's length, an array's length), never a value. */
-function shapeOf(value: unknown): string {
-  if (typeof value === 'string') return `string_${value.length}`;
-  if (Array.isArray(value)) return `array_${value.length}`;
-  return jsonTypeOf(value);
+/** The rejection cache of one task scope, so a repeat arrives without a second validation. */
+function rejectedCalls(scope: object): Map<string, string> {
+  let cache = rejections.get(scope);
+  if (cache === undefined) { cache = new Map(); rejections.set(scope, cache); }
+  return cache;
 }
-/** #798: a finite number or a boolean cannot be his words, so a refused call may name that value back. */
-const SCALAR_VALUE = /^-?\d{1,15}(?:\.\d{1,9})?$/;
-function failedScalar(value: unknown): string | undefined {
-  if (typeof value === 'boolean') return `boolean=${value}`;
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  return SCALAR_VALUE.test(String(value)) ? `number=${String(value)}` : undefined;
-}
-function logArgumentsRejected(name: string, args: unknown, write: boolean): void {
-  const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
-  const fields = Object.keys(record).slice(0,24).map(key => {
-    const named = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key';
-    // #798: only a write is worth recovering a value for; a read keeps the metadata-only shape it had.
-    const scalar = write ? failedScalar(record[key]) : undefined;
-    return `${named}:${scalar ?? shapeOf(record[key])}`;
-  });
-  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields, reason: args === null || typeof args !== 'object' || Array.isArray(args) ? 'arguments_not_object' : 'schema_validation_failed' });
+/**
+ * Every violation the tool's own predicate names, not just the first. Each token is `path:keyword`, so
+ * removing that one key lets the next rule speak; the loop is bounded and a token that names no key the
+ * call carries (a structural rule) ends it. A token is a rule name, never a value.
+ */
+export function argumentViolationsOf(tool: { rejection?: (args: unknown) => string | undefined }, args: Record<string, unknown>): string[] {
+  if (tool.rejection === undefined) return [];
+  const tokens: string[] = [];
+  const rest: Record<string, unknown> = { ...args };
+  for (let step = 0; step < 8; step++) {
+    const token = tool.rejection(rest);
+    if (token === undefined || tokens.includes(token)) break;
+    tokens.push(token);
+    const field = token.slice(0, token.indexOf(':'));
+    if (field.length === 0 || !Object.hasOwn(rest, field)) break;
+    delete rest[field];
+  }
+  return tokens;
 }
 /** The one line the model may speak when a call is refused for its arguments: owner-facing, no host prose. */
 export const INVALID_ARGUMENTS_SPEECH = 'That lookup failed on my side.';
+/** C-ARGS: what a rejected call is, so a model can never narrate it as a search that came back empty. */
+export const NOTHING_RAN_RULE = 'Nothing ran, so there is no result and no finding: a rejected lookup found nothing because nothing ran, never because the result was empty or because it came back empty.';
+/** C-ARGS: an identical rejected call is answered from this cache, and its branch ends until he adds facts. */
+export const BRANCH_CLOSED = 'This branch is closed until the owner adds facts: the same call with the same arguments is not sent again.';
+/** Every violation the tool's own refusal names, as the `{field, reason}` pairs the host and the model both read. */
+export function argumentViolations(reason: string): { field: string; reason: string }[] {
+  const named = /Rejected arguments?: ([^.]+)\./u.exec(reason)?.[1];
+  if (named === undefined) return [];
+  return named.split(', ').filter(token => token.length > 0).map(token => {
+    const cut = token.indexOf(':');
+    return cut <= 0 ? { field: 'arguments', reason: token } : { field: token.slice(0, cut), reason: token.slice(cut + 1) };
+  });
+}
 /** The closed tool response for an invalid-arguments refusal: the fix is for the model alone, never read aloud. */
 export function invalidArgumentsResponse(reason: string): JsonObject | undefined {
   if (!reason.startsWith('Invalid arguments for ')) return undefined;
   return {
+    status: 'rejected',
+    executed: false,
+    resultEvidence: 'none',
     error: 'invalid_arguments',
+    violations: argumentViolations(reason),
     fixNotForSpeech: reason,
     say: INVALID_ARGUMENTS_SPEECH,
+    resultRule: NOTHING_RAN_RULE,
     speakingRule: 'Never read fixNotForSpeech aloud; it is instruction for you. Say only the say line, once.',
   };
 }
 /** For every declared tool: the tool name and its expected argument shape, never the bad values. */
-function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>, rejected?: string | undefined): string {
-  const token = rejected === undefined ? '' : ` Rejected argument: ${rejected}.`;
+function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>, violations: readonly string[]): string {
+  const token = violations.length === 0 ? '' : violations.length === 1
+    ? ` Rejected argument: ${violations[0]}.` : ` Rejected arguments: ${violations.join(', ')}.`;
   if (guidance !== undefined && guidance.length > 0) return `Invalid arguments for ${name}.${token} ${guidance}`;
   const properties = (parameters['properties'] ?? {}) as Record<string, { type?: unknown; items?: unknown }>;
   const shape = Object.entries(properties).map(([key, schema]) => {
@@ -146,9 +168,15 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       const executionId = `${host.runId}:${ctx.step}:${index}`;
       const record: ToolRecord = { ...(call.id !== undefined ? { callId: call.id } : {}), name: call.name, executionId, status: 'refused', reason: 'unknown_tool' };
       const tool = registry.find(t => t.name === call.name);
+      // C-ARGS/D5: the declaration-driven normalizer runs before any validation, for every tool. It drops
+      // only another intent's keys, undeclared keys and absent-value fillers, so a real value of a key this
+      // intent reads still reaches the tool's own refusal. It runs before the call is journaled because the
+      // executor re-derives `argumentsHash` from the arguments it is handed: one form, one hash.
+      const normalized = tool === undefined ? undefined : normalizeArguments(tool, call.args);
+      const args = normalized === undefined ? call.args : normalized.args;
       const refusal: ToolCallRefusal = {
         runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
-        executionId, toolName: call.name, argumentsHash: createHash('sha256').update(JSON.stringify(call.args)).digest('hex'),
+        executionId, toolName: call.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
         ...(call.id !== undefined ? { callId: call.id } : {}), ...(tool ? { accountId: tool.accountId, resourceId: tool.resourceId } : {}),
       };
       let intent: ToolCallIntent | undefined;
@@ -162,12 +190,21 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
-          const rejected = tool.rejection?.(call.args);
-          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || rejected !== undefined || !tool.validate(call.args)) {
-            const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
-            const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, rejected);
+          if (normalized !== undefined) logArgumentsNormalized(call.name, normalized.dropped);
+          const shape = typeof call.args !== 'object' || call.args === null || Array.isArray(call.args);
+          const callKey = `${call.name}:${createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 16)}`;
+          const rejections = rejectedCalls(ctx.invalidAttempts ?? seenIds);
+          const cached = rejections.get(callKey);
+          // The same rejected call with the same arguments in the same task is answered from the cache: it is
+          // not validated again, and its branch ends until the owner adds facts.
+          if (!shape && cached !== undefined) { record.reason = `${cached} ${BRANCH_CLOSED}`; return; }
+          const violations = shape ? [] : argumentViolationsOf(tool, args);
+          if (shape || violations.length > 0 || !tool.validate(args)) {
+            const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, callKey);
+            const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, violations);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
-            logArgumentsRejected(call.name, call.args, tool.effect === 'write');
+            rejections.set(callKey, record.reason);
+            logArgumentsRejected(call.name, violations, shape ? 'arguments_not_object' : 'schema_validation_failed');
             return;
           }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {
@@ -178,14 +215,14 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (Date.now() >= ctx.control.deadlineMs) throw new Interrupted('deadline');
           intent = { ...refusal, accountId: tool.accountId, resourceId: tool.resourceId };
           try {
-            journalState = owner.journal.intent(structuredClone(intent), structuredClone(call.args));
+            journalState = owner.journal.intent(structuredClone(intent), structuredClone(args));
             if (journalState !== 'fresh' && journalState !== 'existing') throw Error('invalid_journal_intent');
           } catch { journalState = 'failed'; return; }
           if (journalState === 'existing') return;
           if (callSignal.aborted || ctx.control.signal.aborted) throw new Interrupted('cancelled');
           if (Date.now() >= ctx.control.deadlineMs) throw new Interrupted('deadline');
           dispatched = true;
-          return tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
+          return tool.execute(args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
             revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal: callSignal });
         });
         if (dispatched) {

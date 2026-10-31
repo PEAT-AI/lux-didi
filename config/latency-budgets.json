@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "LAT-1022: the latency budget eval's own numbers, one per host-side segment. Every budget is the recon's measured",
+    "p50 for that segment plus a margin, and nothing here is a target the product has been tuned to: these are the",
+    "values a release may not regress past, not an ambition. The recon is didi-107-1031/RECON-LATENCY.md.",
+    "breach: every segment above its budget fails the eval; a segment under its budget prints and passes."
+  ],
+  "segments": {
+    "speechEndToCreateMs": {
+      "budgetMs": 2000,
+      "measuredP50Ms": 1006,
+      "basis": "recon Q2.A: live_response_latency.msSinceOwnerFinal for a plain turn, n=377 p50 1,006 ms, with margin"
+    },
+    "createToFirstAudioMs": {
+      "budgetMs": 2000,
+      "measuredP50Ms": 500,
+      "basis": "recon Q2.C: provider create to first PCM, class c p50 3,324 ms end to end with the model leg about 0.5 s"
+    },
+    "toolOutputToCreateMs": {
+      "budgetMs": 4500,
+      "measuredP50Ms": 3324,
+      "basis": "recon Q2.C: live_continuation_timing tool output to response.create, class c n=83 p50 3,324 ms, with margin"
+    },
+    "providerOutputAckMs": {
+      "budgetMs": 1000,
+      "measuredP50Ms": 489,
+      "basis": "recon Q2.B: trace call.output_written to the next response.created, n=775 p50 489 ms, with margin"
+    },
+    "connectorRequestMs": {
+      "budgetMs": 2000,
+      "measuredP50Ms": 1528,
+      "basis": "recon Q2.E: research_source.ms knowledge n=385 p50 1,528 ms, the slowest connector read with a margin"
+    },
+    "deadAirRungMs": {
+      "budgetMs": 8000,
+      "measuredP50Ms": 5000,
+      "basis": "recon Q2/Q3: the host's own no-output rung, the 8,000 ms dead-air bound the field run breaches in 5.9% of runs"
+    }
+  }
+}

@@ -90,17 +90,29 @@ test('W4: every credential or identity code the host reports reads as a sign-in,
 });
 
 test('tool and connector names map to the human group names', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search_mongoose']),
-    ['knowledge base', 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search']),
+    ["Rob's private notes", 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
   assert.deepEqual(connectorGroupNames('google'), ['calendar', 'mail']);
   assert.deepEqual(connectorGroupNames('mattermost'), ['team chat']);
-  assert.deepEqual(connectorGroupNames('lux-knowledge'), ['knowledge base']);
+  assert.deepEqual(connectorGroupNames('lux-knowledge'), ["Rob's private notes"], 'the owner\'s own notes, not a second knowledge base');
   assert.deepEqual(connectorGroupNames('mongoose'), ['company knowledge']);
 });
 
+test('#623: the mongoose reads are grouped by the endpoint that serves them, so company knowledge is named', () => {
+  // The served names themselves, not a retired prefix: search and read are the knowledge endpoint's own.
+  assert.deepEqual(toolGroupNames(['search', 'read', 'search_knowledge']), ['company knowledge', "Rob's private notes"]);
+  assert.deepEqual(toolGroupNames(['ask_data_agent', 'data_agent_job']), ['company numbers'],
+    'the numbers endpoint is company numbers, never company knowledge');
+  assert.deepEqual(toolGroupNames(['get_company', 'list_inbound_leads']), ['customers']);
+  for (const retired of ['ask_mongoose', 'search_mongoose', 'get_knowledge_item', 'read_knowledge_body']) {
+    assert.deepEqual(toolGroupNames([retired]), [], `a retired name groups nothing: ${retired}`);
+  }
+  assert.match(toolGroupNames(['list_companies']).join(', '), /company knowledge/u, 'a company listing is company knowledge');
+});
+
 test('L8-10: a session that can search the web names it among what it can reach', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ['knowledge base', 'mail', 'memory', 'web search']);
-  assert.deepEqual(toolGroupNames(['search_knowledge']), ['knowledge base'], 'no web group without the web read');
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ["Rob's private notes", 'mail', 'memory', 'web search']);
+  assert.deepEqual(toolGroupNames(['search_knowledge']), ["Rob's private notes"], 'no web group without the web read');
 });
 
 test('C-LUXSAVE11: Runtime context never duplicates the generated save capability', () => {

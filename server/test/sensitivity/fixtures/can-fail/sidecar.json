@@ -1,0 +1,9 @@
+{
+  "name": "can-fail",
+  "target": "tree",
+  "production": "server/test/sensitivity/fixtures/guard.txt",
+  "mutant": {"find": "refuses", "replace": "allows", "note": "the guard is removed"},
+  "command": ["bash", "server/test/sensitivity/fixtures/can-fail/check.sh"],
+  "test": {"file": "server/test/sensitivity/fixtures/can-fail/check.sh", "name": "the dispatch path refuses an unregistered caller"},
+  "note": "synthetic fixture: the runner must pass this one, because the test feels its mutant"
+}

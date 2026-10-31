@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchAdmission, ResearchLedger, RESEARCH, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
+import { ResearchAdmission, ResearchLedger, RESEARCH, RESEARCH_READ_CEILING, sameOwnerQuestion, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
 import { answersTheAsk } from '../live/index.js';
 import type { IntentSubResult } from '../tools/intent.js';
 import { lateCommentarySilence } from '../live/index.js';
@@ -321,4 +321,86 @@ test('B-2: rebuild, quip, retry, and the retry is not refused as answered', () =
   if (answersTheAsk(false, 'The council approved the budget on Tuesday.')) admission.answered();
   assert.deepEqual(admission.admit('start', false, false, 'what is the release budget'),
     { admitted: false, reason: 'answer_already_given' });
+});
+
+// C-RESEARCH #107: one host-owned job per owner question, and a continue never spends the turn.
+test('#107: a start then two continues are one job, and no continue is a spent turn', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true });
+  const job = admission.jobId();
+  assert.equal(typeof job, 'string', 'the admitted start opens one job');
+  admission.delivered('run-1');
+  assert.deepEqual(admission.admit('continue'), { admitted: true }, 'the first continue attaches');
+  assert.deepEqual(admission.admit('continue'), { admitted: true }, 'the second continue is not a spent turn');
+  assert.equal(admission.jobId(), job, 'both continues attach to the same job');
+  assert.equal(admission.readsSpent(), 0, 'a continue spends no read budget');
+});
+
+test('#107: a paraphrased second start attaches to the same owner ask', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what changed in the release notes'), { admitted: true });
+  const job = admission.jobId();
+  assert.deepEqual(admission.admit('start', false, false, 'what has changed in the release notes?'), { admitted: true, attach: true },
+    'the model paraphrase is the same owner ask, so it attaches instead of being a spent turn');
+  assert.equal(admission.jobId(), job, 'the paraphrase joins the job, it never opens a second one');
+});
+
+test('#107: a distinct owner question after the answer starts a new job', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what changed in the release notes'), { admitted: true });
+  const first = admission.jobId();
+  admission.delivered('run-1');
+  admission.answered();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'when is the dentist appointment'), { admitted: true });
+  assert.notEqual(admission.jobId(), first, 'a new owner question is a new job');
+});
+
+test('#107: a rebuild mid-job keeps the job and does not refill its read budget', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true });
+  const job = admission.jobId();
+  assert.equal(admission.takeReads(RESEARCH_READ_CEILING), RESEARCH_READ_CEILING, 'one task may read to its ceiling');
+  assert.equal(admission.takeReads(1), 0, 'and not one read past it');
+  // A provider rebuild never touches this object, which is exactly why the job and its budget survive it.
+  assert.equal(admission.jobId(), job, 'the job is the same job across a rebuild');
+  assert.equal(admission.readsLeft(), 0, 'a rebuild does not refill the budget');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'and what about the roadmap'), { admitted: true });
+  assert.equal(admission.readsLeft(), RESEARCH_READ_CEILING, 'a new owner question gets fresh budget inside the ceiling');
+});
+
+// C-RESEARCH #107 (R-R2): identity must not merge a distinct owner question into the running job.
+test('#107: a distinct question that shares a topic is not the same owner ask', () => {
+  assert.equal(sameOwnerQuestion('who owns Acme Seeds', 'Acme Seeds revenue'), false,
+    'a topic word in common is not the same ask');
+  assert.equal(sameOwnerQuestion('what changed in the release notes', 'what has changed in the release notes?'), true,
+    'a reworded repeat of the same ask is the same ask');
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
+  const job = admission.jobId();
+  assert.deepEqual(admission.admit('start', false, false, 'Acme Seeds revenue'), { admitted: true },
+    'a distinct question is admitted as its own ask, never as an attach');
+  assert.notEqual(admission.jobId(), job, 'the distinct question opens its own job');
+});
+
+// C-RESEARCH #107 (R-R2): a web read the task ceiling cut says so, and is never dispatched as an outage.
+test('#107: a web read cut by the ceiling names the ceiling and never reaches the port', async () => {
+  const searched: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['web'], ledger: new ResearchLedger(),
+    emit() {}, log() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {},
+    execute: async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 })),
+    readsLeft: () => 0,
+    web: { search: async request => { searched.push(request.query); return { ok: false as const, code: 'web_unavailable' as const }; } },
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'synthetic web ceiling', lookups: [{ source: 'web', query: 'synthetic ceiling' }] }, signal());
+  assert.deepEqual(searched, [], 'a read past the ceiling is never dispatched');
+  assert.match(JSON.stringify(reply), /read ceiling/u, `the cut names its cause: ${JSON.stringify(reply).slice(0, 400)}`);
+  assert.doesNotMatch(JSON.stringify(reply), /web unavailable|is not connected/u, 'the cut is never reported as an outage');
 });

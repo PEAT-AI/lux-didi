@@ -32,7 +32,7 @@ cp server/tools/vault-write.ts "$out/source/tools/"
 # W7: the Trello tool descriptions are voice content too.
 cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"
-cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
+cp server/tools/declarations.ts server/tools/normalize.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts server/tools/google.ts server/tools/lux-knowledge.ts server/tools/mongoose.ts server/tools/mattermost.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 # W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
 # staging tree carries that module and its import closure too.
@@ -43,6 +43,8 @@ cp server/host/log.ts "$out/source/host/"
 cp server/host/events.ts "$out/source/host/"
 # host/log.ts names the stop gate constants, so stage the module it imports.
 cp server/live/stop-phrase.ts server/live/tool-outcome.ts "$out/source/live/"
+# The latency wagon made host/log.ts import the mongoose connector's clock, so stage that module too.
+cp server/connectors/*.ts "$out/source/connectors/"
 # The live-voice adapters import the alarm mode marker, so stage its module too.
 cp server/live/alarm-mode.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"

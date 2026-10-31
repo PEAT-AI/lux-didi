@@ -25,8 +25,12 @@ cp "$root/server/runtime/store.ts" "$root/server/runtime/outbox.ts" "$out/source
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
-mkdir -p "$out/source/live" "$out/source/adapters/live-voice" "$out/source/contracts"
-cp "$root"/server/live/{config,types}.ts "$out/source/live/"
+mkdir -p "$out/source/live" "$out/source/adapters/live-voice" "$out/source/contracts" "$out/source/host" "$out/source/people"
+cp "$root"/server/live/{config,types,alarm-mode,tool-outcome}.ts "$out/source/live/"
+cp "$root"/server/host/{events,provider-binding}.ts "$out/source/host/"
+# live/types and the mattermost connector name the roster, and research.ts reads it for its title
+# and person words, so the roster tree is part of this compile's closure.
+cp "$root/server/people/index.ts" "$out/source/people/"
 cp "$root"/server/adapters/live-voice/*.ts "$out/source/adapters/live-voice/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.

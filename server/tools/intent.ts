@@ -145,6 +145,11 @@ export const INTERNAL = {
   /** W3: the data endpoint's field search and its one metric query, the two calls a count needs. */
   mongooseSearchFields: 'search_fields',
   mongooseMetricQuery: 'run_metric_query',
+  /** G2: the data endpoint's own agent, the only route a KPI or metric question takes, and its job read. */
+  askDataAgent: 'ask_data_agent',
+  dataAgentJob: 'data_agent_job',
+  /** G2: the knowledge endpoint's deterministic coverage router, asked before a coverage question is answered. */
+  mongooseDataCapability: 'check_data_capability',
   /** C-OPEN 2: the owner's Drive files by name, and one file again by the id a listing carried. */
   driveSearch: 'drive_search_files',
   driveGet: 'drive_get_file',

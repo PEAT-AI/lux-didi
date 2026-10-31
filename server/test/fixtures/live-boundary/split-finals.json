@@ -1,0 +1,125 @@
+{
+  "about": "D7: an ask split across three owner finals is one ask; filler and a clarifying question do not close it.",
+  "scenarios": [
+    {
+      "id": "split-three-finals",
+      "why": "The verb, the day and the duration arrive as three separate finals. The model's call omits the duration, so the hour the connector receives must come from his own words 'for an hour'.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Put a block in my calendar",
+        "tomorrow at three",
+        "for an hour."
+      ],
+      "steps": [
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic block"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic block"
+              },
+              "spanMinutes": 60
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "split-final refusal: at the base the ask never reaches a granted write, because every compose call is refused at the live grant filter, and no interpreter merges his three finals into one operation (D2). C-GRANTS/D2 fix this."
+      }
+    },
+    {
+      "id": "filler-mid-ask",
+      "why": "The model's filler and a turnComplete land mid-ask. The model's call omits the duration, so the hour the connector receives can only come from his own 'an hour' across the two finals.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Block an hour tomorrow at three"
+      ],
+      "steps": [
+        {
+          "filler": "Mm-hm, one moment."
+        },
+        {
+          "ownerFinal": "for the synthetic review."
+        },
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic review"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic review"
+              },
+              "spanMinutes": 60
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so the call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
+      }
+    },
+    {
+      "id": "clarify-then-answer",
+      "why": "The model asks which day and the owner answers 'Friday, at ten'. The model's call carries a wrong pinned start, so the start the connector receives must be the owner's, not the model's.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Put a block in my calendar for an hour."
+      ],
+      "steps": [
+        {
+          "modelText": "Which day should I put that block on?"
+        },
+        {
+          "ownerFinal": "Friday, at ten."
+        },
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic block",
+            "start": "2026-01-05T09:00:00.000Z",
+            "duration_minutes": 60
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic block"
+              },
+              "notArgs": {
+                "start": "2026-01-05T09:00:00.000Z"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so the call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
+      }
+    }
+  ]
+}

@@ -28,6 +28,8 @@ binaries run outside the lock: only the compiler is inside it.
 
 Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci`.
 
+`bash scripts/check-combined-tree.sh <base> <head>` is the release gate: it maps every file the branch changed to its checks and runs that union at the head, so a release never ships a file no check covers.
+
 ## What CI runs and what stays local
 
 Nine of the twelve need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:
@@ -96,7 +98,7 @@ filtered on read, so removing them is an owner decision and never a check or a m
 | `check-live-session.sh` | The call core: session, mute, continuity, resumption, recovery, watchdog, summary, selection, memory note, warm context, vault write, stop-phrase gate, trace store, voice fault replay, `naya-logs`, the research suites for continuation, knowledge, steps and web, and the C-LIVE replay eval `partial-research-turn-contract-replay` (one research operation per owner turn, the bounded operation, coverage rows). |
 | `check-live-gateway.sh` | The loopback Live gateway with chat, host, HTTP, open-actions and prompt regressions. |
 | `check-prompt.sh` | Prompt composition, the Live persona, runtime context and the research suites (`research`, calendar, mail query, routed, shape, web). It also runs `server/test/prompt-content.integration.mjs`, which compares the shipped instruction byte for byte against `server/test/fixtures/prompt-final.json` and pins the accepted character hash. This is where triage, topic, routing and the 2,500 character reply cap are pinned, and the Trello tool descriptions (`server/test/trello-guidance.test.ts`). |
-| `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests), and the open destinations: the shared table both allowlists answer, their host parity, Gmail, Calendar and Drive handles, and the open evals E1 to E9 replayed host side (`open-destinations` test). It also covers the owner-only write asks: the `create_event` length declaration beside its validator, a calendar ask answered after the model's own question (granted once, only inside the 120 s window), an explicit retry claim only held against a refused write, and a refused write's own scalar in the `tool_arguments_rejected` line, never its text. |
+| `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests), and the open destinations: the shared table both allowlists answer, their host parity, Gmail, Calendar and Drive handles, and the open evals E1 to E9 replayed host side (`open-destinations` test). It also covers the owner-only write asks: the `create_event` length declaration beside its validator, a calendar ask answered after the model's own question (granted once, only inside the 120 s window), an explicit retry claim only held against a refused write, and a refused call's own rule names in the `tool_arguments_rejected` line, never its text. The argument normalizer's cases in the `tools-builtin-intent` suite prove the twelve-key person read dispatches, that a wrong value of a key the intent reads still refuses with every violation at once, and that `tool_arguments_rejected` carries a `path:keyword` per violation and no value, with dropped keys on their own `tool_arguments_normalized` event. |
 
 ## Connectors and MCP
 
@@ -115,6 +117,14 @@ filtered on read, so removing them is an owner decision and never a check or a m
 | Script | Covers |
 | --- | --- |
 | `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Release pull requests only. |
+| `eval-release.sh` | Tier 2 (`docs/evals.md`): the real realtime adapter in text mode over a loopback fake provider. `--dry-run` prints the plan and the price, `--fake-model` replays recorded synthetic turns, `--real` refuses without a matching `--confirm-price`. |
+| `eval-audio-probe.sh` | Tier 2b: a synthetic utterance through the adapter's upload path, provider audio counted and dropped, no audio device. |
+| `eval-mutation-probe.sh` | Honesty probe (a): each known mutation of the guarded eval code makes the self-test fail. |
+| `check-test-sensitivity.sh` | Honesty probe (b): each sidecar in `server/test/sensitivity/` mutates one production file in a copy of the tree and proves the named test fails under it. Skipped sidecars whose test is absent from this tree are reported, never counted as passes (`--require-all` refuses). `--selftest` covers the runner with a test that cannot fail and one that can. See `docs/evals.md`. |
+| `check-combined-tree.sh` | The combined-tree gate for a release branch: `<base> <head>` maps every changed file through `config/check-map.json` to its check scripts and runs the union one at a time, and two static passes fail when a check's staging list or a Swift compile unit misses a changed file its target imports. Renders the LaunchAgent plist from the app's writer and lints it with a key whitelist when `Sources/` changes. `--static` runs the two static passes alone; `--selftest` proves the map, both static passes and the plist validator. The extractors read literal text: a `cp <src> "$out/source/..."` staging line and a `swiftc ... <files>.swift` compile unit. A check that stages through a variable or a helper, or builds with `swift build`, is named in a `STATIC WARN` line and is not extracted; that warning never fails the gate by itself. |
+| `red-at-base.sh` | Honesty probe (b): a named test must fail at a base commit. |
+
+| `check-live-boundary.sh` | The live-boundary evals (`docs/evals.md`): the scenario files and the phrasing corpus driven through the production live session and its dispatch path, with only the provider transport and the connector I/O replaced. Prints `PASS` / `EXPECTED_RED` / `FAIL` per scenario, then the per-kind false-refusal usability gate and the injection and noncommand safety gate. `EXPECTED_RED` names the base defect it waits on and never counts as a pass; the release train runs it with `--release-gate`. No model call, no network, no audio, about fifteen seconds. |
 
 `scripts/run-local-evals.sh` is the owner's own run and is not a check: scripted by default, `--live` only
 with `--yes`, and the full private suite never leaves the owner's machine.
@@ -269,3 +279,13 @@ was said in, so travel or a host timezone change never moves it. The stop
 endpoint above also cancels every active series: it cancels the series row
 (never a silent row delete) together with the ringing and pending occurrences,
 so a stopped series is gone from `list_alarms` until the owner asks again.
+
+### Latency budget
+
+`scripts/check-latency-budget.sh` replays a plain turn, a one-tool turn, a two-tool batch and a silent
+continuation through the real host path, with a fake realtime transport and a fake connector carrying
+recorded synthetic timings, and judges every host-side segment against `config/latency-budgets.json`.
+Each budget is the recon's measured p50 for that segment plus a margin and says so in its `basis`. The
+eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
+receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
+itself a failure. No network, no model, well under two minutes.

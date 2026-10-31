@@ -1,0 +1,68 @@
+{
+  "about": "D7: a positive dispatch for each draft kind, asserting the exact connector arguments.",
+  "scenarios": [
+    {
+      "id": "draft-email-positive",
+      "why": "An owner-asked draft must reach the gmail draft write with the owner's words, and never send it.",
+      "families": [
+        "mail",
+        "drafts",
+        "knowledge"
+      ],
+      "finals": [
+        "Draft an email to synthetic.person@example.invalid about the synthetic invoice."
+      ],
+      "steps": [
+        {
+          "tool": "draft_email",
+          "args": {
+            "to": "synthetic.person@example.invalid",
+            "subject": "Synthetic invoice",
+            "body": "Here is the synthetic invoice you asked about."
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "mail",
+              "tool": "gmail_create_draft",
+              "args": {
+                "to": [
+                  "synthetic.person@example.invalid"
+                ],
+                "subject": "Synthetic invoice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "draft-chat-positive",
+      "why": "An owner-asked chat draft must reach the mattermost draft write, resolving the spoken channel through the owner's own read.",
+      "families": [
+        "chat",
+        "knowledge"
+      ],
+      "finals": [
+        "Write a chat draft to Synthetic Town saying the synthetic bridge is open."
+      ],
+      "steps": [
+        {
+          "tool": "draft_chat",
+          "args": {
+            "channel": "Synthetic Town",
+            "message": "The synthetic bridge is open."
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "chat",
+              "tool": "mattermost_save_draft",
+              "args": {
+                "message": "The synthetic bridge is open."
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

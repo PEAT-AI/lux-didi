@@ -88,7 +88,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const host = await startHost(config);
     const stop = (error?: Error) => {
       if (error) { console.error(error.message); process.exitCode = 1; }
-      void host.close().catch(() => { console.error('Host shutdown failed'); process.exitCode = 1; }).finally(() => supervision?.dispose());
+      // C-QUIT 2: the ordered close is the shutdown, and it owns the exit too. A closed host that
+      // leaves one handle referenced would keep this process alive after every receipt is written,
+      // which is a quit that looks dead for the full watchdog and then ends in the forced path.
+      void host.close().catch(() => { console.error('Host shutdown failed'); process.exitCode = 1; }).finally(() => {
+        supervision?.dispose();
+        process.exit(process.exitCode ?? 0);
+      });
     };
     process.once('SIGINT', () => stop()); process.once('SIGTERM', () => stop());
     supervision?.watch(stop);

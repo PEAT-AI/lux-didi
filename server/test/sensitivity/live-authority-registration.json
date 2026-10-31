@@ -1,0 +1,17 @@
+{
+  "name": "live-authority-registration",
+  "target": "dist",
+  "production": "server/host/live.ts",
+  "compiled": "dist/host/live.js",
+  "build": ["tsconfig.json"],
+  "mutant": {
+    "find": "signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId)",
+    "replace": "null",
+    "note": "the dispatch path no longer resolves the current live registration"
+  },
+  "command": ["node", "--test", "--test-name-pattern", "trusted composition registers current Live authority", "dist/test/live-gateway.test.js"],
+  "workdir": ".",
+  "env": {},
+  "test": {"file": "server/test/live-gateway.test.ts", "name": "trusted composition registers current Live authority and refuses after terminal/revoke"},
+  "note": "escaped class (c): a live-boundary scenario must fail when dispatch bypasses the live registration"
+}

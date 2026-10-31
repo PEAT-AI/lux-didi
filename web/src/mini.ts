@@ -77,17 +77,32 @@ export function visualState(state: MiniState): MiniVisualState {
   }
 }
 
-/** M3-R2: the click on the orb and the Right Command tap are one press, and the press
- *  has three steps: nothing live connects, a live orb mutes the microphone hot, a hot
- *  muted orb brings the microphone back. The pill answers with the step; the app owns
- *  the one native toggle. */
-export type PresenceStep = 'connect' | 'hot-mute' | 'live';
+/** ORB-107: the loop's own health, read by the app so a stopped loop leaves a receipt instead
+ *  of a still picture nobody notices. `fpsBucket` is the mean frames per second since the page
+ *  started, rounded to tens, so a healthy 60 Hz page reads 60 and a dead one reads 0. */
+export interface MiniOrbFrameStats { frames: number; firstFrameMs: number; alive: boolean; fpsBucket: number }
 
-export function clickStep(state: MiniState): PresenceStep {
-  if (state === 'idle' || state === 'error' || state === 'connecting') return 'connect';
-  if (state === 'muted') return 'live';
-  return 'hot-mute';
+const health = { frames: 0, firstFrameMs: 0, lastPaintAt: 0, startedAt: 0, idle: false };
+
+export function orbFrameStats(nowMs: number = typeof performance === 'undefined' ? Date.now() : performance.now()): MiniOrbFrameStats {
+  const seconds = health.startedAt > 0 ? Math.max((nowMs - health.startedAt) / 1000, 0.001) : 0;
+  const fps = seconds > 0 ? health.frames / seconds : 0;
+  return {
+    frames: health.frames,
+    firstFrameMs: Math.round(health.firstFrameMs),
+    // A reduced-motion page idles on purpose; a page that stopped painting stops being alive.
+    alive: health.idle || (health.lastPaintAt > 0 && nowMs - health.lastPaintAt < 2500),
+    fpsBucket: Math.min(120, Math.round(fps / 10) * 10),
+  };
 }
+
+/** The app reads the page's loop health through this one function. */
+interface OrbFrameHost { didiOrbFrameStats?: () => MiniOrbFrameStats }
+
+function installOrbFrameStats(host: OrbFrameHost = globalThis as OrbFrameHost): void {
+  host.didiOrbFrameStats = () => orbFrameStats();
+}
+installOrbFrameStats();
 
 /** The visual the loop last painted, so a strip can prove a transition moved the colour
  *  without anyone opening an image. */
@@ -108,18 +123,6 @@ export function pillState(stage: Element | null | undefined): MiniState {
   return value === 'listening' || value === 'thinking' || value === 'tool' || value === 'speaking'
     || value === 'muted' || value === 'connecting' || value === 'error' ? value : 'idle';
 }
-
-/** M3-R2: the native press asks the page which of the three steps it means, because the
- *  page owns the state it paints; the app then runs its one native toggle. */
-export interface PillClickHost { didiClickStep?: () => PresenceStep }
-
-export function installMiniClick(host: PillClickHost = globalThis as PillClickHost): void {
-  host.didiClickStep = () => {
-    if (typeof document === 'undefined') return 'connect';
-    return clickStep(pillState(document.querySelector('.mini-stage')));
-  };
-}
-installMiniClick();
 
 /** The pill's one animation loop, and the seams a test needs to run it without a browser. */
 export interface MiniOrbScope {
@@ -148,6 +151,9 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
     || (!document.hidden && (globalThis as { didiNativeSurfaceVisible?: boolean }).didiNativeSurfaceVisible !== false);
   const paint = () => {
     const at = now();
+    health.frames += 1;
+    health.lastPaintAt = at;
+    if (health.firstFrameMs === 0) health.firstFrameMs = at;
     const stage = doc.querySelector('.mini-stage');
     machine.request(visualState(pillState(stage)), at);
     const visual = machine.visual(at);
@@ -166,17 +172,19 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   };
   const step = () => {
     handle = undefined;
-    if (stopped || !visible()) return;
-    paint();
+    if (stopped) return;
+    // ORB-107: a hidden surface paints nothing but never stops scheduling. One hidden tick used
+    // to end the loop here, and only WebKit's own visibility signal could bring it back.
+    if (visible()) paint();
     if (!reducedMotion()) handle = frame(step);
   };
   const refresh = () => {
     if (handle !== undefined) cancel?.(handle);
     handle = undefined;
-    if (!visible()) return;
-    paint();
-    if (!reducedMotion()) handle = frame(step);
+    if (!stopped) step();
   };
+  health.idle = reducedMotion();
+  health.startedAt = now();
   refreshVisuals = paint;
   if (typeof window !== 'undefined') window.addEventListener('didi-surface-visibility', refresh);
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);

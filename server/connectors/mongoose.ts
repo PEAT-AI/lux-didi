@@ -3,6 +3,7 @@ import { tokenIdentity, type IdentityProof, type TokenClaimSpec } from './identi
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
+import { hostLogEvent } from '../tools/host-events.js';
 
 /**
  * The three Mongoose endpoints release 1023b serves, each its own OAuth resource with its own token.
@@ -39,8 +40,8 @@ export function mongooseTokenIdentity(token: string, endpoint: MongooseEndpoint,
  * endpoint. A name outside this list is refused before dispatch, whatever the remote annotates.
  */
 export const MONGOOSE_ENDPOINT_TOOLS: Readonly<Record<MongooseEndpoint, readonly string[]>> = {
-  knowledge: ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started'],
-  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields'],
+  knowledge: ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started', 'check_data_capability'],
+  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields', 'ask_data_agent', 'data_agent_job'],
   crm: ['get_company', 'list_inbound_leads', 'list_inbound_lead_events', 'summarize_email_engagements'],
 };
 
@@ -57,7 +58,7 @@ export const MONGOOSE_DENIED_TOOLS: readonly string[] = [
   'create_content', 'create_scheduled_delivery', 'set_project', 'update_content', 'run_sql',
   'get_access_report', 'list_seed_conflicts', 'list_users', 'provision_user', 'resolve_seed_conflict', 'set_user_access',
   'ask_mongoose', 'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'get_company_crm',
-  'get_ticket', 'check_data_capability', 'get_efficacy_evidence', 'get_knowledge_graph', 'get_knowledge_item_schema',
+  'get_ticket', 'get_efficacy_evidence', 'get_knowledge_graph', 'get_knowledge_item_schema',
   'get_reach', 'lint_knowledge', 'list_data_capabilities', 'list_knowledge_domains', 'list_knowledge_edges',
   'list_knowledge_item_versions', 'list_knowledge_items', 'list_markets', 'list_offerings', 'list_user_handles',
   'get_query_result', 'resolve_url', 'search_field_values', 'get_current_project', 'list_projects',
@@ -143,6 +144,14 @@ export const MONGOOSE_FAILURE_STAGES = ['credential', 'spawn', 'handshake', 'fir
 export type MongooseFailureStage = (typeof MONGOOSE_FAILURE_STAGES)[number];
 
 /**
+ * LAT-1022: the closed stage a connector request ended in. `call` is the request itself reaching the
+ * connector; the four connect stages are the ones a request dies in before the connector ever answers, so a
+ * slow or failed request is attributable to one word instead of being hidden inside the tool's total.
+ */
+export const MONGOOSE_REQUEST_STAGES = ['call', ...MONGOOSE_FAILURE_STAGES] as const;
+export type MongooseRequestStage = (typeof MONGOOSE_REQUEST_STAGES)[number];
+
+/**
  * The only stored record fields a local credential verdict may read (key names, never values): whether
  * refresh material exists, and when the consent family started. An access token's own expiry is not
  * one of them, because an expired token alone proves nothing about whether a refresh will work.
@@ -207,17 +216,25 @@ export interface MongooseEvidence extends SourceDispatchEvidence {
   coverage: CompletedResult['coverage'];
   projection: CompletedResult['projection'];
   response: StoredPayload;
-  /** The verified second read of a hit's ref, when the caller asked for depth. */
-  followUp?: { tool: string; decodedResult: unknown; payload: StoredPayload };
+  /** The verified second read of a hit's ref, paged until the server says the coverage is complete. */
+  followUp?: { tool: string; depth?: ReadInput['depth']; pages: readonly MongooseFollowUpPage[]; omitted?: 'cursor_budget' | undefined };
 }
 export interface MongooseRefused { state: 'refused'; reason: string }
 export interface MongooseUnknown { state: 'unknown'; reason: string }
 export type MongooseResult = MongooseEvidence | MongooseRefused | MongooseUnknown;
 
+/** One page of the follow-up read: its decoded envelope behind the payload it was verified from. */
+export interface MongooseFollowUpPage { decodedResult: unknown; payload: StoredPayload }
+
+/** The pages one follow-up read may take, so a deep profile cannot spend the whole source budget. */
+export const MONGOOSE_FOLLOWUP_PAGES = 3;
+
 /** One company lookup: mode answer answers a question and reads its top hit; mode browse lists entities. */
 export interface SearchInput {
   query: string;
   mode?: 'answer' | 'browse';
+  /** The depth a question asks for its own body: a depth ask reads at full, an ordinary one at summary. */
+  depth?: ReadInput['depth'];
   limit?: number;
   cursor?: string;
   verbose?: boolean;
@@ -238,7 +255,11 @@ export interface MongooseReader {
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult>;
 }
 
-export interface MongooseOptions { port: McpPort; registry: McpRegistry; config: MongooseConfig }
+export interface MongooseOptions {
+  port: McpPort; registry: McpRegistry; config: MongooseConfig;
+  /** LAT-1022: the request clock, so a test can drive a connector_request duration without a real wait. */
+  now?: (() => number) | undefined;
+}
 
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
@@ -281,6 +302,7 @@ function preflight(registry: McpRegistry, settings: Settings, envelope: readonly
 
 export function createMongooseReader(options: MongooseOptions): MongooseReader {
   const { port, registry, config } = options;
+  const now = options.now ?? Date.now;
   const envelope = MONGOOSE_ENDPOINT_TOOLS[config.endpoint];
   const settings: Settings = {
     endpointId: config.endpointId,
@@ -295,7 +317,21 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
 
   const schemaValidator = new AjvJsonSchemaValidator();
 
+  /**
+   * LAT-1022: one connector_request line per request, written at its end. Connector, stage, duration and the
+   * call's own closed state; never the tool's arguments, never an answer. The stage is the one the request
+   * ENDED in: `call` when the connector answered, and otherwise the connect stage the closed failure token names
+   * (`mongooseFailureStage` below, which is where each of those stages is defined).
+   */
+  const meter = (startedAt: number, state: MongooseResult['state'], reason?: string): void => {
+    hostLogEvent({ event: 'connector_request', connector: `mongoose-${config.endpoint}`,
+      stage: state === 'completed' ? 'call' as MongooseRequestStage : mongooseFailureStage(reason ?? 'first_call'),
+      ms: Math.max(0, now() - startedAt),
+      outcome: state === 'completed' ? 'ok' : state === 'refused' ? 'refused' : state === 'unknown' ? 'unknown' : 'failed' });
+  };
+
   async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
+    const startedAt = now();
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -304,13 +340,14 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       account: settings.account,
       resource: settings.resource,
     };
-    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    if (signal?.aborted) { meter(startedAt, 'refused'); return { state: 'refused', reason: 'cancelled-before-dispatch' }; }
     // Validate the actual bounded dispatch arguments against the original discovered schema.
     const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
-    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) return { state: 'refused', reason: 'original-schema-arguments-refused' };
+    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) { meter(startedAt, 'refused'); return { state: 'refused', reason: 'original-schema-arguments-refused' }; }
     const result: CallResult = await port.call(request, signal);
-    if (isFailed(result)) return { state: result.state, reason: result.reason };
-    if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
+    if (isFailed(result)) { meter(startedAt, result.state, result.reason); return { state: result.state, reason: result.reason }; }
+    if (signal?.aborted) { meter(startedAt, 'unknown'); return { state: 'unknown', reason: 'cancelled-after-dispatch' }; }
+    meter(startedAt, result.state);
     return {
       state: result.state,
       tool,
@@ -343,13 +380,43 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     return args;
   }
 
-  /** The top hit's ref, read in a second call so the answer carries the entity behind it. */
+  /**
+   * G1: a `handoff` outcome carries the tool the server wants asked next. When that name is one this
+   * endpoint's own envelope serves, it is asked here, once, with the owner's question; a name outside the
+   * envelope (or on another endpoint, whose token this reader does not hold) is left to the projection,
+   * which already shows `next_tool` to the model.
+   */
+  async function handoffRead(evidence: MongooseEvidence, query: string | undefined, signal?: AbortSignal): Promise<MongooseResult | undefined> {
+    const parsed = envelopeOf(evidence.decodedResult);
+    if (parsed?.['outcome'] !== 'handoff') return undefined;
+    const next = parsed['next_tool'];
+    const tool = next !== null && typeof next === 'object' && !Array.isArray(next) ? (next as Record<string, unknown>)['tool'] : undefined;
+    if (typeof tool !== 'string' || !envelope.includes(tool)) return undefined;
+    const call = await dispatch(tool, query === undefined ? {} : { query }, signal);
+    if (call.state !== 'completed') return undefined;
+    return { ...evidence, followUp: { tool, pages: [{ decodedResult: call.decodedResult, payload: call.response }] } };
+  }
+
+  /** The top hit's ref, read in a second call so the answer carries the entity behind it, paged by the
+   *  server's own `next_cursor` until `coverage.complete` or the page budget ends it. A budget that ends
+   *  first is reported as `cursor_budget`, never hidden. */
   async function followUpRead(evidence: MongooseEvidence, depth: ReadInput['depth'], signal?: AbortSignal): Promise<MongooseResult> {
     const ref = topRef(evidence.decodedResult);
     if (ref === undefined) return evidence;
-    const read = await dispatch('read', { ref, depth }, signal);
-    if (read.state !== 'completed') return read;
-    return { ...evidence, followUp: { tool: 'read', decodedResult: read.decodedResult, payload: read.response } };
+    const pages: MongooseFollowUpPage[] = [];
+    let cursor: string | undefined;
+    let omitted: 'cursor_budget' | undefined;
+    for (let page = 0; page < MONGOOSE_FOLLOWUP_PAGES; page += 1) {
+      const read = await dispatch('read', { ref, depth, ...(cursor === undefined ? {} : { cursor }) }, signal);
+      // A page after the first that fails keeps the pages already paid for and names the omission.
+      if (read.state !== 'completed') { if (pages.length === 0) return read; omitted = 'cursor_budget'; break; }
+      pages.push({ decodedResult: read.decodedResult, payload: read.response });
+      if (coverageComplete(read.decodedResult)) { omitted = undefined; break; }
+      cursor = nextCursor(read.decodedResult);
+      omitted = 'cursor_budget';
+      if (cursor === undefined) break;
+    }
+    return { ...evidence, followUp: { tool: 'read', ...(depth === undefined ? {} : { depth }), pages, ...(omitted === undefined ? {} : { omitted }) } };
   }
 
   return {
@@ -362,12 +429,18 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       // Only the published search schema's own keys go on the wire: query, mode, limit, cursor, verbose.
-      const args = typedArgs(input, ['query', 'mode', 'limit', 'cursor', 'verbose'], ['query', 'cursor']);
+      // `depth` is the host's own follow-up depth, never a wire argument: it stays off the search call.
+      const { depth, ...searchInput } = input;
+      const args = typedArgs(searchInput, ['query', 'mode', 'limit', 'cursor', 'verbose'], ['query', 'cursor']);
       if (!args) return { state: 'refused', reason: 'invalid-search-input' };
       const mode = input.mode ?? 'answer';
       const evidence = await dispatch('search', { ...args, query, mode, ...bounded }, signal);
       // A question reads the hit behind it; a browse lists and never spends a second call.
-      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, 'summary', signal);
+      if (evidence.state === 'completed' && mode === 'answer') {
+        const handoff = await handoffRead(evidence, query, signal);
+        if (handoff !== undefined) return handoff;
+        return followUpRead(evidence, input.depth ?? 'summary', signal);
+      }
       return evidence;
     },
     async read(input: ReadInput, signal?: AbortSignal): Promise<MongooseResult> {
@@ -392,7 +465,20 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const denied = preflight(registry, settings, envelope, tool);
       if (denied) return { state: 'refused', reason: denied };
       if (!args || typeof args !== 'object' || Array.isArray(args) || JSON.stringify(args).length > 4000) return { state: 'refused', reason: 'invalid-arguments' };
-      return dispatch(tool, args, signal);
+      // A routed research lookup names the depth it wants its own body read at. That is the host's own
+      // follow-up depth, never a published search argument, so it stays off the wire exactly as it does
+      // on the typed `search` above, and the follow-up runs here too.
+      if (tool !== 'search') return dispatch(tool, args, signal);
+      const evidence = await dispatch('search', args, signal);
+      const mode = typeof args['mode'] === 'string' ? args['mode'] : 'answer';
+      // The routed research leg reads the body behind the hit at full depth: it is the ask that has no
+      // second chance to page, and a summary that stops at the first section is the defect this fixes.
+      if (evidence.state === 'completed' && mode === 'answer') {
+        const handoff = await handoffRead(evidence, typeof args['query'] === 'string' ? args['query'] : undefined, signal);
+        if (handoff !== undefined) return handoff;
+        return followUpRead(evidence, 'full', signal);
+      }
+      return evidence;
     },
   };
 }
@@ -406,6 +492,19 @@ export function topRef(decoded: unknown): string | undefined {
   if (!first || typeof first !== 'object' || Array.isArray(first)) return undefined;
   const ref = (first as Record<string, unknown>)['ref'];
   return typeof ref === 'string' && ref.length > 0 && ref.length <= 512 ? ref : undefined;
+}
+
+/** The cursor that continues a clipped read, when the server returned one. */
+export function nextCursor(decoded: unknown): string | undefined {
+  const cursor = envelopeOf(decoded)?.['next_cursor'];
+  return typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 512 ? cursor : undefined;
+}
+
+/** Whether one page is the whole body: absent coverage, or coverage.complete true, is complete. */
+export function coverageComplete(decoded: unknown): boolean {
+  const coverage = envelopeOf(decoded)?.['coverage'];
+  if (coverage === undefined || coverage === null || typeof coverage !== 'object' || Array.isArray(coverage)) return true;
+  return (coverage as Record<string, unknown>)['complete'] !== false;
 }
 
 /** The JSON body of one MCP result: the first text content block, parsed when it is JSON. */

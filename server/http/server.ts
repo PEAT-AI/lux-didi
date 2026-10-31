@@ -198,7 +198,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             send(res, 200, success({ status: 'ok' })); return;
           }
           if (url.pathname === '/api/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
-            shell.report({ assertion: body.assertion, notifications: body.notifications });
+            // #107: the shell sends its permission state only after it resolved, so a guess is never reported.
+            const notificationState = body.notificationState === 'allowed' || body.notificationState === 'denied' || body.notificationState === 'not_asked'
+              ? body.notificationState : undefined;
+            shell.report({ assertion: body.assertion, notifications: body.notifications, ...(notificationState ? { notificationState } : {}) });
             const health = shell.health();
             if (health.degraded) for (const alarm of scheduler.list().filter(row => row.state === 'pending' || row.state === 'ringing')) {
               for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
@@ -208,6 +211,20 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
           if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
             scheduler.recheck(body.reason as AlarmRecheck); send(res, 200, success({ status: 'ok' })); return;
+          }
+          // #107: the app's one relaunch agent, named by the next due time it was armed for.
+          if (url.pathname === '/api/v1/alarms/relaunch' && body.action === 'scheduled' && typeof body.dueInS === 'number' && Number.isFinite(body.dueInS)) {
+            diagnosticLog.event({ event: 'alarm_relaunch_scheduled', dueInS: Math.max(0, Math.round(body.dueInS)) });
+            send(res, 200, success({ status: 'ok' })); return;
+          }
+          if (url.pathname === '/api/v1/alarms/relaunch' && body.action === 'removed') {
+            diagnosticLog.event({ event: 'alarm_relaunch_removed' });
+            send(res, 200, success({ status: 'ok' })); return;
+          }
+          // #107: launchd refused the agent, so no relaunch exists for the next due alarm.
+          if (url.pathname === '/api/v1/alarms/relaunch' && body.action === 'failed') {
+            diagnosticLog.event({ event: 'alarm_relaunch_failed' });
+            send(res, 200, success({ status: 'ok' })); return;
           }
         }
         throw new ServiceError('BAD_REQUEST', 'Invalid alarm shell request');

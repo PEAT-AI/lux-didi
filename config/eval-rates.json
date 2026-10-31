@@ -1,0 +1,13 @@
+{
+  "note": "The owner fills these in. UNSET is a placeholder, never a zero: a run whose price cannot be computed refuses. Rates are US dollars per million tokens, learned from the owner's own provider billing page.",
+  "model": {
+    "name": "UNSET",
+    "inputUsdPerMTok": "UNSET",
+    "outputUsdPerMTok": "UNSET"
+  },
+  "judge": {
+    "name": "UNSET",
+    "inputUsdPerMTok": "UNSET",
+    "outputUsdPerMTok": "UNSET"
+  }
+}

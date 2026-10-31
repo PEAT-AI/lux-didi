@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Tier 3 post-call auto-review, by hand. Reads the metadata-only host log for one finished call and writes a
+# short report plus one draft synthetic fixture per finding class, into a local folder that git ignores.
+#
+#   scripts/didi-postcall-review --session <liveSessionId> [--log <host.log>] [--out <dir>]
+#   scripts/didi-postcall-review --events <capture.jsonl> [--out <dir>]
+#
+# It never reads owner words: the host log is metadata only, and every draft fixture carries a tool name, an
+# argument-key shape, an outcome code and a timing value. Nothing is written inside the repository except under
+# the git-ignored server/eval-out/.
+set -euo pipefail
+export CI=1
+root="$(cd "$(dirname "$0")/.." && pwd)"
+deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
+if [[ -L "$deps" ]]; then
+  echo 'BLOCKED: server/node_modules is a symlink; run npm ci in this worktree server/' >&2
+  exit 2
+fi
+if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
+  echo 'POSTCALL BLOCKED: the server dependencies (typescript, @types/node) are not installed; run npm ci in server/' >&2
+  exit 2
+fi
+cd "$root/server"
+# The review is a library the host links, so a by-hand run builds once and then reviews. `tsc -p` writes dist/.
+"$deps/typescript/bin/tsc" -p tsconfig.json >/dev/null
+default_out="$root/server/eval-out/postcall"
+if [[ ! " $* " =~ " --out " ]]; then
+  set -- "$@" --out "$default_out"
+fi
+exec node dist/trace/postcall.js "$@"

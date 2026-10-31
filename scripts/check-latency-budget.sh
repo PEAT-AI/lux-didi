@@ -16,7 +16,7 @@ run() {
 }
 
 echo "latency budget, normal fakes"
-run 2>&1 | tee "$work/fast.log" | grep -E '^(ok|not ok|# (pass|fail))|budget=' || true
+LATENCY_BUDGET_SLOW=0 run 2>&1 | tee "$work/fast.log" | grep -E '^(ok|not ok|# (pass|fail))|budget=' || true
 grep -Eq '^# fail 0$' "$work/fast.log" || { echo 'the latency budget eval failed on a normal fake' >&2; tail -40 "$work/fast.log" >&2; exit 1; }
 grep -Eq 'budget=' "$work/fast.log" || { echo 'the eval printed no segment' >&2; exit 1; }
 

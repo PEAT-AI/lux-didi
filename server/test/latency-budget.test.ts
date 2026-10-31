@@ -76,6 +76,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_2' } }));
   opened.socket.deliver(toolCall('call_1'));
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_2' } }));
+  await until(() => opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'call_1')));
   clock.advance(fake(120));
   const writtenAt = clock.now();
   opened.session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
@@ -86,6 +87,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   opened.socket.deliver(toolCall('call_2'));
   opened.socket.deliver(toolCall('call_3'));
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_4' } }));
+  await until(() => opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'call_3')));
   clock.advance(fake(60));
   opened.session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: true } }, { id: 'call_3', name: 'research', response: { ok: true } }] });
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_5' } }));
@@ -143,8 +145,15 @@ test('LAT-1022: a connector request reports its own duration through the real mo
         coverage: {}, decodedResult: { ok: true }, projection: {}, payload: { ok: true } } as unknown as never;
     },
   };
-  const reader = createMongooseReader({ port: port as never, registry: { visibleTools: () => [] } as never,
-    config: { endpointId: 'mongoose-knowledge', endpoint: 'knowledge', account: 'synthetic', resource: 'synthetic', schemaDigest: 'synthetic',
+  const digest = 'synthetic-digest';
+  // The grant the reader preflights: a read grant for the one tool this endpoint serves, on this generation.
+  const registry = {
+    endpoint: () => ({ id: 'mongoose-knowledge' }),
+    currentGrant: () => ({ schemaDigest: digest, generation: 1, effect: 'read', toolNames: ['search'] }),
+    visibleTools: () => [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {}, additionalProperties: true } }],
+  };
+  const reader = createMongooseReader({ port: port as never, registry: registry as never,
+    config: { endpointId: 'mongoose-knowledge', endpoint: 'knowledge', account: 'synthetic', resource: 'synthetic', schemaDigest: digest,
       generation: 1, maxSearchLimit: 5, maxListLimit: 10, queryChars: 100 } as never, now: () => clock.now() });
   const result = await reader.call('search', { query: 'synthetic' });
   const request = lines.find(line => line['event'] === 'connector_request');

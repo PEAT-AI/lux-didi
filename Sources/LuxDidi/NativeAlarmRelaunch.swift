@@ -20,10 +20,10 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
 }
 
 @MainActor final class NativeAlarmRelaunchWriter {
-    static let label = "ai.peat.lux-didi.alarm"
-    static let fileName = "ai.peat.lux-didi.alarm.plist"
-    static let launchArgument = "--alarm-relaunch"
-    static let leadMs = 60_000
+    nonisolated static let label = "ai.peat.lux-didi.alarm"
+    nonisolated static let fileName = "ai.peat.lux-didi.alarm.plist"
+    nonisolated static let launchArgument = "--alarm-relaunch"
+    nonisolated static let leadMs = 60_000
 
     /// The write receipt of the last arm, or nil when nothing was pending.
     private(set) var armedStartMs: Int?
@@ -45,7 +45,7 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
     var plistURL: URL { directory.appendingPathComponent(Self.fileName) }
 
     /// The agent fires before the due time so app start, host start and provider connect are done.
-    static func startMs(dueMs: Int) -> Int { dueMs - leadMs }
+    nonisolated static func startMs(dueMs: Int) -> Int { dueMs - leadMs }
 
     /// One agent for the earliest pending alarm, rewritten on every mutation, gone when nothing is pending.
     func sync(pendingDueMs: [Int], now: () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }) {
@@ -80,7 +80,7 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
     }
 
     /// One plist, closed fields, and the launch argument that makes the alarm the reason for the launch.
-    static func plist(startMs: Int, label: String, appPath: String, calendar: Calendar = .current) -> String {
+    nonisolated static func plist(startMs: Int, label: String, appPath: String, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute],
                                             from: Date(timeIntervalSince1970: TimeInterval(startMs) / 1000))
         func escape(_ value: String) -> String {
@@ -117,6 +117,6 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
     }
 
     /// A launch that carries the argument exists only to announce the alarm it was armed for.
-    static func present(arguments: [String]) -> Bool { arguments.contains(launchArgument) }
-    static var launchKind: String { "alarm_relaunch" }
+    nonisolated static func present(arguments: [String]) -> Bool { arguments.contains(launchArgument) }
+    nonisolated static var launchKind: String { "alarm_relaunch" }
 }

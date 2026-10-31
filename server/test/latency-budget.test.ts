@@ -56,37 +56,37 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   const toolCall = (id: string): Record<string, unknown> => delegated('response.output_item.done', { item: { type: 'function_call', call_id: id, name: 'research', arguments: '{"q":"synthetic"}' } });
 
   // A plain turn: the owner speaks, the capture path's quiet rule declares the end of speech, the provider answers.
-  opened.f.send({ type: 'session.input_transcript.delta', delta: 'synthetic question' });
+  opened.socket.send({ type: 'session.input_transcript.delta', delta: 'synthetic question' });
   clock.advance(700);
-  opened.f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_1' } }));
   clock.advance(fake(1_200));
   const afterCreate = clock.now();
-  opened.f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  opened.socket.send({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
   clock.advance(fake(400));
-  opened.f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+  opened.socket.send(delegated('response.done', { response: { id: 'resp_1' } }));
 
   // A one-tool turn: the call is announced, the host answers it, and the provider opens the continuation.
-  opened.f.send(delegated('response.created', { response: { id: 'resp_2' } }));
-  opened.f.send(toolCall('call_1'));
-  opened.f.send(delegated('response.done', { response: { id: 'resp_2' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_2' } }));
+  opened.socket.send(toolCall('call_1'));
+  opened.socket.send(delegated('response.done', { response: { id: 'resp_2' } }));
   clock.advance(fake(120));
   const writtenAt = clock.now();
   opened.session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-  opened.f.send(delegated('response.created', { response: { id: 'resp_3' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_3' } }));
 
   // A two-tool batch: one continuation answers both.
-  opened.f.send(delegated('response.created', { response: { id: 'resp_4' } }));
-  opened.f.send(toolCall('call_2'));
-  opened.f.send(toolCall('call_3'));
-  opened.f.send(delegated('response.done', { response: { id: 'resp_4' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_4' } }));
+  opened.socket.send(toolCall('call_2'));
+  opened.socket.send(toolCall('call_3'));
+  opened.socket.send(delegated('response.done', { response: { id: 'resp_4' } }));
   clock.advance(fake(60));
   opened.session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: true } }, { id: 'call_3', name: 'research', response: { ok: true } }] });
-  opened.f.send(delegated('response.created', { response: { id: 'resp_5' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_5' } }));
 
   // A silent continuation: the provider opens a response and never sends audio; the host's rung is the bound.
-  opened.f.send(delegated('response.created', { response: { id: 'resp_6' } }));
+  opened.socket.send(delegated('response.created', { response: { id: 'resp_6' } }));
   clock.advance(fake(2_000));
-  opened.f.send(delegated('response.done', { response: { id: 'resp_6' } }));
+  opened.socket.send(delegated('response.done', { response: { id: 'resp_6' } }));
 
   const names = lines.map(line => line['event']);
   for (const name of ['owner_speech_end', 'response_first_audio', 'provider_output_ack']) assert.ok(names.includes(name), `${name} reached the host log`);

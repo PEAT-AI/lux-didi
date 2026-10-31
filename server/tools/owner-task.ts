@@ -198,7 +198,9 @@ export class OwnerTasks implements OwnerTaskPort {
     for (const command of commands) {
       const open = task.operations.filter(operation => operation.kind === command.kind && operation.state !== 'done');
       const amendable = open.at(-1);
-      if (amendable !== undefined && command.amendment) { amendable.fields = command.fields; continue; }
+      // While an operation of this kind is open, the owner's further words amend it: a restarted
+      // sentence is not a second write. A further operation needs the earlier one consumed first.
+      if (amendable !== undefined) { if (command.amendment) amendable.fields = command.fields; continue; }
       task.operations.push({ operationId: `op-${++task.sequence}`, kind: command.kind, fields: command.fields, words, state: 'open' });
     }
   }

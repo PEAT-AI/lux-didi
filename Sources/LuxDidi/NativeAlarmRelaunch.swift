@@ -68,15 +68,16 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
     }
 
     private func arm(startMs: Int, dueMs: Int, now: Int) {
+        // The same due time needs no churn: a reconnect replays rows that are already armed.
+        if armedStartMs == startMs, FileManager.default.fileExists(atPath: plistURL.path) { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let plist = Self.plist(startMs: startMs, label: Self.label, appPath: appPath())
         try? Data(plist.utf8).write(to: plistURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plistURL.path)
         try? runner.run(["bootout", "\(domain)/\(Self.label)"])
         try? runner.run(["bootstrap", domain, plistURL.path])
-        let repeated = armedStartMs == startMs
         armedStartMs = startMs
-        if !repeated { onEvent?(max(0, (dueMs - now) / 1000)) }
+        onEvent?(max(0, (dueMs - now) / 1000))
     }
 
     /// One plist, closed fields, and the launch argument that makes the alarm the reason for the launch.

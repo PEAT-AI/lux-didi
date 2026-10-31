@@ -82,6 +82,8 @@ import WebKit
     /// #107: the one user LaunchAgent that brings her back for the next due alarm.
     private lazy var alarmRelaunch = NativeAlarmRelaunchWriter()
     private var pendingAlarmDueMs: [Int] = []
+    /// Nothing rewrites the agent before the shell has reported the real rows once.
+    private var alarmRowsKnown = false
     private var installedCanaryWatch: Task<Void, Never>?
     private(set) var client: CompanionClient? { didSet { bindAlarmShell() } }
     private func bindAlarmShell() {
@@ -96,6 +98,7 @@ import WebKit
         shell.onAlarms = { [weak self] rows in
             guard let self else { return }
             self.pendingAlarmDueMs = rows.filter { $0.state == "pending" }.map(\.fireAtUtc)
+            self.alarmRowsKnown = true
             self.alarmRelaunch.sync(pendingDueMs: self.pendingAlarmDueMs)
         }
         alarmRelaunch.onEvent = { [weak shell] dueInS in shell?.reportRelaunch(dueInS: dueInS) }
@@ -104,7 +107,7 @@ import WebKit
     /// #107: a quit keeps the next alarm armed, so the agent is rewritten from the last rows and a
     /// quit never disarms a wake-up; an empty schedule removes it.
     func stopAlarms() {
-        alarmRelaunch.rewrite(pendingDueMs: pendingAlarmDueMs)
+        if alarmRowsKnown { alarmRelaunch.rewrite(pendingDueMs: pendingAlarmDueMs) }
         alarmShell?.stop(); alarmShell = nil
     }
     /// The one live page-session cookie, obtained once by `bootstrap()` and

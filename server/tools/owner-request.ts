@@ -2,6 +2,10 @@ import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types
 import { COMPOSE_GRANT_KINDS, composeGrantKinds, type ComposeGrantKind } from './compose.js';
 const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
 const alarmCue = /\balarm\b|\bwake me\b|\bremind me\b/i;
+/** #795: the model handed the ask back as a question, so his next final is still the answer to it. */
+const questionBack = /\?\s*$|^\s*(?:how|what|which|when|who|where|should i|do you|would you|can you)\b/i;
+/** #795: a time, a length or a yes can settle the ask a question asked about; unrelated speech cannot. */
+const followUpCue = /(?:\d|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|hours?|minutes?|mins?|am|pm|noon|midnight|morning|afternoon|evening|night|tonight|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|yes|yeah|yep|sure|ok|okay|correct|right|please|go ahead)\b)/i;
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
   id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
@@ -48,7 +52,9 @@ export class OwnerRequests implements OwnerRequestPort {
     if (alarmWords !== undefined) grants.set('set_alarm', {});
     // Each write tool carries its own intent: drafting, messaging, scheduling or cancelling.
     for (const kind of composeGrantKinds(words)) grants.set(kind, {});
-    if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
+    // #795: a grant held across the model's question is joined only by an answer that can settle it.
+    const carriesOn = previous?.pending?.field !== 'model_question' || followUpCue.test(words);
+    if (previous && carriesOn && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
       const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
       if (!relative.test(previous.words) && relative.test(combined)) previous.observedAt = observedAt;
@@ -80,7 +86,16 @@ export class OwnerRequests implements OwnerRequestPort {
     delete request.alarmWords;
     if (request.pending?.kind === 'set_alarm') delete request.pending;
   }
-  answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }
+  answered(session: string, spoken?: string): void {
+    const request = this.requests.get(session);
+    if (!request) return;
+    request.answered = true;
+    // #795: when the model answers a write ask with a question, the grant the ask already earned waits for
+    // his reply inside the same window, exactly as a split alarm cue does. The reply still has to settle it.
+    if (spoken === undefined || !questionBack.test(spoken.trim())) return;
+    const held = [...request.grants.keys()].find(kind => COMPOSE_GRANT_KINDS.includes(kind as ComposeGrantKind) && request.grants.get(kind)?.target === undefined);
+    if (held !== undefined) request.pending = { kind: held, field: 'model_question' };
+  }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
     if (!request || request.answered) return { code: 'no_owner_request' };

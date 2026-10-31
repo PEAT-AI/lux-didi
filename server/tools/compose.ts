@@ -237,7 +237,7 @@ export const COMPOSE_TOOLS: Readonly<Record<ComposeName, ComposeTool>> = {
   },
   create_event: {
     description: 'Put an owner-only block on his own calendar from the day and time he said. Never invite anyone; another name goes in the description. The host reads the time from his words, so give no start or end.',
-    parameters: { type: 'object', properties: { summary: { type: 'string' }, duration_minutes: { type: 'number', description: 'Only when he said how long it lasts; the host reads his words first.' } }, required: ['summary'], additionalProperties: false },
+    parameters: { type: 'object', properties: { summary: { type: 'string' }, duration_minutes: { type: 'integer', minimum: 5, maximum: 720, description: 'Only when he said how long it lasts; omit otherwise, because the host reads the length from his own words.' } }, required: ['summary'], additionalProperties: false },
     validate: validateCreateEvent,
   },
   delete_event: {

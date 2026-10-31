@@ -716,7 +716,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
         description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
-        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' }, kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Optional recurrence the owner stated in their own words; the host verifies it against them.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Optional weekly weekday set, 0 Sunday to 6 Saturday, verified against the owner words.' } }, additionalProperties: false },
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' }, kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Only when he said a repeat word of his own: every day, weekdays, every Monday. Omit it for a one-time alarm; the host refuses a repeat he did not say.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Only with a weekly repeat he said: 0 Sunday to 6 Saturday, verified against his own words. Omit otherwise.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
@@ -783,7 +783,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');
-            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) return finish({ status: 'refused', reason: 'rule_mismatch' });
+            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) return finish({ status: 'refused', reason: 'rule_mismatch', fixNotForSpeech: 'He said no repeat: call set_alarm once more for the same time with kind and weekdays omitted.' });
             if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });

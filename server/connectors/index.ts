@@ -535,7 +535,11 @@ function chatRejection(args: Record<string, unknown>): string | undefined {
   if (typeof args['query'] === 'string' && PLACEHOLDER_QUERIES.has(args['query'].trim().toLowerCase())) return 'query:placeholder';
   if (args['order'] !== undefined && args['order'] !== 'oldest' && args['order'] !== 'newest') return 'order:unknown';
   if (args['people'] !== undefined && !(Array.isArray(args['people']) && args['people'].length >= 2 && args['people'].length <= MATTERMOST_CHAT.maxPeople && args['people'].every(name => isText(name, 80)))) return 'people:min2';
-  if (['from_date', 'to_date'].some(key => args[key] !== undefined && !(typeof args[key] === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(args[key] as string)))) return 'dates:format';
+  // C-ARGS: each date names its own key, so one refusal can name both dates instead of one shared token.
+  for (const key of ['from_date', 'to_date'] as const) {
+    const value = args[key];
+    if (value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value))) return `${key}:format`;
+  }
   if (args['sides'] !== undefined && args['sides'] !== 'theirs' && args['sides'] !== 'both') return 'sides:unknown';
   if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return 'offset:range';
   if (args['limit'] !== undefined && !isCount(args['limit'], 1, 50)) return 'limit:range';

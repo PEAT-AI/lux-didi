@@ -32,9 +32,9 @@ test('a non-empty value of a key the intent reads is kept and refused, and every
   assert.equal(args['limit'], 100);
   assert.equal(args['from_date'], 'yesterday');
   const violations = argumentViolationsOf(chat, args);
-  assert.deepEqual(violations, ['limit:range', 'dates:format'], 'both violations come back in one answer');
+  assert.deepEqual(violations, ['from_date:format', 'limit:range'], 'both violations come back in one answer');
   const fields = argumentViolations(`Invalid arguments for mattermost_chat. Rejected arguments: ${violations.join(', ')}. Expected an object with intent (string).`);
-  assert.deepEqual(fields, [{ field: 'limit', reason: 'range' }, { field: 'from_date', reason: 'format' }]);
+  assert.deepEqual(fields, [{ field: 'from_date', reason: 'format' }, { field: 'limit', reason: 'range' }]);
   assert.equal(JSON.stringify(violations).includes('yesterday'), false, 'a violation carries a rule, never a value');
   assert.equal(JSON.stringify(violations).includes('100'), false);
 });

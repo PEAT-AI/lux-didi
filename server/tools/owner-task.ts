@@ -235,6 +235,9 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
+      // An empty target is the grant-point probe: it asks whether any open authority exists, and the
+      // handler decides replay against spent with its own canonical target.
+      if (target === '') return { ...common, code: task.openGrant || task.openReceipts.size > 0 ? 'allowed' : 'no_owner_request' };
       const receipt = task.openReceipts.get(target);
       if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
       if (task.openGrant) return { ...common, code: 'allowed' };

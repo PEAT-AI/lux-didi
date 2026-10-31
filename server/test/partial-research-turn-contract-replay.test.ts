@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_READ_CEILING, RESEARCH_READ_CEILING_NOTE, ResearchAdmission, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -564,4 +564,28 @@ test('R2: a source that settles at 8.7 s earns no still-searching line', async t
   assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
   assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
   assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
+});
+
+// C-RESEARCH #107 (D6): one read ceiling per owner task, shared by every connector, and a cut read is terminal.
+test('#107: the read ceiling bounds a long paged task and its reply is a terminal partial', async () => {
+  const clock = fakeClock();
+  const h = mailHarness(clock, page => mailPage([page], `page-${page + 1}`));
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  // The same gate the live host puts around its connector reads: one budget, taken before any read dispatches.
+  const execute = h.deps.execute;
+  let dispatched = 0;
+  h.deps.execute = async (subs, abort) => {
+    const allowed = admission.takeReads(subs.length);
+    dispatched += allowed;
+    if (allowed >= subs.length) return execute(subs, abort);
+    const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false,
+      text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
+    const kept = allowed === 0 ? [] : await execute(subs.slice(0, allowed), abort);
+    return [...kept, ...cut];
+  };
+  const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic long mail read', lookups: [{ source: 'mail', query: 'synthetic' }] }, new AbortController().signal);
+  assert.equal(admission.readsLeft(), 0, `the task read to its ceiling and no further: ${dispatched} dispatched`);
+  assert.equal(dispatched, RESEARCH_READ_CEILING, 'the ceiling is exactly what was dispatched');
+  assert.notEqual(reply['status'], 'complete', `a cut read is a terminal partial, never a complete answer: ${JSON.stringify(reply).slice(0, 400)}`);
 });

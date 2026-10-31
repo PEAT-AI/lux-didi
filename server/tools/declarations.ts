@@ -148,6 +148,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
   const { registry, host, seenIds } = ctx;
   const runOne = async (index: number, call: { id?: string; name: string; args: JsonObject }): Promise<CallOutcome> => {
       const executionId = `${host.runId}:${ctx.step}:${index}`;
+      process.stderr.write(`X4 call=${String(call.id)} exec=${executionId}\n`);
       const record: ToolRecord = { ...(call.id !== undefined ? { callId: call.id } : {}), name: call.name, executionId, status: 'refused', reason: 'unknown_tool' };
       const tool = registry.find(t => t.name === call.name);
       const refusal: ToolCallRefusal = {

@@ -3328,12 +3328,23 @@ export class LiveSessionOwner {
    * history is the journal seed and whose opening input is the pickup line. Returns false only on a
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
-  /** G-R13: execution ids are `runId:step:index`, so the step must never repeat within a session even
-   *  when a rebuild hands the work to a fresh handle. The counter's format is unchanged; the handle
-   *  simply continues from the session's high-water mark. */
-  #markStep(handle: ActiveSession): void {
+  /** G-R15: the step a batch runs under, never below the session's high-water mark, so execution ids
+   *  (`runId:step:index`) never repeat within a run. The handle's own numbering is preserved. */
+  #takeStep(handle: ActiveSession): number {
     const high = this.#stepHigh.get(handle.liveSessionId) ?? 0;
-    this.#stepHigh.set(handle.liveSessionId, Math.max(high, handle.toolStep));
+    const step = Math.max(handle.toolStep, high);
+    handle.toolStep = step + 1;
+    this.#stepHigh.set(handle.liveSessionId, step + 1);
+    return step;
+  }
+
+  /** G-R15: the pre-increment form of the same rule, for the batches that advance before they run. */
+  #bumpStep(handle: ActiveSession): number {
+    const high = this.#stepHigh.get(handle.liveSessionId) ?? 0;
+    const step = Math.max(handle.toolStep, high) + 1;
+    handle.toolStep = step;
+    this.#stepHigh.set(handle.liveSessionId, step);
+    return step;
   }
 
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
@@ -4344,7 +4355,9 @@ export class LiveSessionOwner {
       // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
       // retry). They shared handle.toolStep, so executionId (`runId:step:index`) collided and the journal
       // refused the second batch as tool_intent_exists. Take a fresh step per batch.
-      const step = handle.toolStep++; this.#markStep(handle);
+      // G-R15: the batch takes its step from the session high-water mark before any execution id in
+      // it is formed, so a post-rebuild batch can never mint an id an earlier batch used.
+      const step = this.#takeStep(handle);
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
@@ -4754,7 +4767,7 @@ export class LiveSessionOwner {
       if (!authority) return;
       const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      const host = structuredClone(handle.host), step = ++handle.toolStep; this.#markStep(handle);
+      const host = structuredClone(handle.host), step = this.#bumpStep(handle);
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
@@ -4874,7 +4887,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         registerSignals(unit, extra);
         phase2.push(...extra.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
       }
-      const followBatch = await runBatch(phase2, ++handle.toolStep); this.#markStep(handle);
+      const followBatch = await runBatch(phase2, this.#bumpStep(handle));
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
       // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed

@@ -48,6 +48,7 @@ const ALARM = /\b(?:alarms?|wecker|reminders?|erinnerungen?)\b/i;
 const WAKE = /\b(?:wake me|wake up\s+(?:at|in|every|tomorrow|today|tonight|on|around|by|\d)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
 const LIST_VERB = /\b(?:list|show|what|which|any|read)\b/i;
 const CANCEL_VERB = /\b(?:cancel|cancel(?:l)?ed|stop|skip|delete|remove|clear|kill|turn off|abbrechen|ausmachen|löschen|stopp)\b/i;
+const WEEKDAY = /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|today|tomorrow|heute|morgen)\b/i;
 const SNOOZE = /\b(?:snooze|schlummern|nochmal (?:wecken|klingeln))\b/i;
 
 const CREATE_VERB = /\b(?:schedule|scheduling|book|booking|block(?: out)?|reserve|hold|put|add|create|set up|plan|eintragen|trag(?:e)?|plane?|organisier)\b/i;
@@ -100,7 +101,8 @@ export function ownerCommands(words: string): OwnerCommand[] {
   add('set_alarm', (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken)
     || (ALARM.test(spoken) && !LIST_VERB.test(spoken) && !CANCEL_VERB.test(spoken) && !SNOOZE.test(spoken)));
   add('list_alarms', LIST_VERB.test(spoken) && ALARM.test(spoken));
-  add('cancel_alarm', CANCEL_VERB.test(spoken) && ALARM.test(spoken));
+  // "skip this Saturday" cancels an alarm the owner already has: the day stands for the alarm.
+  add('cancel_alarm', CANCEL_VERB.test(spoken) && (ALARM.test(spoken) || WEEKDAY.test(spoken)));
   add('snooze_alarm', SNOOZE.test(spoken) && ALARM.test(spoken));
   add('create_event', CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken) || CREATE_AMEND.test(spoken)));
   add('delete_event', CANCEL_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)));
@@ -234,7 +236,10 @@ export class OwnerTasks implements OwnerTaskPort {
   claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization {
     const task = this.#live(session);
     const operation = task?.operations.filter(candidate => candidate.kind === kind).at(-1);
-    if (task === undefined || operation === undefined || task.id !== requestId) return { code: 'no_owner_request' };
+    if (task === undefined || task.id !== requestId) return { code: 'no_owner_request' };
+    // An open the owner's words already authorize has no bounded operation to journal: he is only
+    // selecting a window, so the same grant point decides and nothing is written down as consumed.
+    if (operation === undefined) return this.authorize(session, kind, target);
     const authorization = this.authorize(session, kind, target);
     if (authorization.code !== 'allowed' && authorization.code !== 'idempotent') return authorization;
     // D4: the intent is journaled before dispatch, keyed by the task and the operation.

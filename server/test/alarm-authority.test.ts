@@ -14,8 +14,9 @@ for (const [operation, words] of [
     gate.observe('s', 'j1', words);
     assert.equal(gate.authorize('s', operation, 'target').code, 'allowed');
     assert.equal(gate.authorize('other', operation, 'target').code, 'no_owner_request');
+    // D2: ten minutes of owner silence ends the task, so the ask is gone rather than merely expired.
     now += 600001;
-    assert.equal(gate.authorize('s', operation, 'target').code, 'request_expired');
+    assert.equal(gate.authorize('s', operation, 'target').code, 'no_owner_request');
   });
 }
 
@@ -36,7 +37,7 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   gate.commit('s', 'set_alarm', 'alarm', { status: 'set' });
   assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'grant_spent');
   mono = 600001;
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
 });
 
 test('hear104 alarm authority: finals join while the task lives and a model reply closes nothing', () => {

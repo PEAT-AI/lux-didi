@@ -3,6 +3,7 @@ import { tokenIdentity, type IdentityProof, type TokenClaimSpec } from './identi
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
+import { hostLogEvent } from '../tools/host-events.js';
 
 /**
  * The three Mongoose endpoints release 1023b serves, each its own OAuth resource with its own token.
@@ -141,6 +142,14 @@ export const MONGOOSE_DEFAULTS = { searchLimit: 5, maxSearchLimit: 50, listLimit
  */
 export const MONGOOSE_FAILURE_STAGES = ['credential', 'spawn', 'handshake', 'first_call'] as const;
 export type MongooseFailureStage = (typeof MONGOOSE_FAILURE_STAGES)[number];
+
+/**
+ * LAT-1022: the closed stage a connector request ended in. `call` is the request itself reaching the
+ * connector; the four connect stages are the ones a request dies in before the connector ever answers, so a
+ * slow or failed request is attributable to one word instead of being hidden inside the tool's total.
+ */
+export const MONGOOSE_REQUEST_STAGES = ['call', ...MONGOOSE_FAILURE_STAGES] as const;
+export type MongooseRequestStage = (typeof MONGOOSE_REQUEST_STAGES)[number];
 
 /**
  * The only stored record fields a local credential verdict may read (key names, never values): whether
@@ -295,7 +304,16 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
 
   const schemaValidator = new AjvJsonSchemaValidator();
 
+  /** LAT-1022: one connector_request line per request, written at its end. Connector, stage, duration and the
+   *  call's own closed state; never the tool's arguments, never an answer. */
+  const meter = (startedAt: number, state: MongooseResult['state']): void => {
+    hostLogEvent({ event: 'connector_request', connector: `mongoose-${config.endpoint}`, stage: 'call' as MongooseRequestStage,
+      ms: Math.max(0, Date.now() - startedAt),
+      outcome: state === 'completed' ? 'ok' : state === 'refused' ? 'refused' : state === 'unknown' ? 'unknown' : 'failed' });
+  };
+
   async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
+    const startedAt = Date.now();
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -304,13 +322,14 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       account: settings.account,
       resource: settings.resource,
     };
-    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    if (signal?.aborted) { meter(startedAt, 'refused'); return { state: 'refused', reason: 'cancelled-before-dispatch' }; }
     // Validate the actual bounded dispatch arguments against the original discovered schema.
     const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
-    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) return { state: 'refused', reason: 'original-schema-arguments-refused' };
+    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) { meter(startedAt, 'refused'); return { state: 'refused', reason: 'original-schema-arguments-refused' }; }
     const result: CallResult = await port.call(request, signal);
-    if (isFailed(result)) return { state: result.state, reason: result.reason };
-    if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
+    if (isFailed(result)) { meter(startedAt, result.state); return { state: result.state, reason: result.reason }; }
+    if (signal?.aborted) { meter(startedAt, 'unknown'); return { state: 'unknown', reason: 'cancelled-after-dispatch' }; }
+    meter(startedAt, result.state);
     return {
       state: result.state,
       tool,

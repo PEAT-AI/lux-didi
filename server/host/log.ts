@@ -1,4 +1,5 @@
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
+import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
@@ -1666,6 +1667,41 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'responseKey', 'awaiting'])) return;
     if (!isSafeToken(value.responseKey) || !isSafeCount(value.awaiting)) return;
     return { event: 'continuation_deferred', responseKey: value.responseKey, awaiting: value.awaiting };
+  }
+
+  if (value.event === 'response_first_audio') {
+    // LAT-1022: a response's own decomposition, the same one a continuation already had, now for the first
+    // response of a turn too: the response it belongs to, when its create went out, its first output-item
+    // envelope and its first audible PCM, and whether it was the turn's first response or a continuation.
+    // An audio-first response delivers its PCM BEFORE the item envelope, so `firstItemAt` is absent when the
+    // item never preceded the end, and the pair is written as measured: nothing here is clamped to be positive.
+    const hasItem = Object.prototype.hasOwnProperty.call(value, 'firstItemAt');
+    if (!closedKeys(value, ['event', 'responseKey', 'createdAt', 'firstAudioAt', 'kind', ...(hasItem ? ['firstItemAt'] : [])])) return;
+    if (!isSafeToken(value.responseKey) || !isSafeMember(value.kind, ['first', 'continuation'])) return;
+    if (!isSafeCount(value.createdAt) || !isSafeCount(value.firstAudioAt)) return;
+    if (hasItem && !isSafeCount(value.firstItemAt)) return;
+    return { event: 'response_first_audio', responseKey: value.responseKey, createdAt: value.createdAt,
+      ...(hasItem ? { firstItemAt: value.firstItemAt as number } : {}), firstAudioAt: value.firstAudioAt, kind: value.kind };
+  }
+  if (value.event === 'connector_request') {
+    // LAT-1022: one line at the end of every connector request, so a slow connector is its own segment instead
+    // of a number hidden inside the tool's total. The connector and the stage are closed words, the duration a
+    // count and the outcome the call's own closed state. `callKey` is named when the caller has one; the
+    // envelope already names the turn and the endpoint, so nothing here is ever an argument or a result.
+    const hasKey = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    if (!closedKeys(value, ['event', 'connector', 'stage', 'ms', 'outcome', ...(hasKey ? ['callKey'] : [])])) return;
+    if (hasKey && !isCallKey(value.callKey)) return;
+    if (!isSafeId(value.connector) || !isSafeMember(value.stage, MONGOOSE_REQUEST_STAGES) || !isSafeCount(value.ms)) return;
+    if (!isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
+    return { event: 'connector_request', ...(hasKey ? { callKey: value.callKey } : {}), connector: value.connector,
+      stage: value.stage, ms: value.ms, outcome: value.outcome };
+  }
+  if (value.event === 'provider_output_ack') {
+    // LAT-1022: the provider acknowledged a function output, so the wait between writing the output and the
+    // provider taking it is its own segment. The call and a count, never the output.
+    if (!closedKeys(value, ['event', 'callKey', 'ms'])) return;
+    if (!isCallKey(value.callKey) || !isSafeCount(value.ms)) return;
+    return { event: 'provider_output_ack', callKey: value.callKey, ms: value.ms };
   }
   if (value.event === 'turn_failed') {
     // S5: a backend response ended failed, incomplete or errored. The provider's code, nothing else.

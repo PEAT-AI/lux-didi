@@ -92,8 +92,8 @@
       }
     },
     {
-      "id": "note-save-seam",
-      "why": "A save-cued note can only be staged through the owner's vault, and this harness binds no vault transport (the production client accepts a loopback URL only), so the host refuses the stage and the note body cannot be asserted at this boundary. The exact seam is LiveOwnerConfig.vaultTransport over a loopback MCP writer; the corpus still measures that the ask reaches the tool.",
+      "id": "note-save-positive",
+      "why": "A save-cued note runs through the owner's vault writer: the production client over the harness's fake fetch, so the exact save the host dispatches is recorded, body and provenance included.",
       "families": [
         "knowledge"
       ],
@@ -109,14 +109,16 @@
             "evidenceRefs": []
           },
           "expect": {
-            "noDispatch": true
+            "dispatch": {
+              "connector": "vault",
+              "tool": "save_insight",
+              "argsContains": "the synthetic bridge reopens on Monday"
+            }
           }
         }
       ],
       "base": {
-        "status": "EXPECTED_RED",
-        "reason": "the staged-note body cannot be asserted at this boundary: the vault writer accepts a loopback URL only, so the harness binds no vaultTransport and stage_lux_note answers the model only after a later turn. The exact seam is LiveOwnerConfig.vaultTransport over a loopback MCP writer. Recorded here so the release gate refuses it rather than reading a green no-dispatch as a positive.",
-        "unverified": true
+        "status": "PASS"
       }
     },
     {

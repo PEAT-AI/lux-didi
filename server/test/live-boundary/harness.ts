@@ -14,6 +14,7 @@ import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveC
 import { Store } from '../../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../../tools/index.js';
 import type { WebEvidence, WebSearchPort } from '../../tools/web-search.js';
+import { createLuxWriteTransport } from '../../adapters/lux-write/client.js';
 import { attachHostLogSink } from '../../tools/host-events.js';
 import { TrelloBoard, type TrelloTransport } from '../../tools/trello.js';
 import { trelloSchemas } from '../../adapters/trello/client.js';
@@ -33,7 +34,7 @@ import { fakeLiveVoicePort, type FakeLiveVoice } from '../fixtures/fake-live-voi
 const MODEL = 'gpt-live-boundary-test';
 export const SYNTHETIC_NOW = 1_700_000_000_000;
 
-export type BoundaryConnector = 'calendar' | 'mail' | 'chat' | 'knowledge' | 'trello';
+export type BoundaryConnector = 'calendar' | 'mail' | 'chat' | 'knowledge' | 'trello' | 'vault';
 /** The connector families a boundary can publish, by connection id. */
 export type FixtureId = 'calendar' | 'calendar-write' | 'mail' | 'drafts' | 'chat' | 'knowledge';
 export const DEFAULT_FAMILIES: readonly FixtureId[] = ['calendar', 'mail', 'chat', 'knowledge', 'drafts'];
@@ -54,6 +55,11 @@ export interface BoundaryOptions {
   families?: readonly FixtureId[];
   /** `owner-trusted-reads` is the host's own mode; `explicit` withholds the write grants. */
   grantMode?: 'explicit' | 'owner-trusted-reads';
+  /**
+   * Bind the owner's vault writer over a recording fake fetch, the way server/test/vault-write.test.ts does:
+   * the production client, a loopback URL, and no socket. A note save then lands in the recorded call.
+   */
+  vault?: boolean;
   /** Bind the owner's Trello board service over a recording fake transport, so a trello write can land. */
   trello?: boolean;
   /**
@@ -227,6 +233,7 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
 
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 1 << 20 }) });
   const trello = options.trello === true ? fakeTrello(calls, (options.breakConnectors ?? []).includes('trello')) : undefined;
+  const vaultTransport = options.vault === false ? undefined : vaultWriter(calls);
   let owner: LiveSessionOwner | undefined;
   const toolOwner = createToolsOwner({
     store, ownerId: store.assistantId, registry, port,
@@ -256,6 +263,7 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
     store, voice: fake.port, profile, now: () => clock.now, timeZone: 'UTC',
     tools: { owner: toolOwner, connectionIds: () => [...published], status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) },
     ...(options.researchWeb ? { researchWeb: options.researchWeb } : {}),
+    ...(vaultTransport ? { vaultTransport } : {}),
   });
   const session = owner.create({ idempotencyKey: `live-boundary-${randomUUID()}`, inputClass: 'ordinary' }, context);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, context);
@@ -358,4 +366,21 @@ function fakeTrello(records: ConnectorCall[], broken = false): TrelloBoard {
     },
   };
   return new TrelloBoard({ transport, signedIn: () => true, boardName: 'Synthetic Board', timeZone: 'UTC', now: () => SYNTHETIC_NOW });
+}
+
+/** The production vault client over a fake fetch: one recorded entry per tool call the writer dispatches. */
+function vaultWriter(records: ConnectorCall[]): ReturnType<typeof createLuxWriteTransport> {
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-vault-session' };
+    if (call['method'] === 'notifications/initialized') return new Response(null, { status: 202, headers });
+    const params = (call['params'] ?? {}) as { name?: string; arguments?: JsonObject };
+    if (call['method'] === 'tools/call' && typeof params.name === 'string') {
+      records.push({ connector: 'vault', tool: params.name, args: params.arguments ?? {} });
+    }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result: call['method'] === 'initialize'
+      ? { protocolVersion: '2025-06-18', capabilities: {} }
+      : { content: [{ type: 'text', text: JSON.stringify({ action: 'inserted', insight_id: 4242, candidates: [] }) }] } }), { headers });
+  };
+  return createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fakeFetch);
 }

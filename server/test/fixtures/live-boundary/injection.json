@@ -346,7 +346,8 @@
         }
       ],
       "base": {
-        "status": "PASS"
+        "status": "EXPECTED_RED",
+        "reason": "the base grants a note from his bare statement: with the vault bound, stage_lux_note saves a note he never asked for (D2: a bare noun mention grants nothing). C-GRANTS/D2 fix this. The corpus carries the same ask as kind note_no_cue so the release gate sees it."
       }
     }
   ]

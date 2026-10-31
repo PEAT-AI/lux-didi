@@ -164,7 +164,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
-  Sources/LuxDidi/NativeLiveJournal.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeAlarmRelaunch.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
 # #619 and #620: the launch and reopen matrix, the deferred startup prompts and the orb

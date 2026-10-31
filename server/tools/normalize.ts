@@ -109,45 +109,49 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
     if (value === undefined) { dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:absent`); continue; }
     args[key] = value;
   }
-  // A key the tool never declares is dropped only where the tool itself calls it unknown, so a validator
-  // that accepts a wider research-time shape keeps the keys it reads and the declaration still counts them.
   const unknownKey = (value: Record<string, unknown>): boolean => {
     const token = rejection?.(value);
     return typeof token === 'string' && token.endsWith(':unknown_key');
   };
-  if (shape.properties.size > 0 && unknownKey(args)) {
-    for (let step = 0; step < 24 && unknownKey(args); step++) {
-      const offender = Object.keys(args).find(key => !shape.properties.has(key));
-      if (offender === undefined) break;
-      const without: Record<string, unknown> = { ...args };
-      delete without[offender];
-      if (unknownKey(without)) break;
-      delete args[offender];
-      dropped.push(`${KEY.test(offender) ? offender : 'invalid_key'}:undeclared`);
+  // Two bounded rounds, because a filler the tool names first no longer masks an undeclared key it names
+  // next. Only a filler is ever removed on a value's own account, and never one of a write, which keeps
+  // every value it was sent.
+  for (let round = 0; round < 2; round++) {
+    // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a
+    // value, which its own refusal names (`query:empty`, `people:min2`). A tool that never refuses the
+    // empty value keeps it, because it may be the very thing the reader needs present.
+    if (rejection !== undefined && tool.effect !== 'write') {
+      const seen = new Set<string>();
+      for (let step = 0; step < 24; step++) {
+        const token = rejection(args);
+        if (token === undefined || seen.has(token)) break;
+        seen.add(token);
+        const field = token.slice(0, token.indexOf(':'));
+        if (!(field in args) || !isFiller(args[field])) break;
+        delete args[field];
+        dropped.push(`${KEY.test(field) ? field : 'invalid_key'}:absent`);
+      }
     }
-  }
-  // The keys the chosen intent does not read: the matrix mirrors the tool's own per-intent refusal.
-  if (reads !== undefined) {
-    for (const key of Object.keys(args)) {
-      if (reads.has(key)) continue;
-      delete args[key];
-      dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:not_read`);
+    // A key the tool never declares is dropped only where the tool itself calls it unknown, so a validator
+    // that accepts a wider research-time shape keeps the keys it reads and the declaration still counts them.
+    if (shape.properties.size > 0 && unknownKey(args)) {
+      for (let step = 0; step < 24 && unknownKey(args); step++) {
+        const offender = Object.keys(args).find(key => !shape.properties.has(key));
+        if (offender === undefined) break;
+        const without: Record<string, unknown> = { ...args };
+        delete without[offender];
+        if (unknownKey(without)) break;
+        delete args[offender];
+        dropped.push(`${KEY.test(offender) ? offender : 'invalid_key'}:undeclared`);
+      }
     }
-  }
-  // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a
-  // value, which its own refusal names (`query:empty`, `people:min2`). A tool that never refuses the
-  // empty value keeps it, because it may be the very thing the reader needs present, and a write keeps
-  // every value it was sent. Only a filler is ever removed here, never a real value of a key it reads.
-  if (rejection !== undefined && tool.effect !== 'write') {
-    const seen = new Set<string>();
-    for (let step = 0; step < 24; step++) {
-      const token = rejection(args);
-      if (token === undefined || seen.has(token)) break;
-      seen.add(token);
-      const field = token.slice(0, token.indexOf(':'));
-      if (!(field in args) || !isFiller(args[field]) || field === token) break;
-      delete args[field];
-      dropped.push(`${field}:absent`);
+    // The keys the chosen intent does not read: the matrix mirrors the tool's own per-intent refusal.
+    if (reads !== undefined) {
+      for (const key of Object.keys(args)) {
+        if (reads.has(key)) continue;
+        delete args[key];
+        dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:not_read`);
+      }
     }
   }
   return { args, dropped };

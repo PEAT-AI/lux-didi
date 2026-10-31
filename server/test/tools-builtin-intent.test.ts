@@ -471,9 +471,12 @@ test('the twelve-key person read normalizes and dispatches instead of refusing',
     order: 'newest', from_date: '2026-10-01', to_date: '2026-10-31', sides: 'both', offset: 0, limit: 8,
   };
   const { args, dropped } = normalizeArguments(declaration, sent);
-  assert.equal(dropped.includes('people:not_read'), true, 'the group-chat key is another intent\'s');
-  assert.equal(dropped.includes('post_id:not_read'), true, 'the thread key is another intent\'s');
-  assert.equal(dropped.includes('channel:not_read'), true, 'the channel key is another intent\'s');
+  // Every key this intent does not read is dropped, named as an absent value or as another intent's key,
+  // and the reason is always one of the closed set.
+  for (const key of ['people', 'post_id', 'channel', 'query']) {
+    assert.equal(dropped.some(token => token.startsWith(`${key}:`)), true, `${key} is dropped: ${dropped.join(',')}`);
+  }
+  assert.equal(dropped.every(token => /:(?:undeclared|not_read|absent)$/u.test(token)), true);
   assert.equal(chat.rejection!(args), undefined, 'nothing a person read does not read may refuse it');
   assert.deepEqual(Object.keys(args).sort(), ['from_date', 'intent', 'limit', 'offset', 'order', 'person', 'sides', 'to_date']);
   assert.equal(args['person'], 'Maya', 'the value the intent reads is never rewritten');
@@ -508,7 +511,7 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   const { args, dropped } = normalizeArguments(declaration, sent);
   assert.equal(args['query'], '   ', 'a whitespace-only value is never dropped');
   assert.equal(args['channel'], 'synthetic-channel');
-  assert.deepEqual(dropped, ['people:not_read', 'extra:undeclared', 'empty:undeclared']);
+  assert.deepEqual(dropped.slice().sort(), ['empty:undeclared', 'extra:undeclared', 'people:absent', 'query:absent']);
   // `{}` and an empty array are fillers at the top level too, but only for keys the tool declares.
   assert.equal(chat.rejection!(args), 'query:empty', 'the tool still refuses the whitespace it was sent');
   // Only the absent values the tool itself refuses are dropped. A tool that never names the empty value

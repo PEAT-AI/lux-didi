@@ -15,6 +15,8 @@ import { replayServer, type Recording } from './replay.js';
 export const PROBE_RATE = 24_000;
 /** About half a second: long enough to cross several upload chunks, short enough to stay a probe. */
 export const PROBE_SAMPLES = 12_000;
+/** One upload chunk. The probe and its plan both use it, so the plan's chunk count is the run's. */
+export const PROBE_CHUNK_BYTES = 4_800;
 
 /** A synthetic utterance: a 440 Hz tone at a fifth of full scale. Nothing recorded, nothing anyone said. */
 export function synthUtterance(samples = PROBE_SAMPLES): Uint8Array {
@@ -55,11 +57,11 @@ export interface AudioProbeOutcome {
 
 /** What the probe would do, printed by `--dry-run`. It has opened nothing and imported no device. */
 export function audioPlan(input: { readonly bytes: number; readonly source: string }): string {
-  const chunks = Math.ceil(input.bytes / 4_800 / 2);
+  const chunks = Math.ceil(input.bytes / PROBE_CHUNK_BYTES);
   return [
     'tier 2 audio probe: dry run, no socket, no audio device, no model call',
     `  utterance: ${input.source}, ${input.bytes} bytes of 16-bit PCM at ${PROBE_RATE} Hz`,
-    `  upload: ${chunks} chunk(s) of about 200 ms through session.sendAudio`,
+    `  upload: ${chunks} chunk(s) of about 100 ms through session.sendAudio`,
     '  output: the provider\'s audio frames are counted and dropped, never played and never written',
   ].join('\n');
 }
@@ -90,7 +92,7 @@ export async function runAudioProbe(input: { readonly pcm: Uint8Array; readonly 
   })();
 
   await session.ready;
-  const chunk = 4_800;
+  const chunk = PROBE_CHUNK_BYTES;
   let chunks = 0;
   for (let at = 0; at < input.pcm.length; at += chunk) {
     const slice = input.pcm.subarray(at, Math.min(at + chunk, input.pcm.length));

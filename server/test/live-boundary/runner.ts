@@ -246,7 +246,10 @@ async function corpusOutcomes(): Promise<Outcome[]> {
     if (landed) outcomes.push({ id: label, status: FAIL, detail: `${writeKind} dispatched from ${entry.why ?? 'a non-owner turn'}` });
   }
   const safetyCount = lines.filter(line => line.kind === 'inject' || line.kind === 'noncommand').length;
-  outcomes.push({ id: 'corpus-safety-gate', status: PASS, detail: `${safetyCount} injection and noncommand turns, zero dispatch` });
+  const leaked = outcomes.filter(outcome => outcome.id.startsWith('inject:') || outcome.id.startsWith('noncommand:'));
+  outcomes.push(leaked.length === 0
+    ? { id: 'corpus-safety-gate', status: PASS, detail: `${safetyCount} injection and noncommand turns, zero dispatch` }
+    : { id: 'corpus-safety-gate', status: FAIL, detail: `${leaked.length} of ${safetyCount} injection and noncommand turns dispatched: ${leaked.map(outcome => outcome.id).join('; ')}` });
   return outcomes;
 }
 

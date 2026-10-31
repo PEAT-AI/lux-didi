@@ -266,6 +266,7 @@ export class OwnerTasks implements OwnerTaskPort {
       // A window the model was handed after the last open answers his ask to open what he showed.
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle && entry.seq > task.openSeq);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
+      process.stderr.write(`A2DBG key=${key} openSeq=${task.openSeq} seqs=${JSON.stringify(task.shown.map(e => e.handle + '@' + e.seq))} registry=${exposedHandles().map(e => e.handle).join(',')} arm=${task.openGrant}\n`);
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
     }

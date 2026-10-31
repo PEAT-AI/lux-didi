@@ -143,7 +143,7 @@ const canonical = (value: unknown): string => JSON.stringify(value ?? null);
 const hashOf = (value: unknown): string => createHash('sha256').update(canonical(value)).digest('hex');
 
 /** D4: the operation ledger, keyed (taskId, operationId) with the canonical-arguments hash. */
-interface LedgerEntry { hash: string; receipt?: unknown }
+interface LedgerEntry { hash: string; receipt?: unknown; words?: string }
 
 /** Per tools-owner state. Only finalized spoken or typed owner input may call observe. */
 export class OwnerTasks implements OwnerTaskPort {
@@ -243,7 +243,7 @@ export class OwnerTasks implements OwnerTaskPort {
     task.openGrant = true; task.openSpent = false;
   }
 
-  authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization {
+  authorize(session: string, kind: ActionKind, target: string, handle?: string, executionId?: string): RequestAuthorization {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
@@ -277,35 +277,35 @@ export class OwnerTasks implements OwnerTaskPort {
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
     }
+    // G-R9: a replay is the same host execution, never args equality. The receipt outlives the ask,
+    // so a provider rebuild cannot turn a retry into a second write or into a refusal.
+    const done = executionId === undefined ? undefined : this.ledger.get(`${task.id}:${executionId}`);
+    if (done !== undefined) return { ...common, words: done.words ?? task.words, code: 'idempotent', receipt: done.receipt };
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     // Opening a window the owner can see is local and target-selected from what his own reads
     // exposed, so any words of his task authorize it; nothing leaves the machine and nothing sends.
     if (operation === undefined) return { ...common, code: 'no_owner_request' };
     const bounded = { ...common, words: operation.words };
-    const entry = this.ledger.get(`${task.id}:${operation.operationId}`);
     // An empty target is the grant-point probe: it asks only whether the owner's operation exists,
     // and the handler decides replay against spent with its own canonical target.
     if (target === '') return { ...bounded, code: 'allowed' };
-    if (operation.state === 'done') {
-      return operation.target === target && entry?.receipt !== undefined
-        ? { ...bounded, code: 'idempotent', receipt: entry.receipt }
-        : { ...bounded, code: 'grant_spent' };
-    }
+    // A done operation is spent: only the same host execution replays (handled above).
+    if (operation.state === 'done') return { ...bounded, code: 'grant_spent' };
     if (operation.state === 'claimed') return { ...bounded, code: 'grant_spent' };
     return { ...bounded, code: 'allowed' };
   }
 
-  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string): RequestAuthorization {
+  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string, executionId?: string): RequestAuthorization {
     const task = this.#live(session);
     const operation = task?.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (task === undefined || task.id !== requestId) return { code: 'no_owner_request' };
     // An open the owner's words already authorize has no bounded operation to journal: he is only
     // selecting a window, so the same grant point decides and nothing is written down as consumed.
-    if (kind === 'open' || operation === undefined) return this.authorize(session, kind, target, handle);
-    const authorization = this.authorize(session, kind, target);
+    if (kind === 'open' || operation === undefined) return this.authorize(session, kind, target, handle, executionId);
+    const authorization = this.authorize(session, kind, target, undefined, executionId);
     if (authorization.code !== 'allowed' && authorization.code !== 'idempotent') return authorization;
     // D4: the intent is journaled before dispatch, keyed by the task and the operation.
-    const key = `${task.id}:${operation.operationId}`;
+    const key = `${task.id}:${executionId ?? operation.operationId}`;
     const hash = hashOf(target);
     const existing = this.ledger.get(key);
     if (existing !== undefined && existing.hash !== hash) return { ...authorization, code: 'grant_spent' };
@@ -330,7 +330,7 @@ export class OwnerTasks implements OwnerTaskPort {
     task.openGrant = false; task.openSpent = true;
   }
 
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string): void {
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string, executionId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
     // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
@@ -342,7 +342,9 @@ export class OwnerTasks implements OwnerTaskPort {
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;
-    this.ledger.set(`${task.id}:${operation.operationId}`, { hash: hashOf(target), receipt });
+    // G-R9: the ledger is keyed by the host execution, so a rebuild can expire the ask and still
+    // replay the receipt of an execution that already ran.
+    this.ledger.set(`${task.id}:${executionId ?? operation.operationId}`, { hash: hashOf(target), receipt, words: operation.words });
   }
 
   /** D2: an owner recurrence the parser cannot read is a clarification, never a silent drop. */
@@ -401,7 +403,17 @@ export class OwnerTasks implements OwnerTaskPort {
     };
   }
 
-  /** Session end only: a provider rebuild keeps the task, its operations and its ledger. */
+  /**
+   * G-R9: a provider rebuild expires every unspent operation of the open ask, so seeded history can
+   * never authorize, and keeps the task, its ledger and the receipts of what already ran.
+   */
+  rebuild(session: string): void {
+    const task = this.#live(session);
+    if (task === undefined) return;
+    task.operations = []; task.openGrant = false; task.openSpent = false; task.shown = []; task.openReceipts.clear();
+  }
+
+  /** Session end only: the ledger goes with the session. */
   release(session: string): void {
     this.tasks.delete(session); this.external.delete(session); this.pendingFinal.delete(session);
     for (const key of [...this.ledger.keys()]) if (key.startsWith(`${this.tasks.get(session)?.id ?? '\u0000'}`)) this.ledger.delete(key);

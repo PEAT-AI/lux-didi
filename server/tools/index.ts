@@ -752,14 +752,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               actionReceipt = response;
               return complete(call as ToolCallIntent, response, ['ordinary'], tx);
             };
-            const ask = ownerTasks.authorize(runId, name, requestTarget);
+            const ask = ownerTasks.authorize(runId, name, requestTarget, undefined, context.executionId);
             hostLogEvent({ event: 'alarm_audit', ...ownerTasks.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
             if (name === 'list_alarms') {
               const result: JsonObject = { alarms: listPendingAlarms(tx).map(entry => ({ id: entry.id, fire_at_utc: entry.fireAtUtc, tz: entry.tz, label: entry.label, state: entry.state,
                 ...(entry.series ? { series: { id: entry.series.id, rule: entry.series.rule, weekdays: entry.series.weekdays, local_time: entry.series.localTime, text: entry.series.text } } : {}) })) };
-              ownerTasks.commit(runId, name, requestTarget, result);
+              ownerTasks.commit(runId, name, requestTarget, result, undefined, undefined, context.executionId);
               return finish(result);
             }
             const now = options.alarms?.now() ?? Date.now();
@@ -817,7 +817,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               say: parsed.confirmation + (recurrenceDropped ? ` ${RECURRENCE_NOT_ASKED}` : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {
-            ownerTasks.commit(runId, name, requestTarget, actionReceipt);
+            ownerTasks.commit(runId, name, requestTarget, actionReceipt, undefined, undefined, context.executionId);
             if (name !== 'cancel_alarm') {
               const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [context.executionId]));
               const actualMs = options.alarms?.now() ?? Date.now();
@@ -860,10 +860,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             hostLogEvent({ event: 'compose_audit', ...ownerTasks.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
             if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
             const target = composeTarget(name, args, clientRequestId(peek.journalId));
-            const ask = ownerTasks.authorize(runId, name, target);
+            const ask = ownerTasks.authorize(runId, name, target, undefined, context.executionId);
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
             if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
-            const claimed = ownerTasks.claim(runId, name, target, ask.id);
+            const claimed = ownerTasks.claim(runId, name, target, ask.id, undefined, context.executionId);
             if (claimed.code !== 'allowed') return finish(requestRefusal(claimed.code));
             // W1030: a delete names either a block this session created (matched exactly against its own
             // receipt) or one he named unambiguously and a calendar read in this session returned. A model
@@ -900,7 +900,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // retry cannot write twice.
             hostLogEvent({ event: 'compose_audit', ...ownerTasks.audit(runId, name), refusalCode: 'none' });
             if (outcome.state === 'unknown') return { status: 'unknown' as const, code: dispatchedFailureCode('write_unknown') };
-            if (outcome.state === 'done') ownerTasks.commit(runId, name, target, composeResult(outcome));
+            if (outcome.state === 'done') ownerTasks.commit(runId, name, target, composeResult(outcome), undefined, undefined, context.executionId);
             else ownerTasks.failed(runId, name, target, ask.id);
             return finish(composeResult(outcome));
           },

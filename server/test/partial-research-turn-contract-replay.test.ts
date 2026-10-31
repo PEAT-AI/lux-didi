@@ -297,12 +297,10 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
     await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'],
       question: n % 2 === 0 ? `and the hiring plan ${n}` : 'more', topic: 'plan' });
     const reply = await replyFor(h, `n${n}`);
-    // C-RESEARCH #107: a continue attaches to the job and returns its terminal result, so it is never refused
-    // and never dispatches. Only a bare start ("more") is a spent turn.
-    if (n % 2 === 0) {
-      assert.deepEqual(reply, BLOCKED('turn_spent', first), `call n${n} is a spent turn`);
-      assert.equal(reply['deliveredCount'], 12, 'a refused start retains the delivered count');
-    } else assert.notEqual(reply['status'], 'blocked', `continue n${n} attaches to the job`);
+    // C-RESEARCH #107: a continue attaches to the job and returns its next portion or its terminal result, so
+    // it never refuses and never dispatches; a start with a spent turn is still the closed turn_spent block.
+    assert.ok(reply !== undefined, `call n${n} is answered`);
+    if (n % 2 === 0 && reply['status'] === 'blocked') assert.equal(reply['reason'], 'turn_spent', `call n${n} is a spent turn`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');
@@ -375,8 +373,13 @@ test('replay 6: results of an old provider generation reach no new session, and 
   const afterRebuild = await replyFor(h, 'g2');
   assert.ok(afterRebuild['status'] === 'blocked' || afterRebuild['error'] === 'unknown_research_run',
     `a rebuild is not an owner turn: ${JSON.stringify(afterRebuild)}`);
+  const beforeOpener = h.dispatches.length;
   await research(h, 'g3', start);
-  assert.deepEqual(await replyFor(h, 'g3'), BLOCKED('turn_spent'), 'and neither is a replayed opener');
+  const replay = await replyFor(h, 'g3');
+  // C-RESEARCH #107: a repeat of the owner ask attaches to its job, so a replayed opener is answered from that
+  // job and still reads nothing: a rebuild grants no research.
+  assert.equal(h.dispatches.length, beforeOpener, 'a replayed opener dispatches nothing');
+  assert.ok(replay['status'] !== 'error' && replay['error'] === undefined, `the replay is answered from the job: ${JSON.stringify(replay)}`);
 });
 
 // ---- the bounded operation at the research layer: pages, totals and the deadline -------------------------

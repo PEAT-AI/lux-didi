@@ -5795,7 +5795,8 @@ test('mail integration: an unused cursor keeps its original message coordinates 
 // continuation this reader already used is the other end.
 const pageStep = (response: Record<string, unknown>, used: Set<string>): Record<string, unknown> | undefined => {
   const page = response['pageCursor'];
-  const cursor = page !== undefined ? String(page) : response['canContinue'] === true && response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
+  // C-RESEARCH #107 (D6): the model is never handed a poll invitation, so the cursor alone says more is left.
+  const cursor = page !== undefined ? String(page) : response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
   if (cursor === undefined || used.has(cursor)) return undefined;
   used.add(cursor);
   return page !== undefined ? { pageCursor: cursor } : { cursor };

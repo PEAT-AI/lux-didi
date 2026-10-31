@@ -1,0 +1,183 @@
+{
+  "about": "D7: a positive dispatch for the alarm, note, trello and open kinds.",
+  "scenarios": [
+    {
+      "id": "set-alarm-positive",
+      "why": "The owner's own words pin the alarm time: the host's own say line names the resolved local time, which is what a reader of his words must see (07:00 for '7 tomorrow morning', 18:30 for 'half six in the evening').",
+      "finals": [
+        "Set an alarm for 7 tomorrow morning."
+      ],
+      "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseContains": "07:00",
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "cancel-alarm-positive",
+      "why": "A cancel names no time of its own: it must cancel an alarm the host set from the owner's words, not one the model picked.",
+      "finals": [
+        "Set an alarm for 7 tomorrow morning."
+      ],
+      "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseContains": "07:00"
+          }
+        },
+        {
+          "ownerFinal": "Now cancel that alarm."
+        },
+        {
+          "tool": "cancel_alarm",
+          "args": {},
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "snooze-alarm-positive",
+      "why": "A snooze moves the alarm the host holds ten minutes on, which only the host's own record can do.",
+      "finals": [
+        "Set an alarm for 7 tomorrow morning."
+      ],
+      "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseContains": "07:00"
+          }
+        },
+        {
+          "ownerFinal": "Snooze it for ten minutes."
+        },
+        {
+          "tool": "snooze_alarm",
+          "args": {},
+          "expect": {
+            "responseNot": [
+              "grant_not_permitted",
+              "unknown_tool",
+              "invalid_arguments"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "note-save-positive",
+      "why": "A save-cued note runs through the owner's vault writer: the production client over the harness's fake fetch, so the exact save the host dispatches is recorded, body and provenance included.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "Save a note: the synthetic bridge reopens on Monday."
+      ],
+      "steps": [
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "vault",
+              "tool": "save_insight",
+              "argsContains": "the synthetic bridge reopens on Monday"
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "trello-write-positive",
+      "why": "A trello write is granted at the base, so the board service must receive the created card.",
+      "trello": true,
+      "finals": [
+        "Add a card to my Trello board called Synthetic card in Backlog."
+      ],
+      "steps": [
+        {
+          "tool": "trello_write",
+          "args": {
+            "action": "create",
+            "name": "Synthetic card",
+            "list": "Backlog"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "trello",
+              "tool": "trelloWriteCard",
+              "args": {
+                "action": "create",
+                "name": "Synthetic card"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+    {
+      "id": "open-positive",
+      "why": "The corpus measures open_web, so the positive scenario does too: the owner's ask names a page, and the declared kind/target shape must be accepted. The base refuses it for every ask (D5).",
+      "finals": [
+        "Open the synthetic bridge page."
+      ],
+      "steps": [
+        {
+          "tool": "open_web",
+          "args": {
+            "kind": "url",
+            "target": "https://synthetic.example/bridge"
+          },
+          "expect": {
+            "responseNot": [
+              "invalid_arguments",
+              "grant_not_permitted",
+              "unknown_tool"
+            ]
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "the base refuses the declared open_web argument shape (kind/target) for every ask: no per-intent normalizer names the field it reads (D5). C-ARGS fixes this."
+      }
+    }
+  ]
+}

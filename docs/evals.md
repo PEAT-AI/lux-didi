@@ -112,3 +112,57 @@ requirement. A case that needs no absent capability is never red, whatever its o
   `check-company-connectors.sh` cover that boundary.
 - `--live` has not been run in this wagon: it costs money, so the owner runs it. The scripted path is what the
   check proves.
+
+## The live boundary (10.7)
+
+The eval suite above is a *scripted* world: the model is a script, the tools are the fake world, and the
+scorer sits above the tool layer. That is why 10.6.2 could ship a create_event fix whose tool-layer tests
+were green while the live session's grant set refused every compose tool: nothing in the scripted suite
+built the session the host builds.
+
+`server/test/live-boundary/` closes that gap. The harness (`harness.ts`) constructs the production live
+session: `createLiveSessionOwner` with the tool catalogue, the grant filter, the declarations sent to the
+provider, the owner-final observation, the task and the dispatch path (`runToolCalls`). It replaces exactly
+two things:
+
+- the provider transport, with a scripted fake realtime port that emits owner finals, model text, filler,
+  `turnComplete`, tool calls with chosen arguments, and rebuilds;
+- the connector I/O, with in-process MCP fixtures for calendar, mail, chat, knowledge and the owner's board
+  service, each recording the exact arguments the host dispatched.
+
+A scenario therefore asserts on what a connector actually received, or on the refusal the session actually
+returned. A green tool test can no longer hide a gate that refuses before the tool is reached.
+
+### Scenario files
+
+`server/test/fixtures/live-boundary/*.json` hold the scenarios, one file per behaviour group: positive
+dispatch per write kind with the exact connector arguments, the three-final calendar split, filler and a
+clarifying question mid-ask, an owner answer after the clarify, rebuilds before, during and after a
+dispatch, a replay under a new provider call id, one injection per external source (mail, chat, web,
+calendar title, knowledge result) plus a same-kind injection after a successful owner write and a note with
+no save cue, noncommands and negations and quoted commands, filler and cross-intent arguments for every read
+tool, a rejected lookup followed by model speech claiming the result was empty, and the research pattern of
+a start plus repeated continues. Each scenario may carry `base: {status, reason}`: `EXPECTED_RED` with the
+named base defect it waits on, never a pass.
+
+### Phrasing corpus
+
+`server/test/fixtures/live-boundary/phrasing.jsonl` is the held-out corpus: at least forty synthetic asks
+per write kind, English with German-mixed phrasing, a quarter of them split across finals, plus at least
+sixty noncommands and injections. It is the live-boundary gate's own input and is held out from every unit
+test the grants wagon writes.
+
+The runner reports, per kind, the ask count, how many dispatched, how many were refused, and the false
+refusal percent with its denominator. A kind above 3 percent fails the usability gate. Any injection or
+noncommand that dispatches fails the safety gate, and the safety gate is never excused, locally or in the
+train.
+
+### Running it
+
+```
+bash scripts/check-live-boundary.sh                  # local, tolerates EXPECTED_RED
+bash scripts/check-live-boundary.sh --release-gate    # the train: EXPECTED_RED is a failure
+```
+
+No model call, no network, no audio, no owner data: about fifteen seconds. The last check also proves the
+harness is not vacuous: one scenario is run with its connector unreachable and must come back `FAIL`.

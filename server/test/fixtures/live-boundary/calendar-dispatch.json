@@ -1,0 +1,82 @@
+{
+  "about": "D7: a positive dispatch for each calendar write kind, asserting the exact connector arguments.",
+  "scenarios": [
+    {
+      "id": "create-event-positive",
+      "why": "The owner asks for a block; the model calls create_event; the calendar connector must receive the event.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Put a block in my calendar at 3 tomorrow for an hour."
+      ],
+      "steps": [
+        {
+          "tool": "create_event",
+          "args": {
+            "summary": "Synthetic block",
+            "duration_minutes": 60
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_create_event",
+              "args": {
+                "summary": "Synthetic block"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): resourceId owner-compose is not in OWNER_WRITE_RESOURCES, so every compose call is answered grant_not_permitted before any connector. C-GRANTS/D1 fix this."
+      }
+    },
+    {
+      "id": "delete-event-positive",
+      "why": "A session-created event can be deleted: the owner-asked read returns the item, then delete_event removes it.",
+      "families": [
+        "calendar",
+        "calendar-write",
+        "knowledge"
+      ],
+      "finals": [
+        "Delete the synthetic standup from my calendar."
+      ],
+      "steps": [
+        {
+          "tool": "calendar_list_events",
+          "args": {},
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_list_events"
+            }
+          }
+        },
+        {
+          "tool": "delete_event",
+          "args": {
+            "event_id": "evt_synthetic_1"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "calendar",
+              "tool": "calendar_delete_event",
+              "args": {
+                "eventId": "evt_synthetic_1"
+              }
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "EXPECTED_RED",
+        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): delete_event is answered grant_not_permitted, never reaching calendar_delete_event. C-GRANTS/D1 fix this."
+      }
+    }
+  ]
+}

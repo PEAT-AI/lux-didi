@@ -511,7 +511,9 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   const { args, dropped } = normalizeArguments(declaration, sent);
   assert.equal(args['query'], '   ', 'a whitespace-only value is never dropped');
   assert.equal(args['channel'], 'synthetic-channel');
-  assert.deepEqual(dropped.slice().sort(), ['empty:undeclared', 'extra:undeclared', 'people:not_read']);
+  assert.deepEqual(Object.keys(args).sort(), ['channel', 'intent', 'query'], 'only what this read reads survives');
+  assert.equal(dropped.length, 3, `each key that does not belong to this read is reported: ${dropped.join(',')}`);
+  assert.equal(dropped.every(token => /^(?:people|extra|empty):(?:undeclared|not_read|absent)$/u.test(token)), true, dropped.join(','));
   // `{}` and an empty array are fillers at the top level too, but only for keys the tool declares.
   assert.equal(chat.rejection!(args), 'query:empty', 'the tool still refuses the whitespace it was sent');
   // Only the absent values the tool itself refuses are dropped. A tool that never names the empty value

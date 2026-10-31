@@ -116,20 +116,23 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   // Two bounded rounds, because a filler the tool names first no longer masks an undeclared key it names
   // next. Only a filler is ever removed on a value's own account, and never one of a write, which keeps
   // every value it was sent.
+  const namedByTool = (key: string, value: unknown): boolean => {
+    if (rejection === undefined) return false;
+    const intentKey = INTENT_MATRICES[tool.name]?.intentKey;
+    const probe: Record<string, unknown> = { [key]: value };
+    if (intentKey !== undefined && intentKey in raw && intentKey !== key) probe[intentKey] = raw[intentKey];
+    const token = rejection(probe);
+    return typeof token === 'string' && token.startsWith(`${key}:`);
+  };
   for (let round = 0; round < 2; round++) {
-    // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a
-    // value, which its own refusal names (`query:empty`, `people:min2`). A tool that never refuses the
-    // empty value keeps it, because it may be the very thing the reader needs present.
-    if (rejection !== undefined && tool.effect !== 'write') {
-      const seen = new Set<string>();
-      for (let step = 0; step < 24; step++) {
-        const token = rejection(args);
-        if (token === undefined || seen.has(token)) break;
-        seen.add(token);
-        const field = token.slice(0, token.indexOf(':'));
-        if (!(field in args) || !isFiller(args[field])) break;
-        delete args[field];
-        dropped.push(`${KEY.test(field) ? field : 'invalid_key'}:absent`);
+    // C-ARGS: an absent-value filler is dropped only where the tool itself refuses the empty value for
+    // that key (`query:empty`, `people:min2`). A tool that never names it keeps it, because the empty
+    // value may be the very thing the reader needs present, and a write keeps every value it was sent.
+    if (tool.effect !== 'write') {
+      for (const key of Object.keys(args)) {
+        if (!isFiller(args[key]) || !namedByTool(key, args[key])) continue;
+        delete args[key];
+        dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:absent`);
       }
     }
     // A key the tool never declares is dropped only where the tool itself calls it unknown, so a validator

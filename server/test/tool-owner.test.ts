@@ -1080,6 +1080,9 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
 });
 
+// D2/D4 replace the deleted "a rebuild drops the grant" lifecycle: a provider rebuild keeps the task,
+// its operations and its ledger, so the same call replays its receipt and writes nothing again. A
+// different ask in the same task still grants no draft, and that refusal is the operation layer's.
 test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
@@ -1087,12 +1090,18 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args)).status, 'completed');
   assert.equal(port.log.length, 1);
+  // A provider rebuild reopens the session inside the same tools owner: the operation and its receipt stay.
+  const replayed = await liveExecute(f, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
+  assert.equal(replayed.status, 'completed');
+  assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
+  assert.match(String(replayed.result_json), /draft_ready/, 'the replay returns the recorded receipt');
+  // A restart does lose the ledger, and then the operation layer refuses before any handler runs.
   const rebuilt = f.reopen();
   rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
-  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
-  assert.equal(refused.status, 'completed');
-  assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  assert.match(String(refused.result_json), /no_owner_request/);
+  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:2', 'draft_email', args), callId: 'call-run:1:2' }, args, 3);
+  assert.equal(refused.status, 'refused');
+  assert.equal(refused.reason, 'operation_no_owner_request', 'the refusal names the operation layer');
+  assert.equal(port.log.length, 1, 'the restarted session writes nothing either');
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {

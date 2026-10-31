@@ -82,7 +82,7 @@ const refusalCode = (response: JsonObject | undefined): string | undefined => {
   return typeof code === 'string' ? code : undefined;
 };
 
-async function runScenario(boundary: Boundary, scenario: Scenario, breakConnectors: readonly BoundaryConnector[] = []): Promise<string[]> {
+async function runScenario(boundary: Boundary, scenario: Scenario): Promise<string[]> {
   const problems: string[] = [];
   for (const text of scenario.finals ?? []) await boundary.ownerFinal(text);
   let lastCallId: string | undefined;
@@ -127,11 +127,6 @@ async function runScenario(boundary: Boundary, scenario: Scenario, breakConnecto
       else if (code !== undefined && expect.responseNot.includes(code)) problems.push(`${step.tool}: answered ${code}: ${JSON.stringify(response).slice(0, 160)}`);
     }
     if (expect.flagged === true && !flagged(boundary)) problems.push(`${step.tool}: the empty claim was not flagged`);
-  }
-  for (const connector of breakConnectors) {
-    boundary.calls.length = 0;
-    problems.push(`${connector}: the broken-dispatch probe never called it`);
-    break;
   }
   return problems;
 }
@@ -235,23 +230,24 @@ async function corpusOutcomes(): Promise<Outcome[]> {
   return outcomes;
 }
 
-/** The harness must not be vacuous: a dispatch whose connector is never called has to come back FAIL. */
+/**
+ * The harness must not be vacuous: a write whose connector I/O is unreachable has to come back FAIL. The
+ * scenario is a trello card create, which the base already grants, and the break sits at the connector, so
+ * the probe proves the same thing before and after the compose grants land.
+ */
 async function brokenDispatchProbe(): Promise<Outcome> {
   const scenario: Scenario = {
     id: 'broken-dispatch-probe', why: 'a write whose connector is unreachable must fail the scenario',
-    families: ['calendar', 'calendar-write', 'knowledge'],
-    finals: ['Put a block in my calendar at 3 tomorrow for an hour.'],
-    steps: [{ tool: 'create_event', args: { summary: 'Synthetic block', duration_minutes: 60 },
-      expect: { dispatch: { connector: 'calendar', tool: 'calendar_create_event', args: { summary: 'Synthetic block' } } } }],
+    trello: true,
+    finals: ['Add a card to my Trello board called Synthetic card in Backlog.'],
+    steps: [{ tool: 'trello_write', args: { action: 'create', name: 'Synthetic card', list: 'Backlog' },
+      expect: { dispatch: { connector: 'trello', tool: 'trelloWriteCard' } } }],
   };
-  const boundary = await openBoundary({ families: scenario.families ?? [] });
-  let failed = false;
-  try {
-    const problems = await runScenario(boundary, scenario);
-    failed = problems.length > 0;
-  } finally { await boundary.close(); }
-  return failed
-    ? { id: 'broken-dispatch-probe', status: PASS, detail: 'the missing connector call failed the scenario, so the suite is not vacuous' }
+  const boundary = await openBoundary({ families: ['knowledge'], trello: true, breakConnectors: ['trello'] });
+  let problems: string[] = [];
+  try { problems = await runScenario(boundary, scenario); } finally { await boundary.close(); }
+  return problems.length > 0
+    ? { id: 'broken-dispatch-probe', status: PASS, detail: `the unreachable connector failed the scenario: ${problems[0]}` }
     : { id: 'broken-dispatch-probe', status: FAIL, detail: 'a scenario whose connector was never called still reported green' };
 }
 

@@ -56,6 +56,12 @@ export interface BoundaryOptions {
   grantMode?: 'explicit' | 'owner-trusted-reads';
   /** Bind the owner's Trello board service over a recording fake transport, so a trello write can land. */
   trello?: boolean;
+  /**
+   * Connectors whose I/O is deliberately unreachable: the fixture answers nothing and records nothing, so a
+   * scenario that expects its dispatch must fail. The non-vacuity probe uses this, and it holds whatever the
+   * grant layer decides, because the break sits at the connector, not at the host's authority.
+   */
+  breakConnectors?: readonly BoundaryConnector[];
   /** The web answer the research tool's web pass returns, so an injection can arrive as a web result. */
   researchWeb?: WebSearchPort;
 }
@@ -194,9 +200,11 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
     const sdk = new Server({ name: `live-boundary-${fixture.id}`, version: '1' }, { capabilities: { tools: { listChanged: false } } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
     sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(fixture.schemas) }) as never);
+    const broken = (options.breakConnectors ?? []).includes(fixture.connector);
     sdk.setRequestHandler('tools/call', req => {
       const tool = String(req.params.name);
       const args = (req.params.arguments ?? {}) as JsonObject;
+      if (broken) return { isError: true, content: [{ type: 'text', text: 'synthetic connector unreachable' }] };
       calls.push({ connector: fixture.connector, tool, args });
       const scripted = options.data?.[fixture.connector]?.[tool];
       const data = scripted ?? fixture.defaultData[tool] ?? { ok: true };
@@ -218,7 +226,7 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   }) as typeof fetch;
 
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 1 << 20 }) });
-  const trello = options.trello === true ? fakeTrello(calls) : undefined;
+  const trello = options.trello === true ? fakeTrello(calls, (options.breakConnectors ?? []).includes('trello')) : undefined;
   let owner: LiveSessionOwner | undefined;
   const toolOwner = createToolsOwner({
     store, ownerId: store.assistantId, registry, port,
@@ -329,13 +337,14 @@ export function webAnswer(text: string, source = { title: 'Synthetic web result'
 }
 
 /** The owner's board service over a recording transport: no REST, no key, one entry per dispatched call. */
-function fakeTrello(records: ConnectorCall[]): TrelloBoard {
+function fakeTrello(records: ConnectorCall[], broken = false): TrelloBoard {
   const boardId = 'aabbccddeeff001122334455';
   const board = { id: boardId, name: 'Synthetic Board', closed: false };
   const lists = [{ id: '11223344556677889900aabb', name: 'Backlog', closed: false }, { id: '223344556677889900aabbcc', name: 'Done', closed: false }];
   const transport: TrelloTransport = {
     tools: async () => ({ ok: true, value: trelloSchemas() }),
     call: async (tool, args) => {
+      if (broken) return { ok: false, code: 'unavailable' };
       records.push({ connector: 'trello', tool, args });
       if (tool === 'trelloReadMember') return { ok: true, value: { id: '3344556677889900aabbccdd', username: 'synthetic', fullName: 'Synthetic Owner' } };
       if (tool === 'trelloReadBoard') return { ok: true, value: { boards: [board] } };

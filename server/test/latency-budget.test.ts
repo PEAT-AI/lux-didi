@@ -188,3 +188,37 @@ test('LAT-1022: a connector request reports its own duration through the real mo
   assert.equal(ms, recorded, 'the segment is the request\'s own duration');
   judge({ connectorRequestMs: recorded });
 });
+
+// LAT-1022 (L-R2 F1): the meter names the stage the request ENDED in, not a constant. A request that dies before
+// the connector answered reports the connect stage its closed failure token names, so a slow or dead connector is
+// attributable to spawn, handshake or the first call instead of hiding behind one word.
+test('LAT-1022: a connector request that dies in the connect phase names that stage', async t => {
+  const clock = new FakeClock();
+  const { lines, detach } = hostLines();
+  t.after(detach);
+  const digest = 'synthetic-digest';
+  const registry = {
+    endpoint: () => ({ id: 'mongoose-knowledge' }),
+    currentGrant: () => ({ schemaDigest: digest, generation: 1, effect: 'read', toolNames: ['search'] }),
+    visibleTools: () => [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {}, additionalProperties: true } }],
+  };
+  const readerFor = (reason: string) => createMongooseReader({
+    port: {
+      visibleTools: () => [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {}, additionalProperties: true } }],
+      call: async () => ({ state: 'unknown', reason }),
+    } as never,
+    registry: registry as never,
+    config: { endpointId: 'mongoose-knowledge', endpoint: 'knowledge', account: 'synthetic', resource: 'synthetic', schemaDigest: digest,
+      generation: 1, maxSearchLimit: 5, maxListLimit: 10, queryChars: 100 } as never,
+    now: () => clock.now(),
+  });
+  const stageOf = async (reason: string): Promise<unknown> => {
+    lines.length = 0;
+    await readerFor(reason).call('search', { query: 'synthetic' });
+    return lines.find(line => line['event'] === 'connector_request')?.['stage'];
+  };
+  assert.equal(await stageOf('pipe_closed'), 'spawn', 'a closed pipe is the spawn stage');
+  assert.equal(await stageOf('child_exited'), 'spawn', 'a dead child is the spawn stage');
+  assert.equal(await stageOf('connect_timeout'), 'handshake', 'a connect timeout is the handshake stage');
+  assert.equal(await stageOf('discovery-required'), 'first_call', 'anything else is the first call');
+});

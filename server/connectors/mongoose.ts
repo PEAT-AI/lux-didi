@@ -309,10 +309,15 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
 
   const schemaValidator = new AjvJsonSchemaValidator();
 
-  /** LAT-1022: one connector_request line per request, written at its end. Connector, stage, duration and the
-   *  call's own closed state; never the tool's arguments, never an answer. */
-  const meter = (startedAt: number, state: MongooseResult['state']): void => {
-    hostLogEvent({ event: 'connector_request', connector: `mongoose-${config.endpoint}`, stage: 'call' as MongooseRequestStage,
+  /**
+   * LAT-1022: one connector_request line per request, written at its end. Connector, stage, duration and the
+   * call's own closed state; never the tool's arguments, never an answer. The stage is the one the request
+   * ENDED in: `call` when the connector answered, and otherwise the connect stage the closed failure token names
+   * (`mongooseFailureStage` below, which is where each of those stages is defined).
+   */
+  const meter = (startedAt: number, state: MongooseResult['state'], reason?: string): void => {
+    hostLogEvent({ event: 'connector_request', connector: `mongoose-${config.endpoint}`,
+      stage: state === 'completed' ? 'call' as MongooseRequestStage : mongooseFailureStage(reason ?? 'first_call'),
       ms: Math.max(0, now() - startedAt),
       outcome: state === 'completed' ? 'ok' : state === 'refused' ? 'refused' : state === 'unknown' ? 'unknown' : 'failed' });
   };
@@ -332,7 +337,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
     if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) { meter(startedAt, 'refused'); return { state: 'refused', reason: 'original-schema-arguments-refused' }; }
     const result: CallResult = await port.call(request, signal);
-    if (isFailed(result)) { meter(startedAt, result.state); return { state: result.state, reason: result.reason }; }
+    if (isFailed(result)) { meter(startedAt, result.state, result.reason); return { state: result.state, reason: result.reason }; }
     if (signal?.aborted) { meter(startedAt, 'unknown'); return { state: 'unknown', reason: 'cancelled-after-dispatch' }; }
     meter(startedAt, result.state);
     return {

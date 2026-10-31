@@ -8,6 +8,7 @@
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { audioPlan, readUtteranceFile, runAudioProbe, synthUtterance } from './audio.js';
 import { judgePrompt } from './judge.js';
 import { buildPlan, confirmPrice, formatPlan, loadRates, loadScenarios, type ReleaseScenario } from './plan.js';
 import { loadRecording } from './replay.js';
@@ -33,7 +34,15 @@ const scenarioPath = (given: string | undefined): string =>
   given === undefined ? here('./scenarios/release.jsonl')
     : given.includes('/') ? given : here(`./scenarios/${given}`);
 
-interface Options { readonly mode: 'dry-run' | 'fake-model' | 'real'; readonly scenarios: string; readonly json: boolean; readonly confirm: number | undefined }
+interface Options {
+  readonly mode: 'dry-run' | 'fake-model' | 'real';
+  readonly scenarios: string;
+  readonly json: boolean;
+  readonly confirm: number | undefined;
+  /** `--audio-probe` swaps the text path for the synthetic utterance path; `--pcm` names a say capture. */
+  readonly audio: boolean;
+  readonly pcm: string | undefined;
+}
 
 function parse(argv: readonly string[]): Options {
   const modes = ['--dry-run', '--fake-model', '--real'].filter(mode => argv.includes(mode));
@@ -45,6 +54,8 @@ function parse(argv: readonly string[]): Options {
     scenarios: scenarioPath(value(argv, '--scenarios')),
     json: argv.includes('--json'),
     confirm,
+    audio: argv.includes('--audio-probe'),
+    pcm: value(argv, '--pcm'),
   };
 }
 
@@ -67,6 +78,23 @@ async function runFakeModel(scenarios: readonly ReleaseScenario[], scenariosPath
   return failures === 0 ? 0 : 1;
 }
 
+/** The audio probe: the same gates, the same adapter, an utterance instead of an ask. */
+async function runAudio(options: Options): Promise<number> {
+  const pcm = options.pcm === undefined ? synthUtterance() : readUtteranceFile(options.pcm);
+  const source = options.pcm ?? 'synthetic tone generated in code';
+  if (options.mode !== 'fake-model') {
+    process.stdout.write(`${audioPlan({ bytes: pcm.length, source })}\n`);
+    return 0;
+  }
+  const outcome = await runAudioProbe({ pcm, recording: loadRecording(join(dirname(options.scenarios), '..', 'recordings', 'audio-probe.json')) });
+  const pass = outcome.connections === 1 && outcome.outputAudioFrames > 0 && outcome.uploadedBytes === pcm.length;
+  process.stdout.write(`${pass ? 'PASS' : 'FAIL'} audio probe: `
+    + `${outcome.chunks} chunk(s), ${outcome.uploadedBytes} bytes up, ${outcome.outputAudioFrames} provider audio frame(s) dropped, `
+    + `transcripts ${JSON.stringify(outcome.transcripts)}\n`);
+  process.stdout.write(`MACHINE ${JSON.stringify({ mode: 'audio-probe', pass, ...outcome })}\n`);
+  return pass ? 0 : 1;
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes('--help') || argv.includes('-h')) { process.stdout.write(USAGE); return 0; }
   const options = parse(argv);
@@ -74,6 +102,8 @@ export async function main(argv: readonly string[]): Promise<number> {
   const rates = loadRates(here('../../../../config/eval-rates.json'));
   const judge = judgePrompt();
   const plan = buildPlan({ scenarios, rates, judgePrompt: judge });
+
+  if (options.audio) return runAudio(options);
 
   if (options.mode === 'dry-run') {
     const text = formatPlan(plan);

@@ -1,0 +1,61 @@
+{
+  "provenance": {
+    "source_finding": "C-EVALS2 tier 2 audio probe",
+    "date": "2026-11-02",
+    "synthetic": true,
+    "note": "Hand-authored synthetic provider turn for the audio path. No provider call was made; the audio is a generated tone."
+  },
+  "steps": [
+    {
+      "trigger": "start",
+      "frames": [
+        {
+          "type": "session.started",
+          "session": {
+            "id": "sess_eval_audio"
+          }
+        }
+      ]
+    },
+    {
+      "trigger": "audio",
+      "frames": [
+        {
+          "type": "session.input_transcript.delta",
+          "event_id": "event_au1",
+          "delta": "synthetic probe utterance"
+        },
+        {
+          "type": "session.output_audio.delta",
+          "delta": "AAAqA0gGTAksDNsOThF9E10V6BYYGOcYUxlaGfsYORgWF5cVwROcETIPigywCbAGlQNrAEH9IfoY9zP0ffEB78ns3upH6QvoL+e15qHm8uan577oMer86xbuefAZ8+z16PgB/Cn/UwJ2BYIIbQsqDq4Q8BLmFIgW0Be6GEAZYhkeGXYYbBcFFkYUNRLcD0QNdgp/B2oEQwEY/vT65Pf09DDypO9Z7VjrqulW6GDnzOad5tPmbudr6MbpeuuA7dDvYfIo9Rr4LPtR/nwBogS2B6sKdQ0JEF0SaBQhFoIXhRgmGWMZOhmtGLwXbRbFFMkSghD6DTkLTAg+BRoC7/7I+7H4uPXn8kvw7u3Z6xTqp+iX5+nmn+a75jvnHuhh6f7q7+ws763xZvRO91n6ev2lAM4D5wblCbwMYA/GEeUTtRUuF0oYBRldGU8Z3BgGGM8WPhVXEyQRrA75CxcJEAbxAsf/nfyB+X72ovP38IjuX+yE6v/o1ucO56nmqeYP59jnAumI6mPsje798KjzhfaI+aT8zv/4AhcGHQkADLIOKRFcE0IV0hYIGN0YTxlcGQQZSBgrF7EV4BPBEVoPtgzfCeAGxwOeAHP9UvpI92D0p/En7+rs+upe6RzoOee65p/m6uaZ56roGOrd6/PtUfDt8r71uPjP+/f+IQJFBVMIQAsADogQzhLJFHEWvxeuGDsZYxklGYQYgBceFmQUWBIDEG8NpAqvB5sEdQFK/iX7E/gh9Vvyy+977Xbrw+lo6Gzn0uad5s3mYedY6K7pXete7arvNvL69Or3+/of/koBcQSGB30KSg3iDzoSShQJFm8XeBgfGWIZQBm4GM4XhRbhFOsSqBAkDmYLewhvBUwCIv/5++H45vUS83PwEe746y7qu+il5/Hmoea25jDnDehK6eLqzuwH74PxOvQf9yj6SP1zAJwDtwa3CZAMNw+iEcYTmhUZFzsY/RhaGVMZ5hgWGOUWWRV4E0kR1Q4lDEYJQQYjA/n/z/yx+a32zvMg8a3uf+yf6hXp5ucX56zmpuYG58nn7eht6kTsae7U8HzzVvZX+XL8nP/GAuYF7gjTC4kOBBE7EyYVvBb3F9MYSxlfGQ0ZVhg/F8sVABTkEYIP4QwNChEH+APQAKX9g/p394300PFN7wztFut16S3oRee/5p7m4+aM55bo/+m/69DtKfDC8pD1iPid+8T+7wETBSMIEwvWDWIQrBKsFFkWrReiGDUZYxksGZAYkxc2FoIUexIqEJkN0grfB80EpwF8/lf7"
+        },
+        {
+          "type": "session.output_transcript.delta",
+          "event_id": "event_au2",
+          "delta": "Audio probe answered."
+        },
+        {
+          "type": "response.event",
+          "delegation_id": "item_au1",
+          "event": {
+            "type": "response.created",
+            "response": {
+              "id": "resp_au1"
+            }
+          }
+        },
+        {
+          "type": "response.event",
+          "delegation_id": "item_au1",
+          "event": {
+            "type": "response.done",
+            "response": {
+              "id": "resp_au1",
+              "status": "completed"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -88,6 +88,22 @@ export function readEvent(raw: unknown): PostcallEvent | undefined {
   }
 }
 
+/**
+ * One capture, either a JSONL stream of metadata events or a fixture object with an `events` array. Both are
+ * read through `readEvent`, so a capture that carries a stray key still yields only the closed shapes.
+ */
+export function readCapture(fileText: string): PostcallEvent[] {
+  const trimmed = fileText.trim();
+  if (trimmed.startsWith('{')) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(trimmed); } catch { return readEvents(fileText.split('\n')); }
+    const events = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['events'] : undefined;
+    if (!Array.isArray(events)) return readEvents(fileText.split('\n'));
+    return events.flatMap((raw): PostcallEvent[] => { const event = readEvent(raw); return event === undefined ? [] : [event]; });
+  }
+  return readEvents(fileText.split('\n'));
+}
+
 /** The whole session's events, in order. A JSONL stream with one metadata event per line. */
 export function readEvents(lines: Iterable<string>): PostcallEvent[] {
   const events: PostcallEvent[] = [];
@@ -289,8 +305,9 @@ export function main(argv: readonly string[]): number {
     process.stderr.write(`didi-postcall-review: give --events, or --log and --session\n\n${USAGE}`);
     return 2;
   }
-  const lines = eventsPath !== undefined ? readFileSync(eventsPath, 'utf8').split('\n') : sessionLines(logPath as string, sessionId as string);
-  const review = reviewSession(readEvents(lines), sessionId);
+  const events = eventsPath !== undefined ? readCapture(readFileSync(eventsPath, 'utf8'))
+    : readEvents(sessionLines(logPath as string, sessionId as string));
+  const review = reviewSession(events, sessionId);
   const written = writeReview(review, outDir);
   process.stdout.write(argv.includes('--json')
     ? `${JSON.stringify({ ...review, report: written.report, drafts: written.drafts }, null, 2)}\n`

@@ -11,13 +11,13 @@ import { readFileSync } from 'node:fs';
 import WebSocket, { WebSocketServer } from 'ws';
 import type { LiveSocketFactory } from '../../adapters/live-voice/types.js';
 
-export type ReplayTrigger = 'start' | 'owner' | 'continuation';
+export type ReplayTrigger = 'start' | 'owner' | 'continuation' | 'audio';
 
 export interface ReplayStep { readonly trigger: ReplayTrigger; readonly frames: readonly Record<string, unknown>[] }
 
 export interface Recording { readonly provenance?: Readonly<Record<string, unknown>>; readonly steps: readonly ReplayStep[] }
 
-const TRIGGERS: readonly string[] = ['start', 'owner', 'continuation'];
+const TRIGGERS: readonly string[] = ['start', 'owner', 'continuation', 'audio'];
 
 export function loadRecording(path: string): Recording {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -77,9 +77,12 @@ export async function replayServer(recording: Recording): Promise<Replay> {
       frames.push(frame);
       // The adapter opens the session with its own create frame: the provider greets only after it, as it does live.
       if (!started) { started = true; next('start'); return; }
-      // The owner's ask reaches the wire as `response.item.create`; the answer's continuation as `response.create`.
-      if (frame['type'] === 'response.item.create') next('owner');
-      else if (frame['type'] === 'response.create') next('continuation');
+      // An owner ask reaches the wire as `response.item.create`, its audio as `session.input_audio.append`, and the
+      // answer's continuation as `response.create`. Each one serves the next step recorded with that trigger.
+      const trigger = frame['type'] === 'response.item.create' ? 'owner'
+        : frame['type'] === 'session.input_audio.append' ? 'audio'
+          : frame['type'] === 'response.create' ? 'continuation' : undefined;
+      if (trigger !== undefined) next(trigger);
     });
   });
 

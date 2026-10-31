@@ -35,6 +35,7 @@ import { CalendarDigestCache } from '../live/warm-context.js';
 import { loadProviderConfig } from '../config/index.js';
 import { createSummarizer } from '../services/summarize.js';
 import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
+import { postcallOnLiveEnd } from '../trace/postcall.js';
 
 /** The one migration list the host applies and every Store reopen reuses, so a host-written database never refuses a downgrade. */
 export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations];
@@ -215,8 +216,12 @@ export function createMongooseSignIn(options: {
   return signIn;
 }
 
-export function sessionTerminalHooks(hooks: { endBoardSession: (liveSessionId: string) => void; scheduleSummary: (liveSessionId: string) => void }): (liveSessionId: string) => void {
-  return liveSessionId => { hooks.endBoardSession(liveSessionId); hooks.scheduleSummary(liveSessionId); };
+export function sessionTerminalHooks(hooks: {
+  endBoardSession: (liveSessionId: string) => void; scheduleSummary: (liveSessionId: string) => void;
+  /** C-EVALS2 tier 3: the post-call review, behind its own default-off setting (`DIDI_POSTCALL_REVIEW`). */
+  postcall?: (liveSessionId: string) => void;
+}): (liveSessionId: string) => void {
+  return liveSessionId => { hooks.endBoardSession(liveSessionId); hooks.scheduleSummary(liveSessionId); hooks.postcall?.(liveSessionId); };
 }
 
 /**
@@ -682,7 +687,8 @@ export async function startHost(config: HostConfig) {
       calendarDigest: { forStart: () => calendarDigest.forStart(), refresh: () => { void calendarDigest.refresh(); } },
       // W7-R4: the board's per-session cache and idempotency ledger end with the session, before the
       // summary is scheduled so a summarizer failure cannot keep a finished run's receipts alive.
-      onSessionTerminal: sessionTerminalHooks({ endBoardSession: liveSessionId => { trello.end(liveSessionId); }, scheduleSummary: liveSessionId => { summarizer.schedule(liveSessionId); } }),
+      onSessionTerminal: sessionTerminalHooks({ endBoardSession: liveSessionId => { trello.end(liveSessionId); }, scheduleSummary: liveSessionId => { summarizer.schedule(liveSessionId); },
+        postcall: liveSessionId => { postcallOnLiveEnd({ dataDir, liveSessionId }); } }),
       log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);

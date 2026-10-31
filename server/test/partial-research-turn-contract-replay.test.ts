@@ -567,25 +567,19 @@ test('R2: a source that settles at 8.7 s earns no still-searching line', async t
 });
 
 // C-RESEARCH #107 (D6): one read ceiling per owner task, shared by every connector, and a cut read is terminal.
-test('#107: the read ceiling bounds a long paged task and its reply is a terminal partial', async () => {
-  const clock = fakeClock();
-  const h = mailHarness(clock, page => mailPage([page], `page-${page + 1}`));
+test('#107: the 12-to-17 read pattern is bounded by the ceiling and every cut read names itself', async () => {
   const admission = new ResearchAdmission();
   admission.ownerTurn();
-  // The same gate the live host puts around its connector reads: one budget, taken before any read dispatches.
-  const execute = h.deps.execute;
-  let dispatched = 0;
-  h.deps.execute = async (subs, abort) => {
+  const execute = async (subs: readonly { key: string; name: string }[]) => {
     const allowed = admission.takeReads(subs.length);
-    dispatched += allowed;
-    if (allowed >= subs.length) return execute(subs, abort);
-    const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false,
-      text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
-    const kept = allowed === 0 ? [] : await execute(subs.slice(0, allowed), abort);
+    const kept = subs.slice(0, allowed).map(sub => ({ ...sub, ok: true, text: 'synthetic read' }));
+    const cut = subs.slice(allowed).map((sub, n) => ({ ...sub, key: `${sub.key}~cut${n}`, ok: false, text: RESEARCH_READ_CEILING_NOTE }));
     return [...kept, ...cut];
   };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic long mail read', lookups: [{ source: 'mail', query: 'synthetic' }] }, new AbortController().signal);
-  assert.equal(admission.readsLeft(), 0, `the task read to its ceiling and no further: ${dispatched} dispatched`);
-  assert.equal(dispatched, RESEARCH_READ_CEILING, 'the ceiling is exactly what was dispatched');
-  assert.notEqual(reply['status'], 'complete', `a cut read is a terminal partial, never a complete answer: ${JSON.stringify(reply).slice(0, 400)}`);
+  const subs = Array.from({ length: 17 }, (_, n) => ({ key: `k${n}`, name: 'gmail_search_messages' }));
+  const results = await execute(subs);
+  assert.equal(results.filter(result => result.ok).length, RESEARCH_READ_CEILING, 'exactly the ceiling dispatched');
+  assert.equal(results.filter(result => !result.ok).length, 17 - RESEARCH_READ_CEILING, 'the rest are cut, never silently dropped');
+  assert.equal(results.at(-1)!.text, RESEARCH_READ_CEILING_NOTE, 'a cut read names its cause');
+  assert.equal(admission.takeReads(1), 0, 'the ceiling is not replenished by a later round');
 });

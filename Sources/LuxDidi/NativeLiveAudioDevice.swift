@@ -42,6 +42,7 @@ struct NativePCMFrameRing {
 /// One converter per capture lifetime. The input callback supplies each buffer exactly once.
 final class NativePCMConverter {
     let output: AVAudioFormat
+    let input: AVAudioFormat
     let inputSampleRate: Double
     let inputChannels: Int
     private let converter: AVAudioConverter
@@ -51,10 +52,16 @@ final class NativePCMConverter {
         }
         guard let converter = AVAudioConverter(from: input, to: output) else { throw NativeLiveAudioError.converterUnavailable }
         converter.channelMap = [0]
-        self.output = output; self.converter = converter
+        self.output = output; self.converter = converter; self.input = input
         inputSampleRate = input.sampleRate; inputChannels = Int(input.channelCount)
     }
     func append(_ input: AVAudioPCMBuffer) throws -> Data { try convert(input, ending: false) }
+    /// C-MICWATCH 3: whether a buffer carries the format this converter was built for.
+    func accepts(_ format: AVAudioFormat) -> Bool { Self.sameShape(format, input) }
+    static func sameShape(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
+        a.channelCount == b.channelCount && a.sampleRate == b.sampleRate
+            && a.commonFormat == b.commonFormat && a.isInterleaved == b.isInterleaved
+    }
     func finish() throws -> Data { try convert(nil, ending: true) }
     private func convert(_ input: AVAudioPCMBuffer?, ending: Bool) throws -> Data {
         var supplied = false, result = Data()
@@ -429,7 +436,7 @@ struct NativeOrbTimeline {
 /// The tap and drain task meet only through this locked eight-frame queue.
 final class NativeCaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
-    private let converter: NativePCMConverter
+    private var converter: NativePCMConverter
     private var assembler = NativePCMFrameAssembler()
     private var ring = NativePCMFrameRing()
     private var stopped = false, muted = false
@@ -452,6 +459,12 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         statistics.tapBuffers += 1
         if !muted {
             do {
+                // C-MICWATCH 3: a format read before start that the buffers do not carry is replaced
+                // by the buffer's own format, once, so the converter never fails on a settled graph.
+                if !converter.accepts(input.format) {
+                    converter = try NativePCMConverter(input: input.format)
+                    statistics.inputSampleRate = converter.inputSampleRate; statistics.inputChannels = converter.inputChannels
+                }
                 let data = try converter.append(input)
                 statistics.convertedBytes += data.count
                 var sum: Double = 0
@@ -469,6 +482,11 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             } catch { failure = true; statistics.convertFailures += 1 }
         }
         signal.yield(())
+    }
+    /// C-MICWATCH 1: whether the tap has delivered at least one buffer.
+    var hasReceivedBuffer: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return statistics.tapBuffers > 0
     }
     func next() -> (Data?, Float, Int, Bool) {
         lock.lock(); defer { lock.unlock() }
@@ -643,6 +661,9 @@ struct NativeLiveInterruptionSample: Sendable {
     /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
     var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
     var startForTesting: ((AVAudioEngine) throws -> Void)?
+    /// C-MICWATCH 1: the fake engine has no tap, so its tests opt in to the first-buffer watchdog
+    /// with their own window. A real engine always runs it with `firstBufferWindowMs`.
+    var firstBufferWindowForTesting: Duration?
     var playbackDriverForTesting: (any NativePlaybackDriver)?
     var sessionFailedForTesting: Bool { sessionFailed }
     var isVoiceProcessingEnabledForTesting: Bool { engine?.inputNode.isVoiceProcessingEnabled ?? false }
@@ -663,6 +684,11 @@ struct NativeLiveInterruptionSample: Sendable {
     /// and the clock it started, so `audio_output_switched` reports a measured switch.
     private var pendingOutputSwitch: (from: String, at: Date)?
     private var voiceProcessingFailed = false
+    /// C-MICWATCH 1: how long a started engine may run before its tap delivers the first buffer.
+    static let firstBufferWindowMs = 1_000
+    private var firstBufferWatchdog: Task<Void, Never>?
+    /// C-MICWATCH 1: the one restart without voice processing a session may take after a stall.
+    private var stallRestarted = false
     /// The device-busy reading taken at call start, before the connecting ring or the live engine
     /// can start: `kAudioDevicePropertyDeviceIsRunningSomewhere` counts Didi itself (#1022).
     private(set) var outsideBusyAtCallStart: Bool?
@@ -819,12 +845,15 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         }
     }
-    private func installConfigurationObserver(object: AVAudioEngine?) {
-        let token = captureGeneration
+    private func installConfigurationObserver(object: AVAudioEngine?, token: UInt64? = nil) {
+        let token = token ?? captureGeneration
+        // C-MICWATCH 2: a change posted during a start that then failed belongs to no engine.
+        let engineID = object.map(ObjectIdentifier.init)
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: object, queue: nil) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.captureGeneration == token else { return }
+                guard let self, self.captureGeneration == token,
+                      engineID == nil || engineID == self.engine.map(ObjectIdentifier.init) else { return }
                 self.routeChanged()
             }
         }
@@ -1143,7 +1172,7 @@ struct NativeLiveInterruptionSample: Sendable {
         sessionStartedAt = now()
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
-        voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil
+        voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil; stallRestarted = false
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
@@ -1273,7 +1302,7 @@ struct NativeLiveInterruptionSample: Sendable {
                                                rate: sessionRate)
         }
         self.engine = engine; self.player = player; self.timePitch = stretch
-        let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
+        var capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
         capture.setMuted(muted); self.capture = capture
         // Tap format is the input node's current output format at install time, never one
         // captured before voice processing was enabled.
@@ -1281,7 +1310,24 @@ struct NativeLiveInterruptionSample: Sendable {
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
             tapInstalled = true
             engine.prepare()
+            // C-MICWATCH 3: the format is read again once the graph is prepared. Only a format that
+            // settled differently replaces the tap and converter; an unchanged one touches nothing.
+            let prepared = engine.inputNode.outputFormat(forBus: 0)
+            if prepared.sampleRate > 0, prepared.channelCount > 0, !NativePCMConverter.sameShape(prepared, hardware) {
+                log("audio_input_format_settled", ["fromChannels": String(hardware.channelCount),
+                                                   "toChannels": String(prepared.channelCount),
+                                                   "fromSampleRate": String(Int(hardware.sampleRate)),
+                                                   "toSampleRate": String(Int(prepared.sampleRate))])
+                engine.inputNode.removeTap(onBus: 0)
+                hardware = prepared
+                capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
+                capture.setMuted(muted); self.capture = capture
+                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+            }
         }
+        // C-MICWATCH 2: observe configuration changes before the engine starts, so a change posted
+        // during start reaches the route logic. The token is the generation activateCapture opens.
+        installConfigurationObserver(object: engine, token: captureGeneration &+ 1)
         do {
             if let startForTesting { try startForTesting(engine) } else { try engine.start() }
         } catch {
@@ -1304,8 +1350,51 @@ struct NativeLiveInterruptionSample: Sendable {
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
         route = "Microphone: " + input.name + " · Output: " + outputDevice().name
         activateCapture(capture, send: send)
-        installConfigurationObserver(object: engine)
         ready = true
+        armFirstBufferWatchdog(capture, voiceProcessing: useVoiceProcessing, format: hardware)
+    }
+    /// C-MICWATCH 1: no tap buffer within the window after start means the graph is not running. The
+    /// first stall restarts once without voice processing (the decision the throw fallback takes); a
+    /// stall after that ends the start as a named engine failure, so the call fails visibly instead
+    /// of presenting live with a dead microphone. A start with buffers only reads one counter.
+    private func armFirstBufferWatchdog(_ capture: NativeCaptureBuffer, voiceProcessing: Bool, format: AVAudioFormat) {
+        firstBufferWatchdog?.cancel(); firstBufferWatchdog = nil
+        let window: Duration
+        if engineFactoryForTesting == nil { window = .milliseconds(Self.firstBufferWindowMs) }
+        else if let testing = firstBufferWindowForTesting { window = testing }
+        else { return }
+        let token = captureGeneration
+        let armed = ContinuousClock.now
+        firstBufferWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: window)
+            guard !Task.isCancelled, let self, self.captureGeneration == token, !capture.hasReceivedBuffer else { return }
+            // Detach this task from the device first, so the release below never cancels it mid-step.
+            self.firstBufferWatchdog = nil
+            self.inputStalled(voiceProcessing: voiceProcessing, format: format,
+                              waitedMs: Int(armed.duration(to: .now) / .milliseconds(1)))
+        }
+    }
+    private func inputStalled(voiceProcessing: Bool, format: AVAudioFormat, waitedMs: Int) {
+        let send = sendFrame
+        let restart = !stallRestarted && send != nil
+        log("audio_input_stalled", ["voiceProcessing": voiceProcessing ? "true" : "false",
+                                    "inputChannels": String(format.channelCount),
+                                    "sampleRate": String(Int(format.sampleRate)),
+                                    "waitedMs": String(waitedMs),
+                                    "action": restart ? "restart_without_voice_processing" : "failed"])
+        if restart, let send {
+            stallRestarted = true
+            voiceProcessingFailed = true
+            releaseAudio(keepingSlot: true)
+            do { try build(send: send); return } catch { sessionFailed = true }
+        }
+        sessionFailed = true
+        sendFrame = nil
+        let token = captureGeneration
+        Task { @MainActor [weak self] in
+            guard let self, self.captureGeneration == token else { return }
+            await self.interrupt(NativeLiveAudioError.engineFailed(code: 0))
+        }
     }
     private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data, UInt64) async throws -> Void) {
         isCapturing = true; captureGeneration &+= 1; captureLifetimeActive = true
@@ -1617,6 +1706,7 @@ struct NativeLiveInterruptionSample: Sendable {
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
+        firstBufferWatchdog?.cancel(); firstBufferWatchdog = nil
         // Release order: observer first, then player/tap, then stop, reset and drop the engine.
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil

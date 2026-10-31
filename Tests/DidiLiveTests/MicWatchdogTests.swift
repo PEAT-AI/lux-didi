@@ -8,12 +8,16 @@ import Foundation
 @MainActor
 enum MicWatchdogTests {
     static func run() async throws {
+        // (c) runs first: tearing down a voice-processing engine makes CoreAudio post a configuration
+        // change to the next voice-processing engine a few hundred ms later, which the existing route
+        // logic logs as audio_route_change_ignored. The restarts in (a) and (b) would leak that line
+        // into the happy-path journal; the line is not the watchdog's.
+        try await checkNormalStartIsUnchanged()
+        print("PASS (c) a normal start with buffers fires no watchdog and keeps voice processing on")
         try await checkStallRestartsWithoutVoiceProcessing()
         print("PASS (a) a start with no buffer fires the watchdog once, restarts without voice processing, and a buffer then goes live")
         try await checkStallTwiceFailsByName()
         print("PASS (b) no buffer in either mode ends the start with a named failure, no third start")
-        try await checkNormalStartIsUnchanged()
-        print("PASS (c) a normal start with buffers fires no watchdog and keeps voice processing on")
         try await checkConfigurationChangeDuringStartIsObserved()
         print("PASS (d) a configuration change posted during engine start is observed and handled")
         try checkConverterFollowsBufferFormat()

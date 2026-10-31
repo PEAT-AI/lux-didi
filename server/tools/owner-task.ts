@@ -25,8 +25,9 @@ interface OwnerTask {
   operations: OwnerOperation[]; sequence: number; closed: boolean;
   openGrant: boolean; openReceipts: Map<string, { journalId: string; receipt: unknown }>;
   shown: { handle: string; kind: string; seq: number }[]; sources: Record<string, number>;
-  /** The task's sequence at the last successful open: a handle exposed after it answers the next open. */
-  openSeq: number;
+  /** A counter of the reads this task exposed, and its value at the last successful open: a window
+   *  exposed after that open answers his next ask to open. */
+  exposure: number; openSeq: number;
 }
 
 /** A task with no owner final for this long is over; the owner has moved on. */
@@ -205,7 +206,7 @@ export class OwnerTasks implements OwnerTaskPort {
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {}, openSeq: 0,
+      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {}, exposure: 0, openSeq: 0,
     };
     this.#apply(task, ownerCommands(words), words);
     this.#armOpen(task, ownerCommands(words), words);
@@ -317,7 +318,7 @@ export class OwnerTasks implements OwnerTaskPort {
     // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
     if (kind === 'open') {
       task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, { journalId: task.journalId, receipt });
-      task.openGrant = false; task.openSeq = task.sequence; return;
+      task.openGrant = false; task.openSeq = task.exposure; return;
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
@@ -351,7 +352,8 @@ export class OwnerTasks implements OwnerTaskPort {
     // A read's own exposure list can be empty when its handle lines were minted before; what counts is
     // every window the model was handed in this task, in the order it saw them.
     const list = handles.length > 0 ? handles : exposedHandles();
-    for (const handle of list) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push({ ...handle, seq: task.sequence });
+    task.exposure += 1;
+    for (const handle of list) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push({ ...handle, seq: task.exposure });
   }
 
   topShown(session: string, kinds: readonly string[]): string | undefined {

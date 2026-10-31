@@ -1052,7 +1052,7 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
-  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, `the block this session made is removed: ${String(removed.result_json)} ${String(removed.reason)}`);
+  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, `the block this session made is removed: ${String(removed.result_json)} ${String(removed.reason)} audit=${JSON.stringify(f.owner.ownerTasks.audit('run', 'delete_event'))}`);
 
 test('W1030 delete_event: a block the owner names is removed only when this session calendar read returned it', async t => {
   const port = composePort();

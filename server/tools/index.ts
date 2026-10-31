@@ -810,7 +810,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
-              ...(recurrenceDropped ? { recurrence: 'not_applied', recurrenceSay: RECURRENCE_NOT_ASKED } : {}),
+              ...(recurrenceDropped ? { recurrence: 'not_applied' } : {}),
               say: parsed.confirmation + (recurrenceDropped ? ` ${RECURRENCE_NOT_ASKED}` : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {

@@ -64,6 +64,8 @@ const MAIL = /\b(?:e-?mails?|mails?|gmail)\b/i;
 const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack)\b/i;
 
 const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|put (?:this|it|that) in my (?:vault|notes)|belongs? in my notes|save\b[^.!?]{0,60}\b(?:into|to)\s+(?:lux|the vault|my notes)|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
+/** The objects of a read the owner asked for: text from them is never a window to open. */
+const READ_OBJECT = /\b(?:knowledge|lux knowledge|the vault|my notes|my mail|my inbox|my calendar|the thread|the channel)\b/i;
 const OPEN_VERB = /(?:^|[^a-zäöüß])(?:open|launch|show|start|öffne|starte|zeig)(?![a-zäöüß])/i;
 const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|inbox|notes|directions|terminal|finder|browser|settings)\b/i;
 const DOMAIN = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
@@ -222,8 +224,10 @@ export class OwnerTasks implements OwnerTaskPort {
    */
   #armOpen(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
     // A window is opened when the owner's own words ask to open something, or when they name a
-    // destination and nothing else. A distinct ask on its own (an alarm, a note, a draft) arms nothing.
+    // destination and nothing else. A distinct ask on its own (an alarm, a note, a draft) arms nothing,
+    // and a read he asked for ("find the plan in Lux knowledge") never opens what its text names.
     if (!commands.some(command => command.kind === 'open') && commands.length > 0) return;
+    if (!OPEN_VERB.test(words) && READ_OBJECT.test(words)) return;
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     // A new owner final is a new selection round: the targets spent in the last round no longer
     // answer for it, so he can name the same window again.
@@ -292,7 +296,8 @@ export class OwnerTasks implements OwnerTaskPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
-    if (kind === 'open') { task.openReceipts.set(target, receipt); task.openGrant = false; return; }
+    // One owner ask may open more than one target it names; the round stays armed until new words come.
+    if (kind === 'open') { task.openReceipts.set(target, receipt); return; }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

@@ -1716,7 +1716,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // LAT-1022: the provider acknowledged a function output, so the wait between writing the output and the
     // provider taking it is its own segment. The call and a count, never the output.
     if (!closedKeys(value, ['event', 'callKey', 'ms'])) return;
-    if (!isCallKey(value.callKey) || !isSafeCount(value.ms)) return;
+    // The provider's own call id is the key here (`call_...`), never the host's scoped trace key, so the closed
+    // shape is the provider-id shape: no dot, slash or space, and a bounded length.
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey) || !isSafeCount(value.ms)) return;
     return { event: 'provider_output_ack', callKey: value.callKey, ms: value.ms };
   }
   if (value.event === 'turn_failed') {

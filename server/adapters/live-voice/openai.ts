@@ -1161,6 +1161,9 @@ class Session implements LiveVoiceSession {
         if (responseId !== undefined && this.openedResponses.has(responseId)) { this.touch(); return; }
         if (responseId !== undefined) this.openedResponses.add(responseId);
         // O1b-A: the response's own receipt, minted before any output can name it.
+        // LAT-1022: a response the host never asked for has no `response.create` of its own, so its decomposition
+        // opens here instead: the provider's own start is that response's beginning.
+        if (this.firstResponseTiming === undefined) this.openResponseTiming();
         // LAT-1022: the provider opening the response that carries these outputs IS the acknowledgement of them,
         // so every output written for this continuation gets its own segment, one call and one count.
         for (const [callKey, writtenAt] of this.outputAckPending) {

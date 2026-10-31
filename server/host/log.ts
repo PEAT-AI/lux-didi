@@ -811,17 +811,32 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_frame_rejected', code: value.code, error: value.error, kind: value.kind, bytes: value.bytes, keys: value.keys };
   }
   if (value.event === 'tool_arguments_rejected') {
-    // Closed shape: tool name and argument key:type paths only, never a value.
-    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
+    // C-ARGS: closed shape. One `path:keyword` token per violation, together, and never a value: the
+    // keyword is a rule name the tool's own predicate declares, the path is the argument key it names.
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'violations', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
-    // F3: key:shape, where a shape is a type and, for a string or an array, its length. Never a value.
-    // #798: a number or a boolean cannot hold his words, so a refused write may name that one value back
-    // (`duration_minutes:number=1.5`); a text field still travels as its length alone.
-    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(?:(?:string|number|boolean|array|object|null|undefined)(_\d{1,7})?|number=-?\d{1,15}(?:\.\d{1,9})?|boolean=(?:true|false))$/;
+    const violationPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:[a-z][a-z0-9_]{0,47}$/u;
+    /** The closed keyword set: the rule names the live tools' own rejection predicates declare. A new rule
+     *  name belongs here, so an unknown word can never carry a value into the line. */
+    const VIOLATION_KEYWORDS: ReadonlySet<string> = new Set(['unknown_key', 'unknown', 'not_object', 'type', 'empty', 'long',
+      'placeholder', 'min2', 'format', 'range', 'required', 'not_for_person', 'not_for_channel', 'not_for_intent',
+      'needs_conversation', 'one_conversation']);
+    const named = (violation: string): boolean => violationPattern.test(violation)
+      && VIOLATION_KEYWORDS.has(violation.slice(violation.indexOf(':') + 1));
     if (!token(value.tool)) return;
-    if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
+    if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !named(violation))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
-    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields, reason: value.reason };
+    return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason };
+  }
+  if (value.event === 'tool_arguments_normalized') {
+    // C-ARGS: the dropped-key telemetry, a closed event of its own: `path:reason`, the reason from the
+    // closed set `undeclared`, `not_read` or `absent`, and never a value.
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'dropped'].sort().join(',')) return;
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
+    const droppedPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(?:undeclared|not_read|absent)$/u;
+    if (!token(value.tool)) return;
+    if (!Array.isArray(value.dropped) || value.dropped.length > 24 || value.dropped.some(dropped => typeof dropped !== 'string' || !droppedPattern.test(dropped))) return;
+    return { event: 'tool_arguments_normalized', tool: value.tool, dropped: value.dropped };
   }
   if (value.event === 'live_session_superseded') {
     // Closed shape: the superseded session id only, never any owner or transcript detail.

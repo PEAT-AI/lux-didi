@@ -2193,14 +2193,21 @@ test('the invalid-argument retry suffix stops at the next owner turn', async t =
   attachment.close(); await attachment.done;
 });
 
-test('three invalid calls inside one owner turn keep the stop-retrying suffix', async t => {
+test('an identical invalid call is answered from the cached rejection and ends its branch', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => detachSink());
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
   await ownerSpoke(h);
   badInsight(h, 'a1'); await h.f.frame(2);
   badInsight(h, 'a2'); await h.f.frame(3);
   badInsight(h, 'a3'); await h.f.frame(4);
-  assert.doesNotMatch(refusalAt(h, 2).fixNotForSpeech!, /Stop retrying/);
-  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying this tool in this turn\./);
+  assert.equal(receipts.filter(receipt => receipt['event'] === 'tool_arguments_rejected').length, 1,
+    'the identical repeat is answered from the cache and never validated a second time');
+  for (const index of [2, 3]) {
+    assert.match(refusalAt(h, index).fixNotForSpeech!, /Invalid arguments for get_insight/, 'the cached rejection still carries the fix');
+    assert.match(refusalAt(h, index).fixNotForSpeech!, /closed until the owner adds facts/);
+  }
   attachment.close(); await attachment.done;
 });
 
@@ -6494,6 +6501,59 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
 
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
+// C-ARGS: a lookup the host refused executed nothing, so a claim that its result came back empty is a
+// claim about a read that never ran, and the existing claim guard corrects it once, in its own words.
+const emptyClaimSetup = async (t: TestContext) => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-empty-claim-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'empty-claim');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
+  });
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
+  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
+  const settled = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'toolResult');
+  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
+  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
+  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
+  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
+  return { h, session, advance, corrections, counted, settled, armed };
+};
+
+test('an empty-result claim after a refused read is corrected once, in the guard its own words', async t => {
+  const { h, session, advance, corrections, counted, settled, armed } = await emptyClaimSetup(t);
+  // The read the model will claim an empty result over: its arguments are refused, so nothing ran.
+  badInsight(h, 'refused-read');
+  for (let attempt = 0; attempt < 300 && !settled(); attempt++) await tick();
+  assert.ok(settled(), 'the refused read settled before she speaks about it');
+  h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
+  assert.ok(armed(), 'the empty-result claim armed the guard');
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the claim over a read that never ran is corrected once');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /nothing ran, so there is no result/);
+  assert.deepEqual(counted().map(line => line.ms), [3_000], 'and the guard counts it with its bound');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('the same words after a read that really ran are never corrected', async t => {
+  const { h, session, advance, corrections } = await emptyClaimSetup(t);
+  // This read dispatched and the fixture answered an empty page: the claim is then simply the truth.
+  h.f.send({ toolCall: { functionCalls: [{ id: 'real-read', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } });
+  for (let attempt = 0; attempt < 300 && !h.owner.current().entries.some(entry => entry.kind === 'toolResult'); attempt++) await tick();
+  h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 40; attempt++) await tick();
+  await advance(3_000);
+  assert.equal(corrections().length, 0, 'a real empty result is never called a claim');
+  h.owner.revoke(session.liveSessionId);
+});
+
 for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));

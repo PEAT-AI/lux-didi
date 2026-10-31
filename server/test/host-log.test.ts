@@ -286,15 +286,22 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
 
-// #798: a refused write may name the scalar it refused, because a number or a boolean cannot be his words.
-test('#798 tool_arguments_rejected admits a key:number=value and a key:boolean=value, never free text', () => {
-  const line = (fields: string[]) => ({ event: 'tool_arguments_rejected', tool: 'create_event', fields, reason: 'schema_validation_failed' });
-  assert.deepEqual(safeEvent(line(['duration_minutes:number=1.5', 'all_day:boolean=true'])), line(['duration_minutes:number=1.5', 'all_day:boolean=true']));
-  assert.deepEqual(safeEvent(line(['summary:string_15', 'duration_minutes:number'])), line(['summary:string_15', 'duration_minutes:number']));
-  assert.equal(safeEvent(line(['summary:string=cardio with Zara'])), undefined, 'a text value is never admitted');
-  assert.equal(safeEvent(line(['summary:string_99999999'])), undefined, 'a length stays bounded');
-  assert.equal(safeEvent(line(['duration_minutes:number=1e400'])), undefined, 'only a plain decimal number is admitted');
-  assert.equal(safeEvent(line(['all_day:boolean=yes'])), undefined, 'a boolean is true or false');
+// C-ARGS: one line per rejected call, a `path:keyword` token per violation, together, never a value.
+test('C-ARGS tool_arguments_rejected carries path and keyword per violation and never a value', () => {
+  const line = (violations: string[]) => ({ event: 'tool_arguments_rejected', tool: 'mattermost_chat', violations, reason: 'schema_validation_failed' });
+  assert.deepEqual(safeEvent(line(['limit:range', 'from_date:format'])), line(['limit:range', 'from_date:format']), 'every violation is on the one line');
+  assert.deepEqual(safeEvent(line([])), line([]), 'a shape-only refusal names no rule');
+  assert.equal(safeEvent(line(['from_date:yesterday'])), undefined, 'a value is never admitted in the keyword place');
+  assert.equal(safeEvent(line(['limit:1e400'])), undefined, 'a number is not a keyword');
+  assert.equal(safeEvent(line(['summary:cardio with Zara'])), undefined, 'free text is refused');
+  assert.equal(safeEvent({ ...line(['limit:range']), fields: ['limit:number'] }), undefined, 'the shape-only key list is gone');
+});
+test('C-ARGS tool_arguments_normalized carries the dropped keys and a closed reason, never a value', () => {
+  const line = { event: 'tool_arguments_normalized', tool: 'mattermost_chat', dropped: ['channel:not_read', 'post_id:absent', 'zzz:undeclared'] };
+  assert.deepEqual(safeEvent(line), line);
+  assert.equal(safeEvent({ ...line, dropped: ['channel:maya'] }), undefined, 'a value is not a reason');
+  assert.equal(safeEvent({ ...line, dropped: ['channel:'] }), undefined, 'a reason is never empty');
+  assert.equal(safeEvent({ ...line, tool: 'mattermost chat' }), undefined);
 });
 
 test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {

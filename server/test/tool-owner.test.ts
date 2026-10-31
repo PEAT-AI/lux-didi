@@ -677,7 +677,7 @@ function errorContext(tool: ToolDefinition, seenIds = new Set<string>()) {
 }
 const refuses = (reasons: string[]): ToolCallJournal => ({ intent: () => 'fresh', refuse: (_call, reason) => { reasons.push(reason); return { id: 'ref', sha256: 'a'.repeat(64) }; }, fail: () => ({ id: 'ref', sha256: 'a'.repeat(64) }) });
 
-test('K1: an invalid tool call returns actionable guidance and stops retrying on the third', async () => {
+test('K1: an invalid tool call returns actionable guidance and an identical repeat closes its branch', async () => {
   const reasons: string[] = [];
   const owner = { journal: refuses(reasons), resultGate: {} as unknown as ToolResultGate };
   const tool = errorTool(); const seenIds = new Set<string>();
@@ -691,7 +691,11 @@ test('K1: an invalid tool call returns actionable guidance and stops retrying on
   assert.doesNotMatch(first.tools[0]!.reason, /Stop retrying/);
   await runToolCalls(owner, [call('2', { ids: ['top-secret'] })], ctx() as never);
   const third = await runToolCalls(owner, [call('3', { ids: ['top-secret'] })], ctx() as never);
-  assert.match(third.tools[0]!.reason, /Stop retrying this tool in this turn\./);
+  // C-ARGS: the identical call is answered from the cached rejection, so its branch closes instead of
+  // being validated again, and the fix it already carries is still the one it is answered with.
+  assert.match(third.tools[0]!.reason, /Invalid arguments for get_insight/);
+  assert.match(third.tools[0]!.reason, /closed until the owner adds facts/);
+  assert.doesNotMatch(third.tools[0]!.reason, /Stop retrying/);
   assert.equal(reasons.length, 3, 'each refusal is journaled, never silently dropped');
 });
 
@@ -712,17 +716,16 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   try {
     await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
   } finally { detach(); }
-  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[]; reason: string };
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
-  // D102-R2/F3: key names and value shapes (a length, never a value) are diagnostic metadata.
-  assert.deepEqual(event.fields, ['ids:array_1', 'limit:number']);
+  // C-ARGS: a tool whose refusal is a plain validator names no rule, and the line never carries a value.
+  assert.deepEqual(event.violations, []);
   assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 
-// #798: a refused write keeps the scalar the validator refused, by field name, so the bad length is
-// recoverable after the call is gone. A text value still travels as its length alone.
-test('#798 a refused write logs its failing number by field name and never its text', async () => {
+// C-ARGS: a refused write names the rule that refused it and never a value, a number, a switch or a text.
+test('C-ARGS a refused write names no value of his in the argument log', async () => {
   const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
   const events: { event?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
@@ -730,12 +733,13 @@ test('#798 a refused write logs its failing number by field name and never its t
   try {
     await runToolCalls(owner, [{ id: '1', name: 'create_event', args: { summary: 'cardio with Zara', duration_minutes: 1.5, all_day: true } }], errorContext(write) as never);
   } finally { detach(); }
-  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[] };
   assert.equal(event.tool, 'create_event');
-  assert.ok(event.fields.includes('duration_minutes:number=1.5'), `the refused scalar is recoverable: ${event.fields.join(',')}`);
-  assert.ok(event.fields.includes('all_day:boolean=true'), `the refused switch is recoverable: ${event.fields.join(',')}`);
-  assert.ok(event.fields.some(field => /^summary:string_\d+$/.test(field)), `a text value is still only its length: ${event.fields.join(',')}`);
-  assert.doesNotMatch(JSON.stringify(event), /Zara/, 'no free text reaches the log');
+  assert.deepEqual(event.violations, [], 'a validate-only write names no rule');
+  const logged = JSON.stringify(event);
+  for (const value of ['cardio with Zara', '1.5', 'true']) {
+    assert.equal(logged.includes(value), false, `no value of his reaches the log: ${value}`);
+  }
 });
 
 
@@ -878,17 +882,18 @@ for (const channel of ['eng', 'synthetic-missing']) {
 // F3: the owner's two reads failed on Didi's own validator with no dispatch, and the fix text never
 // named the key. The model's observed shape is refused with its closed token, the fix text says which
 // keys each intent takes, and the corrected shape passes the same validator.
-test('F3: a rejected mattermost_chat call names its failing key and rule, and the fix text leads to a valid call', async t => {
+test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and a real wrong value still refuses', async t => {
   const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
   const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
   const names = sourceTools.map(tool => tool.name);
   const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
   const f = await fixture(t, { policy: p, sourceTools, resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify([]) }] }) });
   const tool = f.definitions().find(candidate => candidate.name === 'mattermost_chat')!;
-  // Exactly the shape the model sent: every key, the unused ones empty.
+  // C-ARGS: exactly the shape the model sent, every unused key empty. The normalizer drops the other
+  // intent's key and the absent-value fillers before validation, so the read is no longer refused.
   const observed = { intent: 'person', person: 'Synthetic', people: [], channel: '', query: '', from_date: '2026-10-01', to_date: '2026-10-30', sides: 'both', offset: 0, limit: 20 };
-  assert.equal(tool.validate(observed), false, 'the observed shape is refused, not coerced');
-  assert.equal(tool.rejection?.(observed), 'channel:empty', 'the first failing key and rule is named as a closed token');
+  assert.equal(tool.validate(observed), false, 'the raw shape alone would still be refused');
+  assert.equal(tool.rejection?.(observed), 'channel:empty', 'the predicate still names the filler key as a closed token');
   const events: { event?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   const batch = await runToolCalls(f.owner, [{ id: 'observed', name: tool.name, args: observed }], {
@@ -898,13 +903,16 @@ test('F3: a rejected mattermost_chat call names its failing key and rule, and th
   } as never);
   detach();
   const reason = String(batch.tools[0]?.reason ?? '');
-  assert.match(reason, /channel:empty/u, 'the tool result names the failing key');
-  assert.match(reason, /Omit keys you do not use/u, 'the fix text tells the model to omit what it does not use');
-  assert.match(reason, /Never send an empty string/u);
-  // Metadata only: key names and shapes, never a value.
-  const logged = events.find(line => line.event === 'tool_arguments_rejected') as { fields?: string[] } | undefined;
-  assert.deepEqual(logged?.fields, ['intent:string_6', 'person:string_9', 'people:array_0', 'channel:string_0', 'query:string_0', 'from_date:string_10', 'to_date:string_10', 'sides:string_4', 'offset:number', 'limit:number']);
-  assert.doesNotMatch(JSON.stringify(logged), /Synthetic/u);
+  // The fake endpoint answers an empty page, so the settlement is the handler's; what this proves is that no
+  // argument refusal stands in front of it and the read reached the wire at all.
+  assert.notEqual(batch.tools[0]?.status, 'refused', `the filled-in person read is not refused: ${reason}`);
+  assert.doesNotMatch(reason, /Invalid arguments|Rejected argument/u);
+  assert.equal(events.find(line => line.event === 'tool_arguments_rejected'), undefined, 'no violation is left to refuse');
+  // The dropped keys travel on their own closed event, as paths and reasons, never a value: each of the
+  // three is an absent value the tool itself refuses for this person read.
+  const logged = events.find(line => line.event === 'tool_arguments_normalized') as { dropped?: string[] } | undefined;
+  assert.deepEqual(logged?.dropped, ['people:absent', 'channel:absent', 'query:absent']);
+  assert.doesNotMatch(JSON.stringify(events), /Synthetic/u);
   // The corrected shape, which is what the fix text asks for, passes the same validator.
   const corrected = { intent: 'person', person: 'Synthetic', sides: 'both', from_date: '2026-10-01', to_date: '2026-10-30' };
   assert.equal(tool.rejection?.(corrected), undefined);

@@ -24,7 +24,13 @@ const SLOW = process.env['LATENCY_BUDGET_SLOW'] === '1';
 const fake = (ms: number): number => (SLOW ? ms * 8 : ms);
 
 const b64 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
-const delegated = (type: string, event: Record<string, unknown>, id = 'item_1'): Record<string, unknown> => ({ type: 'response.event', delegation_id: id, event: { type, ...event } });
+// Every frame a response sends goes under its own delegation id, the way the provider numbers them: a repeated id
+// is the same delegation, and a second response under the first one's id would be read as its duplicate.
+let delegations = 0;
+const delegated = (type: string, event: Record<string, unknown>): Record<string, unknown> => {
+  if (type === 'response.created') delegations += 1;
+  return { type: 'response.event', delegation_id: `item_${delegations}`, event: { type, ...event } };
+};
 
 /** One scenario's host log: the shaped lines the run wrote, and the segments they carry. */
 function hostLines(): { lines: Record<string, unknown>[]; detach: () => void } {

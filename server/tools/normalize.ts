@@ -15,6 +15,8 @@ export interface ToolDeclaration {
   readonly name: string;
   readonly effect?: 'read' | 'write';
   readonly parameters?: unknown;
+  /** The tool's own predicate. A filler is dropped only while the reduced call still passes it. */
+  readonly validate?: (args: unknown) => boolean;
 }
 
 export interface IntentMatrix {
@@ -102,13 +104,22 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   const reads = readSet(tool, raw);
   const args: Record<string, unknown> = {};
   const dropped: string[] = [];
+  const fillers: string[] = [];
   for (const [key, value] of Object.entries(raw)) {
     const reason: DropReason | undefined = !KEY.test(key) || (shape.properties.size > 0 && !shape.properties.has(key)) ? 'undeclared'
       : reads !== undefined && !reads.has(key) ? 'not_read'
-        : value === undefined || (tool.effect !== 'write' && !shape.required.has(key) && isFiller(value)) ? 'absent'
+        : value === undefined || isFiller(value) ? 'absent'
           : undefined;
     if (reason === undefined) { args[key] = value; continue; }
+    if (reason === 'absent' && value !== undefined) fillers.push(key);
     dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:${reason}`);
+  }
+  // A value the tool's own predicate still needs is not a filler to drop: an empty string a connector
+  // requires to be present, or a key that decides which read this is. The reduced call must stay valid.
+  if (fillers.length > 0 && tool.validate !== undefined && !tool.validate(args) && tool.validate(raw)) {
+    for (const key of fillers) { args[key] = raw[key]; }
+    const kept = new Set(fillers.map(key => `${key}:absent`));
+    return { args, dropped: dropped.filter(token => !kept.has(token)) };
   }
   return { args, dropped };
 }

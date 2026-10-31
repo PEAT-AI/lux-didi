@@ -248,9 +248,7 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
-      // The windows the model was handed belong to this task, not to the handle session: a read that
-      // never rung `shown()` (a harness read, a retry) still counts, once, when the open comes in.
-      this.#syncExposed(task);
+
       // An empty target is the grant-point probe: it asks whether any open authority exists, and the
       // handler decides replay against spent with its own canonical target.
       if (target === '') {
@@ -354,13 +352,6 @@ export class OwnerTasks implements OwnerTaskPort {
   sources(session: string): Record<string, number> { return { ...(this.#live(session)?.sources ?? {}) }; }
 
   externalContentPresent(session: string): boolean { return this.external.has(session); }
-
-  #syncExposed(task: OwnerTask): void {
-    const fresh = exposedHandles().filter(entry => !task.shown.some(shown => shown.handle === entry.handle));
-    if (fresh.length === 0) return;
-    task.exposure += 1;
-    for (const entry of fresh) task.shown.push({ ...entry, seq: task.exposure });
-  }
 
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const task = this.#live(session);

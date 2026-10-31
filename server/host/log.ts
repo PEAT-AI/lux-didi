@@ -1,5 +1,5 @@
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
-import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
@@ -21,7 +21,13 @@ const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 /** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
 const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
+// LAT-1022: the run, progress and source receipts name a source by the tool layer's own SourceKind, so the
+// closed set is derived from that list and never a second copy of it. The copied list had gone stale (it
+// lacked `data`, the company-numbers source), and one source outside the set refused the whole line: every
+// research_run line naming an unread `data` source was dropped silently for four days while research_source
+// kept firing. `drive` and `memory` are named here because the receipts may carry them for a configured
+// connector, and they are not research read kinds.
+const RESEARCH_SOURCES = [...new Set<string>([...RESEARCH_SOURCE_KINDS, 'memory', 'drive'])];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -1467,9 +1473,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
     if (hasReason && !isSafeMember(value.reason, RESEARCH_SOURCE_REASONS)) return;
+    const hasStartedAt = Object.prototype.hasOwnProperty.call(value, 'startedAt');
+    if (hasStartedAt && !isSafeCount(value.startedAt)) return;
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
     if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : [])].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : []), ...(hasStartedAt ? ['startedAt'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -1525,7 +1533,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms,
+      ...(hasStartedAt ? { startedAt: value.startedAt as number } : {}), deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

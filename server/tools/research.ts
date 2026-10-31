@@ -345,6 +345,9 @@ function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory';
 
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+  /** LAT-1022: the read's start instant on the same monotonic clock `ms` was measured on, so two sources of
+   *  one run can be proven to overlap from the log alone. A count, never a query. */
+  startedAt?: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
   plan?: 'knowledge_only' | 'named_sources';
   deadlineMs: number;
@@ -5658,7 +5661,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
     for (const outcome of batch) {
       logLookup({
-        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
+        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, startedAt: Math.max(0, now() - outcome.ms), ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
@@ -6652,7 +6655,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           for (const source of deadSources) {
             run.unavailableReasons.set(source, unavailableReason(source));
             run.sourcesFailed.add(source);
-            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
+            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, startedAt: now(), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
           }
           if (startSources.length === 0) return;
           // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
@@ -6848,6 +6851,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
+              startedAt: Math.max(0, now() - ((consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at))),
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
               ...(part.source === 'chat' ? chatReceiptField(served, part.results) : {}),

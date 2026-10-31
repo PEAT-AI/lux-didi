@@ -90,6 +90,9 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_2' } }));
   await until(() => opened.socket.sent.some(frame => (JSON.parse(frame) as { type?: string }).type === 'response.create'));
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_3' } }));
+  clock.advance(fake(300));
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_3' } }));
 
   // A two-tool batch: one continuation answers both.
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_4' } }));
@@ -100,8 +103,8 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   clock.advance(fake(60));
   opened.session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: true } }, { id: 'call_3', name: 'research', response: { ok: true } }] });
   opened.socket.deliver(delegated('response.done', { response: { id: 'resp_4' } }));
-  await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_5' } }));
+  await until(() => lines.filter(line => line['event'] === 'provider_output_ack').length >= 3);
 
   // A silent continuation: the provider opens a response and never sends audio; the host's rung is the bound.
   opened.socket.deliver(delegated('response.created', { response: { id: 'resp_6' } }));

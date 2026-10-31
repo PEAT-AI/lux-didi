@@ -204,12 +204,14 @@ test('#644: a launch kind posted after the ready frame is written to host.log af
     assert.equal(response.status, 204);
     const written = await lines();
     const started = written.findIndex(line => line.event === 'host_started');
-    const launch = written.findIndex(line => line.event === 'launch_kind');
+    // The shipped schema nests a client receipt under client_diagnostic, closed set in routes.ts and
+    // validated in log.ts, so this is the line the app's launch kind reaches host.log on.
+    const launch = written.findIndex(line => line.event === 'client_diagnostic'
+      && (line.diagnostic as Record<string, unknown> | undefined)?.event === 'launch_kind');
     assert.ok(started >= 0, 'the host wrote its own start line');
-    assert.ok(launch > started, 'launch_kind is present in host.log after host_started, so a launch kind is recorded rather than inferred');
-    assert.deepEqual(
-      { kind: written[launch]!.kind, autoConnects: written[launch]!.autoConnects, windowShown: written[launch]!.windowShown },
-      { kind: 'login_item', autoConnects: false, windowShown: false });
+    assert.ok(launch > started, 'launch_kind reaches host.log after host_started, so a launch kind is recorded rather than inferred');
+    assert.deepEqual(written[launch]!.diagnostic, {
+      event: 'launch_kind', kind: 'login_item', autoConnects: false, windowShown: false });
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

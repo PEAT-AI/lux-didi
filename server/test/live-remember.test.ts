@@ -273,7 +273,8 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     if (outcome === 'saved') {
       assert.equal(result['insightId'], 'synthetic-81');
       assert.equal(result['say'], 'Saved to lux as Synthetic plan.');
-      assert.match(h.saved[0]!.content, /Provenance: request request-\d+; source counts/);
+      // D2 renames the owner request to the owner task, so the provenance names the task it came from.
+      assert.match(h.saved[0]!.content, /Provenance: request (?:request|task)-\d+; source counts/);
       const retry = await call(h, 'stage_lux_note', candidate);
       assert.equal(retry['insightId'], 'synthetic-81');
       assert.equal(h.saved.length, 1, 'same candidate is idempotent');

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import DidiOwner
 
 /// C-MICWATCH: a started engine whose tap never delivers a buffer recovers once without voice
 /// processing or fails by name; a normal start with buffers is untouched. Every case uses the fake
@@ -22,6 +23,8 @@ enum MicWatchdogTests {
         print("PASS (d) a configuration change posted during engine start is observed and handled")
         try checkConverterFollowsBufferFormat()
         print("PASS a buffer whose format differs from the prepared format rebuilds the converter from the buffer")
+        try await checkStallFailureNeverAutoRestarts()
+        print("PASS MW-R1 a dead-input failure shows failed with no automatic restart; any other capture failure still restarts once")
     }
 
     /// Short enough to keep the suite fast, long enough that a buffer appended right after start
@@ -240,5 +243,51 @@ enum MicWatchdogTests {
         let controlStatistics = control.stop()
         try audioRequire(controlStatistics.inputChannels == 3 && controlStatistics.convertFailures == 0,
                          "a matching buffer keeps the prepared format")
+    }
+
+    /// MW-R1: the watchdog's second stall ends the call failed, with no automatic restart and so no
+    /// second connecting ring. The paired case: the same error value from any other capture failure
+    /// keeps today's one automatic restart per 60 s.
+    private static func checkStallFailureNeverAutoRestarts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-mic-watchdog-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+            (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+        func events(_ name: String, in directory: URL) -> [[String: Any]] {
+            guard let text = try? String(contentsOf: directory.appendingPathComponent("native-live.log"), encoding: .utf8) else { return [] }
+            return text.split(separator: "\n").compactMap {
+                try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+            }.filter { $0["event"] as? String == name }
+        }
+        func settled(_ conversation: NativeLiveConversation, _ what: String) async throws {
+            try await waitUntil(what) { conversation.state == NativeLiveConversation.State.failed }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        // The dead input: the conversation owns the device, the engine starts and never delivers.
+        let deadDirectory = root.appendingPathComponent("dead")
+        let counter = Counter()
+        let dead = try makeDevice(NativeAudioJournal(fileURL: nil), owner: owner(), counter: counter, window: window)
+        let deadConversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+                                                      logsDirectory: deadDirectory, audioDevice: dead)
+        try await dead.start { _ in }
+        try await settled(deadConversation, "the second stall fails the call")
+        let interruptions = events("capture_interruption", in: deadDirectory)
+        try audioRequire(interruptions.count == 1 && interruptions[0]["code"] as? String == "engine_failed",
+                         "the dead input reaches the conversation once as engine_failed, got \(interruptions)")
+        try audioRequire(events("live_restart", in: deadDirectory).isEmpty,
+                         "a dead input never restarts the call, so no second connecting ring")
+        try audioRequire(deadConversation.state == .failed && deadConversation.failure != nil && counter.starts == 2,
+                         "the call shows failed after one start with and one without voice processing")
+
+        // Paired case: the same named error from another capture failure still restarts once.
+        let otherDirectory = root.appendingPathComponent("other")
+        let other = try makeDevice(NativeAudioJournal(fileURL: nil), owner: owner(), counter: Counter(), window: nil)
+        let otherConversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+                                                       logsDirectory: otherDirectory, audioDevice: other)
+        await other.interruptForTesting(NativeLiveAudioError.engineFailed(code: 0))
+        try await settled(otherConversation, "the other capture failure settles")
+        try audioRequire(events("live_restart", in: otherDirectory).count == 1,
+                         "any other capture failure keeps its one automatic restart")
     }
 }

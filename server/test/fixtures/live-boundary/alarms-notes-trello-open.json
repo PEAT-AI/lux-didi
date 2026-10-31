@@ -3,7 +3,7 @@
   "scenarios": [
     {
       "id": "set-alarm-positive",
-      "why": "The owner asks for an alarm; the host reads his own words and the alarm is set from the session's ask.",
+      "why": "The owner's own words pin the alarm time: the host's own say line names the resolved local time, which is what a reader of his words must see (07:00 for '7 tomorrow morning', 18:30 for 'half six in the evening').",
       "finals": [
         "Set an alarm for 7 tomorrow morning."
       ],
@@ -12,6 +12,7 @@
           "tool": "set_alarm",
           "args": {},
           "expect": {
+            "responseContains": "07:00",
             "responseNot": [
               "grant_not_permitted",
               "unknown_tool",
@@ -26,11 +27,21 @@
     },
     {
       "id": "cancel-alarm-positive",
-      "why": "The same ask kind answers a cancel, and the cancel path is the host's, not the model's.",
+      "why": "A cancel names no time of its own: it must cancel an alarm the host set from the owner's words, not one the model picked.",
       "finals": [
-        "Cancel my alarm for tomorrow morning."
+        "Set an alarm for 7 tomorrow morning."
       ],
       "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseContains": "07:00"
+          }
+        },
+        {
+          "ownerFinal": "Now cancel that alarm."
+        },
         {
           "tool": "cancel_alarm",
           "args": {},
@@ -49,11 +60,21 @@
     },
     {
       "id": "snooze-alarm-positive",
-      "why": "A snooze is a write on the alarm the host already holds.",
+      "why": "A snooze moves the alarm the host holds ten minutes on, which only the host's own record can do.",
       "finals": [
-        "Snooze that alarm for ten minutes."
+        "Set an alarm for 7 tomorrow morning."
       ],
       "steps": [
+        {
+          "tool": "set_alarm",
+          "args": {},
+          "expect": {
+            "responseContains": "07:00"
+          }
+        },
+        {
+          "ownerFinal": "Snooze it for ten minutes."
+        },
         {
           "tool": "snooze_alarm",
           "args": {},
@@ -71,8 +92,8 @@
       }
     },
     {
-      "id": "note-save-positive",
-      "why": "A save-cued note must stage the owner's own words. It stages locally, so the connector is never called; the model's reply is delivered on a later turn, which the corpus measures.",
+      "id": "note-save-seam",
+      "why": "A save-cued note can only be staged through the owner's vault, and this harness binds no vault transport (the production client accepts a loopback URL only), so the host refuses the stage and the note body cannot be asserted at this boundary. The exact seam is LiveOwnerConfig.vaultTransport over a loopback MCP writer; the corpus still measures that the ask reaches the tool.",
       "families": [
         "knowledge"
       ],
@@ -93,7 +114,9 @@
         }
       ],
       "base": {
-        "status": "PASS"
+        "status": "EXPECTED_RED",
+        "reason": "the staged-note body cannot be asserted at this boundary: the vault writer accepts a loopback URL only, so the harness binds no vaultTransport and stage_lux_note answers the model only after a later turn. The exact seam is LiveOwnerConfig.vaultTransport over a loopback MCP writer. Recorded here so the release gate refuses it rather than reading a green no-dispatch as a positive.",
+        "unverified": true
       }
     },
     {
@@ -129,27 +152,29 @@
     },
     {
       "id": "open-positive",
-      "why": "An owner-asked open is authorized and dispatched to the host's own open path; this lane binds no native open client, so the tool reports that it could not confirm the open.",
+      "why": "The corpus measures open_web, so the positive scenario does too: the owner's ask names a page, and the declared kind/target shape must be accepted. The base refuses it for every ask (D5).",
       "finals": [
-        "Open the synthetic calculator app."
+        "Open the synthetic bridge page."
       ],
       "steps": [
         {
-          "tool": "open_app",
+          "tool": "open_web",
           "args": {
-            "name": "SyntheticCalc"
+            "kind": "url",
+            "target": "https://synthetic.example/bridge"
           },
           "expect": {
             "responseNot": [
+              "invalid_arguments",
               "grant_not_permitted",
-              "unknown_tool",
-              "invalid_arguments"
+              "unknown_tool"
             ]
           }
         }
       ],
       "base": {
-        "status": "PASS"
+        "status": "EXPECTED_RED",
+        "reason": "the base refuses the declared open_web argument shape (kind/target) for every ask: no per-intent normalizer names the field it reads (D5). C-ARGS fixes this."
       }
     }
   ]

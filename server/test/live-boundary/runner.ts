@@ -20,6 +20,8 @@ interface Expect {
   noDispatch?: true | { connector?: BoundaryConnector };
   refused?: { code?: string };
   responseNot?: readonly string[];
+  /** Text the answer must carry, pinned by the owner's own words rather than by the model's call. */
+  responseContains?: string;
   flagged?: true;
 }
 interface Step {
@@ -30,7 +32,8 @@ interface Scenario {
   id: string; why: string; families?: readonly FixtureId[]; trello?: boolean; researchWeb?: boolean;
   data?: Partial<Record<BoundaryConnector, ConnectorData>>;
   finals?: readonly string[]; steps: readonly Step[];
-  base?: { status: 'PASS' | 'EXPECTED_RED'; reason?: string };
+  /** `unverified` marks a scenario whose positive path this boundary cannot assert: it stays red, never green. */
+  base?: { status: 'PASS' | 'EXPECTED_RED'; reason?: string; unverified?: boolean };
 }
 interface ScenarioFile { about: string; scenarios: readonly Scenario[] }
 interface CorpusLine {
@@ -126,6 +129,9 @@ async function runScenario(boundary: Boundary, scenario: Scenario): Promise<stri
       if (response === undefined) problems.push(`${step.tool}: never answered the model`);
       else if (code !== undefined && expect.responseNot.includes(code)) problems.push(`${step.tool}: answered ${code}: ${JSON.stringify(response).slice(0, 160)}`);
     }
+    if (expect.responseContains !== undefined && !JSON.stringify(response ?? {}).includes(expect.responseContains)) {
+      problems.push(`${step.tool}: the answer ${JSON.stringify(response ?? {}).slice(0, 160)} does not carry "${expect.responseContains}"`);
+    }
     if (expect.flagged === true && !flagged(boundary)) problems.push(`${step.tool}: the empty claim was not flagged`);
   }
   return problems;
@@ -149,7 +155,9 @@ async function scenarioOutcomes(): Promise<Outcome[]> {
       try { problems = await runScenario(boundary, scenario); }
       finally { await boundary.close(); }
       const expected = scenario.base?.status === 'EXPECTED_RED';
-      if (problems.length === 0 && !expected) outcomes.push({ id: scenario.id, status: PASS, detail: 'green at the base' });
+      if (scenario.base?.unverified === true) {
+        outcomes.push({ id: scenario.id, status: EXPECTED_RED, detail: `${scenario.base.reason ?? 'the positive path is unverified'} (asserted: ${problems[0] ?? 'no dispatch'})` });
+      } else if (problems.length === 0 && !expected) outcomes.push({ id: scenario.id, status: PASS, detail: 'green at the base' });
       else if (problems.length === 0 && expected) outcomes.push({ id: scenario.id, status: PASS, detail: 'expected red at the base and already green' });
       else if (expected) outcomes.push({ id: scenario.id, status: EXPECTED_RED, detail: `${scenario.base?.reason ?? 'no reason recorded'} (${problems[0]})` });
       else outcomes.push({ id: scenario.id, status: FAIL, detail: problems.join('; ') });

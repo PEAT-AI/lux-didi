@@ -16,7 +16,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   const observe: (session: string, journalId: string, words: string, at?: number) => void = owner.observe.bind(owner);
   row.finals.forEach((words, i) => {
     observe('synthetic', `final-${i}`, words, (row.now ?? now) + (row.finalOffsetsMs?.[i] ?? 0));
-    if (row.clarifyAfter?.includes(i)) { owner.clarify('synthetic', 'set_alarm', 'missing_time'); owner.answered('synthetic'); }
+    if (row.clarifyAfter?.includes(i)) owner.clarify('synthetic', 'set_alarm', 'missing_time');
   });
   const kind = row.call.tool.startsWith('open_') ? 'open' : row.call.tool === 'set_alarm' ? 'set_alarm' : 'lux_note';
   const authorization = owner.authorize('synthetic', kind, JSON.stringify(row.call));
@@ -48,9 +48,9 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   }
 });
 
-test('a completed answer cannot authorize a spontaneous new action', () => {
+test('a model reply cannot authorize a spontaneous new action', () => {
   const owner = new OwnerTasks(() => 0);
+  // A bare time fragment is not a set_alarm command, and no model turn can make it one.
   owner.observe('synthetic', 'final', 'at seven am');
-  owner.answered('synthetic');
   assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'no_owner_request');
 });

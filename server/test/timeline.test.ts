@@ -423,12 +423,15 @@ test('C-AUDIT107: a call with no turn is a row of the call table with turn -', (
 
 test('C-AUDIT107: a session with calls and no turn row is in the summary, and its calls are counted', () => {
   withStore(store => {
-    // No turn.opened row names this session: only the call itself says the session happened.
-    call(store, SESSION, 't-missing', 'call:no-turn-row', 'research', 'failed', 50, T0 + 1_000, 'invalid_arguments');
-    const summary = buildAuditSummary(readOf(store), scanOf([]), T0 - 1);
-    assert.equal(summary.sessions, 1);
-    assert.deepEqual(summary.callsPerTool, { research: 1 });
-    assert.deepEqual(summary.refusalsByCode, { invalid_arguments: 1 });
+    // A turn opened before the window, with its call inside it: the turn row alone would drop the session.
+    turn(store, SESSION, 't-old', 1, T0 - 90_000);
+    call(store, SESSION, 't-old', 'call:in-window', 'research', 'failed', 50, T0 + 1_000, 'invalid_arguments');
+    // No turn row names this session at all: only the call itself says the session happened.
+    call(store, OTHER, null, 'call:no-turn-row', 'gmail_send', 'failed', 20, T0 + 2_000, 'grant_not_permitted');
+    const summary = buildAuditSummary(readOf(store), scanOf([]), T0 - 1_000);
+    assert.equal(summary.sessions, 2);
+    assert.deepEqual(summary.callsPerTool, { research: 1, gmail_send: 1 });
+    assert.deepEqual(summary.refusalsByCode, { invalid_arguments: 1, grant_not_permitted: 1 });
   });
 });
 

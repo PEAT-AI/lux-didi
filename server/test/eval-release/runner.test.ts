@@ -63,16 +63,24 @@ test('a dry run prints the plan and makes no network call', async () => {
   assert.match(text, /calendar-split/);
 });
 
-test('a real run refuses without a price confirmation', async () => {
+test('a real run refuses on the price, not on the key it never reaches', async () => {
   const write = process.stdout.write.bind(process.stdout);
   const writeErr = process.stderr.write.bind(process.stderr);
+  const errs: string[] = [];
   process.stdout.write = (() => true) as typeof process.stdout.write;
-  process.stderr.write = (() => true) as typeof process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { errs.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  const key = process.env['OPENAI_API_KEY'];
   try {
+    // The rates ship UNSET, so the refusal is the price's, and it says so.
+    process.env['OPENAI_API_KEY'] = 'synthetic-key-that-never-reaches-a-provider';
+    assert.equal(await main(['--real', '--confirm-price', '1']), 2);
+    assert.match(errs.join(''), /price is UNSET \(model\.inputUsdPerMTok/);
+    // With the estimate unavailable the confirmation cannot be checked, so a real run cannot start at all.
     assert.equal(await main(['--real']), 2);
-    assert.equal(await main(['--real', '--confirm-price', '0.01']), 2);
+    assert.match(errs.join(''), /price is UNSET/);
   } finally {
     process.stdout.write = write;
     process.stderr.write = writeErr;
+    if (key === undefined) delete process.env['OPENAI_API_KEY']; else process.env['OPENAI_API_KEY'] = key;
   }
 });

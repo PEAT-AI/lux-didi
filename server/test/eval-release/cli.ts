@@ -6,6 +6,7 @@
  *   --real        the owner's priced run: refused without --confirm-price within 20 percent of the estimate
  */
 
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { audioPlan, readUtteranceFile, runAudioProbe, synthUtterance } from './audio.js';
@@ -28,6 +29,17 @@ const value = (argv: readonly string[], name: string): string | undefined => {
   const at = argv.indexOf(name);
   return at >= 0 && at + 1 < argv.length ? argv[at + 1] : undefined;
 };
+
+/** The owner's rates table: the nearest `config/eval-rates.json` above this module, so a copied build finds it. */
+function ratesPath(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let at = 0; at < 8; at += 1) {
+    const candidate = join(dir, 'config/eval-rates.json');
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  return here('../../../../config/eval-rates.json');
+}
 
 /** A bare file name is a name in the scenarios folder, so a probe names `bad.jsonl` and not a long path. */
 const scenarioPath = (given: string | undefined): string =>
@@ -99,7 +111,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (argv.includes('--help') || argv.includes('-h')) { process.stdout.write(USAGE); return 0; }
   const options = parse(argv);
   const scenarios = loadScenarios(options.scenarios);
-  const rates = loadRates(here('../../../../config/eval-rates.json'));
+  const rates = loadRates(ratesPath());
   const judge = judgePrompt();
   const plan = buildPlan({ scenarios, rates, judgePrompt: judge });
 

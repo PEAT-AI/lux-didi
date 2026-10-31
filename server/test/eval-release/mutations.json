@@ -33,5 +33,12 @@
     "find": "    if (!entry)\n        throw new Error(`eval_tool_unmapped: ${tool}`);",
     "replace": "    if (!entry)\n        return { didi: tool, kind: 'read', capability: 'unknown', connector: 'unknown' };",
     "note": "a tool the tool map does not know is dispatched anyway instead of being refused by name"
+  },
+  {
+    "name": "open-price-gate",
+    "file": "test/eval-release/plan.js",
+    "find": "    if (delta > PRICE_CONFIRM_TOLERANCE) {",
+    "replace": "    if (false) {",
+    "note": "the 20 percent tolerance stops refusing, so any confirmation buys the run"
   }
 ]

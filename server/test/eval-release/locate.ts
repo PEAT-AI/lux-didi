@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 const MARKER = 'test/fixtures/regressions/postcall-session.json';
 
 export function locate(relative: string): string {
+  // The mutation probe copies the compiled tree out of the repository, so the source files it reads (scenarios,
+  // recordings, regression fixtures) are named explicitly there. Unset in every other run.
+  const override = process.env['DIDI_EVAL_SOURCE_ROOT'];
+  if (override !== undefined && existsSync(join(override, relative))) return join(override, relative);
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let at = 0; at < 8; at += 1) {
     const candidate = join(dir, relative);

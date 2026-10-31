@@ -719,6 +719,7 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 
+
 async function receivedOwnerFixture(t: TestContext) {
   const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });
   const f = await fixture(t, { result: { content: [{ type: 'text', text: raw }] } });
@@ -729,6 +730,36 @@ async function receivedOwnerFixture(t: TestContext) {
   const cursor = (root.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.equal(typeof cursor, 'string');
   return { ...f, raw, host, dispatch, root, cursor: cursor as string };
 }
+
+// #795: the model asked how long the block should be, so his one-word answer arrives as its own owner
+// final with no scheduling verb in it. The ask's own grant is what authorizes the one write, once.
+test('#795 a calendar ask answered after a question writes one owner-only block through the production path', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
+  f.owner.ownerRequests.answered?.('run', 'How long should the block be?');
+  f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
+  const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
+  assert.equal(created.status, 'completed');
+  assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
+  assert.match(String(created.result_json), /"attendees":0/, 'nobody is invited');
+  assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
+  const [start, end] = port.log[0]!.split(':').slice(1, 3).map(Number) as [number, number];
+  assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
+});
+
+// #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
+test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
+  const refused = await liveExecute(f, composeCall(f, 'run:1:0', 'set_alarm', { kind: 'daily' }), { kind: 'daily' }, 1);
+  assert.match(String(refused.result_json), /rule_mismatch/);
+  assert.match(String(refused.result_json), /without kind and weekdays omitted/);
+  assert.match(String(refused.result_json), /fixNotForSpeech/);
+  const set = await liveExecute(f, composeCall(f, 'run:1:1', 'set_alarm', {}), {}, 1);
+  assert.equal(set.status, 'completed');
+  assert.doesNotMatch(String(set.result_json), /rule_mismatch/);
+});
 
 test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
   const f = await receivedOwnerFixture(t);

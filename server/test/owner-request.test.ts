@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseAlarmTime } from '../tools/alarm.js';
+import { parseAlarmTime, parseSeriesRule, verifyAlarmRule } from '../tools/alarm.js';
 import { OwnerRequests } from '../tools/owner-request.js';
-import { COMPOSE_NAMES, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
+import { COMPOSE_NAMES, COMPOSE_TOOLS, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
 
 test('direct102 authority: finals alone grant compound effects, consumed once with idempotent retries', () => {
   let now = 10;
@@ -503,4 +503,91 @@ test('W1030 split alarm cue: a replayed final never re-grants', () => {
   requests.commit('s', 'set_alarm', 'seven', { status: 'set' }, ask.id);
   requests.observe('s', 'j2', 'me at seven.');
   assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'grant_spent');
+});
+
+// #794: the declaration and the validator are the same rule, so a length the model invents is refused with
+// a bound rather than a shape it could not have known. An omitted length keeps the host's own reading.
+test('#794 create_event declares duration_minutes as the integer range its validator enforces', () => {
+  const properties = COMPOSE_TOOLS.create_event.parameters['properties'] as Record<string, Record<string, unknown>>;
+  const duration = properties['duration_minutes']!;
+  assert.equal(duration['type'], 'integer');
+  assert.equal(duration['minimum'], 5);
+  assert.equal(duration['maximum'], 720);
+  assert.match(String(duration['description']), /omit/i);
+  for (const refused of [1.5, 0, 900]) assert.equal(validateCreateEvent({ summary: 'cardio', duration_minutes: refused }), false, `refused length ${refused}`);
+  assert.equal(validateCreateEvent({ summary: 'cardio', duration_minutes: 90 }), true);
+  assert.equal(validateCreateEvent({ summary: 'cardio' }), true);
+});
+
+test('#794 an omitted length creates the block from his own words, at the host default', () => {
+  const window = eventWindow('put cardio in my calendar at 11', Date.UTC(2026, 9, 29, 0, 0, 0), 'Asia/Singapore');
+  assert.equal(window.status, 'ready');
+  if (window.status !== 'ready') return;
+  assert.equal((window.endUtc - window.startUtc) / 60000, 60);
+});
+
+// #795: the model asked how long the block should be, which answers the ask; his reply is still the answer
+// to the same ask, inside the same 120 s window, and the grant is spent by the one call that uses it.
+test('#795 a calendar ask answered with a question keeps its grant for his reply inside the window', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'put cardio in my calendar at 11');
+  requests.answered('s', 'How long should the block be?');
+  now = 90_000;
+  requests.observe('s', 'j2', 'one and a half hours');
+  const ask = requests.authorize('s', 'create_event', 'cardio');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /cardio in my calendar at 11 one and a half hours/);
+  assert.equal(requests.audit('s', 'create_event').ownerFinals, 2);
+  requests.commit('s', 'create_event', 'cardio', { status: 'event_created' }, ask.id);
+  assert.equal(requests.authorize('s', 'create_event', 'cardio').code, 'grant_spent');
+  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'grant_spent');
+});
+
+test('#795 the reply outside the window, an unrelated reply and a second block all carry no grant', () => {
+  let now = 0;
+  const late = new OwnerRequests(() => now);
+  late.observe('s', 'j1', 'put cardio in my calendar at 11');
+  late.answered('s', 'How long should the block be?');
+  now = 120_001;
+  late.observe('s', 'j2', 'one and a half hours');
+  assert.equal(late.authorize('s', 'create_event', 'cardio').code, 'no_owner_request');
+
+  now = 0;
+  const unrelated = new OwnerRequests(() => now);
+  unrelated.observe('s', 'j1', 'put cardio in my calendar at 11');
+  unrelated.answered('s', 'How long should the block be?');
+  now = 30_000;
+  unrelated.observe('s', 'j2', "what's the weather");
+  assert.equal(unrelated.authorize('s', 'create_event', 'cardio').code, 'no_owner_request');
+
+  now = 0;
+  const once = new OwnerRequests(() => now);
+  once.observe('s', 'j1', 'put cardio in my calendar at 11');
+  once.answered('s', 'How long should the block be?');
+  once.observe('s', 'j2', 'one and a half hours');
+  const ask = once.authorize('s', 'create_event', 'cardio');
+  assert.equal(ask.code, 'allowed');
+  once.commit('s', 'create_event', 'cardio', { status: 'event_created' }, ask.id);
+  assert.equal(once.authorize('s', 'create_event', 'cardio').code, 'grant_spent');
+});
+
+test('#795 a reply to an answered ask with no question reopens nothing, as before', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'put cardio in my calendar at 11');
+  requests.answered('s', 'Done, cardio at 11 is on the calendar.');
+  now = 30_000;
+  requests.observe('s', 'j2', 'one and a half hours');
+  assert.equal(requests.authorize('s', 'create_event', 'cardio').code, 'no_owner_request');
+});
+
+// #796: a repeat the owner never said is not authority, and a one-time ask retried without it is.
+test('#796 a repeat he did not say is refused and the same ask without it is accepted', () => {
+  const owner = parseSeriesRule('wake me at eleven');
+  assert.equal(owner, undefined);
+  assert.equal(verifyAlarmRule({ kind: 'daily' }, owner), false);
+  assert.equal(verifyAlarmRule({ kind: 'weekdays', weekdays: [1, 2, 3, 4, 5] }, owner), false);
+  assert.equal(verifyAlarmRule({}, owner), true, 'the retry without a recurrence is a one-time alarm');
+  assert.equal(verifyAlarmRule({ kind: 'daily' }, parseSeriesRule('wake me at eleven every day')), true);
 });

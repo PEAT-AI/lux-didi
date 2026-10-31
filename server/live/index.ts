@@ -591,6 +591,9 @@ export function claimsWithoutCall(input: { text: string; writeRefused: boolean; 
  * one correction line, once, and the owner is never told an empty result stood where nothing ran.
  */
 /** C-ARGS: the one fixed correction for an empty-result claim made over a lookup that never ran. */
+/** temporary diagnostic */
+export const ARGS_DEBUG = (): unknown => (globalThis as Record<string, unknown>)['__argsdbg'];
+
 export const EMPTY_RESULT_CLAIM_LINE = 'Correction: nothing ran, so there is no result. Say plainly that the lookup was not made, and never that it came back empty.';
 export const EMPTY_RESULT_CLAIM = /\b(?:(?:came|comes|come) back empty|empty results?|(?:nothing|none) (?:was )?found|found nothing|no results?|nothing came back)\b/iu;
 export function claimsEmptyResult(text: string, lookupFailed: boolean): boolean {
@@ -2675,6 +2678,7 @@ export class LiveSessionOwner {
     // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
     // and the call it names did run, so the toolSeen silence does not apply to it.
     const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
+    try { (globalThis as Record<string, unknown>)['__argsdbg'] = [...((globalThis as Record<string, unknown>)['__argsdbg'] as string[] ?? []), `arm text=${JSON.stringify(handle.claimText)} failed=${handle.claimLookupFailed} seen=${handle.claimToolSeen} corrected=${handle.claimCorrected}`]; } catch { /* dbg */ }
     const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
@@ -4971,7 +4975,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         && handle.registry.find(tool => tool.name === call.name)?.effect === 'write') handle.claimWriteRefused = true;
       // C-ARGS: the same receipt for a read, because a rejected or failed lookup ran nothing at all.
       if ((response['error'] !== undefined || response['status'] === 'refused')
-        && handle.registry.find(tool => tool.name === call.name)?.effect === 'read') handle.claimLookupFailed = true;
+        && handle.registry.find(tool => tool.name === call.name)?.effect === 'read') { handle.claimLookupFailed = true; try { ((globalThis as Record<string, unknown>)['__argsdbg'] = [...((globalThis as Record<string, unknown>)['__argsdbg'] as string[] ?? []), `set ${call.name} effect=${handle.registry.find(tool => tool.name === call.name)?.effect} resp=${JSON.stringify(response).slice(0, 80)}`]); } catch { /* dbg */ } }
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;

@@ -6537,6 +6537,7 @@ test('an empty-result claim after a refused read is corrected once, in the guard
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /nothing ran, so there is no result/);
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'and the guard counts it with its bound');
   h.owner.revoke(session.liveSessionId);
+  assert.fail(JSON.stringify((await import('../live/index.js')).ARGS_DEBUG()));
 });
 
 test('the same words after a read that really ran are never corrected', async t => {

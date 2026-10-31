@@ -761,7 +761,7 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
   assert.match(String(refused.result_json), /fixNotForSpeech/);
   const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 1);
-  assert.equal(set.status, 'completed', String(set.result_json));
+  assert.equal(set.status, 'completed', `status=${set.status} reason=${String(set.reason)} json=${String(set.result_json)}`);
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/);
 });
 

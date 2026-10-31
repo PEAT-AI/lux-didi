@@ -793,8 +793,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'violations', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const violationPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:[a-z][a-z0-9_]{0,47}$/u;
+    /** The closed keyword set: the rule names the live tools' own rejection predicates declare. A new rule
+     *  name belongs here, so an unknown word can never carry a value into the line. */
+    const VIOLATION_KEYWORDS: ReadonlySet<string> = new Set(['unknown_key', 'unknown', 'not_object', 'type', 'empty', 'long',
+      'placeholder', 'min2', 'format', 'range', 'required', 'not_for_person', 'not_for_channel', 'not_for_intent',
+      'needs_conversation', 'one_conversation']);
+    const named = (violation: string): boolean => violationPattern.test(violation)
+      && VIOLATION_KEYWORDS.has(violation.slice(violation.indexOf(':') + 1));
     if (!token(value.tool)) return;
-    if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !violationPattern.test(violation))) return;
+    if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !named(violation))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
     return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason };
   }

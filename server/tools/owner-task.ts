@@ -414,7 +414,10 @@ export class OwnerTasks implements OwnerTaskPort {
   rebuild(session: string): void {
     const task = this.#live(session);
     if (task === undefined) return;
+    // The words go with the ask: a later final must not re-derive the expired commands from the
+    // merged sentence, which is how a seeded rebuild used to re-arm the alarm it had just expired.
     task.operations = []; task.openGrant = false; task.openSpent = false; task.shown = []; task.openReceipts.clear();
+    task.words = '';
   }
 
   /** Session end only: the ledger goes with the session. */

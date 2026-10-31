@@ -60,6 +60,8 @@ const NAMED: Readonly<Record<string, Severity>> = {
   uplink_shed: { level: 'warn', cause: 'audio' },
   tool_ceiling_hit: { level: 'warn', cause: 'tool' },
   tool_arguments_rejected: { level: 'warn', cause: 'tool' },
+  // C-ARGS: the dropped-key telemetry of a repaired call is routine, so it stays at debug.
+  tool_arguments_normalized: { level: 'debug', cause: 'tool' },
   connector_failure: { level: 'warn', cause: 'connector' },
   connector_retry: { level: 'info', cause: 'connector' },
   connector_envelope_widened: { level: 'info', cause: 'connector' },

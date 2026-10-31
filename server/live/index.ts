@@ -4966,7 +4966,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });
       }
       if (handle.pendingCallIds.has(id)) publish('toolResult', { ...projection, status, ...(handle.bargeInCallIds.has(id) ? { code: 'after_barge_in' } : {}) });
-      process.stderr.write(`RESP ${id} ${JSON.stringify(responses[index]?.response)}\n`);
       this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;

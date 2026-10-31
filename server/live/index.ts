@@ -736,6 +736,9 @@ interface ActiveSession {
   lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
+  /** LAT-1022: when the capture path declared the owner's speech over, on this host's own clock, so the final's
+   *  own line can say how long after it the transcript landed. Cleared when the turn's input starts again. */
+  speechEndAt?: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
   audioResponseId?: string | undefined;
@@ -2888,7 +2891,13 @@ export class LiveSessionOwner {
     // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
     if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }
     if (type === 'waitingForInput') { if (event.value === false) this.#armWatchdog(handle); return; }
-    if (type === 'modelTurnStarted') { this.#armWatchdog(handle); return; }
+    if (type === 'modelTurnStarted') {
+      // LAT-1022: the adapter's voice-activity end of speech is the moment this host first hears that the turn is
+      // the model's, so the final's own segment is measured from here. Both stamps are this host's clock.
+      handle.speechEndAt = this.#now();
+      this.#armWatchdog(handle);
+      return;
+    }
     if (type === 'audio' || type === 'outputTranscription' || type === 'modelText') {
       // Output arrived, so the clock restarts; the turn stays watched only while it is still open.
       if (handle.turnCompleteSeen) this.#cancelWatchdog(handle); else this.#armWatchdog(handle);
@@ -3647,6 +3656,7 @@ export class LiveSessionOwner {
     handle.researchAdmission.ownerTurn();
     handle.inputFinalTimer?.cancel();
     handle.inputAt = this.#now();
+    handle.speechEndAt = undefined;
     handle.typedOwnerTurn = true;
     handle.inputFinal = true;
     handle.inputFinalAt = handle.inputAt;
@@ -4110,6 +4120,9 @@ export class LiveSessionOwner {
           if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
+          // LAT-1022: a new fragment means the owner is speaking again, so the last end-of-speech instant is stale
+          // and a final is never measured from the previous utterance's end.
+          handle.speechEndAt = undefined;
           handle.typedOwnerTurn = event.finalOrigin === 'typed';
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal && typeof event.text === 'string' && event.text.trim() !== '') {
@@ -4125,7 +4138,8 @@ export class LiveSessionOwner {
             handle.inputFinalAt = handle.inputAt;
             // C-LOGS11: the anchor every final-to-audio latency in this turn is measured from, recorded on the
             // line and joined to the turn by the envelope's turnId, never by a timestamp bracket.
-            hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt });
+            hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt,
+              ...(handle.speechEndAt === undefined ? {} : { msSinceSpeechEnd: Math.max(0, handle.inputFinalAt - handle.speechEndAt) }) });
             const finalTurn = handle.connection.turnId;
             if (finalTurn !== undefined) this.#turnOwnerFinal.set(finalTurn, handle.inputFinalAt);
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.

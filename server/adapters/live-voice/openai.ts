@@ -502,6 +502,9 @@ class Session implements LiveVoiceSession {
   private episodeToken = 0;
   /** F10: what the owner has said so far in this episode, which decides whether the tail is a finished sentence. */
   private episodeWords = '';
+  /** LAT-1022: whether the quiet rule that ended the last input episode was the hesitation one, so the end-of-
+   *  speech line names the rule that actually fired instead of the default. */
+  private episodeHesitation = false;
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -1010,7 +1013,9 @@ class Session implements LiveVoiceSession {
     const token = this.episodeToken + 1, epoch = this.socket;
     this.episodeToken = token;
     // F10: a mid-thought tail earns the longer window, so a hesitation is not answered over.
-    const quiet = hesitationOpen(this.episodeWords) ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
+    const hesitation = hesitationOpen(this.episodeWords);
+    this.episodeHesitation = hesitation;
+    const quiet = hesitation ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
     this.episodeQuiet = this.clock.setTimer(quiet, () => {
       if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
       this.endInputEpisode();
@@ -1020,6 +1025,12 @@ class Session implements LiveVoiceSession {
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
     this.episodeWords = '';
+    // LAT-1022: this is the capture path's own voice-activity verdict that the owner has stopped speaking, so it
+    // is stamped here, on the monotonic audio clock and on the wall clock beside it. The session and the turn are
+    // the envelope's; the rule that fired is the only other field.
+    hostLogEvent({ event: 'owner_speech_end', monoMs: Math.max(0, Math.round(this.clock.now())), wallMs: Date.now(),
+      reason: this.episodeHesitation ? 'hesitation' : 'quiet' });
+    this.episodeHesitation = false;
     this.ownerTurnEnded();
   }
 

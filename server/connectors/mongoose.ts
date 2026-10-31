@@ -247,7 +247,11 @@ export interface MongooseReader {
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult>;
 }
 
-export interface MongooseOptions { port: McpPort; registry: McpRegistry; config: MongooseConfig }
+export interface MongooseOptions {
+  port: McpPort; registry: McpRegistry; config: MongooseConfig;
+  /** LAT-1022: the request clock, so a test can drive a connector_request duration without a real wait. */
+  now?: (() => number) | undefined;
+}
 
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
@@ -290,6 +294,7 @@ function preflight(registry: McpRegistry, settings: Settings, envelope: readonly
 
 export function createMongooseReader(options: MongooseOptions): MongooseReader {
   const { port, registry, config } = options;
+  const now = options.now ?? Date.now;
   const envelope = MONGOOSE_ENDPOINT_TOOLS[config.endpoint];
   const settings: Settings = {
     endpointId: config.endpointId,
@@ -308,12 +313,12 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
    *  call's own closed state; never the tool's arguments, never an answer. */
   const meter = (startedAt: number, state: MongooseResult['state']): void => {
     hostLogEvent({ event: 'connector_request', connector: `mongoose-${config.endpoint}`, stage: 'call' as MongooseRequestStage,
-      ms: Math.max(0, Date.now() - startedAt),
+      ms: Math.max(0, now() - startedAt),
       outcome: state === 'completed' ? 'ok' : state === 'refused' ? 'refused' : state === 'unknown' ? 'unknown' : 'failed' });
   };
 
   async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
-    const startedAt = Date.now();
+    const startedAt = now();
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,

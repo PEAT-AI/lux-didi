@@ -193,6 +193,9 @@ const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 /** C-LOGS11: why one latency field is absent. A closed set, so "missing" is never printed as a duration. */
 const AUDIBLE_MISSING_REASONS = ['no_owner_final', 'no_native_receipt'];
+/** LAT-1022: the closed rule that declared the owner's speech over: the plain quiet rule, or the longer one a
+ *  hesitation buys. A bound the host never reaches writes no line at all. */
+const SPEECH_END_REASONS = ['quiet', 'hesitation'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -400,9 +403,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'owner_final') {
     // C-LOGS11: when the owner's final transcription of a turn landed, on the wall clock, as epoch ms. The
     // turn it belongs to is the envelope's turnId; no word of what he said is on the line.
-    if (!closedKeys(value, ['event', 'ownerFinalAt'])) return;
+    // LAT-1022: and, when the capture path had already declared the end of speech, how long after it the final
+    // landed, so the first segment of the turn is measured instead of inferred from the quiet rule's constant.
+    const hasSpeechMs = Object.prototype.hasOwnProperty.call(value, 'msSinceSpeechEnd');
+    if (!closedKeys(value, ['event', 'ownerFinalAt', ...(hasSpeechMs ? ['msSinceSpeechEnd'] : [])])) return;
     if (!isSafeCount(value.ownerFinalAt)) return;
-    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt };
+    if (hasSpeechMs && !isSafeCount(value.msSinceSpeechEnd)) return;
+    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt, ...(hasSpeechMs ? { msSinceSpeechEnd: value.msSinceSpeechEnd as number } : {}) };
+  }
+  if (value.event === 'owner_speech_end') {
+    // LAT-1022: the capture path's own voice-activity end of speech, on the monotonic clock the audio path runs
+    // on and on the wall clock beside it, with the closed rule that declared it. The session and the turn are
+    // the envelope's; no audio, no level and no word ever rides this line.
+    if (!closedKeys(value, ['event', 'monoMs', 'wallMs', 'reason'])) return;
+    if (!isSafeCount(value.monoMs) || !isSafeCount(value.wallMs)) return;
+    if (!isSafeMember(value.reason, SPEECH_END_REASONS)) return;
+    return { event: 'owner_speech_end', monoMs: value.monoMs, wallMs: value.wallMs, reason: value.reason };
   }
   if (value.event === 'tool_call_admitted' || value.event === 'tool_call_dispatched') {
     // C-LOGS11: one tool call entering the host and leaving toward its source, by call key and tool name,

@@ -7627,6 +7627,15 @@ export class ResearchScheduler {
       return Promise.resolve(knownReply(this.#deps.ledger, id, this.#deps.configured));
     }
     const id = call.researchId ?? newResearchId();
+    // C-RESEARCH #107: a continue never starts work. With no running job to attach to, it returns the terminal
+    // result of the last run this session handed the model, so a poll can never open a second operation.
+    if (call.action === 'continue') {
+      const answered = this.#deps.ledger.last()?.researchId;
+      if (answered !== undefined) {
+        this.#deps.logJoined?.(answered, 'status');
+        return Promise.resolve(knownReply(this.#deps.ledger, answered, this.#deps.configured));
+      }
+    }
     this.#deps.logJoined?.(id, 'continue');
     return this.#drive({ ...call, researchId: id }, signal, id);
   }
@@ -7722,6 +7731,21 @@ export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: A
  * the owner's own finalized words call `ownerTurn`: transcripts in progress, her audio, host nudges, rebuilds and
  * tool results grant nothing. One instance lives for the whole live session, across provider generations.
  */
+/** C-RESEARCH #107: the provider-read ceiling for one owner task, one budget shared by every connector. */
+export const RESEARCH_READ_CEILING = 12;
+/** C-RESEARCH #107: the one line a source reads when the task's read ceiling stopped it before it was read. */
+export const RESEARCH_READ_CEILING_NOTE = 'research read ceiling reached for this task: this source was cut before it was read';
+/** C-RESEARCH #107: the host assigns a question its identity from the owner's words, never from the model's. */
+export function ownerQuestionKey(question: string): string { return [...questionTerms(question)].sort().join(' '); }
+/** C-RESEARCH #107: a model paraphrase of the same owner ask attaches to the same job. */
+export function sameOwnerQuestion(a: string, b: string): boolean {
+  const left = questionTerms(a);
+  const right = questionTerms(b);
+  if (left.size === 0 || right.size === 0) return left.size === right.size;
+  const shared = [...right].filter(word => left.has(word)).length;
+  return shared / Math.max(left.size, right.size) >= 0.6;
+}
+
 export class ResearchAdmission {
   #turns = 0;
   #grant: number | undefined;
@@ -7735,7 +7759,32 @@ export class ResearchAdmission {
   #answered = false;
   /** #1028 behaviour 3: the questions this owner turn already started, so two different asks both run. */
   #starts: string[] = [];
-  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: the one host-owned job the current owner question owns, stable across a provider rebuild. */
+  #job: { id: string; key: string; question: string } | undefined;
+  #jobs = 0;
+  /** C-RESEARCH #107: provider reads this job has spent, shared across every connector. */
+  #reads = 0;
+  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; this.#job = undefined; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** C-RESEARCH #107: a new owner question opens a job with a fresh read budget inside the ceiling. */
+  #openJob(question: string): void {
+    this.#jobs += 1;
+    this.#job = { id: `job-${this.#jobs}`, key: ownerQuestionKey(question), question };
+    this.#reads = 0;
+  }
+  /** C-RESEARCH #107: the job the current owner question owns; a rebuild never reopens or replaces it. */
+  jobId(): string | undefined { return this.#job?.id; }
+  jobQuestion(): string | undefined { return this.#job?.question; }
+  /**
+   * C-RESEARCH #107: take provider reads from this job's ceiling. The ceiling is one budget shared by every
+   * connector, it outlives a provider rebuild (this object does) and only a new owner question refills it.
+   */
+  takeReads(count: number): number {
+    const allowed = Math.max(0, Math.min(count, RESEARCH_READ_CEILING - this.#reads));
+    this.#reads += allowed;
+    return allowed;
+  }
+  readsLeft(): number { return Math.max(0, RESEARCH_READ_CEILING - this.#reads); }
+  readsSpent(): number { return this.#reads; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
@@ -7747,28 +7796,32 @@ export class ResearchAdmission {
     if (action === 'continue' && sameRun) return { admitted: true };
     if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    // C-RESEARCH #107: a continue attaches to the job that is already running (the scheduler waits for it) or
+    // returns that job's cached terminal result. It starts no work, spends no grant and is never refused.
+    if (action === 'continue') return { admitted: true };
     // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
-    if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
-    if (action === 'start') {
-      // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
-      // two research operations. A third, a repeat of the same question, a start after this turn's answer
-      // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
-      const asked = question.trim().toLowerCase();
-      const distinct = asked !== '' && !metaOnlyQuestion(asked);
-      if (this.#grant === this.#turns) {
-        this.#starts.push(distinct ? asked : '');
-        this.#grant = undefined;
-        return { admitted: true };
-      }
-      if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
-        return { admitted: false, reason: 'turn_spent' };
-      }
-      this.#starts.push(asked);
+    if (this.#answered) return { admitted: false, reason: 'answer_already_given' };
+    const asked = question.trim().toLowerCase();
+    const distinct = asked !== '' && !metaOnlyQuestion(asked);
+    // C-RESEARCH #107: a model paraphrase of this job's own owner ask attaches to that job, not a new one.
+    if (this.#job !== undefined && distinct && sameOwnerQuestion(question, this.#job.question)
+      && (this.#grant !== this.#turns || this.#starts.includes(asked) || this.#starts.length >= 2)) {
       return { admitted: true };
     }
-    if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
-    if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
-    this.#grant = undefined;
+    // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
+    // two research operations. A third, a repeat of the same question, a start after this turn's answer
+    // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
+    if (this.#grant === this.#turns) {
+      this.#starts.push(distinct ? asked : '');
+      this.#grant = undefined;
+      if (distinct) this.#openJob(question);
+      return { admitted: true };
+    }
+    if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
+      return { admitted: false, reason: 'turn_spent' };
+    }
+    this.#starts.push(asked);
+    if (this.#job === undefined) this.#openJob(question);
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */

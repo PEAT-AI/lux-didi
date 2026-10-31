@@ -5670,7 +5670,9 @@ test('mail integration: exact native query pages and retained remainder reach la
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
-  const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
+  const first = last(); assert.equal(first['error'], undefined);
+  // C-RESEARCH #107: the model is never invited to poll; the host owns paging inside the job.
+  assert.equal(first['canContinue'], false, 'no poll invitation reaches the model');
   const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
   assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
   const sourceCalls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(sourceCalls.length, 2);
@@ -7471,12 +7473,12 @@ test('research admission names its closed reason and admits a paging continue of
     assert.equal(typeof ADMISSION_DIRECTIVES[reason], 'string');
   }
   assert.notEqual(ADMISSION_DIRECTIVES['turn_spent'], ADMISSION_DIRECTIVES['no_turn_since_result'], 'a refusal is distinguishable from a block');
-  // A continue made after an own-results delivery, with the grant still unspent, is the no_turn_since_result case.
+  // C-RESEARCH #107: a continue after a delivery attaches to the current job, so it is admitted, never refused.
   const second = new ResearchAdmission();
   second.ownerTurn();
   assert.deepEqual(second.admit('continue', true), { admitted: true }, 'the own-results continue spends no owner turn');
   second.delivered('run-2');
-  assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
+  assert.deepEqual(second.admit('continue'), { admitted: true }, 'a continue on the current job is never refused');
 });
 
 // R9-W5: the own-results allowance belongs to an owner turn, never to the session.

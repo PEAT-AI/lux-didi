@@ -295,9 +295,13 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
     await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
-    const refused = await replyFor(h, `n${n}`);
-    if (n % 2 !== 0) assert.equal(refused['deliveredCount'], 12, 'every refused continue retains the delivered count');
-    assert.deepEqual(refused, BLOCKED('turn_spent', n % 2 !== 0 ? first : undefined), `call n${n} is refused`);
+    const reply = await replyFor(h, `n${n}`);
+    // C-RESEARCH #107: a continue attaches to the job and returns its terminal result, so it is never refused
+    // and never dispatches. Only a bare start ("more") is a spent turn.
+    if (n % 2 === 0) {
+      assert.deepEqual(reply, BLOCKED('turn_spent', first), `call n${n} is a spent turn`);
+      assert.equal(reply['deliveredCount'], 12, 'a refused start retains the delivered count');
+    } else assert.notEqual(reply['status'], 'blocked', `continue n${n} attaches to the job`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');

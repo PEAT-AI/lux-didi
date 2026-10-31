@@ -16,7 +16,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -4377,6 +4377,16 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
+    // C-RESEARCH #107: the read ceiling is taken from the job the admission owns, so it is shared by every
+    // connector and a provider rebuild (which recreates this scheduler, not the admission) cannot refill it.
+    const budgetedExecute: typeof execute = async (subs, signal) => {
+      const allowed = handle.researchAdmission.takeReads(subs.length);
+      if (allowed >= subs.length) return execute(subs, signal);
+      const kept = subs.slice(0, allowed);
+      const cut = subs.slice(allowed).map((sub, n) => ({ key: `${sub.key}~cut${n}`, name: sub.name, ok: false, text: RESEARCH_READ_CEILING_NOTE, originalCharacters: 0, omittedCharacters: 0 }));
+      const results = kept.length === 0 ? [] : await execute(kept, signal);
+      return [...results, ...cut];
+    };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
@@ -4389,7 +4399,7 @@ export class LiveSessionOwner {
       queryContext: () => handle.researchQueryContext ?? '',
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(handle), execute,
+      unavailableNow: () => this.#unreachableSources(handle), execute: budgetedExecute,
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
@@ -4496,6 +4506,8 @@ export class LiveSessionOwner {
       // C-CONTINUITY T-11: every research result enters this voice session here, so the reply cap is applied
       // once, centrally, after the envelope is final: a deadline partial and a resumed run obey it too.
       response = capVoiceReply(response, handle.voicePages);
+      // C-RESEARCH #107: the host owns paging inside the job, so the model is never handed a poll invitation.
+      if (response['canContinue'] === true) response = { ...response, canContinue: false };
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {

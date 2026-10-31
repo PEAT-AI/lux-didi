@@ -132,14 +132,14 @@ test('replay 01c4bd89: findings that land after the answer are handed on, not dr
   assert.ok(h.late[0]!.items.length > 0, 'the late block carries the real findings');
 });
 
-test('R6 loop guard: one own-results continue, then a refusal; a new question still needs an owner turn', () => {
+test('C-RESEARCH #107: a continue never refuses and never costs the turn, on the current job', () => {
   const admission = new ResearchAdmission();
   admission.ownerTurn();
-  assert.deepEqual(admission.admit('start'), { admitted: true }, 'the owner turn admits the start');
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true }, 'the owner turn admits the start');
   admission.delivered();
-  assert.deepEqual(admission.admit('continue', true), { admitted: true }, 'one continue for the pending results of its own research');
-  assert.equal(admission.admit('continue', true).admitted, false, 'a second continue is refused: the loop guard');
-  assert.equal(admission.admit('continue').admitted, false, 'a continue for a new question is refused without a new owner turn');
+  assert.deepEqual(admission.admit('continue', true), { admitted: true }, 'a continue for the pending results of its own research');
+  assert.deepEqual(admission.admit('continue', true), { admitted: true }, 'a second continue attaches to the same job instead of being refused');
+  assert.deepEqual(admission.admit('continue'), { admitted: true }, 'a continue never needs a new owner turn');
   assert.deepEqual(admission.admit('stop'), { admitted: true }, 'the owner can always stop her');
 });
 

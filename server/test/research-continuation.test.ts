@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchAdmission, ResearchLedger, RESEARCH, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
+import { ResearchAdmission, ResearchLedger, RESEARCH, RESEARCH_READ_CEILING, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, stillSearchingOf, type ResearchDeps } from '../tools/research.js';
 import { answersTheAsk } from '../live/index.js';
 import type { IntentSubResult } from '../tools/intent.js';
 import { lateCommentarySilence } from '../live/index.js';
@@ -321,4 +321,55 @@ test('B-2: rebuild, quip, retry, and the retry is not refused as answered', () =
   if (answersTheAsk(false, 'The council approved the budget on Tuesday.')) admission.answered();
   assert.deepEqual(admission.admit('start', false, false, 'what is the release budget'),
     { admitted: false, reason: 'answer_already_given' });
+});
+
+// C-RESEARCH #107: one host-owned job per owner question, and a continue never spends the turn.
+test('#107: a start then two continues are one job, and no continue is a spent turn', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true });
+  const job = admission.jobId();
+  assert.equal(typeof job, 'string', 'the admitted start opens one job');
+  admission.delivered('run-1');
+  assert.deepEqual(admission.admit('continue'), { admitted: true }, 'the first continue attaches');
+  assert.deepEqual(admission.admit('continue'), { admitted: true }, 'the second continue is not a spent turn');
+  assert.equal(admission.jobId(), job, 'both continues attach to the same job');
+  assert.equal(admission.readsSpent(), 0, 'a continue spends no read budget');
+});
+
+test('#107: a paraphrased second start attaches to the same owner ask', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what changed in the release notes'), { admitted: true });
+  const job = admission.jobId();
+  assert.deepEqual(admission.admit('start', false, false, 'what has changed in the release notes?'), { admitted: true },
+    'the model paraphrase is the same owner ask, so it attaches instead of being a spent turn');
+  assert.equal(admission.jobId(), job, 'the paraphrase joins the job, it never opens a second one');
+});
+
+test('#107: a distinct owner question after the answer starts a new job', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what changed in the release notes'), { admitted: true });
+  const first = admission.jobId();
+  admission.delivered('run-1');
+  admission.answered();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'when is the dentist appointment'), { admitted: true });
+  assert.notEqual(admission.jobId(), first, 'a new owner question is a new job');
+});
+
+test('#107: a rebuild mid-job keeps the job and does not refill its read budget', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'what is the release scope'), { admitted: true });
+  const job = admission.jobId();
+  assert.equal(admission.takeReads(RESEARCH_READ_CEILING), RESEARCH_READ_CEILING, 'one task may read to its ceiling');
+  assert.equal(admission.takeReads(1), 0, 'and not one read past it');
+  // A provider rebuild never touches this object, which is exactly why the job and its budget survive it.
+  assert.equal(admission.jobId(), job, 'the job is the same job across a rebuild');
+  assert.equal(admission.readsLeft(), 0, 'a rebuild does not refill the budget');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'and what about the roadmap'), { admitted: true });
+  assert.equal(admission.readsLeft(), RESEARCH_READ_CEILING, 'a new owner question gets fresh budget inside the ceiling');
 });

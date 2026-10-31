@@ -29,7 +29,7 @@ export const DEAD_AIR_LIMIT_MS = 4_000;
 const FAILED_OUTCOMES = ['failed', 'timeout', 'aborted', 'cancelled'] as const;
 const REFUSED_OUTCOMES = ['refused', 'blocked'] as const;
 
-interface ToolOutcomeEvent { readonly event: 'tool_call_outcome'; readonly tool: string; readonly outcome: string; readonly code?: string; readonly ms?: number }
+interface ToolOutcomeEvent { readonly event: 'tool_call_outcome'; readonly tool: string; readonly outcome: string; readonly code?: string; readonly ms?: number; readonly argKeys?: readonly string[] }
 interface ToolRefusedEvent { readonly event: 'live_tool_refused'; readonly tool: string; readonly reason: string }
 interface ClassifiedFailureEvent { readonly event: 'tool_classified_failure'; readonly connector: string; readonly code?: string }
 interface ClaimEvent { readonly event: 'live_claim_without_call'; readonly ms: number }
@@ -43,8 +43,15 @@ export type PostcallEvent =
   | RecoveryEvent | TurnOpenEvent;
 
 const TOKEN = /^[A-Za-z0-9_.-]{1,96}$/;
+const ARG_KEY_LIMIT = 12;
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const token = (value: unknown): value is string => typeof value === 'string' && TOKEN.test(value);
+/** Argument shapes are key names only: the names a call's arguments carried, never their values. */
+const argKeys = (value: unknown): readonly string[] | undefined => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > ARG_KEY_LIMIT) return undefined;
+  const keys = value.filter(token).map(String);
+  return keys.length === value.length ? [...keys].sort() : undefined;
+};
 
 /**
  * Read one metadata event. Fields are copied one by one from a whitelist per event name, so an event that
@@ -58,8 +65,10 @@ export function readEvent(raw: unknown): PostcallEvent | undefined {
       if (!token(value['tool']) || !token(value['outcome'])) return undefined;
       const code = token(value['refusalCode']) ? value['refusalCode'] as string : undefined;
       const ms = count(value['ms']) ? value['ms'] as number : undefined;
+      const keys = argKeys(value['argKeys']);
       return { event: 'tool_call_outcome', tool: value['tool'], outcome: value['outcome'],
-        ...(code === undefined ? {} : { code }), ...(ms === undefined ? {} : { ms }) };
+        ...(code === undefined ? {} : { code }), ...(ms === undefined ? {} : { ms }),
+        ...(keys === undefined ? {} : { argKeys: keys }) };
     }
     case 'live_tool_refused':
       if (!token(value['tool']) || !token(value['reason'])) return undefined;
@@ -121,12 +130,15 @@ export function readEvents(lines: Iterable<string>): PostcallEvent[] {
 export interface Finding {
   readonly class: PostcallFindingClass;
   readonly count: number;
-  /** Metadata only: a tool name, a closed code, a layer, a duration. Never a word the owner or the model said. */
+  /** Metadata only: a tool name, a closed code, a layer, a duration, and an argument key shape. Never a word the
+   * owner or the model said, and never an argument value. */
   readonly detail: string;
   readonly layer?: PostcallLayer;
   readonly code?: string;
   readonly tool?: string;
   readonly ms?: number;
+  /** The names a call's arguments carried, sorted. A later wagon can build a fixture from this shape. */
+  readonly argKeys?: readonly string[];
 }
 
 export interface PostcallReview {
@@ -168,8 +180,10 @@ export function reviewSession(events: readonly PostcallEvent[], sessionId: strin
           const ms = event.ms ?? 0;
           if (seen) failures.set(event.tool, { ...seen, count: seen.count + 1, ms: Math.max(seen.ms ?? 0, ms) });
           else failures.set(event.tool, { class: 'tool_failure', count: 1,
-            detail: `${event.tool} ${event.outcome}${event.code === undefined ? '' : ` (${event.code})`}`,
-            tool: event.tool, ms, ...(event.code === undefined ? {} : { code: event.code }) });
+            detail: `${event.tool} ${event.outcome}${event.code === undefined ? '' : ` (${event.code})`}`
+              + `${event.argKeys === undefined ? '' : ` args {${event.argKeys.join(',')}}`}`,
+            tool: event.tool, ms, ...(event.code === undefined ? {} : { code: event.code }),
+            ...(event.argKeys === undefined ? {} : { argKeys: event.argKeys }) });
         }
         break;
       }
@@ -229,6 +243,9 @@ export function draftFixtures(review: PostcallReview): DraftFixture[] {
     if (finding.layer !== undefined) row['layer'] = finding.layer;
     if (finding.code !== undefined) row['code'] = finding.code;
     if (finding.ms !== undefined) row['ms'] = finding.ms;
+    // An argument shape as key names, sorted, comma separated: a later wagon can rebuild the call's outline from
+    // it without ever holding an argument value.
+    if (finding.argKeys !== undefined && finding.argKeys.length > 0) row['argShape'] = [...finding.argKeys].sort().join(',');
     row['count'] = finding.count;
     byClass.set(finding.class, [...(byClass.get(finding.class) ?? []), row]);
   }

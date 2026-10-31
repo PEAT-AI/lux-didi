@@ -38,7 +38,7 @@ test('the report names counts and layers, never owner words', () => {
 test('draft fixtures carry tool names, shapes, codes and timing, and no text field', () => {
   const drafts = draftFixtures(review());
   assert.equal(drafts.length, POSTCALL_FINDINGS.filter(name => drafts.some(draft => draft.class === name)).length);
-  const allowed = new Set(['class', 'synthetic', 'count', 'rows', 'tool', 'layer', 'code', 'ms']);
+  const allowed = new Set(['class', 'synthetic', 'count', 'rows', 'tool', 'layer', 'code', 'ms', 'argShape']);
   const walk = (value: unknown): void => {
     if (Array.isArray(value)) { value.forEach(walk); return; }
     if (typeof value !== 'object' || value === null) return;
@@ -49,8 +49,20 @@ test('draft fixtures carry tool names, shapes, codes and timing, and no text fie
   };
   walk(drafts);
   const serialized = JSON.stringify(drafts);
-  assert.doesNotMatch(serialized, /standup|Acme|arg|query|body/i);
-  for (const draft of drafts) assert.ok(draft.rows.length > 0);
+  assert.doesNotMatch(serialized, /standup|Acme|finance/i);
+  // An argument shape is key names only: every value is a token or a comma separated list of tokens, so no room
+  // is left for a value, a sentence or an owner's words.
+  for (const draft of drafts) {
+    assert.ok(draft.rows.length > 0);
+    for (const row of draft.rows) {
+      for (const [field, value] of Object.entries(row)) {
+        if (typeof value === 'number') continue;
+        assert.match(String(value), /^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$/, `${field}=${value}`);
+      }
+    }
+  }
+  const failed = drafts.find(draft => draft.class === 'tool_failure');
+  assert.equal(failed?.rows[0]?.['argShape'], 'body,thread_id,to');
 });
 
 test('the review writes a report and one draft per class into the folder it is given', () => {
@@ -75,4 +87,15 @@ test('the metadata reader drops a key it does not recognise', () => {
   ] }));
   assert.equal(events.length, 1);
   assert.deepEqual(events[0], { event: 'tool_call_outcome', tool: 'calendar_read', outcome: 'completed', ms: 4 });
+});
+
+test('an argument shape is kept only when every name in it is a token', () => {
+  const shaped = readCapture(JSON.stringify({ events: [
+    { event: 'tool_call_outcome', tool: 'mail_send', outcome: 'failed', argKeys: ['to', 'body'] },
+  ] }));
+  assert.deepEqual(shaped, [{ event: 'tool_call_outcome', tool: 'mail_send', outcome: 'failed', argKeys: ['body', 'to'] }]);
+  const mixed = readCapture(JSON.stringify({ events: [
+    { event: 'tool_call_outcome', tool: 'mail_send', outcome: 'failed', argKeys: ['to', 'not a key'] },
+  ] }));
+  assert.deepEqual(mixed, [{ event: 'tool_call_outcome', tool: 'mail_send', outcome: 'failed' }]);
 });

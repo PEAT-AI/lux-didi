@@ -191,8 +191,11 @@ duration).
 
 For each class it finds, the review writes a draft synthetic fixture into a local, git-ignored folder
 (`server/eval-out/postcall` by default, `<dataDir>/postcall` from the host). A draft carries the class, the tool
-name, the layer and code, a count and a timing value. It has no text field, so there is no field an owner's words
-could arrive in, and the reader drops every key it does not recognise before it looks at an event.
+name, the layer and code, a count, a timing value and an argument shape (`argShape`: the argument names the call
+carried, sorted and comma separated, never a value). It has no text field, so there is no field an owner's words
+could arrive in, and the reader drops every key it does not recognise before it looks at an event. An argument
+shape is kept only when every name in it is a token; a list with one odd name is dropped whole rather than
+partially trusted.
 
 The host calls the same review from the existing session-terminal hook, behind `DIDI_POSTCALL_REVIEW=1`. The
 setting is unset by default: with it unset the hook returns immediately, and a review never fails a call that has

@@ -1,6 +1,6 @@
 {
   "note": "Fixtures under this folder are immutable. A changed file must carry a provenance.ruling line; this manifest then carries its new hash.",
   "fixtures": {
-    "postcall-session.json": "1378cec8c5a08bed91afd6400672b0c4d10e373b22e2044b5a3f26f4de2367ea"
+    "postcall-session.json": "eb5b81721481bf2716519efd6c6ebd9791f054fcc22841ca363210d2eecd7644"
   }
 }

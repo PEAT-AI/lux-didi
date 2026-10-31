@@ -189,7 +189,7 @@ export class OwnerTasks implements OwnerTaskPort {
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
       if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {
         this.#apply(previous, ownerCommands(words), words);
-        this.#armOpen(previous, words);
+        this.#armOpen(previous, ownerCommands(words), words);
       }
       return;
     }
@@ -198,7 +198,7 @@ export class OwnerTasks implements OwnerTaskPort {
       operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {},
     };
     this.#apply(task, ownerCommands(words), words);
-    this.#armOpen(task, words);
+    this.#armOpen(task, ownerCommands(words), words);
     this.tasks.set(session, task);
   }
 
@@ -220,7 +220,10 @@ export class OwnerTasks implements OwnerTaskPort {
    * what the owner's own reads exposed. So each of his finals is one open, spent by its committed
    * success and never re-spent on a second target.
    */
-  #armOpen(task: OwnerTask, words: string): void {
+  #armOpen(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
+    // A distinct ask (an alarm, a note, a draft, an event) arms nothing for open: a window is opened
+    // only when the owner's own words name the destination or name nothing else at all.
+    if (commands.some(command => command.kind !== 'open')) return;
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     task.openGrant = true;
   }

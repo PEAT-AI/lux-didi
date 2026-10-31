@@ -215,6 +215,7 @@ export class OwnerTasks implements OwnerTaskPort {
     // Opening a window the owner can see is local and target-selected from what his own reads
     // exposed, so any words of his task authorize it; nothing leaves the machine and nothing sends.
     if (operation === undefined) return kind === 'open' && task.words.trim().length > 0
+      && !NEGATION.test(task.words) && !CANCEL_TASK.test(task.words)
       ? { ...common, code: 'allowed' } : { ...common, code: 'no_owner_request' };
     const bounded = { ...common, words: operation.words };
     const entry = this.ledger.get(`${task.id}:${operation.operationId}`);

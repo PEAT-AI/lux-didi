@@ -159,7 +159,9 @@ function restrictionText(data: Record<string, unknown>): string | undefined {
   const restriction = data['restriction'];
   const message = isRecord(restriction) ? scalar(restriction['message']) : undefined;
   const code = isRecord(restriction) ? scalar(restriction['code']) ?? 'restricted' : 'restricted';
-  if (data['outcome'] !== 'restricted' && restriction === null) return undefined;
+  // A restriction block is a state of its own: an envelope that is not restricted and carries no block
+  // (the data agent's job replies are one) is ordinary data, never a restriction with no code.
+  if (data['outcome'] !== 'restricted' && !isRecord(restriction)) return undefined;
   return message === undefined ? `restricted: ${code}` : `restricted: ${message}`;
 }
 
@@ -213,6 +215,16 @@ function followUpText(followUp: unknown): { text: string; partial: boolean } | u
   return { text: ['', 'read:', ...parts].join('\n'), partial: omitted !== undefined };
 }
 
+/** The one machine line of a data agent job, so research can follow it without reading prose. */
+function jobLines(data: Record<string, unknown>): string[] | undefined {
+  const id = scalar(data['job_id']);
+  if (id === undefined) return undefined;
+  const lines = [`job ${id} status=${scalar(data['status']) ?? 'unknown'}`];
+  const clarification = scalar(data['clarification']) ?? scalar(data['next_step']);
+  if (clarification !== undefined && clarification !== '') lines.push(`clarification: ${clarification}`);
+  return lines;
+}
+
 /** Preserves source identity and coverage while bounding only the displayed projection. */
 export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseProjection {
   if (typeof data === 'string') return boundedProjection(data);
@@ -237,6 +249,8 @@ export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseP
   else text = JSON.stringify(data);
   const card = followUpText(followUp);
   if (card !== undefined) text = `${text}${card.text}`;
+  const job = jobLines(data);
+  if (job !== undefined) text = `${job.join('\n')}\n${text}`;
   const fullTrailer = coverage.lines.length ? `\ncoverage: ${coverage.lines.join(' | ')}` : '';
   const trailer = fullTrailer.length <= 1500 ? fullTrailer : `${fullTrailer.slice(0, 1450)} [coverage metadata clipped]`;
   const projected = boundedProjection(text, MONGOOSE_PROJECTION_CHARS - trailer.length);

@@ -1938,8 +1938,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
     const words = asked !== '' ? asked : (topicText ?? '').trim();
     if (words === '' || !config.configured.includes('data')) return [];
-    const metric = companyMetricSubs(words, config.question, config.nowMs ?? Date.now());
-    return 'refusal' in metric ? [] : metric.subs;
+    const metric = companyMetricSubs(config.question ?? words);
+    return metric.subs;
   }
   if (kind === 'company_search') {
     // #639: the company read is the typed lookup's own read, on the topic's words and its mode, so the
@@ -2100,6 +2100,8 @@ export interface RunState {
   previousCallAt?: number;
   /** #575: finding texts this session already delivered, shared by every run of the session. */
   deliveredFindings: Set<string>;
+  /** G2: the data agent job this run opened, so a `needs_reply` clarification is answered in the same task. */
+  dataJob?: { jobId: string; awaitingOwner: boolean } | undefined;
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>; historyMore: Set<string>;
@@ -3464,6 +3466,14 @@ function metricRowLines(text: string): string[] {
 
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'company_metric') {
+    // G2: the data agent answers with a job. Its own status line leads, and the number, ranking,
+    // definition and assumptions travel exactly as the endpoint returned them, never recomputed here.
+    const job = results.filter(result => result.ok && /^job \S+ status=/mu.test(result.text));
+    if (job.length > 0) {
+      const lines = job.flatMap(result => result.text.split('\n').filter(line => line.trim() !== ''));
+      const answer = lines.length > 1 ? clip(lines.slice(1).join(' '), RESEARCH.openedBodyChars) : '';
+      return { text: `${SOURCE_LABEL.data}: ${[lines[0]!, answer].filter(value => value !== '').join(' | ')}`, source: 'data', lines, total: lines.length };
+    }
     // W3: a number never travels alone. The newest dated row leads, so the answer says "about 2,400 on
     // 25 October, the latest day loaded" instead of a figure with no day under it.
     const lines = results.filter(result => result.ok).flatMap(result => metricRowLines(result.text));
@@ -3689,7 +3699,11 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.mailRead: return 'mail';
     case HISTORY_IDENTITY.name: return 'memory';
     case INTERNAL.mongooseSearch: return 'mongoose';
-    // W3: the data endpoint's two reads belong to the numbers source, never to company knowledge.
+    // G2: the knowledge endpoint's capability router answers a company question.
+    case INTERNAL.mongooseDataCapability: return 'mongoose';
+    // G2: the data endpoint's agent and its job read belong to the numbers source, never to company knowledge.
+    case INTERNAL.askDataAgent:
+    case INTERNAL.dataAgentJob:
     case INTERNAL.mongooseSearchFields:
     case INTERNAL.mongooseMetricQuery: return 'data';
     case INTERNAL.driveSearch:
@@ -4515,18 +4529,23 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
 }
 
 /**
- * W3-R1: the count metrics the data endpoint serves, in the published shape the live fixture carries.
- * A metric question is one `search_fields` for the field names and one `run_metric_query` for the rows.
+ * G2: the coverage words the data endpoint's capability router answers before any other read: an
+ * unfamiliar country, a district granularity, a forecast or nowcast, a call-level question, an unsupported
+ * crop, or a company the corpus does not know. The brief names them from the served shape's own list.
  */
-const COMPANY_METRICS: readonly {
-  words: RegExp; exploreName: string; metric: string; dateField: string; countryField: string;
-}[] = [{
-  words: /\b(?:active users?|users?|dau|daily active|monthly active)\b/iu,
-  exploreName: 'active_users_daily',
-  metric: 'active_users_daily_n_active_users',
-  dateField: 'active_users_daily_event_date_day',
-  countryField: 'active_users_daily_country',
-}];
+const COVERAGE_ASK = /\b(?:forecast|nowcast|call[- ]level|calls?\b|district|admin[- ]level|sub-?district|crop|coverage|available|unfamiliar|do (?:we|you) (?:have|cover))\b/iu;
+
+/** The one capability question the router takes, built only from what the owner's own words name. */
+function capabilityArgs(question: string): JsonObject {
+  const country = metricCountryOf(question);
+  return {
+    ...(country === undefined ? {} : { countries: [country] }),
+    ...(/\bforecast/iu.test(question) ? { needs_forecast: true } : {}),
+    ...(/\bnowcast/iu.test(question) ? { needs_nowcast: true } : {}),
+    ...(/\bcalls?\b|call[- ]level/iu.test(question) ? { needs_call_history: true } : {}),
+    ...(/\bdistrict|admin[- ]level/iu.test(question) ? { admin_level: 'district' } : {}),
+  };
+}
 
 /** The country the owner named, spelled as the owner spelled it, or none when the ask names no place. */
 function metricCountryOf(question: string): string | undefined {
@@ -4648,35 +4667,17 @@ export function metricWindow(question: string, nowMs: number): MetricWindow | un
 }
 
 /**
- * W3-R1: the data read of one count question. `search_fields` names the fields, `run_metric_query` asks
- * for the rows, both in the exact published argument shape of the live fixture. A count with no date
- * dimension and no date filter is refused here with the closed code, never dispatched as an all-time sum.
+ * G2: the data read of one business, KPI or metric question. The served shape has one entry point,
+ * `ask_data_agent`, which takes the owner's question verbatim; the retired Lightdash field search and
+ * metric query are not on this route at all, so there is no fallback for them to answer from.
  */
-export function companyMetricSubs(query: string, question: string, nowMs: number): { subs: IntentSubCall[] } | { refusal: 'count_needs_date_window' } {
-  const metric = COMPANY_METRICS.find(entry => entry.words.test(query) || entry.words.test(question)) ?? COMPANY_METRICS[0]!;
-  const window = metricWindow(question, nowMs);
-  if (window === undefined) return { refusal: 'count_needs_date_window' };
-  const country = metricCountryOf(question);
-  const where = country ?? 'all countries';
-  const dimensions = [
-    ...(country === undefined ? [] : [{ fieldId: metric.countryField, operator: 'equals', values: [country] }]),
-    { fieldId: metric.dateField, operator: 'inBetween', values: [window.start, window.end] },
-  ];
-  return { subs: [
-    { key: 'm0', name: INTERNAL.mongooseSearchFields, args: { patterns: [query.trim()], exploreName: metric.exploreName } },
-    { key: 'm1', name: INTERNAL.mongooseMetricQuery, args: {
-      title: `${where} daily active users ${window.start} to ${window.end}`,
-      description: `Daily active users ${country === undefined ? '' : `in ${country} `}per day from ${window.start} to ${window.end}.`,
-      queryConfig: {
-        exploreName: metric.exploreName,
-        metrics: [metric.metric],
-        dimensions: [metric.dateField],
-        filters: { dimensions, type: 'and' },
-        sorts: [{ fieldId: metric.dateField, descending: true }],
-        limit: 10,
-      },
-    } },
-  ] };
+export function companyMetricSubs(question: string): { subs: IntentSubCall[] } {
+  return { subs: [{ key: 'm0', name: INTERNAL.askDataAgent, args: { question } }] };
+}
+
+/** G2: the owner's own answer to a `needs_reply` clarification, sent back to the job that asked for it. */
+export function dataReplySubs(jobId: string, ownerWords: string): IntentSubCall[] {
+  return [{ key: 'm0', name: INTERNAL.dataAgentJob, args: { job_id: jobId, op: 'reply', text: ownerWords } }];
 }
 
 /**
@@ -4684,9 +4685,14 @@ export function companyMetricSubs(query: string, question: string, nowMs: number
  * carries the entity behind the answer instead of a title alone. A depth ask reads that body at full depth
  * and follows the server's own cursor until the coverage is complete or the page budget ends it.
  */
-function companySubs(query: string, question = ''): IntentSubCall[] {
+export function companySubs(query: string, question = ''): IntentSubCall[] {
   const depth = budgetFor(question) === RESEARCH.budgets.depth ? 'full' : 'summary';
-  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query), depth } }];
+  // G2: a coverage question asks the deterministic capability router first, on the knowledge endpoint,
+  // and only then reads the corpus, so an unavailable capability is never answered as if it existed.
+  const coverage: IntentSubCall[] = COVERAGE_ASK.test(question)
+    ? [{ key: 'cap0', name: INTERNAL.mongooseDataCapability, args: capabilityArgs(question) }]
+    : [];
+  return [...coverage, { key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query), depth } }];
 }
 
 /** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */
@@ -4775,12 +4781,13 @@ function routedReadUnfiltered(lookup: ResearchLookup, context: { question: strin
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query, context.question) };
   if (lookup.source === 'data') {
-    // W3-R1: the numbers source is the data endpoint's field search and one metric query. A count with
-    // no date window settles refused under its own closed code and the one-line repair.
-    const metric = companyMetricSubs(query, context.question, context.now());
-    return 'refusal' in metric
-      ? { source: 'data', kind: 'company_metric', subs: [], unresolved: true, reason: metric.refusal }
-      : { source: 'data', kind: 'company_metric', subs: metric.subs };
+    // G2: the numbers source is the data endpoint's own agent, on the owner's question verbatim, and
+    // its job read when the agent asks something back.
+    const pending = context.run.dataJob;
+    if (pending?.awaitingOwner === true) {
+      return { source: 'data', kind: 'company_metric', subs: dataReplySubs(pending.jobId, context.question) };
+    }
+    return { source: 'data', kind: 'company_metric', subs: companyMetricSubs(context.question).subs };
   }
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
@@ -6108,6 +6115,48 @@ function autopenVerdict(text: string, carried: KnowledgeConfidence | undefined, 
 }
 
 /**
+ * G2: the one line a data agent job answers with, read back off its own projection. An ask without the line
+ * is not a job and is left exactly as it arrived.
+ */
+const DATA_JOB_LINE = /^job (\S+) status=(running|needs_reply|answered|failed)\b/mu;
+
+function dataJobOf(text: string): { jobId: string; status: 'running' | 'needs_reply' | 'answered' | 'failed' } | undefined {
+  const match = DATA_JOB_LINE.exec(text);
+  if (match?.[1] === undefined) return undefined;
+  return { jobId: match[1], status: match[2] as 'running' | 'needs_reply' | 'answered' | 'failed' };
+}
+
+/**
+ * G2: the data endpoint's agent answers with a job. A job still running is read again inside the same round
+ * and inside the source budget; a job waiting on the owner is remembered on the run, so the owner's next
+ * words go back to it with `op reply` instead of the question being asked from scratch.
+ */
+async function withDataAgentJob(
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+  run: RunState, results: readonly IntentSubResult[], signal: AbortSignal,
+  boundMs: number = RESEARCH.knowledgeReadMs,
+): Promise<IntentSubResult[]> {
+  const asked = results.find(result => result.ok && (result.name === INTERNAL.askDataAgent || result.name === INTERNAL.dataAgentJob));
+  if (asked === undefined) return [...results];
+  const first = dataJobOf(asked.text);
+  if (first === undefined) return [...results];
+  const deadline = Date.now() + boundMs;
+  let current = asked;
+  // `op get` waits up to 25 s on the server; two reads cover a job that was still running on the first.
+  for (let attempt = 0; attempt < 2 && dataJobOf(current.text)?.status === 'running'; attempt += 1) {
+    if (Date.now() >= deadline) break;
+    const next = await execute([{ key: asked.key, name: INTERNAL.dataAgentJob, args: { job_id: first.jobId, op: 'get' } }], signal);
+    const page = next[0];
+    if (page === undefined || !page.ok) break;
+    current = { ...page, key: asked.key };
+  }
+  const settled = dataJobOf(current.text);
+  if (settled?.status === 'needs_reply') run.dataJob = { jobId: settled.jobId, awaitingOwner: true };
+  else if (settled !== undefined) run.dataJob = undefined;
+  return results.map(result => (result === asked ? current : result));
+}
+
+/**
  * C-DEPTH item 3 (W10-R7): the full body replaces the summary of the hit it came from, keyed by that hit's own
  * id, so the knowledge shaping still sees one block of hits and no other source learns a second keyed read.
  * An entry that names no hit is left out rather than appended: a fetched entry reaches the reply or was not paid for.
@@ -6348,6 +6397,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // C-DEPTH item 3 (W10-R7): this is the one place every read passes through, so the summaries are enriched
       // with the full bodies of the hits that matter here, batched once, inside the same round.
       results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
+      // G2: a data agent job still running is read again here, and a job waiting on the owner is remembered
+      // for the rest of this task, before the reply and the progress steps read the findings.
+      results = await withDataAgentJob(executeSource, run, results, progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = [...await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat)];

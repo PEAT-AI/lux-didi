@@ -57,7 +57,13 @@ const READ_TEXT = JSON.stringify({
   body: 'Agri input pricing reached 41 companies in 2025.',
 });
 
-interface FixtureOptions { replies?: Record<string, string>; text?: string; status?: number }
+interface FixtureOptions {
+  replies?: Record<string, string>;
+  /** The replies one tool answers with in call order, so a clipped read can be paged by its own cursor. */
+  sequence?: Record<string, string[]>;
+  text?: string;
+  status?: number;
+}
 
 async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {}) {
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
@@ -67,7 +73,8 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params as { name: string; arguments: Record<string, unknown> };
     calls.push({ name: params.name, arguments: params.arguments });
-    const text = options.replies?.[params.name] ?? options.text ?? SEARCH_TEXT;
+    const next = options.sequence?.[params.name]?.shift();
+    const text = next ?? options.replies?.[params.name] ?? options.text ?? SEARCH_TEXT;
     return { content: [{ type: 'text', text }] } as never;
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => 's' });
@@ -244,6 +251,58 @@ test('a company question runs search mode answer then read on the top ref and re
   if (!projected.ok) return;
   assert.match(projected.projection.text, /Agri input pricing/);
   assert.match(projected.projection.text, /source: https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing/);
+});
+
+/** A profile whose second section only arrives on the server's second page. */
+const FIRST_PAGE = JSON.stringify({
+  outcome: 'evidence', ref: 'item-9', depth: 'full',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: 'c1', coverage: { depth: 'full', complete: false }, restriction: null, request_id: 'req-1',
+  body: 'Section one: the company sells seed to 41 distributors.',
+});
+const SECOND_PAGE = JSON.stringify({
+  outcome: 'evidence', ref: 'item-9', depth: 'full',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: null, coverage: { depth: 'full', complete: true }, restriction: null, request_id: 'req-2',
+  body: 'Section two: the second half of the profile names the Indonesian rice programme.',
+});
+
+test('#641: a company answer in section two of a long profile is found at depth full plus one cursor', async t => {
+  const k = await knowledge({ replies: { search: SEARCH_TEXT }, sequence: { read: [FIRST_PAGE, SECOND_PAGE] } });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri input pricing profile', depth: 'full' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  // The depth ask reads at full, then follows the cursor the server returned until the coverage is complete.
+  assert.deepEqual(k.f.calls, [
+    { name: 'search', arguments: { query: 'agri input pricing profile', mode: 'answer', limit: 5 } },
+    { name: 'read', arguments: { ref: 'item-9', depth: 'full' } },
+    { name: 'read', arguments: { ref: 'item-9', depth: 'full', cursor: 'c1' } },
+  ]);
+  assert.equal(result.followUp?.pages.length, 2, 'both pages of the read are kept');
+  assert.equal(result.followUp?.omitted, undefined, 'a complete coverage is not partial');
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /Indonesian rice programme/u, `the second section reaches the answer: ${projected.projection.text}`);
+  assert.match(projected.projection.text, /Section one/u, 'and the first section is not thrown away');
+  assert.equal(projected.projection.partial, false);
+});
+
+test('#641: a clipped read that spends the page budget says so instead of reading as the whole body', async t => {
+  const clipped = JSON.parse(FIRST_PAGE) as Record<string, unknown>;
+  const k = await knowledge({ replies: { search: SEARCH_TEXT }, sequence: { read: [JSON.stringify(clipped), JSON.stringify(clipped), JSON.stringify(clipped)] } });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri input pricing' });
+  if (result.state !== 'completed') return assert.fail(`expected a completed read, got ${result.state}`);
+  assert.equal(result.followUp?.pages.length, 3, 'the page budget bounds the read');
+  assert.equal(result.followUp?.omitted, 'cursor_budget', 'and the omission is named');
+  const projected = projectMongooseResult(k.a.adapter, result);
+  if (!projected.ok) return assert.fail(projected.reason);
+  assert.match(projected.projection.text, /read_omitted: cursor_budget/u);
+  assert.equal(projected.projection.partial, true);
 });
 
 test('a listing ask runs search mode browse and reads nothing', async t => {

@@ -39,8 +39,8 @@ export function mongooseTokenIdentity(token: string, endpoint: MongooseEndpoint,
  * endpoint. A name outside this list is refused before dispatch, whatever the remote annotates.
  */
 export const MONGOOSE_ENDPOINT_TOOLS: Readonly<Record<MongooseEndpoint, readonly string[]>> = {
-  knowledge: ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started'],
-  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields'],
+  knowledge: ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started', 'check_data_capability'],
+  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields', 'ask_data_agent', 'data_agent_job'],
   crm: ['get_company', 'list_inbound_leads', 'list_inbound_lead_events', 'summarize_email_engagements'],
 };
 
@@ -57,7 +57,7 @@ export const MONGOOSE_DENIED_TOOLS: readonly string[] = [
   'create_content', 'create_scheduled_delivery', 'set_project', 'update_content', 'run_sql',
   'get_access_report', 'list_seed_conflicts', 'list_users', 'provision_user', 'resolve_seed_conflict', 'set_user_access',
   'ask_mongoose', 'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'get_company_crm',
-  'get_ticket', 'check_data_capability', 'get_efficacy_evidence', 'get_knowledge_graph', 'get_knowledge_item_schema',
+  'get_ticket', 'get_efficacy_evidence', 'get_knowledge_graph', 'get_knowledge_item_schema',
   'get_reach', 'lint_knowledge', 'list_data_capabilities', 'list_knowledge_domains', 'list_knowledge_edges',
   'list_knowledge_item_versions', 'list_knowledge_items', 'list_markets', 'list_offerings', 'list_user_handles',
   'get_query_result', 'resolve_url', 'search_field_values', 'get_current_project', 'list_projects',
@@ -365,7 +365,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       // A page after the first that fails keeps the pages already paid for and names the omission.
       if (read.state !== 'completed') { if (pages.length === 0) return read; omitted = 'cursor_budget'; break; }
       pages.push({ decodedResult: read.decodedResult, payload: read.response });
-      if (coverageComplete(read.decodedResult)) break;
+      if (coverageComplete(read.decodedResult)) { omitted = undefined; break; }
       cursor = nextCursor(read.decodedResult);
       omitted = 'cursor_budget';
       if (cursor === undefined) break;
@@ -383,7 +383,9 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       // Only the published search schema's own keys go on the wire: query, mode, limit, cursor, verbose.
-      const args = typedArgs(input, ['query', 'mode', 'limit', 'cursor', 'verbose'], ['query', 'cursor']);
+      // `depth` is the host's own follow-up depth, never a wire argument: it stays off the search call.
+      const { depth, ...searchInput } = input;
+      const args = typedArgs(searchInput, ['query', 'mode', 'limit', 'cursor', 'verbose'], ['query', 'cursor']);
       if (!args) return { state: 'refused', reason: 'invalid-search-input' };
       const mode = input.mode ?? 'answer';
       const evidence = await dispatch('search', { ...args, query, mode, ...bounded }, signal);

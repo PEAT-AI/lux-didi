@@ -104,11 +104,12 @@ function failedScalar(value: unknown): string | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return SCALAR_VALUE.test(String(value)) ? `number=${String(value)}` : undefined;
 }
-function logArgumentsRejected(name: string, args: unknown): void {
+function logArgumentsRejected(name: string, args: unknown, write: boolean): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
   const fields = Object.keys(record).slice(0,24).map(key => {
     const named = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key';
-    const scalar = failedScalar(record[key]);
+    // #798: only a write is worth recovering a value for; a read keeps the metadata-only shape it had.
+    const scalar = write ? failedScalar(record[key]) : undefined;
     return `${named}:${scalar ?? shapeOf(record[key])}`;
   });
   hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields, reason: args === null || typeof args !== 'object' || Array.isArray(args) ? 'arguments_not_object' : 'schema_validation_failed' });
@@ -166,7 +167,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
             const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
             const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, rejected);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
-            logArgumentsRejected(call.name, call.args);
+            logArgumentsRejected(call.name, call.args, tool.effect === 'write');
             return;
           }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {

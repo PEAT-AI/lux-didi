@@ -110,8 +110,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const first = String(rows()[0].id);
   await owner('show my alarms');
   assert.match(await call('list_alarms'), new RegExp(first));
-  await owner('cancel my alarm'); now += 120001; mono += 120001;
-  assert.match(await call('cancel_alarm', { id: first }), /request_expired/);
+  await owner('cancel my alarm'); now += 600001; mono += 600001;
+  assert.match(await call('cancel_alarm', { id: first }), /no_owner_request/);
   await owner('cancel my alarm');
   assert.match(await call('cancel_alarm', { id: first }), /cancelled/);
   assert.equal(rows()[0].state, 'cancelled');
@@ -128,8 +128,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
-  await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
+  await owner('snooze my alarm for five minutes'); now += 600001; mono += 600001;
+  assert.match(await call('snooze_alarm', { id: String(due.id) }), /no_owner_request/);
   await owner('snooze my alarm for five minutes');
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /Alarm set/);
   assert.equal(rows().find(row => row.id === due.id).state, 'done');

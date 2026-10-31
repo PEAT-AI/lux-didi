@@ -7,8 +7,8 @@ import { claimsEmptyResult } from '../live/index.js';
 
 /** The real `mattermost_chat` declaration, exactly as the connector publishes it: no copy in the test. */
 const chat = CONNECTOR_COMPOSED_TOOLS['mattermost']!.find(tool => tool.name === 'mattermost_chat')!;
-const declaration: ToolDeclaration & { rejection?: (args: unknown) => string | undefined } = {
-  name: chat.name, effect: 'read', parameters: { type: 'object', ...chat.parameters }, rejection: chat.rejection,
+const declaration: ToolDeclaration = {
+  name: chat.name, effect: 'read', parameters: { type: 'object', ...chat.parameters },
 };
 
 /** C-ARGS test 1: the call the realtime model made on 10-31, all twelve optional keys beside the person's name. */
@@ -22,7 +22,6 @@ test('the twelve-key person read normalizes and dispatches instead of refusing',
   assert.equal(dropped.includes('post_id:not_read'), true, 'the thread key is another intent\'s');
   assert.equal(dropped.includes('channel:not_read'), true, 'the channel key is another intent\'s');
   assert.equal(chat.rejection!(args), undefined, 'nothing a person read does not read may refuse it');
-  assert.equal(declaration.rejection!(args), undefined);
   assert.deepEqual(Object.keys(args).sort(), ['from_date', 'intent', 'limit', 'offset', 'order', 'person', 'sides', 'to_date']);
   assert.equal(args['person'], 'Maya', 'the value the intent reads is never rewritten');
 });
@@ -32,7 +31,7 @@ test('a non-empty value of a key the intent reads is kept and refused, and every
   const { args } = normalizeArguments(declaration, sent);
   assert.equal(args['limit'], 100);
   assert.equal(args['from_date'], 'yesterday');
-  const violations = argumentViolationsOf(declaration, args);
+  const violations = argumentViolationsOf(chat, args);
   assert.deepEqual(violations, ['limit:range', 'dates:format'], 'both violations come back in one answer');
   const fields = argumentViolations(`Invalid arguments for mattermost_chat. Rejected arguments: ${violations.join(', ')}. Expected an object with intent (string).`);
   assert.deepEqual(fields, [{ field: 'limit', reason: 'range' }, { field: 'from_date', reason: 'format' }]);

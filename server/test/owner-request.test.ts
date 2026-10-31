@@ -591,3 +591,15 @@ test('#796 a repeat he did not say is refused and the same ask without it is acc
   assert.equal(verifyAlarmRule({}, owner), true, 'the retry without a recurrence is a one-time alarm');
   assert.equal(verifyAlarmRule({ kind: 'daily' }, parseSeriesRule('wake me at eleven every day')), true);
 });
+
+test('#796 a refused recurrence spends nothing, so the retry he asked for is authorized', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'wake me at eleven', 0);
+  const first = requests.authorize('s', 'set_alarm', 'alarm');
+  assert.equal(first.code, 'allowed');
+  // The rule_mismatch refusal releases the reservation: the one-time retry is the same ask, not a second one.
+  requests.failed('s', 'set_alarm', 'alarm', first.id);
+  now = 5_000;
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
+});

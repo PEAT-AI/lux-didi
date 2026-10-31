@@ -235,13 +235,9 @@ export class OwnerTasks implements OwnerTaskPort {
     // A window is opened when the owner's own words ask to open something, or when they name a
     // destination and nothing else. A distinct ask on its own (an alarm, a note, a draft) arms nothing,
     // and a read he asked for ("find the plan in Lux knowledge") never opens what its text names.
-    // Every finished final of his is one open for what it showed; a final that only asks something still
-    // leaves him looking at the windows, so the round arms on it too. A negation, a cancel, a past
-    // statement or a read of his own text arms nothing.
-    if (!words.trim() || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
-    // A write ask (an alarm, a note, a draft) is not an open: his words name no destination and no verb.
-    if (commands.length > 0 && !commands.some(command => command.kind === 'open') && !OPEN_VERB.test(words)) return;
+    if (!commands.some(command => command.kind === 'open') && commands.length > 0) return;
     if (!OPEN_VERB.test(words) && READ_OBJECT.test(words)) return;
+    if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     // A new owner final is a new selection round. The receipts of the task stay (D4: a retry in the
     // same task replays what already opened), the round itself is armed again.
     task.openGrant = true;

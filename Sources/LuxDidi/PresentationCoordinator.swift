@@ -388,8 +388,120 @@ enum NativeQuitStage: String, Sendable {
     case awaitingMainActor, audio, logout, webSession, host, applicationExit, secondQuit
 }
 
+// C-QUIT: the status item is reachable and its click is on record. One typed receipt per event, in a
+// closed set of names and fields, so the file log never takes free text and a test can name the line.
+enum StatusSurfaceEvent: String, Sendable {
+    case statusItemState = "status_item_state", statusClick = "status_click"
+    case menuOpenRequested = "menu_open_requested", menuOpened = "menu_opened", menuItem = "menu_item"
+    case quitStage = "quit_stage", quitForced = "quit_forced"
+}
+
+/// A receipt field is a flag, a count or a word from a closed set; never a message or a path.
+enum StatusSurfaceFact: Equatable, Sendable {
+    case flag(Bool), number(Int), word(String)
+    var value: Any {
+        switch self {
+        case .flag(let flag): return flag
+        case .number(let number): return number
+        case .word(let word): return word
+        }
+    }
+}
+
+struct StatusSurfaceReceipt: Equatable, Sendable {
+    let event: StatusSurfaceEvent
+    var facts: [String: StatusSurfaceFact]
+    var record: [String: Any] {
+        var fields = facts.mapValues(\.value)
+        fields["event"] = event.rawValue
+        return fields
+    }
+}
+
+/// C-QUIT 1: the four verbs the status item always carries, with the receipt each click writes. One
+/// plan, so the app's menu and the test that proves it reachable cannot drift apart.
+enum StatusMenuEntry: String, CaseIterable, Sendable {
+    case quit, start, stop, mute, show
+    var receipt: StatusSurfaceReceipt { StatusSurfaceReceipt(event: .menuItem, facts: ["item": .word(rawValue)]) }
+}
+
+struct StatusMenuPlan: Sendable {
+    struct Item: Equatable, Sendable {
+        let entry: StatusMenuEntry
+        let title: String
+        let selector: String
+        let keyEquivalent: String
+    }
+    /// Assignment order at the top of the menu; Quit closes it, after the app's own extras.
+    static let items: [Item] = [
+        Item(entry: .start, title: "Start Live", selector: "startLiveFromMenu", keyEquivalent: ""),
+        Item(entry: .mute, title: "Mute", selector: "muteLiveFromMenu", keyEquivalent: ""),
+        Item(entry: .stop, title: "Stop", selector: "stopLiveFromMenu", keyEquivalent: ""),
+        Item(entry: .quit, title: "Quit Naya", selector: "quit", keyEquivalent: "q"),
+    ]
+    static func item(_ entry: StatusMenuEntry) -> Item? { items.first { $0.entry == entry } }
+    /// The item carries its target and action at build time, so a click needs no activation and no
+    /// lazy menu work: the same call the app makes is the call the test makes.
+    @discardableResult
+    static func add(_ entry: StatusMenuEntry, to menu: NSMenu, target: AnyObject?) -> NSMenuItem? {
+        guard let item = item(entry) else { return nil }
+        let added = menu.addItem(withTitle: item.title, action: NSSelectorFromString(item.selector),
+                                 keyEquivalent: item.keyEquivalent)
+        added.target = target
+        return added
+    }
+}
+
+/// C-QUIT 1: a status item that is always clickable. `NSStatusItem.squareLength` is a sentinel, not a
+/// width, and a symbol that resolves to nil leaves a blank item, so the title carries it instead.
+enum StatusItemPresentation {
+    static let length: CGFloat = 24
+    static let fallbackTitle = "N"
+    enum Image: String, Sendable { case ok, missing = "nil", fallback }
+    struct Resolved: Equatable {
+        let image: NSImage?
+        let title: String
+        let state: Image
+    }
+    static func resolve(symbol: NSImage?) -> Resolved {
+        guard let symbol else { return Resolved(image: nil, title: fallbackTitle, state: .fallback) }
+        return Resolved(image: symbol, title: "", state: .ok)
+    }
+    @MainActor static func state(button: NSStatusBarButton?) -> StatusSurfaceReceipt {
+        guard let button else {
+            return StatusSurfaceReceipt(event: .statusItemState,
+                facts: ["visible": .flag(false), "length": .number(Int(length)), "image": .word(Image.missing.rawValue),
+                        "frame_on_screen": .flag(false)])
+        }
+        let onScreen = button.window?.isVisible == true && !button.visibleRect.isEmpty
+        let image: Image = button.image != nil ? .ok : (button.title.isEmpty ? .missing : .fallback)
+        return StatusSurfaceReceipt(event: .statusItemState,
+            facts: ["visible": .flag(onScreen), "length": .number(Int(button.frame.width)),
+                    "image": .word(image.rawValue), "frame_on_screen": .flag(onScreen)])
+    }
+}
+
+/// #644: the host writes `launch_kind` only after its own host_started, so a receipt posted before the
+/// ready frame never lands. This relay is the whole deferral: keep the kind until a client is bound.
+struct LaunchReceiptRelay: Equatable {
+    private(set) var pending: LaunchKind?
+    mutating func received(_ kind: LaunchKind, hostUp: Bool) -> LaunchKind? {
+        guard !hostUp else { return kind }
+        pending = kind
+        return nil
+    }
+    /// Returns the kept kind once, and only once: a second ready frame posts nothing.
+    mutating func hostUp() -> LaunchKind? { defer { pending = nil }; return pending }
+}
+
 final class NativeQuitDeadline: @unchecked Sendable {
+    /// The safety net only: a bounded shutdown finishes well inside this, and a wedged stage ends here.
+    static let deadline: Double = 3
     static let shared = NativeQuitDeadline()
+    private let clock: () -> Double
+    init(clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) { self.clock = clock }
+    private var startedAt: Double = 0
+    private var report: (@Sendable (StatusSurfaceReceipt) -> Void)?
     private var childPID: Int32?
     var ownedChildPID: Int32? { lock.lock(); defer { lock.unlock() }; return childPID }
     func setOwnedChildPID(_ pid: Int32) { lock.lock(); defer { lock.unlock() }; childPID = pid }
@@ -401,37 +513,64 @@ final class NativeQuitDeadline: @unchecked Sendable {
 
     /// Returns true only for the first request. A second request forces exit immediately.
     func request(schedule: (Double, @escaping @Sendable () -> Void) -> Void,
-                 forced: @escaping @Sendable (NativeQuitStage) -> Void) -> Bool {
+                 forced: @escaping @Sendable (NativeQuitStage) -> Void,
+                 report: @escaping @Sendable (StatusSurfaceReceipt) -> Void = { _ in }) -> Bool {
         lock.lock()
         guard state == .idle else {
             let forceAgain = state == .running || state == .exiting
             if forceAgain { state = .forced }
+            let reporter = self.report
             lock.unlock()
-            if forceAgain { forced(.secondQuit) }
+            if forceAgain {
+                reporter?(Self.forcedReceipt(.secondQuit))
+                forced(.secondQuit)
+            }
             return false
         }
         state = .running
+        startedAt = clock()
+        self.report = report
         lock.unlock()
-        schedule(2.5) { [self] in
+        report(Self.stageReceipt(.awaitingMainActor, ms: 0))
+        schedule(Self.deadline) { [self] in
             lock.lock()
             guard state == .running || state == .exiting else { lock.unlock(); return }
             state = .forced
             let stage = currentStage
+            let reporter = self.report
             lock.unlock()
+            reporter?(Self.forcedReceipt(stage))
             forced(stage)
         }
         return true
     }
+    /// Every stage transition is written with its elapsed milliseconds, so a stall names its own stage.
     func stage(_ stage: NativeQuitStage) {
-        lock.lock(); defer { lock.unlock() }
-        if state == .running { currentStage = stage }
+        lock.lock()
+        guard state == .running else { lock.unlock(); return }
+        currentStage = stage
+        let reporter = report
+        let elapsed = Self.ms(since: startedAt, now: clock())
+        lock.unlock()
+        reporter?(Self.stageReceipt(stage, ms: elapsed))
     }
     func complete() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard state == .running else { return false }
+        lock.lock()
+        guard state == .running else { lock.unlock(); return false }
         // Keep the watchdog armed through AppKit/applicationWillTerminate cleanup.
         state = .exiting
         currentStage = .applicationExit
+        let reporter = report
+        let elapsed = Self.ms(since: startedAt, now: clock())
+        lock.unlock()
+        reporter?(Self.stageReceipt(.applicationExit, ms: elapsed))
         return true
+    }
+    static func ms(since start: Double, now: Double) -> Int { max(0, Int(((now - start) * 1000).rounded())) }
+    static func stageReceipt(_ stage: NativeQuitStage, ms: Int) -> StatusSurfaceReceipt {
+        StatusSurfaceReceipt(event: .quitStage, facts: ["stage": .word(stage.rawValue), "ms": .number(ms)])
+    }
+    static func forcedReceipt(_ stage: NativeQuitStage) -> StatusSurfaceReceipt {
+        StatusSurfaceReceipt(event: .quitForced, facts: ["stage": .word(stage.rawValue)])
     }
 }

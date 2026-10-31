@@ -193,9 +193,10 @@ struct NativeLogFile {
 /// the process monotonic clock, the launch identity and a per-instance sequence, plus the closed
 /// reason and its numeric detail. A test or a proof build can pass no URL and read `events` instead.
 /// Writing never throws into a call path and never changes capture or session state.
-final class NativeLiveJournal {
+final class NativeLiveJournal: @unchecked Sendable {
     private let now: () -> Date
     private var file: NativeLogFile
+    private let lock = NSLock()
     private(set) var events: [[String: Any]] = []
     /// The live session this journal is inside, if any: every line written meanwhile carries its id.
     var sessionID: String?
@@ -236,12 +237,19 @@ final class NativeLiveJournal {
     /// sequence and, inside a call, the session id; a caller's own timestamp is kept. One line costs
     /// exactly one sequence number, so the range a reader sees has no free gaps.
     func append(_ record: [String: Any], at date: Date) {
+        lock.lock(); defer { lock.unlock() }
         var fields = record
         var stamp = NativeLogClock.shared.stamp("native-live", at: date)
         if let sessionID, fields["liveSessionId"] == nil { fields["liveSessionId"] = sessionID }
         for (key, value) in fields { stamp[key] = value }
         events.append(stamp)
         write(stamp)
+    }
+
+    /// C-QUIT 3: the status item's own receipts, on the same file log as the live lane. The quit
+    /// watchdog writes the forced line from its own queue, so the append takes the journal's lock.
+    func appendSurfaceReceipt(_ receipt: StatusSurfaceReceipt, at date: Date? = nil) {
+        append(receipt.record, at: date ?? now())
     }
 
     /// E1: one metadata-only `live_interrupted` line. Numbers, a boolean and the session id only,

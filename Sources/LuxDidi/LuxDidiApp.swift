@@ -35,6 +35,9 @@ import WebKit
     /// immediately after a call tears the conversation down (#251).
     private(set) var lastLiveState: String?
     private lazy var liveJournal = NativeLiveJournal(fileURL: liveLogsDirectory?.appendingPathComponent("native-live.log"))
+    /// C-QUIT 3: the one file-log sink the status item and the quit watchdog write their receipts to.
+    var surfaceReceiptLog: NativeLiveJournal { liveJournal }
+    func appendSurfaceReceipt(_ receipt: StatusSurfaceReceipt) { liveJournal.appendSurfaceReceipt(receipt) }
     @Published var connecting = false
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
@@ -100,6 +103,8 @@ import WebKit
     private(set) var pageCookie: HTTPCookie?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
+    /// #644: a launch kind that arrived before the host was up, posted once the connection is bound.
+    private var launchReceiptRelay = LaunchReceiptRelay()
     @Published private(set) var sendingConnected = false
     private var connectedSender: NativeConnectedSend?
     private(set) var installedProof: PreparedInstalledProof?
@@ -235,6 +240,9 @@ import WebKit
             pageCookie = cookie
             await shell.load(cookie: cookie)
             await refreshLiveDetails(); error = nil
+            // #644: the host has answered its ready frame and this client is bound, so a launch kind
+            // that arrived before it is posted now, after host_started rather than before it.
+            postPendingLaunchReceipt()
         } catch {
             bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
             if let diagnostic = supervisor?.startupFailureDiagnostic { bootstrapFailureDiagnostic = diagnostic }
@@ -373,7 +381,17 @@ import WebKit
         }
     }
     /// #613: the launch receipt the host records, best effort: a host that is down leaves the local line only.
+    /// #644: a launch receipt posted before the host is up is never written, so the kind is kept and
+    /// replayed once the host has answered its ready frame and this model holds a bound client.
     func forwardLaunchReceipt(_ kind: LaunchKind) {
+        guard let post = launchReceiptRelay.received(kind, hostUp: client != nil) else { return }
+        postLaunchReceipt(post)
+    }
+    private func postPendingLaunchReceipt() {
+        guard let kind = launchReceiptRelay.hostUp() else { return }
+        postLaunchReceipt(kind)
+    }
+    private func postLaunchReceipt(_ kind: LaunchKind) {
         guard let client else { return }
         Task { _ = try? await client.launchReceipt(kind: kind.rawValue,
             autoConnects: kind.autoConnects, windowShown: kind.presentsWindowAtLaunch) }
@@ -730,6 +748,7 @@ struct RootView: View {
     private var singleKeyGrantMonitor: NSObjectProtocol?
     private var keyboardMonitor: Any?
     private var statusClickMonitor: Any?
+    private var statusScreenMonitor: NSObjectProtocol?
     private var menuTracking = StatusMenuTracking()
     private let menuLogger = Logger(subsystem: "LuxDidi", category: "menu")
     private var terminationMonitor: NSObjectProtocol?
@@ -741,6 +760,8 @@ struct RootView: View {
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
     private let quitDeadline = NativeQuitDeadline.shared
+    /// C-QUIT 3: every status item and quit receipt lands in native-live.log, never in os Logger only.
+    private func appendSurface(_ receipt: StatusSurfaceReceipt) { model.appendSurfaceReceipt(receipt) }
     /// The one owner of the visible surface (#311). Every entry point (Dock
     /// click, hotkey, orb click, mode button, close) reports through it, so no
     /// sequence leaves two surfaces on screen.
@@ -827,18 +848,26 @@ struct RootView: View {
         model.onMiniMode = { [weak self] in self?.showMiniOrb() }
         model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
+        statusItem = NSStatusBar.system.statusItem(withLength: StatusItemPresentation.length)
+        let symbol = StatusItemPresentation.resolve(
+            symbol: NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya"))
+        statusItem.button?.image = symbol.image
+        statusItem.button?.title = symbol.title
+        appendSurface(StatusItemPresentation.state(button: statusItem.button))
+        statusScreenMonitor = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.appendSurface(StatusItemPresentation.state(button: self?.statusItem.button)) }
+            }
         let menu = NSMenu()
         menu.delegate = self
         liveMenuItem = menu.addItem(withTitle: "Naya: stopped", action: nil, keyEquivalent: "")
-        menu.addItem(withTitle: "Start Live", action: #selector(startLiveFromMenu), keyEquivalent: "")
-        muteMenuItem = menu.addItem(withTitle: "Mute", action: #selector(muteLiveFromMenu), keyEquivalent: "")
-        menu.addItem(withTitle: "Stop", action: #selector(stopLiveFromMenu), keyEquivalent: "")
+        StatusMenuPlan.add(.start, to: menu, target: self)
+        muteMenuItem = StatusMenuPlan.add(.mute, to: menu, target: self)
+        StatusMenuPlan.add(.stop, to: menu, target: self)
         menu.addItem(NSMenuItem.separator())
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
-        menu.addItem(withTitle: "Open Naya app", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Naya app", action: #selector(showFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Settings", action: #selector(openSettingsFromMenu), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
@@ -851,19 +880,23 @@ struct RootView: View {
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
-        menu.addItem(withTitle: "Quit Naya", action: #selector(quit), keyEquivalent: "q")
-        for item in menu.items { item.target = self }
+        StatusMenuPlan.add(.quit, to: menu, target: self)
+        for item in menu.items where item.target == nil { item.target = self }
         // Q4-R2: "Show mini orb" is presentation only and carries its own target, so it joins the
         // menu after the default target pass. A menu item never opens a live microphone.
         menu.addItem(miniOrbMenu.item())
         statusItem.menu = menu
         statusClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                if let self, let button = self.statusItem.button, event.window === button.window,
-                   button.bounds.contains(button.convert(event.locationInWindow, from: nil)) {
+                guard let self, let button = self.statusItem.button, event.window === button.window else { return }
+                let inside = button.bounds.contains(button.convert(event.locationInWindow, from: nil))
+                self.appendSurface(StatusSurfaceReceipt(event: .statusClick,
+                    facts: ["hit": .word(inside ? "button" : "other")]))
+                if inside {
                     self.menuTracking.requested { event, requests, opens in
                         self.menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
                     }
+                    self.appendSurface(StatusSurfaceReceipt(event: .menuOpenRequested, facts: [:]))
                 }
             }
             return event
@@ -1033,6 +1066,9 @@ struct RootView: View {
     @objc func show() {
         coordinator.presentFull(activating: true)
     }
+    /// C-QUIT 3: the menu's own Open Naya app, so the status item's five verbs are each on record and
+    /// the Dock, hotkey and launch callers of `show()` are not written down as a menu click.
+    @objc func showFromMenu() { appendSurface(StatusMenuEntry.show.receipt); show() }
     /// ORBFIRST: an interactive launch connects by itself, once, and only after the host is
     /// connected and the orb page is hostable. A denied microphone or a refused audio owner is
     /// final for the launch: the orb shows its error look and nothing retries.
@@ -1122,6 +1158,7 @@ struct RootView: View {
         menuTracking.opened { event, requests, opens in
             menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
         }
+        appendSurface(StatusSurfaceReceipt(event: .menuOpened, facts: [:]))
     }
     /// #3p, R2: the notice's button. The owner's one explicit click asks for the Input
     /// Monitoring grant, which puts Naya in that list by itself, and opens the pane so the
@@ -1185,9 +1222,9 @@ struct RootView: View {
         pushSingleKeyState()
         syncSingleKeyGrantWatch()
     }
-    @objc func startLiveFromMenu() { menuBridge.start() }
-    @objc func muteLiveFromMenu() { summonActions.mute() }
-    @objc func stopLiveFromMenu() { model.stopTrigger.arm(.menu); menuBridge.stop() }
+    @objc func startLiveFromMenu() { appendSurface(StatusMenuEntry.start.receipt); menuBridge.start() }
+    @objc func muteLiveFromMenu() { appendSurface(StatusMenuEntry.mute.receipt); summonActions.mute() }
+    @objc func stopLiveFromMenu() { appendSurface(StatusMenuEntry.stop.receipt); model.stopTrigger.arm(.menu); menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
 
     /// #620: a prompt that is not shown at launch, and the decision the owner moment reached, are
@@ -1575,7 +1612,7 @@ struct RootView: View {
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         dockMenu.build(muted: model.live?.isMuted == true)
     }
-    @objc func quit() { NSApp.terminate(nil) }
+    @objc func quit() { appendSurface(StatusMenuEntry.quit.receipt); NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func runInstalledProof() async {
         let okay = await InstalledProofRun.execute(model: model, window: window)
@@ -1586,6 +1623,8 @@ struct RootView: View {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if cleanQuit { return .terminateNow }
         let logger = Logger(subsystem: "LuxDidi", category: "quit")
+        // The watchdog writes from its own queue, after a wedged MainActor could no longer write.
+        let receipts = model.surfaceReceiptLog
         let first = quitDeadline.request(schedule: { seconds, fire in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds, execute: fire)
         }, forced: { stage in
@@ -1594,7 +1633,7 @@ struct RootView: View {
             // No MainActor hop or AppKit callback: even a wedged executor cannot hold Quit.
             // The owned host has received bounded TERM/KILL; the OS releases native audio.
             Darwin._exit(EXIT_SUCCESS)
-        })
+        }, report: { receipts.appendSurfaceReceipt($0) })
         if first {
             Task {
                 await model.shutdown(stage: { quitDeadline.stage($0) })

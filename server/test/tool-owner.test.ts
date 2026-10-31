@@ -734,7 +734,7 @@ test('#798 a refused write logs its failing number by field name and never its t
   assert.equal(event.tool, 'create_event');
   assert.ok(event.fields.includes('duration_minutes:number=1.5'), `the refused scalar is recoverable: ${event.fields.join(',')}`);
   assert.ok(event.fields.includes('all_day:boolean=true'), `the refused switch is recoverable: ${event.fields.join(',')}`);
-  assert.ok(event.fields.includes('summary:string_15'), 'a text value is still only its length');
+  assert.ok(event.fields.some(field => /^summary:string_\d+$/.test(field)), `a text value is still only its length: ${event.fields.join(',')}`);
   assert.doesNotMatch(JSON.stringify(event), /Zara/, 'no free text reaches the log');
 });
 

@@ -221,9 +221,9 @@ export class OwnerTasks implements OwnerTaskPort {
    * success and never re-spent on a second target.
    */
   #armOpen(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
-    // A distinct ask (an alarm, a note, a draft, an event) arms nothing for open: a window is opened
-    // only when the owner's own words name the destination or name nothing else at all.
-    if (commands.some(command => command.kind !== 'open')) return;
+    // A window is opened when the owner's own words ask to open something, or when they name a
+    // destination and nothing else. A distinct ask on its own (an alarm, a note, a draft) arms nothing.
+    if (!commands.some(command => command.kind === 'open') && commands.length > 0) return;
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     // A new owner final is a new selection round: the targets spent in the last round no longer
     // answer for it, so he can name the same window again.

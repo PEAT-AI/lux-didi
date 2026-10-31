@@ -288,14 +288,21 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
   });
 }
 
-for (const words of ['he said save this into Lux', 'if I say save this into Lux', 'what is in my calendar?']) {
-  test(`hear104 real host: owner save cue is independent of framing: ${words}`, async t => {
+// D2 closes the old hole where any owner words authorized a note or save: the save cue is what grants it,
+// whatever the framing around it, and a question with no cue is refused at the operation layer.
+for (const [words, cued] of [['he said save this into Lux', true], ['if I say save this into Lux', true], ['what is in my calendar?', false]] as const) {
+  test(`hear104 real host: only the owner save cue grants a Lux save: ${words}`, async t => {
     const h = await harness(t, { tools: true });
     const { attachment } = await attached(h);
     await ownerBlock(h, words);
     const result = await call(h, 'stage_lux_note', candidate);
-    assert.equal(result['saved'], true, 'a finalized owner ask supplies intent without a save cue');
-    assert.equal(h.saved.length, 1);
+    if (cued) {
+      assert.equal(result['saved'], true, 'the owner save cue supplies intent');
+      assert.equal(h.saved.length, 1);
+    } else {
+      assert.match(String(result['error'] ?? ''), /operation_no_owner_request/, 'no save cue, no save');
+      assert.equal(h.saved.length, 0);
+    }
     attachment.close();
   });
 }
@@ -338,7 +345,8 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
     return true;
   });
   t.after(unbind);
-  assert.equal((await call(h, 'open_source', { handle: 'L999' }))['code'], 'no_owner_request', 'an opener cannot act on injected summaries');
+  // D2 and requirement 5: the operation layer refuses before any handler runs, so the refusal names it.
+  assert.match(String((await call(h, 'open_source', { handle: 'L999' }))['error'] ?? ''), /operation_no_owner_request/, 'an opener cannot act on injected summaries');
   await ownerBlock(h, 'Good morning');
   await assistantBlock(h, 'The synthetic opening is spoken.');
   await ownerBlock(h, 'open the pitch deck in my browser');
@@ -398,8 +406,9 @@ for (const source of ['Lux note', 'forwarded mail']) {
     const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
     await assistantBlock(h, 'The synthetic plan is summarized.');
-    assert.equal((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['code'], 'no_owner_request');
-    assert.equal((await call(h, 'set_alarm', {}))['code'], 'no_owner_request');
+    // D2 and requirement 5: the injected text grants nothing, and the operation layer says so.
+    assert.match(String((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['error'] ?? ''), /operation_no_owner_request/);
+    assert.match(String((await call(h, 'set_alarm', {}))['error'] ?? ''), /operation_no_owner_request/);
     assert.equal(native.length, 0);
     assert.equal(h.store.transaction(tx => tx.all('SELECT id FROM alarms')).length, 0);
     attachment.close();

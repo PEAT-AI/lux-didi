@@ -101,7 +101,7 @@ import WebKit
             self.alarmRowsKnown = true
             self.alarmRelaunch.sync(pendingDueMs: self.pendingAlarmDueMs)
         }
-        alarmRelaunch.onEvent = { [weak shell] dueInS in shell?.reportRelaunch(dueInS: dueInS) }
+        alarmRelaunch.onEvent = { [weak shell] event in shell?.reportRelaunch(event) }
         alarmShell = shell; shell.start()
     }
     /// #107: a quit keeps the next alarm armed, so the agent is rewritten from the last rows and a

@@ -5,17 +5,26 @@ import Foundation
 /// `--alarm-relaunch`, and the host then fires the due alarm into the session the app opens.
 /// Display sleep is fine. A closed lid or a manual sleep still blocks the wake-up (docs/alarm.md).
 protocol AlarmRelaunchRunning: AnyObject {
-    func run(_ arguments: [String]) throws
+    /// The launchctl exit status, so the schedule is reported only when launchd accepted it.
+    func run(_ arguments: [String]) throws -> Int32
+}
+
+/// The one thing the host is told about the agent, each observed rather than assumed.
+enum AlarmRelaunchEvent: Equatable {
+    case scheduled(dueInS: Int)
+    case removed
+    case failed
 }
 
 /// The real launchd bridge. Tests inject a recorder instead, so no test touches the user domain.
 final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
-    func run(_ arguments: [String]) throws {
+    func run(_ arguments: [String]) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments
         try process.run()
         process.waitUntilExit()
+        return process.terminationStatus
     }
 }
 
@@ -27,7 +36,7 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
 
     /// The write receipt of the last arm, or nil when nothing was pending.
     private(set) var armedStartMs: Int?
-    var onEvent: ((Int?) -> Void)?
+    var onEvent: ((AlarmRelaunchEvent) -> Void)?
 
     private let directory: URL
     private let domain: String
@@ -61,10 +70,10 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
 
     func remove() {
         let loaded = armedStartMs != nil || FileManager.default.fileExists(atPath: plistURL.path)
-        try? runner.run(["bootout", "\(domain)/\(Self.label)"])
+        _ = try? runner.run(["bootout", "\(domain)/\(Self.label)"])
         try? FileManager.default.removeItem(at: plistURL)
         armedStartMs = nil
-        if loaded { onEvent?(nil) }
+        if loaded { onEvent?(.removed) }
     }
 
     private func arm(startMs: Int, dueMs: Int, now: Int) {
@@ -74,10 +83,13 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
         let plist = Self.plist(startMs: startMs, label: Self.label, appPath: appPath())
         try? Data(plist.utf8).write(to: plistURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plistURL.path)
-        try? runner.run(["bootout", "\(domain)/\(Self.label)"])
-        try? runner.run(["bootstrap", domain, plistURL.path])
+        _ = try? runner.run(["bootout", "\(domain)/\(Self.label)"])
+        // Only an accepted bootstrap is a schedule. A refusal is its own degraded signal, never a
+        // scheduled event that claims an agent exists when launchd never loaded it.
+        let bootstrapped = (try? runner.run(["bootstrap", domain, plistURL.path])) ?? -1
+        guard bootstrapped == 0 else { armedStartMs = nil; onEvent?(.failed); return }
         armedStartMs = startMs
-        onEvent?(max(0, (dueMs - now) / 1000))
+        onEvent?(.scheduled(dueInS: max(0, (dueMs - now) / 1000)))
     }
 
     /// One plist, closed fields, and the launch argument that makes the alarm the reason for the launch.

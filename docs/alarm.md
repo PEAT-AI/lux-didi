@@ -48,7 +48,11 @@ While any alarm is pending the app keeps exactly one user LaunchAgent,
 time minus 60 seconds, and its program is `open -g -a <app> --args --alarm-relaunch`: it opens the app
 in the background and never steals focus. The agent is rewritten on every alarm change and again on
 quit, and removed when nothing is pending. `launchctl bootstrap` and `bootout` run through an
-injected runner, so tests use a temporary domain and never touch the real one.
+injected runner, so tests use a temporary domain and never touch the real one. `alarm_relaunch_scheduled`
+carries `due_in_s` and is written only when launchd accepted the agent; a refused bootstrap is
+`alarm_relaunch_failed`, never a schedule that claims an agent exists. The interval uses only the keys
+launchd defines (Minute, Hour, Day, Month): an agent that fires is rewritten or removed by the app that
+comes back.
 
 A launch with `--alarm-relaunch` logs `launch_kind alarm_relaunch`, shows no window and takes no
 focus, starts the host, and opens a live session only for the due alarm. Display sleep is fine:
@@ -62,7 +66,7 @@ opens one for the alarm.
 
 ## Diagnostics and verification
 
-Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_announced`, `alarm_acknowledged`, `alarm_missed`, `alarm_relaunch_scheduled`, `alarm_relaunch_removed` and `alarm_degraded`. `alarm_announced` carries `alarmId` and `mode` (`new_session` or `in_call`) and is written when the alarm block reaches the provider, which is the only proof that she was asked to speak. `alarm_degraded` with reason `notifications_not_asked` stays distinct from `notifications_denied`: the shell reports the permission only after the request resolved. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
+Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_announced`, `alarm_acknowledged`, `alarm_missed`, `alarm_relaunch_scheduled`, `alarm_relaunch_removed`, `alarm_relaunch_failed` and `alarm_degraded`. `alarm_announced` carries `alarmId` and `mode` (`new_session` or `in_call`) and is written when the alarm block reaches the provider, which is the only proof that she was asked to speak. `alarm_degraded` with reason `notifications_not_asked` stays distinct from `notifications_denied`: the shell reports the permission only after the request resolved. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
 
 `bash scripts/check-host.sh` compiles a temporary shell on macOS without launching it and runs the synthetic alarm matrix against an offline-packed host. The matrix uses a stub clock, fake provider and fake shell; no real audio or accounts are used. `bash scripts/check-live-session.sh` runs the parser, authority, storage, scheduler and log tests; `bash scripts/check-native-live.sh` exercises injected power, notification and audio-output policy. `bash scripts/check-docs.sh` verifies public documentation and prompt surfaces.
 

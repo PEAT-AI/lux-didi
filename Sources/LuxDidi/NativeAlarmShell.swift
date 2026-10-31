@@ -134,9 +134,13 @@ import UserNotifications
         post("shell", body: Self.shellReport(assertion: alarms.isEmpty || policy.assertionHeld,
                                              notificationsAllowed: notificationsAllowed, state: notificationState))
     }
-    /// #107: the host log carries the relaunch agent's state, armed for the next due time.
-    func reportRelaunch(dueInS: Int?) {
-        post("relaunch", body: dueInS.map { ["action": "scheduled", "dueInS": $0] } ?? ["action": "removed"])
+    /// #107: the host log carries the relaunch agent's state, observed rather than assumed.
+    func reportRelaunch(_ event: AlarmRelaunchEvent) {
+        switch event {
+        case .scheduled(let dueInS): post("relaunch", body: ["action": "scheduled", "dueInS": dueInS])
+        case .removed: post("relaunch", body: ["action": "removed"])
+        case .failed: post("relaunch", body: ["action": "failed"])
+        }
     }
     func noteLiveSession(_ id: String) {
         // Route the occurrence into the live call without a competing chime.

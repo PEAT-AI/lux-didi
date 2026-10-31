@@ -240,6 +240,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event'])) return;
     return { event: 'alarm_relaunch_removed' };
   }
+  if (value.event === 'alarm_relaunch_failed') {
+    // #107: launchd refused the agent, so a quit app would not come back for the next alarm.
+    if (!closedKeys(value, ['event'])) return;
+    return { event: 'alarm_relaunch_failed' };
+  }
   if (value.event === 'tool_diagnostic_capture') {
     const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];
     const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));

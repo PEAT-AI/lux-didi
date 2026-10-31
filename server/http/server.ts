@@ -221,6 +221,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             diagnosticLog.event({ event: 'alarm_relaunch_removed' });
             send(res, 200, success({ status: 'ok' })); return;
           }
+          // #107: launchd refused the agent, so no relaunch exists for the next due alarm.
+          if (url.pathname === '/api/v1/alarms/relaunch' && body.action === 'failed') {
+            diagnosticLog.event({ event: 'alarm_relaunch_failed' });
+            send(res, 200, success({ status: 'ok' })); return;
+          }
         }
         throw new ServiceError('BAD_REQUEST', 'Invalid alarm shell request');
       }

@@ -14,7 +14,14 @@ import UserNotifications
 /// #107: a recorder instead of launchctl, so no test ever touches the real user domain.
 final class RecordingRelaunchRunner: AlarmRelaunchRunning {
     private(set) var invocations: [[String]] = []
-    func run(_ arguments: [String]) throws { invocations.append(arguments) }
+    /// What launchctl answers: 0 accepted, anything else refused.
+    var status: Int32 = 0
+    func run(_ arguments: [String]) throws -> Int32 { invocations.append(arguments); return status }
+}
+
+final class RefusedEvents {
+    private(set) var values: [AlarmRelaunchEvent] = []
+    func record(_ event: AlarmRelaunchEvent) { values.append(event) }
 }
 
 @MainActor final class SyntheticSessionState {
@@ -85,7 +92,7 @@ final class RecordingRelaunchRunner: AlarmRelaunchRunning {
         let runner = RecordingRelaunchRunner()
         let writer = NativeAlarmRelaunchWriter(directory: directory, domain: "gui/9999-synthetic",
                                                runner: runner, appPath: { "/synthetic/Lux Didi.app" })
-        var events: [Int?] = []
+        var events: [AlarmRelaunchEvent] = []
         writer.onEvent = { events.append($0) }
         writer.sync(pendingDueMs: [])
         precondition(!FileManager.default.fileExists(atPath: writer.plistURL.path), "no pending alarm means no agent")
@@ -130,7 +137,19 @@ final class RecordingRelaunchRunner: AlarmRelaunchRunning {
                      "no runner call touches the real user domain")
         writer.sync(pendingDueMs: [])
         precondition(!FileManager.default.fileExists(atPath: writer.plistURL.path), "nothing pending removes the agent")
-        precondition(events.compactMap { $0 }.count == 2 && events.last == .some(nil), "armed twice and then removed")
+        precondition(events.filter { if case .scheduled = $0 { return true } else { return false } }.count == 2,
+                     "two observed schedules")
+        precondition(events.last == .removed, "removal is observed")
+        // A refused bootstrap is a degraded signal, never a scheduled event.
+        let refused = RecordingRelaunchRunner(); refused.status = 1
+        let refusedEvents = RefusedEvents()
+        let refusedWriter = NativeAlarmRelaunchWriter(directory: directory.appendingPathComponent("refused"),
+                                                      domain: "gui/9999-synthetic", runner: refused,
+                                                      appPath: { "/synthetic/Lux Didi.app" })
+        refusedWriter.onEvent = { refusedEvents.record($0) }
+        refusedWriter.sync(pendingDueMs: [firstDue])
+        precondition(refusedWriter.armedStartMs == nil, "a refused bootstrap arms nothing")
+        precondition(refusedEvents.values == [.failed], "a refusal is its own degraded event")
 
         // 4. A launch with the alarm argument names itself and takes no focus.
         let relaunch = LaunchKind.resolve(arguments: ["/app", "--alarm-relaunch"], environment: [:], loginLaunch: false)

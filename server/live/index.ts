@@ -4479,6 +4479,10 @@ export class LiveSessionOwner {
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
         response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
+      } else if (verdict !== undefined && verdict.attach === true && handle.researchAdmission.deliveredReply() !== undefined) {
+        // C-RESEARCH #107: a paraphrase or repeat of this job's own owner ask returns the job's terminal result
+        // instead of starting a second operation, so it dispatches nothing and spends no budget.
+        response = { ...handle.researchAdmission.deliveredReply()!, repeat: true };
       } else {
         const firstStep = handle.toolStep;
         // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.

@@ -342,7 +342,7 @@ test('#107: a paraphrased second start attaches to the same owner ask', () => {
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start', false, false, 'what changed in the release notes'), { admitted: true });
   const job = admission.jobId();
-  assert.deepEqual(admission.admit('start', false, false, 'what has changed in the release notes?'), { admitted: true },
+  assert.deepEqual(admission.admit('start', false, false, 'what has changed in the release notes?'), { admitted: true, attach: true },
     'the model paraphrase is the same owner ask, so it attaches instead of being a spent turn');
   assert.equal(admission.jobId(), job, 'the paraphrase joins the job, it never opens a second one');
 });

@@ -7724,7 +7724,8 @@ export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonO
 }
 export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
-export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
+/** C-RESEARCH #107: `attach` says the call joins the job that already owns this owner question. */
+export type AdmissionVerdict = { admitted: true; attach?: boolean } | { admitted: false; reason: AdmissionBlockReason };
 
 /**
  * C-LIVE behaviour 1: each finalized owner turn grants one research operation. `start` or an admitted `continue`
@@ -7807,7 +7808,7 @@ export class ResearchAdmission {
     // C-RESEARCH #107: a model paraphrase of this job's own owner ask attaches to that job, not a new one.
     if (this.#job !== undefined && distinct && sameOwnerQuestion(question, this.#job.question)
       && (this.#grant !== this.#turns || this.#starts.includes(asked) || this.#starts.length >= 2)) {
-      return { admitted: true };
+      return { admitted: true, attach: true };
     }
     // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
     // two research operations. A third, a repeat of the same question, a start after this turn's answer

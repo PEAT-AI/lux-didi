@@ -187,7 +187,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const batch = await runToolCalls(owner, [{ id: randomUUID(), name: 'open_web', args }], {
         registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
         authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 },
-        step: openStep++, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true, ownerTasks: owner.ownerTasks,
+        step: openStep++, contentIndex: 0, ownerTasks: owner.ownerTasks, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
       });
       assert.equal(batch.error, undefined);
       return batch.accepted.map(entry => entry.response);
@@ -222,8 +222,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open zzsyntheticnotasite', Date.now());
   const notFound = await runToolCalls(owner, [{ id: 'synthetic-not-found', name: 'open_web', args: { kind: 'site', target: 'zzsyntheticnotasite' } }], {
     registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
-    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0,
-    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true, ownerTasks: owner.ownerTasks,
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0, ownerTasks: owner.ownerTasks,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
   } as never);
   const notFoundText = JSON.stringify(notFound.accepted);
   assert.match(notFoundText, /"not_found"/, 'the resolver answer is reported as itself');
@@ -240,7 +240,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
   const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'example.invalid' } }], {
     registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
-    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0,
+    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0, ownerTasks: owner.ownerTasks,
     seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
   } as never);
   const noBrowserText = JSON.stringify(noBrowser.accepted);

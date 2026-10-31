@@ -24,4 +24,11 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
 fi
 cd "$root/server"
 "$deps/typescript/bin/tsc" -p tsconfig.json
+# The live-boundary harness and runner are compiled here, not through tsconfig.json: this wagon's scope is
+# server/test and scripts, so the check names its own two files with the same strict settings instead of
+# editing the build config. A type error in either file fails this check.
+"$deps/typescript/bin/tsc" --ignoreConfig --outDir dist --rootDir . --module nodenext --moduleResolution nodenext \
+  --target ES2023 --strict --exactOptionalPropertyTypes --noUncheckedIndexedAccess \
+  --noUnusedLocals --noUnusedParameters --skipLibCheck --types node \
+  test/live-boundary/harness.ts test/live-boundary/runner.ts
 exec node dist/test/live-boundary/runner.js "$@"

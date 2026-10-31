@@ -18,6 +18,7 @@ import {
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
 import { projectMongooseResult, mongooseToolStatus, renderMongooseTool } from '../tools/mongoose.js';
+import { toolGroupNames } from '../prompt/runtime-context.js';
 import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongoosePublishedTool, mongooseSanitizeParameters } from '../connectors/mongoose.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
@@ -234,6 +235,14 @@ test('each endpoint carries its own audience and its own token, never the other 
 });
 
 // --- acceptance 3: search answer then read, browse lists, restricted stays restricted ---
+
+test('#623: the persona group tables are exactly the served per-endpoint envelopes', async () => {
+  // The prompt module keeps its own copy of these names so the prompt build stays free of the MCP stack;
+  // this is the parity check that keeps the two from drifting.
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.knowledge]), ['company knowledge']);
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.data]), ['company numbers']);
+  assert.deepEqual(toolGroupNames([...MONGOOSE_ENDPOINT_TOOLS.crm]), ['customers']);
+});
 
 test('a company question runs search mode answer then read on the top ref and renders a source card', async t => {
   const k = await knowledge({ replies: { search: SEARCH_TEXT, read: READ_TEXT } });

@@ -90,7 +90,7 @@ test('W4: every credential or identity code the host reports reads as a sign-in,
 });
 
 test('tool and connector names map to the human group names', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search_mongoose']),
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search']),
     ['knowledge base', 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
   assert.deepEqual(connectorGroupNames('google'), ['calendar', 'mail']);
   assert.deepEqual(connectorGroupNames('mattermost'), ['team chat']);

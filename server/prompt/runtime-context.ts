@@ -3,8 +3,6 @@
  * is created (and on each rebuild), never from the model. It carries no private content beyond the
  * session's own connected group names and the state of its connectors.
  */
-import { MONGOOSE_ENDPOINT_TOOLS } from '../connectors/mongoose.js';
-
 export interface RuntimeContextInput {
   readonly now: Date;
   readonly timeZone: string;
@@ -126,10 +124,14 @@ function label(y: number, m: number, d: number): string {
  * #623: the group one Mongoose read tool belongs to, keyed on the endpoint whose catalogue serves it, so
  * the persona is told she has company knowledge, numbers and customers from the served names themselves.
  */
+const MONGOOSE_KNOWLEDGE_TOOLS: readonly string[] = ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started', 'check_data_capability'];
+const MONGOOSE_DATA_TOOLS: readonly string[] = ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields', 'ask_data_agent', 'data_agent_job'];
+const MONGOOSE_CRM_TOOLS: readonly string[] = ['get_company', 'list_inbound_leads', 'list_inbound_lead_events', 'summarize_email_engagements'];
+
 function mongooseToolGroup(name: string): string | undefined {
-  if (MONGOOSE_ENDPOINT_TOOLS.knowledge.includes(name)) return 'company knowledge';
-  if (MONGOOSE_ENDPOINT_TOOLS.data.includes(name)) return 'company numbers';
-  if (MONGOOSE_ENDPOINT_TOOLS.crm.includes(name)) return 'customers';
+  if (MONGOOSE_KNOWLEDGE_TOOLS.includes(name)) return 'company knowledge';
+  if (MONGOOSE_DATA_TOOLS.includes(name)) return 'company numbers';
+  if (MONGOOSE_CRM_TOOLS.includes(name)) return 'customers';
   return undefined;
 }
 

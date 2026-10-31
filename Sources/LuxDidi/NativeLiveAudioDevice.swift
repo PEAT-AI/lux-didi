@@ -689,6 +689,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private var firstBufferWatchdog: Task<Void, Never>?
     /// C-MICWATCH 1: the one restart without voice processing a session may take after a stall.
     private var stallRestarted = false
+    /// MW-R1: the session ended because the input stayed dead after the restart. The conversation
+    /// reads it to skip its automatic restart, which would only ring into the same dead input.
+    private(set) var inputStallFailed = false
     /// The device-busy reading taken at call start, before the connecting ring or the live engine
     /// can start: `kAudioDevicePropertyDeviceIsRunningSomewhere` counts Didi itself (#1022).
     private(set) var outsideBusyAtCallStart: Bool?
@@ -1172,7 +1175,7 @@ struct NativeLiveInterruptionSample: Sendable {
         sessionStartedAt = now()
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
-        voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil; stallRestarted = false
+        voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil; stallRestarted = false; inputStallFailed = false
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
@@ -1389,6 +1392,7 @@ struct NativeLiveInterruptionSample: Sendable {
             do { try build(send: send); return } catch { sessionFailed = true }
         }
         sessionFailed = true
+        inputStallFailed = true
         sendFrame = nil
         let token = captureGeneration
         Task { @MainActor [weak self] in

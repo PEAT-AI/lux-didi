@@ -784,3 +784,26 @@ test('C-MICWATCH: live_input_dead keeps a closed shape of the session and its ge
   assert.equal(safeEvent({ ...dead, generation: -1 }), undefined, 'a negative generation is refused');
   assert.equal(safeEvent({ ...dead, liveSessionId: 'not-a-session' }), undefined, 'a malformed session id is refused');
 });
+
+// LAT-1022: the company-numbers source is a real SourceKind, and the closed set here had lost it. One source
+// outside the set refused the whole line, so every run receipt naming an unread `data` source was dropped
+// silently while research_source kept firing: four days of run-level latency with no run line at all.
+test('LAT-1022: a run receipt naming the company-numbers source still reaches host.log', () => {
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, unchecked: ['data'] }), { ...run, unchecked: ['data'] }, 'an unread company-numbers source is a source');
+  const read = { ...run, sources: [{ kind: 'data', disposition: 'completed', latencyMs: 40 }] };
+  assert.deepEqual(safeEvent(read), read, 'a company-numbers read is named in the run receipt');
+});
+
+// LAT-1022: a source receipt carries its own start instant, so two reads of one run can be proven to overlap
+// from the log alone. A count only, on the clock its `ms` was measured on.
+test('LAT-1022: a research_source receipt carries its start instant', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, startedAt: 1_700_000_000_000 }), { ...source, startedAt: 1_700_000_000_000 }, 'the start instant is kept');
+  assert.equal(safeEvent({ ...source, startedAt: 12.5 }), undefined, 'a fractional instant is refused');
+  assert.equal(safeEvent({ ...source, startedAt: -1 }), undefined, 'a negative instant is refused');
+});

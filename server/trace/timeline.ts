@@ -344,7 +344,10 @@ const orDash = (value: string | null): string => value ?? '-';
  */
 const playbackLine = (p: PlaybackView, label = '  playback', suffix = ''): string =>
   `${label} ${p.playbackKey} segment=${p.segmentSeq} instance=${p.sourceInstanceId} response=${orDash(p.responseKey)}`
-  + ` received=${wall(p.receivedAt)} audible=${wall(p.audibleAt)} enqueued=${wall(p.enqueuedAt)}`
+  // LAT-1022: the native device reports `audible` on the first chunk that crosses the threshold, which is the
+  // same chunk `received` names, so the two instants are equal by construction. Printing them as two stamps
+  // reads as a 0 ms audio path, which it never was: the segment says same-chunk and no audible interval exists.
+  + ` received=${wall(p.receivedAt)} audible=${p.audibleAt === null ? wall(null) : p.audibleAt === p.receivedAt ? 'same-chunk' : wall(p.audibleAt)} enqueued=${wall(p.enqueuedAt)}`
   + ` started=${wall(p.startedAt)} drained=${wall(p.drainedAt)} interrupted=${wall(p.interruptedAt)}`
   + ` termination=${orDash(p.terminationReason)} clock=approx${suffix}`;
 
@@ -721,6 +724,17 @@ export interface AuditCallRow {
 export interface AuditTurnRow {
   turnId: string; ownerFinalAt: number | null; providerFirstAudioAt: number | null; nativeFirstAudibleAt: number | null;
   finalToProviderMs: number | null; finalToAudibleMs: number | null; missingReason: AuditMissingReason | null;
+  /**
+   * LAT-1022: the segments the budget audit reads, each measured from the log beside the turn and null when the
+   * turn did not do that step: the native speech end to the owner final, the owner final to the first response's
+   * create, that create to its first audio, the last tool output to the continuation's create, and every
+   * connector request the turn made. A segment is never inferred: a turn with no tool prints no tool segment.
+   */
+  speechEndToFinalMs: number | null;
+  finalToCreateMs: number | null;
+  createToFirstAudioMs: number | null;
+  toolOutputToCreateMs: number | null;
+  connectorMs: number[];
 }
 export interface AuditToolFailure { tool: string; outcome: CallOutcome; refusalCode: string | null; count: number }
 export interface AuditAggregates {
@@ -812,7 +826,27 @@ function auditTurnRow(turn: TurnView, lines: readonly LogLine[]): AuditTurnRow {
     : providerFirstAudioAt === null && nativeFirstAudibleAt === null ? 'no_provider_audio'
     : nativeFirstAudibleAt === null ? 'no_native_receipt'
     : null;
-  return { turnId: turn.turnId, ownerFinalAt, providerFirstAudioAt, nativeFirstAudibleAt, finalToProviderMs, finalToAudibleMs, missingReason };
+  // LAT-1022: the segments between the own stamps, so one audit row says where a turn's time went. The speech
+  // end is the native VAD's own instant on the wall clock, the create and audio instants are the response's own
+  // receipts, and the tool segment runs from the last output written to the create that answered it.
+  const speechEnd = lines.find(line => line.event === 'owner_speech_end' && line.turnId === turn.turnId);
+  const speechEndAt = speechEnd === undefined ? null : count(speechEnd.record.wallMs) ?? speechEnd.at;
+  const responses = lines.filter(line => line.event === 'response_first_audio' && line.turnId === turn.turnId);
+  const firstResponse = responses.find(line => line.record.kind === 'first');
+  const firstCreatedAt = firstResponse === undefined ? null : count(firstResponse.record.createdAt);
+  const firstAudioAt = firstResponse === undefined ? null : count(firstResponse.record.firstAudioAt);
+  const continuation = responses.find(line => line.record.kind === 'continuation');
+  const continuationCreatedAt = continuation === undefined ? null : count(continuation.record.createdAt);
+  const lastOutputAt = continuationCreatedAt === null ? null
+    : [...lines].reverse().find(line => line.event === 'tool_output_sent' && line.turnId === turn.turnId && line.at !== null && line.at <= continuationCreatedAt)?.at ?? null;
+  const connectorMs = lines.filter(line => line.event === 'connector_request' && line.turnId === turn.turnId)
+    .map(line => count(line.record.ms)).filter((ms): ms is number => ms !== null);
+  return { turnId: turn.turnId, ownerFinalAt, providerFirstAudioAt, nativeFirstAudibleAt, finalToProviderMs, finalToAudibleMs, missingReason,
+    speechEndToFinalMs: speechEndAt === null || ownerFinalAt === null ? null : Math.max(0, ownerFinalAt - speechEndAt),
+    finalToCreateMs: ownerFinalAt === null || firstCreatedAt === null ? null : Math.max(0, firstCreatedAt - ownerFinalAt),
+    createToFirstAudioMs: firstCreatedAt === null || firstAudioAt === null ? null : Math.max(0, firstAudioAt - firstCreatedAt),
+    toolOutputToCreateMs: lastOutputAt === null || continuationCreatedAt === null ? null : Math.max(0, continuationCreatedAt - lastOutputAt),
+    connectorMs };
 }
 
 /** The clock's own health: how many lines tie monoMs to wall time, and how far the offset spread. */
@@ -962,6 +996,13 @@ export function renderCallAudit(audit: CallAudit): string {
   out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');
   for (const turn of audit.turns) {
     out.push(`${turn.turnId} ${auditNumber(turn.ownerFinalAt)} ${auditNumber(turn.providerFirstAudioAt)} ${auditNumber(turn.nativeFirstAudibleAt)} ${auditMs(turn.finalToProviderMs)} ${auditMs(turn.finalToAudibleMs)} ${turn.missingReason ?? '-'}`);
+  }
+  out.push('');
+  // LAT-1022: where the turn's time went, one row per measured segment. A step the turn did not take prints a
+  // dash, because an absent segment is never a zero.
+  out.push('latency turn speechEndToFinal finalToCreate createToFirstAudio toolOutputToCreate connector');
+  for (const turn of audit.turns) {
+    out.push(`${turn.turnId} ${auditMs(turn.speechEndToFinalMs)} ${auditMs(turn.finalToCreateMs)} ${auditMs(turn.createToFirstAudioMs)} ${auditMs(turn.toolOutputToCreateMs)} ${turn.connectorMs.length === 0 ? MISSING : turn.connectorMs.join(',')}`);
   }
   out.push('');
   out.push('slowest calls');

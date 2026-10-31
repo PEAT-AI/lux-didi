@@ -345,6 +345,9 @@ function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory';
 
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+  /** LAT-1022: the read's start instant on the same monotonic clock `ms` was measured on, so two sources of
+   *  one run can be proven to overlap from the log alone. A count, never a query. */
+  startedAt?: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
   plan?: 'knowledge_only' | 'named_sources';
   deadlineMs: number;
@@ -4863,6 +4866,9 @@ interface RoutedOutcome {
   bodyOnly?: boolean;
   lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
+  /** LAT-1022: the instant this read was dispatched on the run's clock, captured once and passed to the
+   *  receipt. The receipt's start is this value, never a duration subtracted from the clock afterwards. */
+  startedAt?: number;
   /** E5: the mail queries this read ran, so the receipt carries their shape and the reply their words. */
   mail?: MailQueryInfo;
   /** Release 4: the pages this read lost after it had already delivered, so the receipt says partial. */
@@ -5675,7 +5681,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
     for (const outcome of batch) {
       logLookup({
-        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
+        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }), ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
@@ -5723,7 +5729,11 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   try {
     try {
       await Promise.all([...groups.values()].map(async plans => {
+        // LAT-1022: one clock read at dispatch, stamped on every read this group sends, so the source receipt's
+        // start instant is the one the read really had.
+        const dispatchedAt = now();
         const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
+        for (const outcome of batch) outcome.startedAt ??= dispatchedAt;
         record(batch);
         outcomes.push(...batch);
         // #621: a source that matched nothing gets exactly one broadened retry inside this same call, so the
@@ -5731,7 +5741,9 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const retryPlans = broadenedPlans(run, plans, readContext);
         if (retryPlans !== undefined && batch.every(outcome => outcome.outcome === 'empty')) {
           run.retried.add(retryPlans[0]!.read.source as SourceKind);
+          const retriedAt = now();
           const retried = await routedGroup(deps, run, retryPlans, { question, configured, unavailable, unavailableReason, signal, now });
+          for (const outcome of retried) outcome.startedAt ??= retriedAt;
           record(retried);
           outcomes.push(...retried);
         }
@@ -6719,13 +6731,16 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const startSources = allSources.filter(source => !unavailable.includes(source));
           const deadSources = allSources.filter(source => unavailable.includes(source));
           const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
+          // LAT-1022: the instant this read was asked for, read once, so a source that never ran still names the
+          // start it was given instead of a second clock read.
+          const unavailableAt = now();
           for (const source of startSources) {
             first.reading.add(source);
           }
           for (const source of deadSources) {
             run.unavailableReasons.set(source, unavailableReason(source));
             run.sourcesFailed.add(source);
-            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
+            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, startedAt: unavailableAt, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
           }
           if (startSources.length === 0) return;
           // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
@@ -6925,6 +6940,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
+              startedAt: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? knowledgeStartedAt : at,
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
               ...(part.source === 'chat' ? chatReceiptField(served, part.results) : {}),

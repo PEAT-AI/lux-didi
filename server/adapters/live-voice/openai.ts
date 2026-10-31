@@ -502,6 +502,9 @@ class Session implements LiveVoiceSession {
   private episodeToken = 0;
   /** F10: what the owner has said so far in this episode, which decides whether the tail is a finished sentence. */
   private episodeWords = '';
+  /** LAT-1022: whether the quiet rule that ended the last input episode was the hesitation one, so the end-of-
+   *  speech line names the rule that actually fired instead of the default. */
+  private episodeHesitation = false;
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -540,6 +543,15 @@ class Session implements LiveVoiceSession {
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
   private noItemTimer: unknown;
 
+  /** LAT-1022: every response, the first one included, reports its first output-item envelope and its first
+   *  audible PCM against the `response.create` that asked for it, so a first response is decomposed the way a
+   *  continuation already was. An audio-first response delivers the PCM before the item envelope, so both
+   *  instants are written as measured and neither is clamped: the pair is a real ordering, never an assertion. */
+  private firstResponseTiming: { kind: 'first' | 'continuation'; createdAt: number; responseKey?: string; firstItemAt: number | null; firstAudioAt: number | null } | undefined;
+  /** LAT-1022: outputs written and not yet acknowledged, so the wait between the write and the provider taking
+   *  it is measured instead of inferred from the next response. Keyed by the call the output answers. */
+  private readonly outputAckPending = new Map<string, number>();
+
   private clearNoItemTimer(): void {
     if (this.noItemTimer !== undefined) this.clock.clearTimer(this.noItemTimer);
     this.noItemTimer = undefined;
@@ -550,6 +562,30 @@ class Session implements LiveVoiceSession {
     if (!timing) return;
     hostLogEvent({ event: 'live_continuation_timing', ...timing,
       class: timing.toolCall ? 'd-chain' : timing.nudged ? 'b' : timing.firstAudioAt !== null ? 'c' : 'b-second' });
+  }
+
+  /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
+  private openResponseTiming(): void {
+    this.logResponseFirstAudio();
+    this.firstResponseTiming = { kind: this.continuationsSent === 0 ? 'first' : 'continuation', createdAt: this.clock.now(), firstItemAt: null, firstAudioAt: null };
+  }
+
+  /** LAT-1022: the first of a kind only, so a later item or frame never moves the segment it measured. */
+  private noteResponseTiming(field: 'firstItemAt' | 'firstAudioAt'): void {
+    const timing = this.firstResponseTiming;
+    if (timing && timing[field] === null) timing[field] = this.clock.now();
+  }
+
+  /** LAT-1022: one line per response that produced audio, written when it ends: response key, the item and
+   *  audio instants, and whether this was the turn's first response or a continuation. Nothing else. */
+  private logResponseFirstAudio(): void {
+    const timing = this.firstResponseTiming;
+    this.firstResponseTiming = undefined;
+    if (!timing || timing.firstAudioAt === null) return;
+    const responseKey = timing.responseKey ?? (this.currentResponse === undefined ? undefined : this.responseKeyOf(this.currentResponse));
+    if (responseKey === undefined) return;
+    hostLogEvent({ event: 'response_first_audio', responseKey, createdAt: timing.createdAt,
+      ...(timing.firstItemAt === null ? {} : { firstItemAt: timing.firstItemAt }), firstAudioAt: timing.firstAudioAt, kind: timing.kind });
   }
 
   private lastAnswerNow = false;
@@ -830,6 +866,7 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
+    if (this.answerOnReady || this.openerOnReady) this.openResponseTiming();
     if (this.answerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
     else if (this.openerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
@@ -886,6 +923,7 @@ class Session implements LiveVoiceSession {
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
+      this.noteResponseTiming('firstAudioAt');
       if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
         this.continuationTiming.firstAudioAt = this.clock.now();
         this.clearNoItemTimer();
@@ -975,7 +1013,9 @@ class Session implements LiveVoiceSession {
     const token = this.episodeToken + 1, epoch = this.socket;
     this.episodeToken = token;
     // F10: a mid-thought tail earns the longer window, so a hesitation is not answered over.
-    const quiet = hesitationOpen(this.episodeWords) ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
+    const hesitation = hesitationOpen(this.episodeWords);
+    this.episodeHesitation = hesitation;
+    const quiet = hesitation ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
     this.episodeQuiet = this.clock.setTimer(quiet, () => {
       if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
       this.endInputEpisode();
@@ -985,6 +1025,12 @@ class Session implements LiveVoiceSession {
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
     this.episodeWords = '';
+    // LAT-1022: this is the capture path's own voice-activity verdict that the owner has stopped speaking, so it
+    // is stamped here, on the monotonic audio clock and on the wall clock beside it. The session and the turn are
+    // the envelope's; the rule that fired is the only other field.
+    hostLogEvent({ event: 'owner_speech_end', monoMs: Math.max(0, Math.round(this.clock.now())), wallMs: Date.now(),
+      reason: this.episodeHesitation ? 'hesitation' : 'quiet' });
+    this.episodeHesitation = false;
     this.ownerTurnEnded();
   }
 
@@ -1101,6 +1147,7 @@ class Session implements LiveVoiceSession {
   private delegated(message: ObjectValue): void {
     const event = message.event;
     if (!object(event) || typeof event.type !== 'string') fail('protocol_error');
+    if (event.type.startsWith('response.output_item.')) this.noteResponseTiming('firstItemAt');
     if (event.type.startsWith('response.output_item.') && this.continuationTiming) {
       this.continuationTiming.firstItemAt ??= this.clock.now();
       if (object(event.item) && event.item.type === 'function_call') this.continuationTiming.toolCall = true;
@@ -1114,6 +1161,18 @@ class Session implements LiveVoiceSession {
         if (responseId !== undefined && this.openedResponses.has(responseId)) { this.touch(); return; }
         if (responseId !== undefined) this.openedResponses.add(responseId);
         // O1b-A: the response's own receipt, minted before any output can name it.
+        // LAT-1022: a response the host never asked for has no `response.create` of its own, so its decomposition
+        // opens here instead: the provider's own start is that response's beginning.
+        if (this.firstResponseTiming === undefined) this.openResponseTiming();
+        // LAT-1022: the provider opening the response that carries these outputs IS the acknowledgement of them,
+        // so every output written for this continuation gets its own segment, one call and one count.
+        for (const [callKey, writtenAt] of this.outputAckPending) {
+          hostLogEvent({ event: 'provider_output_ack', callKey, ms: Math.max(0, this.clock.now() - writtenAt) });
+        }
+        this.outputAckPending.clear();
+        if (this.firstResponseTiming !== undefined && this.firstResponseTiming.responseKey === undefined) {
+          this.firstResponseTiming.responseKey = this.responseKeyOf(responseId);
+        }
         this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
           createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
         });
@@ -1149,6 +1208,9 @@ class Session implements LiveVoiceSession {
       case 'response.failed':
       case 'response.incomplete':
       case 'response.cancelled': {
+        // LAT-1022: the response's own item-and-audio decomposition travels with its end, so both instants are
+        // the ones it really had and one line per response is written however it ended.
+        this.logResponseFirstAudio();
         const response = object(event.response) ? event.response : undefined;
         const responseId = typeof response?.id === 'string' && response.id.length ? response.id : undefined;
         // A duplicated or out-of-order terminal event is the same end: it neither closes an obligation twice nor
@@ -1579,6 +1641,7 @@ class Session implements LiveVoiceSession {
       });
       written.push(call.id);
       this.outputSent.add(call.id);
+      this.outputAckPending.set(call.id, writtenAt);
     }
     this.pendingCalls = this.pendingCalls.filter(call => !written.includes(call.id));
     for (const id of written) this.answeredCalls.delete(id);
@@ -1625,6 +1688,7 @@ class Session implements LiveVoiceSession {
       return this.continuationOutcome = 'failed';
     }
     this.toolRounds = round;
+    this.openResponseTiming();
     const now = this.clock.now();
     this.continuationTiming = { toolOutputAt: this.lastToolOutputAt ?? now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };
     this.lastAnswerNow = answerNow;
@@ -1963,6 +2027,7 @@ class Session implements LiveVoiceSession {
       if (this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
         // Reserve the response before response.created arrives, closing the typed-input race.
         this.delegatedOutstanding = true;
+        this.openResponseTiming();
       }
     });
   }

@@ -165,3 +165,22 @@ pruned, and is merged with the host's existing no-call receipts without double-c
 the larger of the two counts.
 
 Status tick regression: `bash Tests/DidiStatusTests/check-status-quiet.sh` runs headless with a base-red proof; live calls still poll every two seconds, but unchanged status fields and orb click-through do not write, and notification capability refreshes only at launch, activation or explicit permission request. Installed WindowServer rate acceptance belongs to a separately authorized owner observation, not shared-desktop UI tests.
+
+### Where a turn's time went
+
+One audit row per owner turn now carries the whole decomposition: `speechEndToFinalMs` (the capture
+path's own end of speech to the owner's final), `finalToCreateMs` (the final to the first response's
+create), `createToFirstAudioMs` (that create to the first PCM), `toolOutputToCreateMs` (the last tool
+output written to the continuation's create) and `connectorMs` (every connector request the turn made,
+from `connector_request`). `node scripts/didi-timeline call <id> --audit` prints them under a `latency`
+table; a step the turn did not take prints a dash, because an absent segment is never a zero.
+
+`response_first_audio` is the segment's own receipt: `firstItemAt` is the provider's first output-item
+envelope and `firstAudioAt` the first audible PCM. An audio-first response delivers its PCM BEFORE the
+item envelope, so `firstItemAt` can be later than `firstAudioAt` or absent; the pair is written as
+measured and never clamped. `provider_output_ack` closes the other wait: the call and the milliseconds
+between the output going out and the provider opening the response that carries it.
+
+A playback segment's `audible` instant is the native device's first audible chunk, which is the same
+chunk `received` names, so the timeline prints `same-chunk` there instead of a second stamp that would
+read as a 0 ms audio path.

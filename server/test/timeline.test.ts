@@ -524,7 +524,11 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
     assert.deepEqual(Object.keys((json['calls'] as Record<string, unknown>[])[0]!).sort(),
       ['callKey', 'executionMs', 'name', 'outcome', 'refusalCode', 'totalMs', 'turnId']);
     assert.deepEqual(Object.keys((json['turns'] as Record<string, unknown>[])[0]!).sort(),
-      ['finalToAudibleMs', 'finalToProviderMs', 'missingReason', 'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'turnId']);
+      // LAT-1022: the audit's per-turn segments are part of the stable shape: the speech end to the final, the
+      // final to the first create, that create to its first audio, the last tool output to the continuation's
+      // create, and every connector request the turn made.
+      ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
+        'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
       ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
     assert.equal(json['version'], 2);

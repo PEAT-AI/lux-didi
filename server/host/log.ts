@@ -1,5 +1,6 @@
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
-import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
+import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
@@ -21,7 +22,13 @@ const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 /** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
 const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
+// LAT-1022: the run, progress and source receipts name a source by the tool layer's own SourceKind, so the
+// closed set is derived from that list and never a second copy of it. The copied list had gone stale (it
+// lacked `data`, the company-numbers source), and one source outside the set refused the whole line: every
+// research_run line naming an unread `data` source was dropped silently for four days while research_source
+// kept firing. `drive` and `memory` are named here because the receipts may carry them for a configured
+// connector, and they are not research read kinds.
+const RESEARCH_SOURCES = [...new Set<string>([...RESEARCH_SOURCE_KINDS, 'memory', 'drive'])];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -186,6 +193,9 @@ const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 /** C-LOGS11: why one latency field is absent. A closed set, so "missing" is never printed as a duration. */
 const AUDIBLE_MISSING_REASONS = ['no_owner_final', 'no_native_receipt'];
+/** LAT-1022: the closed rule that declared the owner's speech over: the plain quiet rule, or the longer one a
+ *  hesitation buys. A bound the host never reaches writes no line at all. */
+const SPEECH_END_REASONS = ['quiet', 'hesitation'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -416,9 +426,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'owner_final') {
     // C-LOGS11: when the owner's final transcription of a turn landed, on the wall clock, as epoch ms. The
     // turn it belongs to is the envelope's turnId; no word of what he said is on the line.
-    if (!closedKeys(value, ['event', 'ownerFinalAt'])) return;
+    // LAT-1022: and, when the capture path had already declared the end of speech, how long after it the final
+    // landed, so the first segment of the turn is measured instead of inferred from the quiet rule's constant.
+    const hasSpeechMs = Object.prototype.hasOwnProperty.call(value, 'msSinceSpeechEnd');
+    if (!closedKeys(value, ['event', 'ownerFinalAt', ...(hasSpeechMs ? ['msSinceSpeechEnd'] : [])])) return;
     if (!isSafeCount(value.ownerFinalAt)) return;
-    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt };
+    if (hasSpeechMs && !isSafeCount(value.msSinceSpeechEnd)) return;
+    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt, ...(hasSpeechMs ? { msSinceSpeechEnd: value.msSinceSpeechEnd as number } : {}) };
+  }
+  if (value.event === 'owner_speech_end') {
+    // LAT-1022: the capture path's own voice-activity end of speech, on the monotonic clock the audio path runs
+    // on and on the wall clock beside it, with the closed rule that declared it. The session and the turn are
+    // the envelope's; no audio, no level and no word ever rides this line.
+    if (!closedKeys(value, ['event', 'monoMs', 'wallMs', 'reason'])) return;
+    if (!isSafeCount(value.monoMs) || !isSafeCount(value.wallMs)) return;
+    if (!isSafeMember(value.reason, SPEECH_END_REASONS)) return;
+    return { event: 'owner_speech_end', monoMs: value.monoMs, wallMs: value.wallMs, reason: value.reason };
   }
   if (value.event === 'tool_call_admitted' || value.event === 'tool_call_dispatched') {
     // C-LOGS11: one tool call entering the host and leaving toward its source, by call key and tool name,
@@ -1505,9 +1528,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
     if (hasReason && !isSafeMember(value.reason, RESEARCH_SOURCE_REASONS)) return;
+    const hasStartedAt = Object.prototype.hasOwnProperty.call(value, 'startedAt');
+    if (hasStartedAt && !isSafeCount(value.startedAt)) return;
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
     if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : [])].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : []), ...(hasStartedAt ? ['startedAt'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -1563,7 +1588,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms,
+      ...(hasStartedAt ? { startedAt: value.startedAt as number } : {}), deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
@@ -1695,6 +1721,43 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'responseKey', 'awaiting'])) return;
     if (!isSafeToken(value.responseKey) || !isSafeCount(value.awaiting)) return;
     return { event: 'continuation_deferred', responseKey: value.responseKey, awaiting: value.awaiting };
+  }
+
+  if (value.event === 'response_first_audio') {
+    // LAT-1022: a response's own decomposition, the same one a continuation already had, now for the first
+    // response of a turn too: the response it belongs to, when its create went out, its first output-item
+    // envelope and its first audible PCM, and whether it was the turn's first response or a continuation.
+    // An audio-first response delivers its PCM BEFORE the item envelope, so `firstItemAt` is absent when the
+    // item never preceded the end, and the pair is written as measured: nothing here is clamped to be positive.
+    const hasItem = Object.prototype.hasOwnProperty.call(value, 'firstItemAt');
+    if (!closedKeys(value, ['event', 'responseKey', 'createdAt', 'firstAudioAt', 'kind', ...(hasItem ? ['firstItemAt'] : [])])) return;
+    if (!isSafeToken(value.responseKey) || !isSafeMember(value.kind, ['first', 'continuation'])) return;
+    if (!isSafeCount(value.createdAt) || !isSafeCount(value.firstAudioAt)) return;
+    if (hasItem && !isSafeCount(value.firstItemAt)) return;
+    return { event: 'response_first_audio', responseKey: value.responseKey, createdAt: value.createdAt,
+      ...(hasItem ? { firstItemAt: value.firstItemAt as number } : {}), firstAudioAt: value.firstAudioAt, kind: value.kind };
+  }
+  if (value.event === 'connector_request') {
+    // LAT-1022: one line at the end of every connector request, so a slow connector is its own segment instead
+    // of a number hidden inside the tool's total. The connector and the stage are closed words, the duration a
+    // count and the outcome the call's own closed state. `callKey` is named when the caller has one; the
+    // envelope already names the turn and the endpoint, so nothing here is ever an argument or a result.
+    const hasKey = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    if (!closedKeys(value, ['event', 'connector', 'stage', 'ms', 'outcome', ...(hasKey ? ['callKey'] : [])])) return;
+    if (hasKey && !isCallKey(value.callKey)) return;
+    if (!isSafeId(value.connector) || !isSafeMember(value.stage, MONGOOSE_REQUEST_STAGES) || !isSafeCount(value.ms)) return;
+    if (!isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
+    return { event: 'connector_request', ...(hasKey ? { callKey: value.callKey } : {}), connector: value.connector,
+      stage: value.stage, ms: value.ms, outcome: value.outcome };
+  }
+  if (value.event === 'provider_output_ack') {
+    // LAT-1022: the provider acknowledged a function output, so the wait between writing the output and the
+    // provider taking it is its own segment. The call and a count, never the output.
+    if (!closedKeys(value, ['event', 'callKey', 'ms'])) return;
+    // The provider's own call id is the key here (`call_...`), never the host's scoped trace key, so the closed
+    // shape is the provider-id shape: no dot, slash or space, and a bounded length.
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey) || !isSafeCount(value.ms)) return;
+    return { event: 'provider_output_ack', callKey: value.callKey, ms: value.ms };
   }
   if (value.event === 'turn_failed') {
     // S5: a backend response ended failed, incomplete or errored. The provider's code, nothing else.

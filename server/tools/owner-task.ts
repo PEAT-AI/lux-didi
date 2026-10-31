@@ -258,15 +258,19 @@ export class OwnerTasks implements OwnerTaskPort {
       }
       // One open per handle, each with its own receipt: a handle this task showed answers before any
       // refusal, and a retry of a spent handle returns the receipt it already has (D4).
-      const key = handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`;
+      // The handle is the target selector whether the caller passed it beside the arguments or only
+      // inside them: an open of {"handle":"L2"} is an open of L2.
+      const selector = handle !== undefined && handle !== ''
+        ? handle
+        : /^\{"handle":"(L[0-9]{1,4})"\}$/.exec(target)?.[1];
+      const key = selector !== undefined && selector !== '' ? `handle:${selector}` : `target:${target}`;
       // A retry inside the same owner final replays; once he says something new, the target is asked
       // for again and opens again (G-R3: the retry is the same task, not a new ask).
       const spent = task.openReceipts.get(key);
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       // A window the model was handed after the last open answers his ask to open what he showed.
-      const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle && entry.seq > task.openSeq);
+      const shown = selector !== undefined && selector !== '' && task.shown.some(entry => entry.handle === selector && entry.seq > task.openSeq);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
-      process.stderr.write(`A2DBG key=${key} openSeq=${task.openSeq} seqs=${JSON.stringify(task.shown.map(e => e.handle + '@' + e.seq))} registry=${exposedHandles().map(e => e.handle).join(',')} arm=${task.openGrant}\n`);
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
     }
@@ -321,7 +325,8 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
     // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
     if (kind === 'open') {
-      task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, { journalId: task.journalId, receipt });
+      const selector = handle !== undefined && handle !== '' ? handle : /^\{"handle":"(L[0-9]{1,4})"\}$/.exec(target)?.[1];
+      task.openReceipts.set(selector !== undefined && selector !== '' ? `handle:${selector}` : `target:${target}`, { journalId: task.journalId, receipt });
       task.openGrant = false; task.openSeq = task.exposure; return;
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);

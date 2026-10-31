@@ -44,7 +44,7 @@ const ALARM = /\b(?:alarms?|wecker)\b/i;
 /** RULING G-R1: every wake-up phrasing the owner uses reads as one set_alarm construction:
  *  "wake up at 10:30 and remind me to go to sport", "wake me at 7 and brief me",
  *  "check in with me in an hour about X", "in 20 minutes remind me", "weck mich um 7", "erinner mich". */
-const WAKE = /\b(?:wake me|wake up(?!\s+me)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
+const WAKE = /\b(?:wake me|wake up\s+(?:at|in|every|tomorrow|today|tonight|on|around|by|\d)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
 const LIST_VERB = /\b(?:list|show|what|which|any|read)\b/i;
 const CANCEL_VERB = /\b(?:cancel|cancel(?:l)?ed|stop|delete|remove|clear|kill|turn off|abbrechen|ausmachen|löschen|stopp)\b/i;
 const SNOOZE = /\b(?:snooze|schlummern|nochmal (?:wecken|klingeln))\b/i;
@@ -109,7 +109,7 @@ export function ownerCommands(words: string): OwnerCommand[] {
   add('lux_note', SAVE_CUE.test(spoken) && !/^.*\bremember me\b.*$/i.test(spoken));
   const otherAsk = (CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)))
     || (DRAFT_VERB.test(spoken) && (MAIL.test(spoken) || CHAT.test(spoken))) || SAVE_CUE.test(spoken)
-    || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken);
+    || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken) || ALARM.test(spoken);
   add('open', OPEN_VERB.test(spoken) || ((!otherAsk) && (OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken))));
   return commands;
 }

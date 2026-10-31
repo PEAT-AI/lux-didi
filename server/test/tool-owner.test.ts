@@ -767,17 +767,16 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
 });
 
-// #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
-test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
+// D3: a one-time alarm carrying a recurrence the model invented is the one-time alarm he asked for,
+// and the result says which part of the call was not used. It is never a refusal.
+test('#796 a model-added recurrence is dropped and the one-time alarm is set', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
-  const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.match(String(refused.result_json), /rule_mismatch/);
-  assert.match(String(refused.result_json), /call set_alarm once more[^"]*kind and weekdays omitted/, String(refused.result_json));
-  assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
-  assert.match(String(refused.result_json), /fixNotForSpeech/);
-  const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 2);
+  const set = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
+  assert.equal(set.status, 'completed', String(set.result_json));
+  assert.match(String(set.result_json), /not_applied/, String(set.result_json));
+  assert.match(String(set.result_json), /the owner did not ask/, String(set.result_json));
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
 });
 

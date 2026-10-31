@@ -117,9 +117,7 @@ import Foundation
             deadline.stage(stage)
         }
         clock.now += 0.02
-        let cleanAt = clock.now
         check(deadline.complete(), "a shutdown whose host exits completes cleanly")
-        check(cleanAt < 1.5, "the shutdown finished inside the 1.5 s budget before the net came due")
         clock.advance(to: 1.5)
         let receipts = collected.receipts
         let stageReceipts = receipts.filter { $0.event == .quitStage }
@@ -131,6 +129,16 @@ import Foundation
               "every stage line carries its elapsed milliseconds")
         check(!receipts.contains { $0.event == .quitForced } && forcedCalls.receipts.isEmpty,
               "a clean quit writes no quit_forced line and takes no forced path")
+        // The budget has to come from what the shutdown produced, not from this test's own clock
+        // arithmetic: this is the elapsed the deadline itself measured at applicationExit, so a stage
+        // that waited would raise it and fail here. A real supervised host's stop to close is timed
+        // separately, with a wall clock, in `server/test/host-entry.test.mjs`.
+        var measuredMs: Int?
+        if case .number(let elapsed) = stageReceipts.last?.facts["ms"] { measuredMs = elapsed }
+        check(measuredMs == 100,
+              "the shutdown the deadline measured is the sum of its stage times, not a constant of the test")
+        check(measuredMs.map { $0 < 1500 } == true,
+              "the measured shutdown is inside the 1.5 s budget, well before the net comes due")
 
         // A host that never answers the stop request still ends at the net, with the line on record.
         let hungClock = FakeClock()

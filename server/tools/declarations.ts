@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
 import { hostLogEvent } from './host-events.js';
-import { ownerKindOf } from './owner-task.js';
+import { ownerKindOf, requestRefusal } from './owner-task.js';
 import type { OwnerTaskPort } from './types.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
@@ -239,7 +239,13 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       // Empty host-only placeholder; only the gate may reconstruct provider JSON.
       const binding: ToolResultBinding = { executionId, name: call.name, ...(call.id !== undefined ? { callId: call.id } : {}),
         contentIndex: ctx.contentIndex, partIndex: 0, result: structuredClone(ref) };
-      return { record, binding, response: { functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } } };
+      // G-R10: a refusal the model can read names the plain code the handler would have named, so a
+      // layered `operation_<code>` reason never reaches the model as an empty response.
+      const plain = record.status === 'refused' && record.reason !== undefined
+        ? record.reason.replace(/^operation_/, '')
+        : undefined;
+      const response: JsonObject = plain === undefined ? {} : { ...requestRefusal(plain) };
+      return { record, binding, response: { functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response } } };
   };
   // Dispatch the whole batch concurrently; the adapter bounds each endpoint and queues beyond its limit.
   // Results keep their original batch order because each runOne writes its own index.

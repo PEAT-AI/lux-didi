@@ -252,3 +252,71 @@ bash scripts/didi-postcall-review --session <id>   # review one finished call by
 bash scripts/eval-mutation-probe.sh             # every mutation must be caught
 bash scripts/red-at-base.sh --base <sha> --test <file>   # a named test must fail at base
 ```
+
+## Test sensitivity: a test that cannot fail
+
+A test that passes whether or not the code it names is present proves nothing. `scripts/check-test-sensitivity.sh`
+applies one small mutant per sidecar in a copy of the tree, runs only the named test, and fails when the test
+still passes. Sidecars live in `server/test/sensitivity/<name>.json`.
+
+```json
+{
+  "name": "price-gate-tolerance",
+  "target": "dist",
+  "production": "server/test/eval-release/plan.ts",
+  "compiled": "dist/test/eval-release/plan.js",
+  "build": ["tsconfig.eval.json"],
+  "assets": [["server/test/eval-release/judge-prompt.md", "dist/test/eval-release/judge-prompt.md"]],
+  "mutant": {"find": "    if (delta > PRICE_CONFIRM_TOLERANCE) {", "replace": "    if (false) {", "note": "the 20 percent comparison is removed"},
+  "command": ["node", "--test", "--test-name-pattern", "a confirmation outside the tolerance refuses", "dist/test/eval-release/price.test.js"],
+  "workdir": ".",
+  "env": {"DIDI_EVAL_SOURCE_ROOT": "server"},
+  "test": {"file": "server/test/eval-release/price.test.ts", "name": "a confirmation outside the tolerance refuses"},
+  "note": "the price gate test has to execute the gate, not read a CLI exit code"
+}
+```
+
+- `target` is `dist` (build the tsconfig, copy the compiled tree into the git-ignored `server/eval-out/`, apply the
+  mutant to `compiled`, and run `command` from `workdir`) or `tree` (copy the tracked tree to a temp directory,
+  apply the mutant to `production`, and run `command` there).
+- `mutant.find` must appear exactly once in the file it is applied to. A mutant whose anchor moved is a failure,
+  never a pass: the sidecar has to be updated with the code it guards.
+- The unmutated test must pass first, and its name must appear in that run's output. A test that never ran cannot
+  feel a mutant, which is the second escaped class this guards.
+- A sidecar whose `test.file` is absent from the tree is reported `SKIP` (the clean-quit sidecar belongs to the
+  combined release tree); `--require-all` turns a skip into a failure. `--only <name>` runs one sidecar.
+
+The three shipped sidecars cover the escaped classes: a clean-quit timing assertion (`clean-quit-fixed-delay`),
+the 20 percent price gate (`price-gate-tolerance`) and the live dispatch registration
+(`live-authority-registration`). `--selftest` runs the runner's own fixtures: a test that cannot fail must be
+reported, and one that can must pass.
+
+Both scripts write their Markdown summary to the path in `DIDI_CHECK_SUMMARY` so the overnight run can attach it.
+Nothing in either script reads the network.
+
+## The combined-tree gate
+
+A wagon gate sees one branch. Two wagons can each be green and their merge red, because a check's staging list or
+a Swift compile unit never learned about a file the other wagon added. `scripts/check-combined-tree.sh <base> <head>`
+runs on the combined tree:
+
+```bash
+bash scripts/check-combined-tree.sh origin/main release/10.7            # static passes, then the check union
+bash scripts/check-combined-tree.sh origin/main release/10.7 --static   # static passes only
+```
+
+- `config/check-map.json` maps path globs to check scripts. `--selftest` proves every path under `server/`,
+  `Sources/`, `Tests/`, `web/`, `docs/`, `config/` and `scripts/` matches at least one entry and that every
+  `scripts/check-*.sh` is named by one. The map is coarser than the truth on purpose: a change runs the union of
+  its area's checks, one at a time.
+- The staging pass reads each check script's `cp <src> "$out/source/..."` lines and the TypeScript import graph of
+  the staged entry files, and fails naming the changed file a staging list does not carry.
+- The Swift pass reads each `swiftc ... <files>` compile unit and fails when a unit uses a top-level type a changed
+  file declares and does not compile that file.
+- When `Sources/` changes, the plist pass renders the LaunchAgent plist from the app's own writer at a fixed
+  synthetic time (`NativeAlarmRelaunch.plist(startMs: 1800000000000, ...)`), runs `plutil -lint` and a key
+  whitelist (`Label`, `ProgramArguments`, `RunAtLoad`, `StartCalendarInterval`, whose keys are `Minute`, `Hour`,
+  `Day`, `Weekday`, `Month` only). A `Year` key is rejected: launchd ignores it. The pass never calls launchctl.
+
+Both static passes read the head tree out of git, so any pair of shas replays from any worktree without a
+checkout. The check summary is Markdown: check, rc, duration and the last failing test.

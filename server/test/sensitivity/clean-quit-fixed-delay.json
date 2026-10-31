@@ -1,0 +1,15 @@
+{
+  "name": "clean-quit-fixed-delay",
+  "target": "tree",
+  "production": "Sources/LuxDidi/PresentationCoordinator.swift",
+  "mutant": {
+    "find": "        let elapsed = Self.ms(since: startedAt, now: clock())\n        lock.unlock()\n        reporter?(Self.stageReceipt(.applicationExit, ms: elapsed))",
+    "replace": "        let elapsed = 0\n        lock.unlock()\n        reporter?(Self.stageReceipt(.applicationExit, ms: elapsed))",
+    "note": "the clean-quit sequence reports a fixed constant instead of its own measured shutdown"
+  },
+  "command": ["bash", "scripts/check-native-live.sh"],
+  "workdir": ".",
+  "env": {},
+  "test": {"file": "Tests/DidiLiveTests/QuitSurfaceTests.swift", "name": "the shutdown the deadline measured is the sum of its stage times, not a constant of the test"},
+  "note": "escaped class (a): declared for the combined release tree, where Tests/DidiLiveTests/QuitSurfaceTests.swift exists; skipped in a tree that does not carry it"
+}

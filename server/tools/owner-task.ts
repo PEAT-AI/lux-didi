@@ -367,7 +367,13 @@ export class OwnerTasks implements OwnerTaskPort {
   }
 
   topShown(session: string, kinds: readonly string[]): string | undefined {
-    return this.#live(session)?.shown.find(shown => kinds.includes(shown.kind))?.handle;
+    const task = this.#live(session);
+    if (task === undefined) return undefined;
+    // The top of the READ the owner is looking at, so a second result list answers his ask before the
+    // first list he saw does.
+    const latest = Math.max(0, ...task.shown.map(entry => entry.seq));
+    return task.shown.find(entry => entry.seq === latest && kinds.includes(entry.kind))?.handle
+      ?? task.shown.find(entry => kinds.includes(entry.kind))?.handle;
   }
 
   currentId(session: string): string | undefined { return this.#live(session)?.id; }

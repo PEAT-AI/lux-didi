@@ -191,8 +191,9 @@ export class OwnerTasks implements OwnerTaskPort {
         // The same final can arrive twice (a duplicated transcription); his words join only once.
         if (!operation.words.trimEnd().endsWith(words.trim())) operation.words = `${operation.words} ${words}`.trim();
       }
-      const seen = new Set(previous.operations.map(operation => operation.kind));
-      this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
+      // Only a task that has no operation yet needs the merged ask: that is the split sentence whose
+      // verb and object arrived in different finals. Once an ask is open, his new final is the ask.
+      if (previous.operations.length === 0) this.#apply(previous, ownerCommands(merged), merged);
       if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {
         this.#apply(previous, ownerCommands(words), words);
         this.#armOpen(previous, ownerCommands(words), words);

@@ -4315,7 +4315,6 @@ export class LiveSessionOwner {
     const remaining: typeof event.calls = [];
     for (const call of event.calls) {
       const row = this.#store.transaction(tx => tx.get("SELECT * FROM tool_calls WHERE run_id=? AND call_id=? AND state!='intent'", [host.runId, call.id]));
-      process.stderr.write(`X5 replay call=${call.id} row=${row ? 'yes' : 'no'}\n`);
       if (!row) { remaining.push(call); continue; }
       const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
       let response: JsonObject;
@@ -4804,7 +4803,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (this.#settled(handle) || generation !== handle.generation) return;
         if (gate.state !== 'allowed') { pending.push(unit); continue; }
         hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
-        process.stderr.write(`X5 cachecall idx=${unit.index} name=${unit.call.name} call=${unit.call.id}\n`);
         cached.set(unit.index, hit);
         cachedDeliveryBindings.set(unit.index, hit.binding);
       }

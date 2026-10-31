@@ -299,8 +299,9 @@ export class OwnerTasks implements OwnerTaskPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
-    // One owner ask may open more than one target it names; the round stays armed until new words come.
-    if (kind === 'open') { task.openReceipts.set(target, receipt); return; }
+    // One ask is one open, spent by its success; a second window from the same ask needs a handle the
+    // ask actually showed, or new owner words.
+    if (kind === 'open') { task.openReceipts.set(target, receipt); task.openGrant = false; return; }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

@@ -249,7 +249,7 @@ export class OwnerTasks implements OwnerTaskPort {
 
   authorize(session: string, kind: ActionKind, target: string, handle?: string, callId?: string): RequestAuthorization {
     const task = this.#live(session);
-    if (kind === 'set_alarm')    if (task === undefined || task.closed) return { code: 'no_owner_request' };
+    if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
 

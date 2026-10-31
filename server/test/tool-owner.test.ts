@@ -770,12 +770,12 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
 // D3: a one-time alarm carrying a recurrence the model invented is the one-time alarm he asked for,
 // and the result says which part of the call was not used. It is never a refusal.
 test('#796 a model-added recurrence is dropped and the one-time alarm is set', async t => {
-  const events: Record<string, unknown>[] = [];
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads', log: event => { events.push(event as Record<string, unknown>); } });
+  const events: unknown[] = [];
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', log: event => { events.push(event); } });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   const set = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.equal(set.status, 'completed', JSON.stringify(events.filter(event => String(event['event']).startsWith('tool') || String(event['event']).startsWith('alarm'))));
+  assert.equal(set.status, 'completed', JSON.stringify(events).slice(0, 600));
   assert.match(String(set.result_json), /not_applied/, String(set.result_json));
   assert.match(String(set.result_json), /the owner did not ask/, String(set.result_json));
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));

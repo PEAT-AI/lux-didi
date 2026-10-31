@@ -28,6 +28,8 @@ binaries run outside the lock: only the compiler is inside it.
 
 Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci`.
 
+`bash scripts/check-combined-tree.sh <base> <head>` is the release gate: it maps every file the branch changed to its checks and runs that union at the head, so a release never ships a file no check covers.
+
 ## What CI runs and what stays local
 
 Nine of the twelve need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:

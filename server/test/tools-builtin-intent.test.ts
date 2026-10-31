@@ -414,7 +414,8 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   t.after(() => port.close());
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (id, signal) => lookup?.(id, signal) ?? null });
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic' } });
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
+    route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
   const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });

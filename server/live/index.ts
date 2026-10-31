@@ -572,7 +572,7 @@ export function announcesLookup(text: string): boolean {
  * a write this owner turn was refused, because that is the only case where the host has a receipt to check
  * it against. "again", "still", "retried" and "tried once more", and nothing new is spoken for it.
  */
-const RETRY_CLAIM = /\b(?:again|still|retried|tried once more)\b/i;
+const RETRY_CLAIM = /\b(?:i|i've|i'd|i'll|let me)\b[^.!?]*\b(?:again|still|retried|tried once more|retry)\b|\b(?:retried|tried once more|try again)\b/i;
 export function claimsRetryWithoutCall(text: string, writeRefused: boolean): boolean {
   return writeRefused && RETRY_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }

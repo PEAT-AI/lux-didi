@@ -1012,6 +1012,23 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   assert.match(String(sent.result_json), /no_owner_request|grant_spent|his click|reply box/);
 });
 
+test('W1030 amendment: a later owner final amends the window the same operation opened', async t => {
+  // D2 (d) through the production call path: the first final opens the operation, the second amends it,
+  // so the block is one operation amended rather than two events.
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour', 1_000);
+  const first = { summary: 'gym' };
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', first), first)).status, 'completed');
+  const [start, end] = (port.log.find(entry => entry.startsWith('calendar_create_event')) ?? '').split(':').slice(1);
+  assert.equal(Number(end) - Number(start), 3_600_000, 'one hour from his first final');
+  f.owner.observeAlarmOwner('run', 'j2', 'make it two hours', 2_000);
+  const second = { summary: 'gym' };
+  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', second), second, 2)).status, 'completed');
+  const amended = (port.log.filter(entry => entry.startsWith('calendar_create_event')).at(-1) ?? '').split(':').slice(1);
+  assert.equal(Number(amended[1]) - Number(amended[0]), 7_200_000, 'his second final amends that block to two hours');
+});
+
 test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
   const port = composePort();
   const clashing: ComposeDispatch = { ...port, createEvent: async input => ({ state: 'done', clash: 'your 9 o clock standup', response: await port.createEvent(input).then(outcome => outcome.state === 'done' ? outcome.response : {}) }) };

@@ -18,14 +18,33 @@ export type ComposeGrantKind = 'draft_email' | 'draft_chat' | 'create_event' | '
 export const COMPOSE_GRANT_KINDS: readonly ComposeGrantKind[] = ['draft_email', 'draft_chat', 'create_event', 'delete_event'];
 
 const MAIL = /\b(?:e-?mails?|mails?)\b/i;
-const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack)\b/i;
-const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell)\b/i;
-const CALENDAR = /\b(?:calendar|schedule|book)\b/i;
-const BLOCK_VERB = /\b(?:block|add|put|reserve|hold)\b/i;
-const BLOCK_NOUN = /\b(?:hour|time|block|slot|event|meeting|gym|appointment|lunch)\b/i;
-const SCHEDULE_VERB = /\b(?:schedule|book|block|add|put|move|create|reserve|hold)\b/i;
-const CANCEL_VERB = /\b(?:cancel|delete|remove|drop|scrap)\b/i;
-const EVENT_NOUN = /\b(?:event|meeting|block|appointment|booking|lunch|gym|slot)\b/i;
+const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack|kanal|kanäle)\b/i;
+const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell|entwirf|entwerf|formulier|verfass|schreib)\w*\b/i;
+const CALENDAR = /\b(?:calendar|schedule|book|kalender|termin|meeting)\b/i;
+const BLOCK_VERB = /\b(?:block|add|put|reserve|hold|schieb|leg|buch|reservier|ansetz)\w*\b/i;
+const BLOCK_NOUN = /\b(?:hour|time|block|slot|event|meeting|gym|appointment|lunch|call(?:s)?|stunde|minute|termin)\w*\b/i;
+const SCHEDULE_VERB = /\b(?:schedule|book|block|add|put|move|create|reserve|hold|einplan|eintrag|trag|block|schieb|leg|buch|reservier|ansetz)\w*\b/i;
+const CANCEL_VERB = /\b(?:cancel|delete|remove|drop|scrap|take|absag|streich|lösch|entfern|nimm|raus|absetz|sag\w*[^.!?]{0,40}\bab)\w*\b/i;
+const EVENT_NOUN = /\b(?:event|meeting|block|appointment|booking|lunch|gym|slot|stand-?up|call(?:s)?|termin)\w*\b/i;
+
+/** A quoted span and a relayed clause are the words of another voice, never the owner asking. */
+const QUOTED_SPAN = /["„“”«»][^"„“”«»]{0,200}["„“”«»]/g;
+const RELAY_CLAUSE = /\b(?:said|says|wrote|writes|told me|told you|asked me|sagte|sagt|schrieb|schreibt|erzählt|meinte)\b[^.!?]{0,40}:[^.!?]*/gi;
+/** #107: a relayed complement is their ask, not his: "someone told me to ...", "read that ...". */
+const RELAY_COMPLEMENT = /\b(?:told me|told you|asked me|only telling|just telling|read that|heard that|wrote that|hat mir gesagt|sagte mir|erzählt)\b[^.!?]*/gi;
+/** #107: a past or settled report is not a new ask. */
+const REPORT = /(?:^|[.!?,;]\s*)\w+ing\s+(?:\w+\s+){0,3}(?:is|are|was|were)\b|\b(?:i|we)\s+(?:already\s+)?(?:created|added|put|scheduled|booked|deleted|cancelled|canceled|removed|wrote|drafted|sent|saved|set|made|moved|reserved|held)\b|\balready\b|\byesterday\b|\blast night\b|\b(?:wurde|wurden|habe|haben|bereits|schon|gestern|steht|existiert|läuft)\b/i;
+/** #107: a negated write clause spends nothing. */
+const NEGATION = /\b(?:don['’]?t|do not|does not|doesn['’]?t|won['’]?t|will not|never|no need to|not|nothing|kein\w*|nicht|nichts|ohne)\b/i;
+/** #107: a question is not a command; the modal form below is the exception that is one. */
+const QUESTION_OPEN = /^\s*(?:what|why|how|when|who|where|which|whose|did|do|does|is|are|was|were|should|shall|has|have|tell me if|tell me whether|let me know if|wann|warum|wie|wer|wo|welche\w*|ist|sind|hat|hast|soll\w*|gibt es|hältst|weißt|weisst)\b/i;
+const isQuestion = (ask: string): boolean => /\?\s*$/.test(ask) || QUESTION_OPEN.test(ask);
+/** #107: "can you put a block at noon" and "kannst du ... eintragen" are the owner asking for it. */
+const MODAL = /\b(?:(?:can|could|would|will)\s+you|are you able to|kannst|könntest|können sie|würdest du|magst du)\b/i;
+/** #107: any interrogative word makes the turn a question, whatever the modal lead-in offered. */
+const INTERROGATIVE = /\b(?:what|which|when|where|who|whose|why|how|wann|wie|warum|wer|wo|welche\w*)\b/i;
+/** #107: relayed instructions inside a turn are data, never an ask. */
+const INJECTION = /\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier|your)\s+(?:\w+\s+)?(?:instructions?|prompts?|rules?)\b|\b(?:ignorier|vergiss)\s+(?:alle\s+)?(?:vorherigen|deine)\s+(?:anweisungen|regeln)\b/i;
 
 /**
  * Which write intents one finalized owner turn carries. Intent words plus the thing being written
@@ -33,12 +52,32 @@ const EVENT_NOUN = /\b(?:event|meeting|block|appointment|booking|lunch|gym|slot)
  * beyond the verb and its object appearing in the same turn.
  */
 export function composeGrantKinds(words: string): readonly ComposeGrantKind[] {
+  // #107 D-COMPOSEGATE: only the owner's own ask grants a write, and only when it is a command.
+  const asked = ownerAsk(words);
+  const kinds = writeIntent(asked);
+  if (kinds.length === 0 || INJECTION.test(words) || REPORT.test(asked)) return [];
+  if (asked.split(/[.!?;,]/).some(clause => NEGATION.test(clause) && writeIntent(clause).length > 0)) return [];
+  if (!isQuestion(asked)) return kinds;
+  // A modal request is the owner asking for the thing; anything else with a question in it is not.
+  return MODAL.test(asked) && !INTERROGATIVE.test(asked) ? kinds : [];
+}
+
+/** The owner's own words: a quoted span or a relayed clause speaks for another voice. */
+function ownerAsk(words: string): string {
+  return words.replace(QUOTED_SPAN, ' ').replace(RELAY_CLAUSE, ' ').replace(RELAY_COMPLEMENT, ' ');
+}
+
+/** Which write intents one clause carries: its verbs and its objects, in either language. */
+function writeIntent(words: string): ComposeGrantKind[] {
   const kinds: ComposeGrantKind[] = [];
   const mail = MAIL.test(words);
   const chat = CHAT.test(words);
-  if (mail && (DRAFT_VERB.test(words) || /\bto\b/i.test(words))) kinds.push('draft_email');
+  const addressed = /@|\bto\b|\ban\b/i.test(words);
+  if (mail && (DRAFT_VERB.test(words) || addressed)) kinds.push('draft_email');
+  if (!mail && !chat && DRAFT_VERB.test(words) && /@|\b(?:reply|antwort)\w*\b/i.test(words)) kinds.push('draft_email');
   if (chat && DRAFT_VERB.test(words) && !(mail && !chat)) kinds.push('draft_chat');
-  if (CALENDAR.test(words) ? SCHEDULE_VERB.test(words) : BLOCK_VERB.test(words) && BLOCK_NOUN.test(words)) kinds.push('create_event');
+  if (CALENDAR.test(words) ? SCHEDULE_VERB.test(words) || BLOCK_VERB.test(words) : BLOCK_VERB.test(words) && BLOCK_NOUN.test(words)) kinds.push('create_event');
+  if (!CALENDAR.test(words) && /\b(?:i need|ich brauche)\b[^.!?]{0,40}\b(?:\d+\s*(?:minutes?|hours?|minuten|stunden)|an? hour|one hour)\b/i.test(words)) kinds.push('create_event');
   if (CANCEL_VERB.test(words) && (EVENT_NOUN.test(words) || CALENDAR.test(words))) kinds.push('delete_event');
   return kinds;
 }
@@ -101,9 +140,10 @@ export function resolveRecipient(words: string, candidates: readonly RecipientCa
   return { status: found.length === 0 ? 'recipient_unknown' : 'recipient_ambiguous', candidates: found.slice(0, 3).map(candidate => candidate.name) };
 }
 
-const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+/** #107: the same week in the other language he speaks, index for index. */
+const WEEKDAY_WORDS = ['sunday|sonntag', 'monday|montag', 'tuesday|dienstag', 'wednesday|mittwoch', 'thursday|donnerstag', 'friday|freitag', 'saturday|samstag'] as const;
 const NUMBERS: Readonly<Record<string, number>> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, twenty: 20, thirty: 30, forty: 40, fifty: 50 };
-const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)(\s+and\s+a?\s*half)?\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i;
+const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)(\s+and\s+a?\s*half)?\s*(hours?|hrs?|h|minutes?|mins?|m|stunden?|std|minuten?)\b/i;
 
 export type EventWindow =
   | { status: 'ready'; startUtc: number; endUtc: number; timeZone: string; names: string[] }
@@ -146,7 +186,7 @@ function hourMinute(text: string): { hour: number; minute: number } | undefined 
   return { hour: settled, minute };
 }
 
-const NOT_A_NAME = new Set(['on', 'at', 'for', 'in', 'and', 'from', 'tomorrow', 'today', 'tonight', 'next', 'this', 'the', 'a', 'an', 'my', 'our', 'about', ...WEEKDAYS]);
+const NOT_A_NAME = new Set(['on', 'at', 'for', 'in', 'and', 'from', 'tomorrow', 'today', 'tonight', 'next', 'this', 'the', 'a', 'an', 'my', 'our', 'about', ...WEEKDAY_WORDS.flatMap(day => day.split('|'))]);
 
 /** People he named alongside the event; they are described, never invited. */
 export function namedOthers(words: string, ownerName?: string): string[] {
@@ -159,6 +199,23 @@ export function namedOthers(words: string, ownerName?: string): string[] {
 }
 
 /**
+ * #107: the alarm parser reads one language, so the day and the clock word he said in the other are
+ * named in it: "morgen um 3" and "tomorrow at 3" must settle the same window.
+ */
+export function englishDayWords(words: string): string {
+  return words
+    .replace(/\bü?bermorgen\b/gi, 'tomorrow')
+    .replace(/\bheute\b/gi, 'today')
+    .replace(/\bmorgen\b/gi, 'tomorrow')
+    .replace(/\b(?:früh|frueh)\b/gi, 'morning')
+    .replace(/\babend\b/gi, 'evening')
+    .replace(/\bnacht\b/gi, 'night')
+    .replace(/\bmittag\b/gi, 'noon')
+    .replace(/\buhr\b/gi, '')
+    .replace(/\bum\b/gi, 'at');
+}
+
+/**
  * The event window the host trusts: a named weekday settles the date locally, anything else rides
  * the alarm parser's normalisation, and the model's own epoch is never used.
  */
@@ -167,7 +224,7 @@ export function eventWindow(words: string, now: number, timeZone: string, ownerN
   const cleaned = (match ? `${words.slice(0, match.index)} ${words.slice(match.index + match[0].length)}` : words).trim();
   const names = namedOthers(words, ownerName);
   const duration = durationMinutes(words) * 60000;
-  const weekday = WEEKDAYS.findIndex(day => new RegExp(`\\b${day}\\b`, 'i').test(cleaned));
+  const weekday = WEEKDAY_WORDS.findIndex(day => new RegExp(`\\b(?:${day})\\b`, 'i').test(cleaned));
   if (weekday >= 0) {
     const time = hourMinute(cleaned);
     if (!time) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -178,7 +235,7 @@ export function eventWindow(words: string, now: number, timeZone: string, ownerN
     if (startUtc <= now) { ahead += 7; startUtc = zonedInstant(year, month, day + ahead, time.hour, time.minute, timeZone); }
     return { status: 'ready', startUtc, endUtc: startUtc + duration, timeZone, names };
   }
-  const parsed = parseAlarmTime(cleaned, now, timeZone);
+  const parsed = parseAlarmTime(englishDayWords(cleaned), now, timeZone);
   if (parsed.status === 'ready') return { status: 'ready', startUtc: parsed.fireAtUtc, endUtc: parsed.fireAtUtc + duration, timeZone: parsed.tz, names };
   if (parsed.status === 'clarify') return { status: 'clarify', reason: parsed.reason === 'unsupported_time_expression' ? 'unsupported_time_expression' : 'missing_time' };
   const time = hourMinute(cleaned);
@@ -283,7 +340,7 @@ export function composeResult(outcome: ComposeOutcome): JsonObject {
     const names = outcome.candidates.slice(0, 3);
     const asked = outcome.code === 'recipient_ambiguous'
       ? `I found more than one match: ${names.join(', ')}. Which one did you mean?`
-      : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
+        : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
     return { status: 'refused', code: outcome.code, candidates: names, say: asked };
   }
   if (outcome.state === 'not_authorized') return notAuthorizedResult(outcome.family, outcome.command);

@@ -143,6 +143,13 @@ export function exposeHandles(text: string): void {
 
 /** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */
 const OPEN_LINE = /^\s*open: L[0-9]{1,4}(?:\s*=|\s|$)/;
+/** Every handle this session handed the model, in exposure order: the windows it may be asked to open. */
+export function exposedHandles(): { handle: string; kind: string }[] {
+  const shown: { handle: string; kind: string }[] = [];
+  for (const [id, openHandle] of handles) if (exposed.has(id)) shown.push({ handle: id, kind: openHandle.kind });
+  return shown;
+}
+
 /** The exact handle lines this session minted, so a lookalike inside a body is never taken for one. */
 const mintedLines = new Set<string>();
 

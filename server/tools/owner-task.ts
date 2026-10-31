@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ActionKind, OwnerTaskPort, RequestAuthorization } from './types.js';
+import { exposedHandles } from './open-handles.js';
 
 /**
  * D2: the owner's task, and the bounded operations it grants.
@@ -23,7 +24,9 @@ interface OwnerTask {
   id: string; journalId: string; words: string; start: number; observedAt: number; observedMono: number; finals: number;
   operations: OwnerOperation[]; sequence: number; closed: boolean;
   openGrant: boolean; openReceipts: Map<string, { journalId: string; receipt: unknown }>;
-  shown: { handle: string; kind: string }[]; sources: Record<string, number>;
+  shown: { handle: string; kind: string; seq: number }[]; sources: Record<string, number>;
+  /** The task's sequence at the last successful open: a handle exposed after it answers the next open. */
+  openSeq: number;
 }
 
 /** A task with no owner final for this long is over; the owner has moved on. */
@@ -202,7 +205,7 @@ export class OwnerTasks implements OwnerTaskPort {
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {},
+      operations: [], sequence: 0, closed: false, openGrant: false, openReceipts: new Map(), shown: [], sources: {}, openSeq: 0,
     };
     this.#apply(task, ownerCommands(words), words);
     this.#armOpen(task, ownerCommands(words), words);
@@ -256,7 +259,8 @@ export class OwnerTasks implements OwnerTaskPort {
       // for again and opens again (G-R3: the retry is the same task, not a new ask).
       const spent = task.openReceipts.get(key);
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
-      const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle);
+      // A window the model was handed after the last open answers his ask to open what he showed.
+      const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle && entry.seq > task.openSeq);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
@@ -313,7 +317,7 @@ export class OwnerTasks implements OwnerTaskPort {
     // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
     if (kind === 'open') {
       task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, { journalId: task.journalId, receipt });
-      task.openGrant = false; return;
+      task.openGrant = false; task.openSeq = task.sequence; return;
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
@@ -344,7 +348,10 @@ export class OwnerTasks implements OwnerTaskPort {
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const task = this.#live(session);
     if (task === undefined || task.id !== requestId) return;
-    for (const handle of handles) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push(handle);
+    // A read's own exposure list can be empty when its handle lines were minted before; what counts is
+    // every window the model was handed in this task, in the order it saw them.
+    const list = handles.length > 0 ? handles : exposedHandles();
+    for (const handle of list) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push({ ...handle, seq: task.sequence });
   }
 
   topShown(session: string, kinds: readonly string[]): string | undefined {

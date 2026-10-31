@@ -908,9 +908,10 @@ test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and
   assert.notEqual(batch.tools[0]?.status, 'refused', `the filled-in person read is not refused: ${reason}`);
   assert.doesNotMatch(reason, /Invalid arguments|Rejected argument/u);
   assert.equal(events.find(line => line.event === 'tool_arguments_rejected'), undefined, 'no violation is left to refuse');
-  // The dropped keys travel on their own closed event, as paths and reasons, never a value.
+  // The dropped keys travel on their own closed event, as paths and reasons, never a value: each of the
+  // three is an absent value the tool itself refuses for this person read.
   const logged = events.find(line => line.event === 'tool_arguments_normalized') as { dropped?: string[] } | undefined;
-  assert.deepEqual(logged?.dropped, ['people:not_read', 'channel:not_read', 'query:absent']);
+  assert.deepEqual(logged?.dropped, ['people:absent', 'channel:absent', 'query:absent']);
   assert.doesNotMatch(JSON.stringify(events), /Synthetic/u);
   // The corrected shape, which is what the fix text asks for, passes the same validator.
   const corrected = { intent: 'person', person: 'Synthetic', sides: 'both', from_date: '2026-10-01', to_date: '2026-10-30' };

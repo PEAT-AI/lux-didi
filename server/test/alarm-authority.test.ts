@@ -14,7 +14,7 @@ for (const [operation, words] of [
     gate.observe('s', 'j1', words);
     assert.equal(gate.authorize('s', operation, 'target').code, 'allowed');
     assert.equal(gate.authorize('other', operation, 'target').code, 'no_owner_request');
-    now += 120001;
+    now += 600001;
     assert.equal(gate.authorize('s', operation, 'target').code, 'request_expired');
   });
 }
@@ -35,7 +35,7 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   assert.equal(parsed.status, 'ready');
   gate.commit('s', 'set_alarm', 'alarm', { status: 'set' });
   assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'grant_spent');
-  mono = 120001;
+  mono = 600001;
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired');
 });
 

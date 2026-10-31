@@ -443,11 +443,14 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   f.send({ serverContent: { inputTranscription: { text: 'put cardio in my calendar at 11', finished: true } } });
   assert.ok(await settled(() => granted() === 'allowed'), `the ask grants before any question: ${granted()}`);
   f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true }, generationComplete: true, turnComplete: true } });
-  await settled(() => granted() === 'no_owner_request');
+  // D2: a model question and its turnComplete close nothing; the owner's operation still stands.
+  await f.frame(3);
   const afterQuestion = granted();
+  assert.equal(afterQuestion, 'allowed', 'a question back to the owner spends no operation');
   f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
   const allowed = await settled(() => granted() === 'allowed');
   assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion}); ask=${JSON.stringify(owner.ownerTasks.authorize(session.liveSessionId, 'create_event', 'cardio'))} current=${String(owner.ownerTasks.currentId(session.liveSessionId))}`);
+  assert.match(owner.ownerTasks.authorize(session.liveSessionId, 'create_event', 'cardio').words ?? '', /one and a half hours/, 'the answer joins the same ask');
   assert.equal(owner.ownerTasks.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
 });
 

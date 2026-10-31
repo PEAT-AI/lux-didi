@@ -758,6 +758,9 @@ interface ActiveSession {
   /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
   claimText: string; claimTimer?: { cancel: () => void } | undefined;
   claimToolSeen: boolean; claimCorrected: boolean;
+  /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
+   *  provider opens a model turn, which can arrive after the transcript in the same batch. */
+  answeredWords?: string | undefined;
   /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
   claimWriteRefused: boolean;
   inputJournalId?: number;
@@ -2647,6 +2650,7 @@ export class LiveSessionOwner {
   #resetClaimCheck(handle: ActiveSession): void {
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false;
+    handle.answeredWords = undefined;
   }
 
   /**
@@ -3994,7 +3998,8 @@ export class LiveSessionOwner {
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
           // #795: the response's own words, so a question back to the owner keeps his write ask standing.
-          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, 'PROBE How long?');
+          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, handle.answeredWords);
+          handle.answeredWords = undefined;
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
           this.#logVoiceProfile(handle, generation);
@@ -4081,6 +4086,8 @@ export class LiveSessionOwner {
           const said = stripNonLexicalTags(event.text);
           if (said.trim() && handle.pendingCallIds.size === 0) handle.lookupAckAt = this.#now();
           countTurnScript(handle, said);
+          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
+          handle.answeredWords = `${handle.answeredWords ?? ''} ${said}`.slice(-400);
           handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.

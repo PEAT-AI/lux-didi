@@ -128,8 +128,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
-  await owner('snooze my alarm for five minutes'); now += 600001; mono += 600001;
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /no_owner_request/);
+  // D2: this ask is not spent by the model's reply or by elapsed wall time; the snooze below is the
+  // same owner ask completed, and a second call replays its receipt instead of writing twice.
   await owner('snooze my alarm for five minutes');
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /Alarm set/);
   assert.equal(rows().find(row => row.id === due.id).state, 'done');

@@ -54,7 +54,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DEAD_AIR_CONTINUATION_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -7874,10 +7874,12 @@ test('SI-R2 (#719): post-tool no-item signal re-requests the answer before the d
   // C-RESEARCH #107 (#719): a settled batch with a silent continuation is re-requested before the rung, so
   // the owner is not waited out to a dead-air rebuild.
   const reRequests = hostLines(captureDir).filter(line => line.event === 'live_continuation_re_request');
-  assert.equal(reRequests.length, 1, 'the silent continuation is re-requested once');
+  assert.equal(reRequests.length, 1, `the silent continuation is re-requested once: ${JSON.stringify(hostLines(captureDir).map(line => line.event))}`);
   assert.equal(reRequests[0]!['requested'], true, 'the re-request reached the provider');
   assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 0, 'the rung waits for the re-requested answer');
   h.advance(DEAD_AIR_CONTINUATION_MS); scheduler.runDue(); await settlePort();
+  // The re-requested response is in flight, so the rung's own grace runs before it nudges.
+  h.advance(DEAD_AIR_RESPONSE_GRACE_MS); scheduler.runDue(); await settlePort();
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge');
   assert.equal(nudges.length, 1);
   assert.equal(nudges[0]!['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung keeps its eight-second base after the re-request');

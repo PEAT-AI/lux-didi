@@ -178,9 +178,18 @@ test('D2: German-mixed phrasing is read by the same deterministic constructions'
   assert.deepEqual(kinds('weck mich um sieben'), ['set_alarm']);
   assert.deepEqual(kinds('trag morgen einen Termin ein'), ['create_event']);
   assert.deepEqual(kinds('öffne die Mail app'), ['open']);
-  // An alarm the owner already has is named by its day or by the reminders themselves (C-RECUR M2).
+
+});
+
+// C-RECUR M2: an alarm the owner already has is named by its day or by the reminders themselves.
+test('D2: a day or the reminders name the alarm to cancel, and stop is an ask not a negation', () => {
   assert.deepEqual(kinds('skip this Saturday'), ['cancel_alarm']);
   assert.deepEqual(kinds('stop the Saturday cardio reminders'), ['cancel_alarm']);
+  const gate = new OwnerTasks(() => 0);
+  gate.observe('s', 'j1', 'stop the Saturday cardio reminders');
+  const ask = gate.authorize('s', 'cancel_alarm', 'series');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words!, /reminders/);
 });
 
 test('D2: a length the owner named is pinned on the operation', () => {

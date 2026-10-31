@@ -30,7 +30,9 @@ export const OWNER_TASK_IDLE_MS = 10 * 60_000;
 
 // A quotation is the owner reading something aloud, so it is content, never a cue.
 const QUOTED = /["“”„'][^"“”„']{0,200}["“”„']/g;
-const NEGATION = /\b(?:don['’]?t|do not|never|no need|stop|nicht|kein(?:e|en|em)?|bloß nicht)\b/i;
+/** "stop" is a cancel verb for an alarm the owner has, so it is read as an ask, never as a negation;
+ *  "don't", "no need" and "nicht" stay negations. */
+const NEGATION = /\b(?:don['’]?t|do not|never|no need|nicht|kein(?:e|en|em)?|bloß nicht)\b/i;
 /** A question about something grants nothing; a modal request ("can you put an alarm at 07:45")
  *  is the owner asking for the thing, so the command constructions still read it. */
 const QUESTION = /^\s*(?:what|when|where|who|which|how|why|did|do|does|was|were|have|has|had|is|are|hast du|gibt es|was|wann|wo|wer|wie|warum)\b/i;

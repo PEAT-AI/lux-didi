@@ -478,7 +478,7 @@ run_checks() {
   local base="$1" head="$2" checks="$3" static_log="$4"
   local logdir summary table failed=0 check start rc seconds last last_file
   logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-combined.XXXXXX")"
-  summary="${DIDI_CHECK_SUMMARY:-$logdir/summary.md}"
+  summary="${DIDI_CHECK_SUMMARY:-${TMPDIR:-/tmp}/didi-combined-summary.md}"
   table=''
   for check in $checks; do
     start=$(date +%s)
@@ -540,7 +540,7 @@ analysis plist "$base" "$head" 2>&1 | tee -a "$static_log" || status=1
 if [[ $static_only -eq 0 ]]; then
   run_checks "$base" "$head" "$checks" "$static_log" || status=1
 else
-  summary="${DIDI_CHECK_SUMMARY:-$logdir/summary.md}"
+  summary="${DIDI_CHECK_SUMMARY:-${TMPDIR:-/tmp}/didi-combined-summary.md}"
   { printf '# Combined-tree gate: %s..%s\n\n## Static passes\n\n```\n' "$base" "$head"
     cat "$static_log"; printf '```\n\nNo check ran (--static).\n'; } >"$summary"
   printf 'COMBINED summary %s\n' "$summary"

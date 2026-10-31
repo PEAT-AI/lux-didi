@@ -220,5 +220,5 @@ test('LAT-1022: a connector request that dies in the connect phase names that st
   assert.equal(await stageOf('pipe_closed'), 'spawn', 'a closed pipe is the spawn stage');
   assert.equal(await stageOf('child_exited'), 'spawn', 'a dead child is the spawn stage');
   assert.equal(await stageOf('connect_timeout'), 'handshake', 'a connect timeout is the handshake stage');
-  assert.equal(await stageOf('discovery-required'), 'first_call', 'anything else is the first call');
+  assert.equal(await stageOf('original-schema-arguments-refused'), 'first_call', 'a local refusal is the first call');
 });

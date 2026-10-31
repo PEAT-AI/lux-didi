@@ -1165,7 +1165,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 if (evidence.state === 'unknown') {
                   const code = dispatchedFailureCode(evidence.reason);
                   options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
-                  return { status: 'unknown', code };
+                  // G5: the closed code stays what the model and the gate read, and the reason the connector
+                  // gave travels beside it, so `tool_call_outcome` never loses the cause to the collapse.
+                  return { status: 'unknown', code, reason: evidence.reason };
                 }
                 if (evidence.state !== 'completed') {
                   // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
@@ -1178,7 +1180,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                     // #637: a channel the chat connector does not know is its own closed code, so the reply can
                     // say the channel is unknown; every other refusal keeps the code it had.
                     const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                    return { status: 'failed', code: failureCode };
+                    return { status: 'failed', code: failureCode, reason: 'reason' in evidence ? evidence.reason : evidence.state };
                   }
                   // A classified failure is visible: the endpoint flips to configured and the call
                   // returns the plain reason as its projection, never an empty success. A status that

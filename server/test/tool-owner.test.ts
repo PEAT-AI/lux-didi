@@ -757,7 +757,8 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
   assert.match(String(refused.result_json), /rule_mismatch/);
-  assert.match(String(refused.result_json), /without kind and weekdays omitted/, String(refused.result_json));
+  assert.match(String(refused.result_json), /call set_alarm once more[^"]*kind and weekdays omitted/, String(refused.result_json));
+  assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
   assert.match(String(refused.result_json), /fixNotForSpeech/);
   const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 1);
   assert.equal(set.status, 'completed');

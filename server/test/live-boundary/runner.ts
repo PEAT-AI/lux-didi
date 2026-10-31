@@ -67,7 +67,7 @@ const isRefusal = (response: JsonObject | undefined): boolean => {
 /** The base reason a corpus kind is still red, so a red kind always names the defect it waits on. */
 const KIND_REASONS: Readonly<Record<string, string>> = {
   // #107 CG-R4/F13, CG-R5/F15: each retained row names its own measured cause for its own kind.
-  delete_event: 'one session: 42 asks, 3 dispatched, 39 refused, all 39 an unanswered call (the session stops answering after the sixth dispatch); one ask per turn: 38 dispatched, 4 refused, all 4 the same ask "Streich den synthetischen Termin Montag um 2, der fällt aus", unanswered',
+  delete_event: 'one session: 42 asks, 3 dispatched, 39 refused, all 39 an unanswered call; one ask per turn: 38 dispatched, 4 refused, all 4 the same ask "Streich den synthetischen Termin Montag um 2, der fällt aus", unanswered',
   draft_email: 'one session: 42 asks, 6 dispatched, 36 refused, all 36 an unanswered call; one ask per turn: 40 dispatched, 2 refused, both "Write a mail to the synthetic supplier, subject Synthetic invoice", unanswered',
   draft_chat: 'one session: 42 asks, 32 dispatched, 10 refused, all 10 code recipient_unknown (the spoken channel does not resolve in a later turn); one ask per turn: 42 dispatched, 0 refused',
   set_alarm: 'the base reads his words with a fixed English lexicon, so German-mixed asks refuse; D2 fix this',

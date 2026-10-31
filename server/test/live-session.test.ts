@@ -7489,7 +7489,8 @@ test('research own-results continue allowance renews on each owner turn', () => 
     assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
     admission.delivered(`synthetic-${turn}`);
     assert.deepEqual(admission.admit('continue', true), { admitted: true });
-    assert.equal(admission.admit('continue', true).admitted, false);
+    // C-RESEARCH #107 (D6): the allowance is no longer a loop guard; every continue attaches to the job.
+    assert.deepEqual(admission.admit('continue', true), { admitted: true }, 'a second continue attaches, never refused');
   }
 });
 

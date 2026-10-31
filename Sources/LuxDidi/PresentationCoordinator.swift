@@ -388,36 +388,6 @@ enum NativeQuitStage: String, Sendable {
     case awaitingMainActor, audio, logout, webSession, host, applicationExit, secondQuit
 }
 
-// C-QUIT: the status item is reachable and its click is on record. One typed receipt per event, in a
-// closed set of names and fields, so the file log never takes free text and a test can name the line.
-enum StatusSurfaceEvent: String, Sendable {
-    case statusItemState = "status_item_state", statusClick = "status_click"
-    case menuOpenRequested = "menu_open_requested", menuOpened = "menu_opened", menuItem = "menu_item"
-    case quitStage = "quit_stage", quitForced = "quit_forced"
-}
-
-/// A receipt field is a flag, a count or a word from a closed set; never a message or a path.
-enum StatusSurfaceFact: Equatable, Sendable {
-    case flag(Bool), number(Int), word(String)
-    var value: Any {
-        switch self {
-        case .flag(let flag): return flag
-        case .number(let number): return number
-        case .word(let word): return word
-        }
-    }
-}
-
-struct StatusSurfaceReceipt: Equatable, Sendable {
-    let event: StatusSurfaceEvent
-    var facts: [String: StatusSurfaceFact]
-    var record: [String: Any] {
-        var fields = facts.mapValues(\.value)
-        fields["event"] = event.rawValue
-        return fields
-    }
-}
-
 /// C-QUIT 1: the four verbs the status item always carries, with the receipt each click writes. One
 /// plan, so the app's menu and the test that proves it reachable cannot drift apart.
 enum StatusMenuEntry: String, CaseIterable, Sendable {

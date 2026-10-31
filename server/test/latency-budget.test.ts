@@ -172,7 +172,10 @@ test('LAT-1022: a connector request reports its own duration through the real mo
   const reader = createMongooseReader({ port: port as never, registry: registry as never,
     config: { endpointId: 'mongoose-knowledge', endpoint: 'knowledge', account: 'synthetic', resource: 'synthetic', schemaDigest: digest,
       generation: 1, maxSearchLimit: 5, maxListLimit: 10, queryChars: 100 } as never, now: () => clock.now() });
+  const before = clock.now();
   const result = await reader.call('search', { query: 'synthetic' });
+  // The fake connector's own recorded delay: the segment must be exactly what the request took, never a guess.
+  const recorded = clock.now() - before;
   const request = lines.find(line => line['event'] === 'connector_request');
   assert.ok(request !== undefined, `the connector request reached the host log (state ${String(result.state)})`);
   assert.equal(request['connector'], 'mongoose-knowledge', 'and it names the connector');
@@ -180,5 +183,6 @@ test('LAT-1022: a connector request reports its own duration through the real mo
   assert.equal(request['outcome'], 'ok', 'and the call\'s own closed state');
   const ms = counted(request['ms']);
   assert.ok(ms !== undefined, 'and a duration, never a null');
-  judge({ connectorRequestMs: ms });
+  assert.equal(ms, recorded, 'the segment is the request\'s own duration');
+  judge({ connectorRequestMs: recorded });
 });

@@ -55,6 +55,9 @@ function judge(segments: Record<string, number>): string[] {
     const budget = budgets.segments[name as Segment];
     assert.ok(budget !== undefined, `${name} has a budget`);
     const breach = value > budget.budgetMs;
+    // Printed as it is judged, never after: a breaching segment must name itself in the output even though the
+    // assertion that follows it ends the test.
+    process.stdout.write(`${name}=${value} budget=${budget.budgetMs} ${breach ? 'BREACH' : 'ok'}\n`);
     out.push(`${name}=${value} budget=${budget.budgetMs} ${breach ? 'BREACH' : 'ok'}`);
     assert.equal(breach, false, `${name} ${value} ms breaches the ${budget.budgetMs} ms budget (p50 ${budget.measuredP50Ms})`);
   }
@@ -143,7 +146,6 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
     deadAirRungMs: fake(2_000),
   };
   const printed = judge(segments);
-  process.stdout.write(`${printed.join(' ')}\n`);
   assert.ok(printed.length === 5, 'every budgeted segment was judged');
   // LAT-1022: the slowed fake is the gate's own proof: the same replay must breach, or the eval proves nothing.
   if (SLOW) assert.fail('a slowed fake must breach a budget, and every segment passed');

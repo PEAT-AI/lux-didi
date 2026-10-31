@@ -540,8 +540,8 @@ test('#795 a calendar ask answered with a question keeps its grant for his reply
   assert.match(ask.words ?? '', /cardio in my calendar at 11 one and a half hours/);
   assert.equal(requests.audit('s', 'create_event').ownerFinals, 2);
   requests.commit('s', 'create_event', 'cardio', { status: 'event_created' }, ask.id);
-  assert.equal(requests.authorize('s', 'create_event', 'cardio').code, 'grant_spent');
-  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'grant_spent');
+  assert.equal(requests.authorize('s', 'create_event', 'cardio').code, 'idempotent', 'a replay reuses the receipt');
+  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'grant_spent', 'the grant is consumed once');
 });
 
 test('#795 the reply outside the window, an unrelated reply and a second block all carry no grant', () => {
@@ -569,7 +569,7 @@ test('#795 the reply outside the window, an unrelated reply and a second block a
   const ask = once.authorize('s', 'create_event', 'cardio');
   assert.equal(ask.code, 'allowed');
   once.commit('s', 'create_event', 'cardio', { status: 'event_created' }, ask.id);
-  assert.equal(once.authorize('s', 'create_event', 'cardio').code, 'grant_spent');
+  assert.equal(once.authorize('s', 'create_event', 'gym').code, 'grant_spent', 'no second block on the same ask');
 });
 
 test('#795 a reply to an answered ask with no question reopens nothing, as before', () => {

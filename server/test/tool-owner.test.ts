@@ -742,6 +742,7 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
   assert.equal(created.status, 'completed');
+  assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
   assert.match(String(created.result_json), /"attendees":0/, 'nobody is invited');
   assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
@@ -934,7 +935,8 @@ const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefini
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
 type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
 const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ExecutableCall, args: Record<string, unknown>, step = 1) => {
-  const grant = { tool: call.toolName, effect: 'write' as const, accountId: call.accountId, resourceId: call.resourceId };
+  const effect = liveTools(f).find(tool => tool.name === call.toolName)?.effect ?? 'write';
+  const grant = { tool: call.toolName, effect, accountId: call.accountId, resourceId: call.resourceId };
   if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
   const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
     registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },

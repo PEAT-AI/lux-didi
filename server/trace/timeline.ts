@@ -852,10 +852,10 @@ function toolFailures(calls: readonly AuditCallRow[]): AuditToolFailure[] {
 export function buildCallAudit(report: TimelineReport, scan: LogScan, refusalsColumn = true): CallAudit {
   const lines = sessionLines(scan, report.liveSessionId);
   // F8: a rebuild drops the turn link, so a call can be in the store with no turn. It is still a call:
-  // count it, count its refusal, and list it under its own bucket instead of vanishing. A call the report
-  // could not place in a turn prints turn -, whatever turn id its row kept.
+  // count it, count its refusal, and list it under its own bucket instead of vanishing. The report's
+  // unattributed calls carry no turn id by definition, so their table row prints turn -.
   const calls = [...report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines))),
-    ...report.unattributedCalls.map(call => ({ ...auditCallRow(call, lines), turnId: null }))];
+    ...report.unattributedCalls.map(call => auditCallRow(call, lines))];
   const turns = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
   const timed = calls.filter((call): call is AuditCallRow & { totalMs: number } => call.totalMs !== null);
   // #107: the store writes a real refusal as outcome 'failed' with the code in outcome_code, so the code

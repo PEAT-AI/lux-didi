@@ -18,7 +18,7 @@ export function locate(relative: string): string {
 }
 
 export function serverDir(): string {
-  return join(locate(MARKER), '../../..');
+  return join(locate(MARKER), '../../../..');
 }
 
 export function scenariosDir(): string {

@@ -266,12 +266,23 @@ async function brokenDispatchProbe(): Promise<Outcome> {
     steps: [{ tool: 'trello_write', args: { action: 'create', name: 'Synthetic card', list: 'Backlog' },
       expect: { dispatch: { connector: 'trello', tool: 'trelloWriteCard' } } }],
   };
-  const boundary = await openBoundary({ families: ['knowledge'], trello: true, breakConnectors: ['trello'] });
-  let problems: string[] = [];
-  try { problems = await runScenario(boundary, scenario); } finally { await boundary.close(); }
-  return problems.length > 0
-    ? { id: 'broken-dispatch-probe', status: PASS, detail: `the unreachable connector failed the scenario: ${problems[0]}` }
-    : { id: 'broken-dispatch-probe', status: FAIL, detail: 'a scenario whose connector was never called still reported green' };
+  const legs: { label: string; options: Parameters<typeof openBoundary>[0]; scenario: Scenario }[] = [
+    { label: 'unreachable connector', options: { families: ['knowledge'], trello: true, breakConnectors: ['trello'] }, scenario },
+    { label: 'wrong expected argument on a live connector', options: { families: ['knowledge'], trello: true },
+      scenario: { ...scenario, id: 'broken-argument-probe',
+        steps: [{ tool: 'trello_write', args: { action: 'create', name: 'Synthetic card', list: 'Backlog' },
+          expect: { dispatch: { connector: 'trello', tool: 'trelloWriteCard', args: { name: 'A card the connector never received' } } } }] } },
+  ];
+  const unproven: string[] = [];
+  for (const leg of legs) {
+    const boundary = await openBoundary(leg.options);
+    let problems: string[] = [];
+    try { problems = await runScenario(boundary, leg.scenario); } finally { await boundary.close(); }
+    if (problems.length === 0) unproven.push(leg.label);
+  }
+  return unproven.length === 0
+    ? { id: 'broken-dispatch-probe', status: PASS, detail: 'both broken legs failed the scenario: an unreachable connector, and a dispatched call whose arguments differ from the expected ones' }
+    : { id: 'broken-dispatch-probe', status: FAIL, detail: `these broken legs still reported green: ${unproven.join('; ')}` };
 }
 
 const outcomes: Outcome[] = [...await scenarioOutcomes(), ...await corpusOutcomes(), await brokenDispatchProbe()];

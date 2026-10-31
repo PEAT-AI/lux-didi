@@ -389,7 +389,7 @@ test('F8: a call with no turn after a rebuild is listed in its own bucket and co
     assert.equal(audit.calls.length, 4, 'the audit counts every call, not only the ones a turn claims');
     assert.deepEqual(audit.calls.filter(row => row.turnId === null).map(row => row.callKey), ['call:orphan']);
     // The refusal count carries the orphan too: one gmail grant refusal plus one orphan refusal.
-    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, missing: 1 });
+    assert.deepEqual(audit.aggregates.refusalsByCode, { grant_not_permitted: 1, uncoded: 1 });
     const text = renderCallAudit(audit);
     assert.match(text, /after rebuild, no turn calls=1/u);
     assert.match(text, /call:orphan set_alarm/u);
@@ -523,8 +523,8 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
     assert.deepEqual(Object.keys((json['turns'] as Record<string, unknown>[])[0]!).sort(),
       ['finalToAudibleMs', 'finalToProviderMs', 'missingReason', 'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'refusalsByCode', 'slowestCalls', 'turnsOver4s']);
-    assert.equal(json['version'], 1);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+    assert.equal(json['version'], 2);
   });
 });
 
@@ -602,7 +602,7 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
-    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 1\)/);
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 2\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
     assert.match(text, /missing no_native_receipt/);
   } finally {

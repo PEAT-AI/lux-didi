@@ -152,7 +152,7 @@ function storeReader(database) {
 }
 
 async function callView() {
-  const { buildCallAudit, buildCallStory, buildTimeline, listCalls, renderCallAudit, renderCallStory, resolveSession, scanLogs } = await traceModule();
+  const { buildCallAudit, buildCallStory, buildTimeline, listCalls, renderCallAudit, renderCallStory, resolveSession, scanLogs, traceCallCarriesRefusalCode } = await traceModule();
   const scan = scanLogs(logInputs());
   const spec = options.session ?? 'latest';
   const database = join(dataDirectory(), 'state.sqlite');
@@ -181,7 +181,9 @@ async function callView() {
       const sessionId = liveSessionId ?? story.liveSessionId ?? undefined;
       if (store === undefined) fail('the audit needs state.sqlite under the data directory');
       if (sessionId === undefined || report === undefined) fail(`no traced session for ${spec}`);
-      const audit = buildCallAudit(report, scan);
+      // #107: a store opened before the refusal-code migration has no refusal data, and the audit says
+      // missing there instead of printing a confident none.
+      const audit = buildCallAudit(report, scan, traceCallCarriesRefusalCode(store.read));
       process.stdout.write(options.json ? `${JSON.stringify(audit, null, 2)}\n` : renderCallAudit(audit));
       return;
     }

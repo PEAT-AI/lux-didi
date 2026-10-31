@@ -53,7 +53,7 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary
 node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 ```
 
-`call --audit` prints, in order: session coverage and clock health; one row per tool call; one row per owner turn; then the aggregates. `sessions --audit-summary` prints the same aggregates across every session with a turn since the date. `--json` is the stable shape and carries its own schema number (`version`), so a reader pins a number rather than a field list.
+`call --audit` prints, in order: session coverage and clock health; one row per tool call; one row per owner turn; then the aggregates. A call the store holds without a turn row is still a row of that table, with `turn` printed as `-`. `sessions --audit-summary` prints the same aggregates across every session with a turn or a call since the date. `--json` is the stable shape and carries its own schema number (`version`), so a reader pins a number rather than a field list.
 
 | Column | Means |
 | --- | --- |
@@ -71,7 +71,7 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 | `finalToAudible` | `nativeFirstAudible - ownerFinal`: the wait until what she said reached his speaker |
 | `missing` | why a measurement is absent (`no_owner_final`, `no_provider_audio`, `no_native_receipt`) |
 
-The aggregates are the five slowest calls, the refusals counted per code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
+The aggregates are the five slowest calls, the refusals counted per code, the calls that did not complete grouped by tool, outcome and code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. A call counts as a refusal by its refusal code whatever its outcome string says, because the store records a real refusal as `failed` with the code on the row; an outcome that named no code counts as `uncoded`. Refusals print `none` only when the store carried refusal data and it was empty, and `missing` when the window or the store has none. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
 
 A missing measurement prints as `missing` or `null` and is never printed as zero, so an absent native receipt cannot read as an instant answer. A missing number is answered by a missing receipt, never by inference from a neighbour.
 

@@ -4748,7 +4748,7 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
-if (event.calls.some(call => OWNER_WRITE_RESOURCES.has(call.name))) await this.#waitForOwnerTranscript(handle, event.sequence);
+if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       ownerRequestId = this.#tools.owner.ownerRequests.currentId(handle.liveSessionId);
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {

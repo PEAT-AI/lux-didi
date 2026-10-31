@@ -82,7 +82,9 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
 
     /// One plist, closed fields, and the launch argument that makes the alarm the reason for the launch.
     nonisolated static func plist(startMs: Int, label: String, appPath: String, calendar: Calendar = .current) -> String {
-        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute],
+        // launchd's StartCalendarInterval takes exactly Minute, Hour, Day, Weekday and Month.
+        // No Year key exists: an agent that fires is rewritten or removed by the app that comes back.
+        let parts = calendar.dateComponents([.month, .day, .hour, .minute],
                                             from: Date(timeIntervalSince1970: TimeInterval(startMs) / 1000))
         func escape(_ value: String) -> String {
             value.replacingOccurrences(of: "&", with: "&amp;")
@@ -105,7 +107,6 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
           </array>
           <key>StartCalendarInterval</key>
           <dict>
-            <key>Year</key><integer>\(parts.year ?? 0)</integer>
             <key>Month</key><integer>\(parts.month ?? 0)</integer>
             <key>Day</key><integer>\(parts.day ?? 0)</integer>
             <key>Hour</key><integer>\(parts.hour ?? 0)</integer>

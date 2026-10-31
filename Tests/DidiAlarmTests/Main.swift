@@ -99,6 +99,25 @@ final class RecordingRelaunchRunner: AlarmRelaunchRunning {
         precondition(written.contains("<string>--args</string>") && written.contains("--alarm-relaunch"),
                      "the launch carries the alarm argument")
         precondition(written.contains("StartCalendarInterval"), "the agent is timed")
+        // The interval is launchd's own: Minute, Hour, Day and Month, and no key launchd rejects.
+        precondition(!written.contains("<key>Year</key>"), "launchd has no Year key")
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        func intervalKeys(_ start: Int, _ calendar: Calendar = .current) -> [String] {
+            let parts = calendar.dateComponents([.month, .day, .hour, .minute],
+                                                from: Date(timeIntervalSince1970: TimeInterval(start) / 1000))
+            let pairs: [(String, Int?)] = [("Month", parts.month), ("Day", parts.day),
+                                           ("Hour", parts.hour), ("Minute", parts.minute)]
+            return pairs.map { "<key>\($0.0)</key><integer>\($0.1!)</integer>" }
+        }
+        for key in intervalKeys(firstDue - 60_000) { precondition(written.contains(key), "the interval pins \(key)") }
+        // A due time just after midnight arms the agent at 23:59 the evening before.
+        let midnightDue = Int(ISO8601DateFormatter().date(from: "2026-11-01T00:00:30Z")!.timeIntervalSince1970 * 1000)
+        let midnight = NativeAlarmRelaunchWriter.plist(startMs: NativeAlarmRelaunchWriter.startMs(dueMs: midnightDue),
+                                                       label: NativeAlarmRelaunchWriter.label,
+                                                       appPath: "/synthetic/Lux Didi.app", calendar: utc)
+        for key in intervalKeys(midnightDue - 60_000, utc) { precondition(midnight.contains(key), "the minute before midnight pins \(key)") }
+        precondition(midnight.contains("<key>Day</key><integer>31</integer>"), "the day before, never the due day")
         let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         precondition(files == [NativeAlarmRelaunchWriter.fileName], "exactly one plist")
         writer.sync(pendingDueMs: [firstDue + 3_600_000])

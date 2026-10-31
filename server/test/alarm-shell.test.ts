@@ -16,7 +16,8 @@ test('alarm shell: disconnection, denied notifications and failed assertion are 
   shell.report({ assertion: true, notifications: true });
   assert.deepEqual(shell.health(), { degraded: false, reasons: [] });
   shell.report({ assertion: false, notifications: false });
-  assert.deepEqual(shell.health(), { degraded: true, reasons: ['assertion_failed', 'notifications_denied'] });
+  assert.deepEqual(shell.health(), { degraded: true, reasons: ['assertion_failed', 'notifications_not_asked'] },
+    'a client that reported no permission state has not asked yet');
   // #107: a permission that was never asked stays distinct from one that was refused.
   shell.report({ assertion: true, notifications: false, notificationState: 'not_asked' });
   assert.deepEqual(shell.health(), { degraded: true, reasons: ['notifications_not_asked'] });

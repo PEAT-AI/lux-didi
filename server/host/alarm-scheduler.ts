@@ -169,7 +169,8 @@ export class AlarmShellBridge {
     const reasons: AlarmShellReason[] = [];
     if (!this.capabilities?.assertion) reasons.push('assertion_failed');
     if (!this.capabilities?.notifications) {
-      reasons.push(this.capabilities?.notificationState === 'not_asked' ? 'notifications_not_asked' : 'notifications_denied');
+      // Only an explicit denial is a denial: a client that reported no state has not asked yet.
+      reasons.push(this.capabilities?.notificationState === 'denied' ? 'notifications_denied' : 'notifications_not_asked');
     }
     return { degraded: reasons.length > 0, reasons };
   }

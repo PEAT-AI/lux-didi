@@ -236,6 +236,25 @@ test('each endpoint carries its own audience and its own token, never the other 
 
 // --- acceptance 3: search answer then read, browse lists, restricted stays restricted ---
 
+test('#643: the replaced catalogue is written once, so a second boot logs no replacement', () => {
+  const c = configDir();
+  const events: number[] = [];
+  const legacy = { schemaVersion: 1, endpoints: [{ ...mongooseEntry('knowledge'), resource: 'mongoose', url: 'https://mongoose.dev.peat-cloud.com/mcp' }] };
+  try {
+    writeFileSync(join(c.dir, 'mcp.json'), JSON.stringify(legacy), { mode: 0o600 });
+    const first = loadMcpEndpoints({ configDir: c.dir, events: event => { if (event.event === 'mongoose_catalogue_replaced') events.push(event.endpoints); } });
+    assert.equal(first.state, 'configured');
+    assert.deepEqual(events, [3], 'the legacy entry is replaced once');
+    // The replacement is on disk now: the same boot shape is no longer legacy.
+    const written = JSON.parse(readFileSync(join(c.dir, 'mcp.json'), 'utf8')) as { endpoints: { resource: string }[] };
+    assert.deepEqual(written.endpoints.map(entry => entry.resource).sort(), ['mongoose:crm', 'mongoose:data', 'mongoose:knowledge'],
+      'the three release-1023b endpoints are what the file now holds');
+    const second = loadMcpEndpoints({ configDir: c.dir, events: event => { if (event.event === 'mongoose_catalogue_replaced') events.push(event.endpoints); } });
+    assert.equal(second.state, 'configured');
+    assert.deepEqual(events, [3], 'a second boot logs no replacement at all');
+  } finally { c.close(); }
+});
+
 test('#623: the persona group tables are exactly the served per-endpoint envelopes', async () => {
   // The prompt module keeps its own copy of these names so the prompt build stays free of the MCP stack;
   // this is the parity check that keeps the two from drifting.

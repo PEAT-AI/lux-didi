@@ -262,6 +262,7 @@ export class OwnerTasks implements OwnerTaskPort {
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       // A window the model was handed after the last open answers his ask to open what he showed.
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle && entry.seq > task.openSeq);
+      process.stderr.write(`AUTHDBG key=${key} openSeq=${task.openSeq} shown=${JSON.stringify(task.shown)} spentKeys=${JSON.stringify([...task.openReceipts.keys()])}\n`);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
@@ -353,6 +354,7 @@ export class OwnerTasks implements OwnerTaskPort {
     // every window the model was handed in this task, in the order it saw them.
     const list = handles.length > 0 ? handles : exposedHandles();
     task.exposure += 1;
+    process.stderr.write(`REGDBG task=${task.id} exposure=${task.exposure} list=${list.map(e => e.handle).join(',')}\n`);
     for (const handle of list) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push({ ...handle, seq: task.exposure });
   }
 

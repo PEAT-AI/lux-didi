@@ -6501,6 +6501,55 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
 
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
+// C-ARGS: a lookup the host refused executed nothing, so a claim that its result came back empty is a
+// claim about a read that never ran, and the existing claim guard corrects it once, in its own words.
+const emptyClaimSetup = async (t: TestContext) => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-empty-claim-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'empty-claim');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
+  });
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
+  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
+  const settled = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'toolResult');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
+  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
+  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
+  return { h, session, advance, corrections, counted, settled };
+};
+
+test('an empty-result claim after a refused read is corrected once, in the guard its own words', async t => {
+  const { h, session, advance, corrections, counted, settled } = await emptyClaimSetup(t);
+  // The read the model will claim an empty result over: its arguments are refused, so nothing ran.
+  badInsight(h, 'refused-read');
+  for (let attempt = 0; attempt < 300 && !settled(); attempt++) await tick();
+  assert.ok(settled(), 'the refused read settled before she speaks about it');
+  h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the claim over a read that never ran is corrected once');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /nothing ran, so there is no result/);
+  assert.deepEqual(counted().map(line => line.ms), [3_000], 'and the guard counts it with its bound');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('the same words after a read that really ran are never corrected', async t => {
+  const { h, session, advance, corrections } = await emptyClaimSetup(t);
+  // This read dispatched and the fixture answered an empty page: the claim is then simply the truth.
+  h.f.send({ toolCall: { functionCalls: [{ id: 'real-read', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } });
+  for (let attempt = 0; attempt < 300 && !h.owner.current().entries.some(entry => entry.kind === 'toolResult'); attempt++) await tick();
+  h.f.send({ serverContent: { outputTranscription: { text: 'It came back empty.', finished: true }, turnComplete: true } });
+  await advance(3_000);
+  assert.equal(corrections().length, 0, 'a real empty result is never called a claim');
+  h.owner.revoke(session.liveSessionId);
+});
+
 for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));

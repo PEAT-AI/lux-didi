@@ -255,6 +255,28 @@ test('#643: the replaced catalogue is written once, so a second boot logs no rep
   } finally { c.close(); }
 });
 
+test('#641: a handoff outcome asks the tool its next_tool names, once, and only when this endpoint serves it', async t => {
+  const handoff = (tool: string): string => JSON.stringify({
+    outcome: 'handoff', items: [], next_cursor: null, restriction: null, request_id: 'req-h',
+    next_tool: { endpoint: 'knowledge', tool },
+  });
+  const served = await knowledge({ replies: { search: handoff('list_companies'), list_companies: JSON.stringify({ outcome: 'evidence', items: [] }) } });
+  t.after(() => served.f.close());
+  t.after(() => served.a.adapter.close());
+  const followed = await served.reader.searchCompany({ query: 'which company is this' });
+  assert.equal(followed.state, 'completed');
+  assert.deepEqual(served.f.calls.map(call => call.name), ['search', 'list_companies'], 'the named tool is asked once');
+  assert.equal((followed.state === 'completed' ? followed.followUp?.tool : undefined), 'list_companies');
+  const outside = await knowledge({ replies: { search: handoff('get_company') } });
+  t.after(() => outside.f.close());
+  t.after(() => outside.a.adapter.close());
+  const stood = await outside.reader.searchCompany({ query: 'which company is this' });
+  assert.equal(stood.state, 'completed');
+  assert.deepEqual(outside.f.calls.map(call => call.name), ['search'], 'a name outside the envelope is not dispatched');
+  assert.equal(stood.state === 'completed' ? stood.followUp : 'refused', undefined,
+    'no follow-up is invented for a tool this endpoint cannot ask');
+});
+
 test('#623: the persona group tables are exactly the served per-endpoint envelopes', async () => {
   // The prompt module keeps its own copy of these names so the prompt build stays free of the MCP stack;
   // this is the parity check that keeps the two from drifting.

@@ -351,6 +351,23 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     return args;
   }
 
+  /**
+   * G1: a `handoff` outcome carries the tool the server wants asked next. When that name is one this
+   * endpoint's own envelope serves, it is asked here, once, with the owner's question; a name outside the
+   * envelope (or on another endpoint, whose token this reader does not hold) is left to the projection,
+   * which already shows `next_tool` to the model.
+   */
+  async function handoffRead(evidence: MongooseEvidence, query: string | undefined, signal?: AbortSignal): Promise<MongooseResult | undefined> {
+    const parsed = envelopeOf(evidence.decodedResult);
+    if (parsed?.['outcome'] !== 'handoff') return undefined;
+    const next = parsed['next_tool'];
+    const tool = next !== null && typeof next === 'object' && !Array.isArray(next) ? (next as Record<string, unknown>)['tool'] : undefined;
+    if (typeof tool !== 'string' || !envelope.includes(tool)) return undefined;
+    const call = await dispatch(tool, query === undefined ? {} : { query }, signal);
+    if (call.state !== 'completed') return undefined;
+    return { ...evidence, followUp: { tool, pages: [{ decodedResult: call.decodedResult, payload: call.response }] } };
+  }
+
   /** The top hit's ref, read in a second call so the answer carries the entity behind it, paged by the
    *  server's own `next_cursor` until `coverage.complete` or the page budget ends it. A budget that ends
    *  first is reported as `cursor_budget`, never hidden. */
@@ -390,7 +407,11 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const mode = input.mode ?? 'answer';
       const evidence = await dispatch('search', { ...args, query, mode, ...bounded }, signal);
       // A question reads the hit behind it; a browse lists and never spends a second call.
-      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, input.depth ?? 'summary', signal);
+      if (evidence.state === 'completed' && mode === 'answer') {
+        const handoff = await handoffRead(evidence, query, signal);
+        if (handoff !== undefined) return handoff;
+        return followUpRead(evidence, input.depth ?? 'summary', signal);
+      }
       return evidence;
     },
     async read(input: ReadInput, signal?: AbortSignal): Promise<MongooseResult> {
@@ -423,7 +444,11 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const mode = typeof args['mode'] === 'string' ? args['mode'] : 'answer';
       // The routed research leg reads the body behind the hit at full depth: it is the ask that has no
       // second chance to page, and a summary that stops at the first section is the defect this fixes.
-      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, 'full', signal);
+      if (evidence.state === 'completed' && mode === 'answer') {
+        const handoff = await handoffRead(evidence, typeof args['query'] === 'string' ? args['query'] : undefined, signal);
+        if (handoff !== undefined) return handoff;
+        return followUpRead(evidence, 'full', signal);
+      }
       return evidence;
     },
   };

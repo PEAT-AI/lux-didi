@@ -144,7 +144,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
-    else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');
+    else if (name === 'search_knowledge' || name === 'get_insight') add("Rob's private notes");
     else if (name === 'remember_note') add('memory');
     else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }
     // L8-10: the web read is a research source, so the session's own list names it when it can run.
@@ -157,7 +157,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
 export function connectorGroupNames(connector: string): string[] {
   if (connector === 'google') return ['calendar', 'mail'];
   if (connector === 'mattermost') return ['team chat'];
-  if (connector === 'lux-knowledge') return ['knowledge base'];
+  if (connector === 'lux-knowledge') return ["Rob's private notes"];
   if (connector === 'mongoose') return ['company knowledge'];
   return [connector];
 }

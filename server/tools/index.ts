@@ -939,9 +939,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             : { code, say: 'The host could not confirm that the target opened.' };
           if (dispatched && authorization.code === 'allowed') ownerTasks.commit(runId, 'open', requestTarget, payload, authorization.id,
             typeof (effectiveArgs as JsonObject)['handle'] === 'string' ? String((effectiveArgs as JsonObject)['handle']) : undefined);
-          // A dispatch the host made and could not confirm spends the round just the same, without a
-          // receipt to replay: the owner's words opened one attempt, not a retryable grant.
-          else if (dispatched) ownerTasks.spend(runId, 'open');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a

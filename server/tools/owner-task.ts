@@ -27,7 +27,7 @@ interface OwnerTask {
   shown: { handle: string; kind: string; seq: number }[]; sources: Record<string, number>;
   /** A counter of the reads this task exposed, and its value at the last successful open: a window
    *  exposed after that open answers his next ask to open. */
-  exposure: number; openSeq: number; openSpent?: boolean; openStamp?: number;
+  exposure: number; openSeq: number; openStamp?: number;
 }
 
 /** A task with no owner final for this long is over; the owner has moved on. */
@@ -240,7 +240,7 @@ export class OwnerTasks implements OwnerTaskPort {
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     // A new owner final is a new selection round. The receipts of the task stay (D4: a retry in the
     // same task replays what already opened), the round itself is armed again.
-    task.openGrant = true; task.openSpent = false;
+    task.openGrant = true;
   }
 
   authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization {
@@ -323,13 +323,6 @@ export class OwnerTasks implements OwnerTaskPort {
     }
   }
 
-  /** An attempt that reached the native side and did not open spends the round without a receipt. */
-  spend(session: string, kind: ActionKind): void {
-    const task = this.#live(session);
-    if (task === undefined || kind !== 'open') return;
-    task.openGrant = false; task.openSpent = true;
-  }
-
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
@@ -396,7 +389,7 @@ export class OwnerTasks implements OwnerTaskPort {
       // An open is the round the task armed, not an operation: it is available while the round is
       // unspent, spent once it opened something, and absent before any of his words armed it.
       grantState: task === undefined ? 'absent'
-        : kind === 'open' ? (task.openGrant ? 'available' : task.openReceipts.size > 0 || task.openSpent === true ? 'spent' : 'absent')
+        : kind === 'open' ? (task.openGrant ? 'available' : task.openReceipts.size > 0 ? 'spent' : 'absent')
         : operation === undefined ? 'absent' : operation.state,
     };
   }

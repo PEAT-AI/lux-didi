@@ -3,6 +3,8 @@
  * is created (and on each rebuild), never from the model. It carries no private content beyond the
  * session's own connected group names and the state of its connectors.
  */
+import { MONGOOSE_ENDPOINT_TOOLS } from '../connectors/mongoose.js';
+
 export interface RuntimeContextInput {
   readonly now: Date;
   readonly timeZone: string;
@@ -120,6 +122,17 @@ function label(y: number, m: number, d: number): string {
   return `${ymd({ y, m, d })} (${shortWeekdays[date.getUTCDay()]!})`;
 }
 
+/**
+ * #623: the group one Mongoose read tool belongs to, keyed on the endpoint whose catalogue serves it, so
+ * the persona is told she has company knowledge, numbers and customers from the served names themselves.
+ */
+function mongooseToolGroup(name: string): string | undefined {
+  if (MONGOOSE_ENDPOINT_TOOLS.knowledge.includes(name)) return 'company knowledge';
+  if (MONGOOSE_ENDPOINT_TOOLS.data.includes(name)) return 'company numbers';
+  if (MONGOOSE_ENDPOINT_TOOLS.crm.includes(name)) return 'customers';
+  return undefined;
+}
+
 /** The human group names a set of granted tool names makes available. */
 export function toolGroupNames(toolNames: readonly string[]): string[] {
   const groups: string[] = [];
@@ -131,9 +144,9 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('mattermost_')) add('team chat');
     else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');
     else if (name === 'remember_note') add('memory');
-    else if (name.startsWith('ask_mongoose') || name.startsWith('search_mongoose') || name.startsWith('get_knowledge_item') || name.startsWith('read_knowledge_body')) add('company knowledge');
+    else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }
     // L8-10: the web read is a research source, so the session's own list names it when it can run.
-    else if (name === 'web_search') add('web search');
+    if (name === 'web_search') add('web search');
   }
   return groups;
 }

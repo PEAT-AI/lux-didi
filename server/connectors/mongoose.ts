@@ -207,17 +207,25 @@ export interface MongooseEvidence extends SourceDispatchEvidence {
   coverage: CompletedResult['coverage'];
   projection: CompletedResult['projection'];
   response: StoredPayload;
-  /** The verified second read of a hit's ref, when the caller asked for depth. */
-  followUp?: { tool: string; decodedResult: unknown; payload: StoredPayload };
+  /** The verified second read of a hit's ref, paged until the server says the coverage is complete. */
+  followUp?: { tool: string; depth?: ReadInput['depth']; pages: readonly MongooseFollowUpPage[]; omitted?: 'cursor_budget' | undefined };
 }
 export interface MongooseRefused { state: 'refused'; reason: string }
 export interface MongooseUnknown { state: 'unknown'; reason: string }
 export type MongooseResult = MongooseEvidence | MongooseRefused | MongooseUnknown;
 
+/** One page of the follow-up read: its decoded envelope behind the payload it was verified from. */
+export interface MongooseFollowUpPage { decodedResult: unknown; payload: StoredPayload }
+
+/** The pages one follow-up read may take, so a deep profile cannot spend the whole source budget. */
+export const MONGOOSE_FOLLOWUP_PAGES = 3;
+
 /** One company lookup: mode answer answers a question and reads its top hit; mode browse lists entities. */
 export interface SearchInput {
   query: string;
   mode?: 'answer' | 'browse';
+  /** The depth a question asks for its own body: a depth ask reads at full, an ordinary one at summary. */
+  depth?: ReadInput['depth'];
   limit?: number;
   cursor?: string;
   verbose?: boolean;
@@ -343,13 +351,26 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     return args;
   }
 
-  /** The top hit's ref, read in a second call so the answer carries the entity behind it. */
+  /** The top hit's ref, read in a second call so the answer carries the entity behind it, paged by the
+   *  server's own `next_cursor` until `coverage.complete` or the page budget ends it. A budget that ends
+   *  first is reported as `cursor_budget`, never hidden. */
   async function followUpRead(evidence: MongooseEvidence, depth: ReadInput['depth'], signal?: AbortSignal): Promise<MongooseResult> {
     const ref = topRef(evidence.decodedResult);
     if (ref === undefined) return evidence;
-    const read = await dispatch('read', { ref, depth }, signal);
-    if (read.state !== 'completed') return read;
-    return { ...evidence, followUp: { tool: 'read', decodedResult: read.decodedResult, payload: read.response } };
+    const pages: MongooseFollowUpPage[] = [];
+    let cursor: string | undefined;
+    let omitted: 'cursor_budget' | undefined;
+    for (let page = 0; page < MONGOOSE_FOLLOWUP_PAGES; page += 1) {
+      const read = await dispatch('read', { ref, depth, ...(cursor === undefined ? {} : { cursor }) }, signal);
+      // A page after the first that fails keeps the pages already paid for and names the omission.
+      if (read.state !== 'completed') { if (pages.length === 0) return read; omitted = 'cursor_budget'; break; }
+      pages.push({ decodedResult: read.decodedResult, payload: read.response });
+      if (coverageComplete(read.decodedResult)) break;
+      cursor = nextCursor(read.decodedResult);
+      omitted = 'cursor_budget';
+      if (cursor === undefined) break;
+    }
+    return { ...evidence, followUp: { tool: 'read', ...(depth === undefined ? {} : { depth }), pages, ...(omitted === undefined ? {} : { omitted }) } };
   }
 
   return {
@@ -367,7 +388,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const mode = input.mode ?? 'answer';
       const evidence = await dispatch('search', { ...args, query, mode, ...bounded }, signal);
       // A question reads the hit behind it; a browse lists and never spends a second call.
-      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, 'summary', signal);
+      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, input.depth ?? 'summary', signal);
       return evidence;
     },
     async read(input: ReadInput, signal?: AbortSignal): Promise<MongooseResult> {
@@ -406,6 +427,19 @@ export function topRef(decoded: unknown): string | undefined {
   if (!first || typeof first !== 'object' || Array.isArray(first)) return undefined;
   const ref = (first as Record<string, unknown>)['ref'];
   return typeof ref === 'string' && ref.length > 0 && ref.length <= 512 ? ref : undefined;
+}
+
+/** The cursor that continues a clipped read, when the server returned one. */
+export function nextCursor(decoded: unknown): string | undefined {
+  const cursor = envelopeOf(decoded)?.['next_cursor'];
+  return typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 512 ? cursor : undefined;
+}
+
+/** Whether one page is the whole body: absent coverage, or coverage.complete true, is complete. */
+export function coverageComplete(decoded: unknown): boolean {
+  const coverage = envelopeOf(decoded)?.['coverage'];
+  if (coverage === undefined || coverage === null || typeof coverage !== 'object' || Array.isArray(coverage)) return true;
+  return (coverage as Record<string, unknown>)['complete'] !== false;
 }
 
 /** The JSON body of one MCP result: the first text content block, parsed when it is JSON. */

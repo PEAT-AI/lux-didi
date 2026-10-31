@@ -174,7 +174,13 @@ function coverageLines(data: Record<string, unknown>): { lines: string[]; partia
   const visit = (value: Record<string, unknown>, prefix = ''): void => {
     for (const key of ['outcome', 'has_more', 'total', 'next_cursor', 'complete', 'whole_body', 'next_body_offset', 'returned_chars']) add(`${prefix}${key}`, value[key]);
     const coverage = value['coverage'];
-    if (isRecord(coverage)) { add(`${prefix}coverage.depth`, coverage['depth']); add(`${prefix}coverage.complete`, coverage['complete']); partial ||= coverage['complete'] === false; }
+    if (isRecord(coverage)) {
+      add(`${prefix}coverage.depth`, coverage['depth']); add(`${prefix}coverage.complete`, coverage['complete']); partial ||= coverage['complete'] === false;
+      // 10-24 coverage: the browse fallback and the empty sections are named on their own lines, so the
+      // answer can say it came from a browse and which section came back empty instead of reading as full.
+      add(`${prefix}coverage.browse_fallback`, coverage['browse_fallback']);
+      add(`${prefix}coverage.empty_sections`, coverage['empty_sections']);
+    }
     const nextTool = value['next_tool'];
     if (isRecord(nextTool)) { add(`${prefix}next_tool.endpoint`, nextTool['endpoint']); add(`${prefix}next_tool.tool`, nextTool['tool']); }
     const cursor = value['next_cursor'];
@@ -185,16 +191,26 @@ function coverageLines(data: Record<string, unknown>): { lines: string[]; partia
   return { lines, partial };
 }
 
-/** The source card of the second read: the entity behind the top hit, named and attributed. */
-function followUpText(followUp: unknown): string | undefined {
+/** The source card of the second read: the entity behind the top hit, named and attributed, every page of
+ *  it, and the reason the read stopped short when the page budget ended it first. */
+function followUpText(followUp: unknown): { text: string; partial: boolean } | undefined {
   if (!isRecord(followUp)) return undefined;
-  const data = followUp['data'];
-  if (!isRecord(data)) return undefined;
-  const read = hitLines(data);
-  const body = scalar(data['body']);
-  const head = read !== undefined && read.length ? read.join('\n') : undefined;
-  if (head === undefined && body === undefined) return undefined;
-  return ['', 'read:', ...(head === undefined ? [] : [head]), ...(body === undefined ? [] : [body])].join('\n');
+  const pages = Array.isArray(followUp['pages']) ? followUp['pages'] : [];
+  const parts: string[] = [];
+  for (const page of pages) {
+    if (!isRecord(page)) continue;
+    const data = page['data'];
+    if (!isRecord(data)) continue;
+    const read = hitLines(data);
+    const head = read !== undefined && read.length ? read.join('\n') : undefined;
+    if (head !== undefined) parts.push(head);
+    const body = scalar(data['body']);
+    if (body !== undefined) parts.push(body);
+  }
+  const omitted = scalar(followUp['omitted']);
+  if (omitted !== undefined) parts.push(`read_omitted: ${omitted}`);
+  if (parts.length === 0) return undefined;
+  return { text: ['', 'read:', ...parts].join('\n'), partial: omitted !== undefined };
 }
 
 /** Preserves source identity and coverage while bounding only the displayed projection. */
@@ -220,11 +236,11 @@ export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseP
   else if (typeof data['profile'] === 'string') text = data['profile'];
   else text = JSON.stringify(data);
   const card = followUpText(followUp);
-  if (card !== undefined) text = `${text}${card}`;
+  if (card !== undefined) text = `${text}${card.text}`;
   const fullTrailer = coverage.lines.length ? `\ncoverage: ${coverage.lines.join(' | ')}` : '';
   const trailer = fullTrailer.length <= 1500 ? fullTrailer : `${fullTrailer.slice(0, 1450)} [coverage metadata clipped]`;
   const projected = boundedProjection(text, MONGOOSE_PROJECTION_CHARS - trailer.length);
-  return { text: `${projected.text}${trailer}`, partial: projected.partial || coverage.partial, originalCharacters: projected.originalCharacters, omittedCharacters: projected.omittedCharacters };
+  return { text: `${projected.text}${trailer}`, partial: projected.partial || coverage.partial || card?.partial === true, originalCharacters: projected.originalCharacters, omittedCharacters: projected.omittedCharacters };
 }
 
 /** One decoded envelope behind its verified payload; a connector that set no follow-up decodes nothing. */
@@ -249,9 +265,14 @@ export function projectMongooseResult(port: McpPort, result: ConnectorResult): {
   if (!payload.ok) return { ok: false, reason: payload.reason };
   let data: unknown = payload.text;
   try { data = JSON.parse(payload.text); } catch { data = payload.text; }
-  const followUp = result.followUp === undefined ? undefined : decodeStored(port, result.source, result.followUp.payload, result.followUp.decodedResult);
-  const attachment = followUp !== undefined && followUp.ok ? { data: followUp.data } : undefined;
-  return { ok: true, projection: renderMongooseTool(data, attachment) };
+  const followUp = result.followUp === undefined ? undefined : {
+    pages: result.followUp.pages.flatMap(page => {
+      const decoded = decodeStored(port, result.source, page.payload, page.decodedResult);
+      return decoded.ok ? [{ data: decoded.data }] : [];
+    }),
+    ...(result.followUp.omitted === undefined ? {} : { omitted: result.followUp.omitted }),
+  };
+  return { ok: true, projection: renderMongooseTool(data, followUp) };
 }
 
 export type { MongooseResult };

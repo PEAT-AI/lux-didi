@@ -199,8 +199,8 @@ export const RESEARCH = Object.freeze({
    */
   knowledgeQueryTerms: 10,
   /**
-   * K2: a search snippet stays short, and the body a hit is opened for is shown at three thousand
-   * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
+   * K2: a search snippet stays short. 3r K1: the body the search asks for is this window, the server's
+   * default, so a hit arrives as text the owner can be read without a get_insight round trip.
    */
   knowledgeBodyChars: 2_000,
   /**
@@ -1947,7 +1947,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
     const words = asked !== '' ? asked : (topicText ?? '').trim();
     if (words === '' || !config.configured.includes('mongoose')) return [];
-    return companySubs(words);
+    return companySubs(words, config.question ?? '');
   }
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
@@ -4681,10 +4681,12 @@ export function companyMetricSubs(query: string, question: string, nowMs: number
 
 /**
  * The company lookup: one search, and for a question one read of the top hit's ref, so the finding
- * carries the entity behind the answer instead of a title alone.
+ * carries the entity behind the answer instead of a title alone. A depth ask reads that body at full depth
+ * and follows the server's own cursor until the coverage is complete or the page budget ends it.
  */
-function companySubs(query: string): IntentSubCall[] {
-  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
+function companySubs(query: string, question = ''): IntentSubCall[] {
+  const depth = budgetFor(question) === RESEARCH.budgets.depth ? 'full' : 'summary';
+  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query), depth } }];
 }
 
 /** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */
@@ -4771,7 +4773,7 @@ function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedRea
 function routedReadUnfiltered(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
-  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
+  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query, context.question) };
   if (lookup.source === 'data') {
     // W3-R1: the numbers source is the data endpoint's field search and one metric query. A count with
     // no date window settles refused under its own closed code and the one-line repair.
@@ -6083,9 +6085,12 @@ function hitTitleWords(line: string): string[] {
  * C-POLISH10: whether the leg may open one hit's body without being asked. An unprompted open costs a round trip,
  * so it takes a hit the ranker scored at or above the floor AND whose title or tags share a content word with the
  * ask; the decision is reported as closed fields, a bucket and a reason, never the ask or the title.
+ * The score is the ranker's own, taken from the confidence the shape carried off the reply header
+ * (`_confidence: medium · mode: reranked · top score: 0.37 · relevant candidate: yes_`). The shaped text has
+ * that line stripped, so parsing the text alone left every real decision at bucket=unknown.
  */
-function autopenVerdict(text: string, ask: string, candidates: readonly string[]): { ids: string[]; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
-  const confidence = knowledgeConfidenceOf(text.split('\n'));
+function autopenVerdict(text: string, carried: KnowledgeConfidence | undefined, ask: string, candidates: readonly string[]): { ids: string[]; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
+  const confidence = carried ?? knowledgeConfidenceOf(text.split('\n'));
   const scored = Number(confidence?.top ?? '');
   const bucket = Number.isFinite(scored) && scored > 0
     ? (scored >= 0.6 ? 'high' : scored >= RESEARCH.knowledgeAutopenScore ? 'medium' : 'low')
@@ -6119,7 +6124,7 @@ async function withFullEntries(
   if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
   // C-POLISH10: an open nobody asked for is decided here, on the ranker's score and on the hit's own title, so an
   // unrelated entry is never opened and injected. The line carries the decision and a bucket, never the words.
-  const verdict = autopenVerdict(searched.text, question, knowledgeReadIds(searched.text, asked));
+  const verdict = autopenVerdict(searched.text, searched.knowledgeConfidence, question, knowledgeReadIds(searched.text, asked));
   hostLogEvent({ event: 'knowledge_autopen', decision: verdict.ids.length > 0 ? 'opened' : 'skipped', bucket: verdict.bucket, reason: verdict.reason ?? 'none' });
   if (verdict.ids.length === 0) return [...results];
   const ids = verdict.ids;
@@ -6145,7 +6150,15 @@ async function withFullEntries(
         bodies.set(open, `${bodies.get(open)!}\n${line.trim()}`);
       }
     }
-    for (const [id, body] of bodies) bodies.set(id, body.slice(0, RESEARCH.knowledgeBodyChars));
+    // Budget item G4: the stage-two body follows the reply budget, never a per-hit cut below what the
+    // reply can still carry. A long document keeps its tail while readReplyChars is left; the last entry
+    // that overruns is cut at the remaining budget and says so with the existing cut line.
+    let remaining = RESEARCH.readReplyChars;
+    for (const [id, body] of bodies) {
+      const keep = Math.min(body.length, Math.max(0, remaining));
+      bodies.set(id, body.slice(0, keep));
+      remaining -= keep;
+    }
     if (bodies.size === 0) { run.knowledgeFetchCut = true; return [...results]; }
     const enriched = searched.text.split('\n').map(line => {
       const id = hitIdOf(line);

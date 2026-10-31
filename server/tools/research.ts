@@ -332,7 +332,7 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window', 'read_ceiling'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
@@ -2466,6 +2466,8 @@ export interface ResearchDeps {
   calendarDigest?: (() => string | undefined) | undefined;
   /** WEB: the public web read. Present means the web part is configured; absent means it is not offered. */
   web?: WebSearchPort | undefined;
+  /** C-RESEARCH #107: the job's remaining provider reads, so a web read past the ceiling is never dispatched. */
+  readsLeft?: (() => number) | undefined;
   /**
    * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
    * once instead of spending its deadline on sub-calls that cannot reach a stopped connector. P5: an
@@ -3003,7 +3005,7 @@ export function clip(text: string, max: number): string {
  */
 
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window' | 'read_ceiling';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -3022,6 +3024,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
+  // C-RESEARCH #107: the task's own read ceiling stopped this source before it was read.
+  read_ceiling: label => `${label} was cut by this task's read ceiling before I read it`,
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
   timed_out: (label, source) => `${label} did not answer within ${Math.round(RESEARCH.sourceDeadline[source] / 1000)} seconds`,
   still_reading: label => `I am still reading ${label}`,
@@ -3049,6 +3053,7 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
   // #635: a timeout says it timed out, whatever the connector called it.
+  if (text === 'read_ceiling') return 'read_ceiling';
   if (/timeout|timed_out/u.test(text)) return 'timed_out';
   if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
   return 'provider_failed';
@@ -5349,6 +5354,10 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
     if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
     const query = bound.query;
     const readStarted = now();
+    if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+      run.unavailableReasons.set('web', 'read_ceiling');
+      return { plan };
+    }
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
     recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
@@ -6716,6 +6725,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               const readStarted = now();
               const bound = bindResearchQuery(String(call.args['query'] ?? ''), `${deps.queryContext?.() ?? ownerWords} ${[...run.evidence.values()].join(' ')}`);
               if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
+              if (deps.readsLeft !== undefined && deps.readsLeft() <= 0) {
+                run.unavailableReasons.set('web', 'read_ceiling');
+                return empty;
+              }
               const outcome = await deps.web!.search({ query: bound.query, signal: readSignal, deadlineMs: webDeadlineMs(bound.query) });
               recordWebRead(deps, run, bound.query, outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }

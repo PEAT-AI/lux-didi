@@ -388,3 +388,19 @@ test('#107: a distinct question that shares a topic is not the same owner ask', 
     'a distinct question is admitted as its own ask, never as an attach');
   assert.notEqual(admission.jobId(), job, 'the distinct question opens its own job');
 });
+
+// C-RESEARCH #107 (R-R2): a web read the task ceiling cut says so, and is never dispatched as an outage.
+test('#107: a web read cut by the ceiling names the ceiling and never reaches the port', async () => {
+  const searched: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['web'], ledger: new ResearchLedger(),
+    emit() {}, log() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {},
+    execute: async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 })),
+    readsLeft: () => 0,
+    web: { search: async request => { searched.push(request.query); return { ok: false as const, code: 'web_unavailable' as const }; } },
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'synthetic web ceiling', lookups: [{ source: 'web', query: 'synthetic ceiling' }] }, signal());
+  assert.deepEqual(searched, [], 'a read past the ceiling is never dispatched');
+  assert.match(JSON.stringify(reply), /read ceiling/u, `the cut names its cause: ${JSON.stringify(reply).slice(0, 400)}`);
+  assert.doesNotMatch(JSON.stringify(reply), /web unavailable|is not connected/u, 'the cut is never reported as an outage');
+});

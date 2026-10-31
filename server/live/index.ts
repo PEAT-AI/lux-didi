@@ -4428,14 +4428,16 @@ export class LiveSessionOwner {
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute: budgetedExecute,
+      // C-RESEARCH #107: the web read path asks the same job ceiling the connector gate takes from.
+      readsLeft: () => handle.researchAdmission.readsLeft(),
       // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
       voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
         const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
-        // C-RESEARCH #107: a web read is a provider read, so it is charged to the same job ceiling before it
-        // dispatches; a cut web read is a failed read, never an uncharged one.
-        if (handle.researchAdmission.takeReads(1) === 0) return { ok: false, code: 'web_unavailable' as const };
+        // C-RESEARCH #107: a web read is a provider read, so it is charged to the same job ceiling. The engine
+        // asks `readsLeft` first, so a read past the ceiling is never dispatched and never reported as an outage.
+        handle.researchAdmission.takeReads(1);
         const result = await this.#researchWeb!.search(request);
         if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;

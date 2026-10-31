@@ -770,11 +770,12 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
 // D3: a one-time alarm carrying a recurrence the model invented is the one-time alarm he asked for,
 // and the result says which part of the call was not used. It is never a refusal.
 test('#796 a model-added recurrence is dropped and the one-time alarm is set', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  const events: Record<string, unknown>[] = [];
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', log: event => { events.push(event as Record<string, unknown>); } });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   const set = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.equal(set.status, 'completed', String(set.result_json));
+  assert.equal(set.status, 'completed', JSON.stringify(events.filter(event => String(event['event']).startsWith('tool') || String(event['event']).startsWith('alarm'))));
   assert.match(String(set.result_json), /not_applied/, String(set.result_json));
   assert.match(String(set.result_json), /the owner did not ask/, String(set.result_json));
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
@@ -1051,7 +1052,7 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
-  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
+  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, `the block this session made is removed: ${String(removed.result_json)} ${String(removed.reason)}`);
 
 test('W1030 delete_event: a block the owner names is removed only when this session calendar read returned it', async t => {
   const port = composePort();

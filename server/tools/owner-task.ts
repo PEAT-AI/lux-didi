@@ -110,7 +110,7 @@ export function ownerCommands(words: string): OwnerCommand[] {
   const otherAsk = (CREATE_VERB.test(spoken) && (EVENT_NOUN.test(spoken) || CALENDAR.test(spoken)))
     || (DRAFT_VERB.test(spoken) && (MAIL.test(spoken) || CHAT.test(spoken))) || SAVE_CUE.test(spoken)
     || (SET_VERB.test(spoken) && ALARM.test(spoken)) || WAKE.test(spoken) || ALARM.test(spoken);
-  add('open', OPEN_VERB.test(spoken) || ((!otherAsk) && (OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken))));
+  add('open', (!otherAsk) && (OPEN_VERB.test(spoken) || OPEN_NOUN.test(spoken) || DOMAIN.test(spoken) || FIND.test(spoken) || namedDestination(spoken)));
   return commands;
 }
 

@@ -234,9 +234,9 @@ export class OwnerTasks implements OwnerTaskPort {
     if (!commands.some(command => command.kind === 'open') && commands.length > 0) return;
     if (!OPEN_VERB.test(words) && READ_OBJECT.test(words)) return;
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
-    // A new owner final is a new selection round: the targets spent in the last round no longer
-    // answer for it, so he can name the same window again.
-    task.openGrant = true; task.openReceipts.clear();
+    // A new owner final is a new selection round. The receipts of the task stay (D4: a retry in the
+    // same task replays what already opened), the round itself is armed again.
+    task.openGrant = true;
   }
 
   authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization {
@@ -246,13 +246,17 @@ export class OwnerTasks implements OwnerTaskPort {
     if (kind === 'open') {
       // An empty target is the grant-point probe: it asks whether any open authority exists, and the
       // handler decides replay against spent with its own canonical target.
-      if (target === '') return { ...common, code: task.openGrant || task.openReceipts.size > 0 || task.shown.length > 0 ? 'allowed' : 'no_owner_request' };
-      const receipt = task.openReceipts.get(target);
-      if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
-      // One ask may open each window it exposes: a handle this ask showed is a target the owner saw.
-      if (task.openGrant || (handle !== undefined && handle !== '' && task.shown.some(shown => shown.handle === handle))) {
-        return { ...common, code: 'allowed' };
+      if (target === '') {
+        return { ...common, code: task.openGrant || task.shown.length > 0 || task.openReceipts.size > 0 ? 'allowed' : 'no_owner_request' };
       }
+      // One open per handle, each with its own receipt: a handle this task showed answers before any
+      // refusal, and a retry of a spent handle returns the receipt it already has (D4).
+      const key = handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`;
+      const receipt = task.openReceipts.get(key);
+      if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
+      const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle);
+      // Neither named by him nor shown by a read of this task: that needs new owner words.
+      if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
@@ -301,12 +305,14 @@ export class OwnerTasks implements OwnerTaskPort {
     }
   }
 
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
-    // One ask is one open, spent by its success; a second window from the same ask needs a handle the
-    // ask actually showed, or new owner words.
-    if (kind === 'open') { task.openReceipts.set(target, receipt); task.openGrant = false; return; }
+    // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
+    if (kind === 'open') {
+      task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, receipt);
+      task.openGrant = false; return;
+    }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

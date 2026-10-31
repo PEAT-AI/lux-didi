@@ -114,7 +114,7 @@ export interface OwnerTaskPort {
   authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization;
   claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string): RequestAuthorization;
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void;
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string): void;
   clarify(session: string, kind: ActionKind, field: string): void;
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void;
   topShown(session: string, kinds: readonly string[]): string | undefined;

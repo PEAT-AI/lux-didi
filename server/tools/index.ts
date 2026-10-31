@@ -937,7 +937,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
             : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
             : { code, say: 'The host could not confirm that the target opened.' };
-          if (dispatched && authorization.code === 'allowed') ownerTasks.commit(runId, 'open', requestTarget, payload, authorization.id);
+          if (dispatched && authorization.code === 'allowed') ownerTasks.commit(runId, 'open', requestTarget, payload, authorization.id,
+            typeof (effectiveArgs as JsonObject)['handle'] === 'string' ? String((effectiveArgs as JsonObject)['handle']) : undefined);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a

@@ -63,16 +63,12 @@
               "connector": "calendar",
               "tool": "calendar_delete_event",
               "args": {
-                "eventId": "evt_synthetic_1"
+                "event_id": "evt_synthetic_1"
               }
             }
           }
         }
-      ],
-      "base": {
-        "status": "EXPECTED_RED",
-        "reason": "compose refused at the live grant filter (server/live/index.ts:2057): delete_event is answered grant_not_permitted, never reaching calendar_delete_event. C-GRANTS/D1 fix this."
-      }
+      ]
     }
   ]
 }

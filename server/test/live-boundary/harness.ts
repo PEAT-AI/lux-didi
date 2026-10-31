@@ -152,7 +152,16 @@ const CONNECTORS: readonly FixtureConnector[] = [
   { id: 'calendar', connector: 'calendar', family: 'google', protocol: 'google', endpoint: { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'synthetic-account', resource: 'synthetic-calendar' },
     schemas: schemas(['calendar_list_events', 'calendar_list_calendars']),
     defaultData: {
-      calendar_list_events: { events: [{ id: 'evt_synthetic_1', summary: 'Synthetic standup', start: '2026-10-12T09:00:00Z', end: '2026-10-12T09:15:00Z' }] },
+      // #107 CG-R4: the delete corpus names several blocks in both languages, so the fixture calendar
+      // holds one block per name the corpus uses; a delete then resolves the block the words name.
+      calendar_list_events: { events: [
+        { id: 'evt_synthetic_1', summary: 'Synthetic standup', start: '2026-10-12T09:00:00Z', end: '2026-10-12T09:15:00Z' },
+        { id: 'evt_synthetic_2', summary: 'synthetische Standup', start: '2026-10-13T10:00:00Z', end: '2026-10-13T10:15:00Z' },
+        { id: 'evt_synthetic_3', summary: 'synthetischen Termin', start: '2026-10-14T14:00:00Z', end: '2026-10-14T14:30:00Z' },
+        { id: 'evt_synthetic_4', summary: 'synthetic gym block', start: '2026-10-15T09:00:00Z', end: '2026-10-15T10:00:00Z' },
+        { id: 'evt_synthetic_5', summary: 'Block morgen früh', start: '2026-10-16T07:00:00Z', end: '2026-10-16T07:30:00Z' },
+        { id: 'evt_synthetic_6', summary: 'synthetische Meeting', start: '2026-10-16T16:00:00Z', end: '2026-10-16T16:30:00Z' },
+      ] },
       calendar_list_calendars: { calendars: [{ id: 'primary', summary: 'Synthetic primary' }] },
     } },
   { id: 'calendar-write', connector: 'calendar', family: 'google', protocol: 'google', endpoint: { id: 'calendar-write', url: 'https://fixture.invalid/calendar-write', account: 'synthetic-account', resource: 'synthetic-calendar-write' },
@@ -296,6 +305,9 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   const close = async (): Promise<void> => {
     detachLog();
     globalThis.fetch = originalFetch;
+    // #107 CG-R4: the roster is module-global, so it is cleared on close exactly as the runtime does
+    // (server/host/runtime.ts:625); otherwise one boundary's people answer for the next one.
+    installPeople(null);
     await owner!.shutdown();
     for (const { sdk, transport } of servers) { await transport.close(); await sdk.close(); }
     await port.close();
@@ -325,11 +337,17 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
     maybeToolCall: async (name, args, id) => {
       const callId = id ?? `call-${randomUUID()}`;
       lastCallId = callId;
-      await emit({ type: 'toolCall', calls: [{ id: callId, name, args }] });
-      for (let index = 0; index < 60; index += 1) {
-        const answered = fake.toolResponses.flat().find(response => response.id === callId);
-        if (answered) return answered.response;
-        await tick();
+      // #107 CG-R4: past RESUMPTION_TOOL_CALL_LIMIT the host opens a fresh provider session, so a call
+      // the replaced session never answered is offered to the new one instead of reading as unanswered.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const sessions = fake.sessionsOpened;
+        await emit({ type: 'toolCall', calls: [{ id: callId, name, args }] });
+        for (let index = 0; index < 60; index += 1) {
+          const answered = fake.toolResponses.flat().find(response => response.id === callId);
+          if (answered) return answered.response;
+          if (fake.sessionsOpened > sessions) break;
+          await tick();
+        }
       }
       return undefined;
     },

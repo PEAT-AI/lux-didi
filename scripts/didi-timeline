@@ -15,7 +15,7 @@ didi-timeline <session|latest> [options]
 
   call <session|latest> one call's ordered story: the store's turns and tool calls merged with
                         host.log (and its rotated files), native-live.log and audio.log
-  sessions              the same audit aggregates across every session with a turn since a date
+  sessions              the same audit aggregates across every session with a turn or a call since a date
   doctor                log health: files, bytes, lines, torn lines, top events, oldest and newest
                         day, and the lines no session or call can be attributed to
   list                  one row per session the logs name: start, duration, tools, max silence, terminal
@@ -24,9 +24,10 @@ didi-timeline <session|latest> [options]
   --content             opt into gated transcripts, requested/effective arguments and supported full source results
   --json                print the report as JSON (no owner text unless --content)
   --audit               with call: session coverage and clock health, one row per tool call and per owner turn,
-                        then slowest calls, refusals by code, slow turns, claims with no call and dead air
+                        then slowest calls, refusals by code, tool failures by tool and code, slow turns,
+                        claims with no call and dead air
   --audit-summary       with sessions: counts per tool, p50/p90 latency per tool, refusals per code, final-to-audio
-  --since <date>        with --audit-summary: a day (YYYY-MM-DD) or an ISO instant; sessions opened since it
+  --since <date>        with --audit-summary: a day (YYYY-MM-DD) or an ISO instant; sessions with a turn or a call since it
   --export-metadata     named columns of the five metadata tables only, never a dump
   --session <id>        with --export-metadata, restrict the export to one live session
   --data-dir <path>     the host data directory holding state.sqlite and logs/

@@ -131,6 +131,5 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
     }
 
     /// A launch that carries the argument exists only to announce the alarm it was armed for.
-    nonisolated static func present(arguments: [String]) -> Bool { arguments.contains(launchArgument) }
     nonisolated static var launchKind: String { "alarm_relaunch" }
 }

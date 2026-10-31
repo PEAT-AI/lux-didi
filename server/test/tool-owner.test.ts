@@ -952,7 +952,7 @@ const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: Executa
   if (!f.host.grants.some(existing => existing.tool === grant.tool)) f.host.grants.push(grant);
   const batch = await runToolCalls({ journal: f.owner.journal, resultGate: f.owner.resultGate }, [{ id: call.callId, name: call.toolName, args: args as never }], {
     registry: liveTools(f), host: f.host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5_000 },
-    step, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'], authorize: true,
+    step, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'], authorize: true, ownerTasks: f.owner.ownerTasks,
   });
   const record = batch.tools[0]!;
   const result = batch.bindings[0]?.result;

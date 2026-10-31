@@ -126,6 +126,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     assert.match(String(row?.['result_json']), /not_applied/, String(row?.['result_json']));
     assert.match(String(row?.['result_json']), /the owner did not ask/, String(row?.['result_json']));
     assert.equal(store.transaction(tx => tx.all('SELECT id FROM alarm_series')).length, 0, 'a one-time ask never writes a series');
+    // The positive half: the one-time alarm he asked for really is set and pending.
+    const scheduled = store.transaction(tx => tx.get('SELECT state,fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
+    assert.equal(scheduled?.state, 'pending', 'the one-time alarm is set');
+    assert.ok(Number(scheduled?.fire_at_utc) > alarmNow, 'it is scheduled ahead');
   });
   // Every open name exercises the real registry executor, not an alias of open_web.
   beginHandleSession(session.liveSessionId);
@@ -219,7 +223,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const notFound = await runToolCalls(owner, [{ id: 'synthetic-not-found', name: 'open_web', args: { kind: 'site', target: 'zzsyntheticnotasite' } }], {
     registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
     authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0,
-    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true, ownerTasks: owner.ownerTasks,
   } as never);
   const notFoundText = JSON.stringify(notFound.accepted);
   assert.match(notFoundText, /"not_found"/, 'the resolver answer is reported as itself');

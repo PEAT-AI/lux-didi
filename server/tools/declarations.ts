@@ -179,8 +179,11 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           }
           // D2: the catalogue exposes every supported tool, so a write's authority is the owner's own
           // bounded operation, checked here at the one grant point. Each refusal names its layer.
+          // C1: no owner-task port means no operation check, so a write would run on the catalogue
+          // grant alone. That is a fail-open path, so it is refused rather than allowed.
           const operationKind = ownerKindOf(tool.name);
-          if (operationKind !== undefined && ctx.ownerTasks !== undefined) {
+          if (operationKind !== undefined) {
+            if (ctx.ownerTasks === undefined) { record.reason = 'operation_not_configured'; return; }
             const operation = ctx.ownerTasks.authorize(host.runId, operationKind, '');
             if (operation.code !== 'allowed' && operation.code !== 'idempotent') { record.reason = `operation_${operation.code}`; return; }
           }

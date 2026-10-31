@@ -168,9 +168,15 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       const executionId = `${host.runId}:${ctx.step}:${index}`;
       const record: ToolRecord = { ...(call.id !== undefined ? { callId: call.id } : {}), name: call.name, executionId, status: 'refused', reason: 'unknown_tool' };
       const tool = registry.find(t => t.name === call.name);
+      // C-ARGS/D5: the declaration-driven normalizer runs before any validation, for every tool. It drops
+      // only another intent's keys, undeclared keys and absent-value fillers, so a real value of a key this
+      // intent reads still reaches the tool's own refusal. It runs before the call is journaled because the
+      // executor re-derives `argumentsHash` from the arguments it is handed: one form, one hash.
+      const normalized = tool === undefined ? undefined : normalizeArguments(tool, call.args);
+      const args = normalized === undefined ? call.args : normalized.args;
       const refusal: ToolCallRefusal = {
         runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
-        executionId, toolName: call.name, argumentsHash: createHash('sha256').update(JSON.stringify(call.args)).digest('hex'),
+        executionId, toolName: call.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
         ...(call.id !== undefined ? { callId: call.id } : {}), ...(tool ? { accountId: tool.accountId, resourceId: tool.resourceId } : {}),
       };
       let intent: ToolCallIntent | undefined;
@@ -184,12 +190,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
-          // C-ARGS/D5: the declaration-driven normalizer runs before any validation, for every tool. It
-          // drops only another intent's keys, undeclared keys and absent-value fillers, so a real value of a
-          // key this intent reads still reaches the tool's own refusal.
-          const normalized = normalizeArguments(tool, call.args);
-          logArgumentsNormalized(call.name, normalized.dropped);
-          const args = normalized.args;
+          if (normalized !== undefined) logArgumentsNormalized(call.name, normalized.dropped);
           const shape = typeof call.args !== 'object' || call.args === null || Array.isArray(call.args);
           const callKey = `${call.name}:${createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 16)}`;
           const rejections = rejectedCalls(ctx.invalidAttempts ?? seenIds);

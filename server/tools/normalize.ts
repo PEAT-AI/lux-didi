@@ -38,7 +38,9 @@ export const INTENT_MATRICES: Readonly<Record<string, IntentMatrix>> = Object.fr
     common: Object.freeze(['order', 'from_date', 'to_date', 'sides', 'offset', 'limit']),
     intents: Object.freeze({
       person: Object.freeze(['person', 'query']),
-      overview: Object.freeze(['query']),
+      // The overview is a person's overview: the read refuses without `person` ("invalid-person"), and the
+      // predicates above allow that key for the intent, so it is read here exactly as `person` reads it.
+      overview: Object.freeze(['person', 'query']),
       channel: Object.freeze(['channel', 'query']),
       group: Object.freeze(['people', 'query']),
       topics: Object.freeze(['person', 'channel', 'query']),

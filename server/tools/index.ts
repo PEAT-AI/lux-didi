@@ -1122,7 +1122,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // a copy, and the composed names are never stored in the registry grant.
               if (!grant.toolNames.includes(name) && !composedNames.includes(name)) { return { status: 'failed', code: 'not_granted' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
-              // Normalize at the boundary; the intent hash below stays over the model's original args.
+              // Normalize at the boundary. The declaration already normalized and journaled this call, so this
+              // pass is idempotent and the intent hash stays over the arguments the executor is handed.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
               if (declaration.normalize !== undefined && prepared === undefined) { return { status: 'failed' }; }
               const callArgs = prepared === undefined ? args : prepared.args;

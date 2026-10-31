@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   CALL_AUDIT_SCHEMA_VERSION, buildAuditSummary, buildCallAudit, buildCallStory, buildTimeline, listCalls, logHealth,
-  renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
+  renderAuditSummary, renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
   type CallAudit, type LogInput, type LogStream, type TimelineReport, type TraceRead,
 } from '../trace/timeline.js';
 

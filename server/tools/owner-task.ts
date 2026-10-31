@@ -37,7 +37,10 @@ const AMEND = /\b(?:make it|change it|move it|push it|shift it|instead|rather|no
 
 const SET_VERB = /\b(?:set|put|make|create|add|schedule|wake|remind|take|weck|erinner|stell|trag)\b/i;
 const ALARM = /\b(?:alarms?|wecker)\b/i;
-const WAKE = /\b(?:wake me|weck mich|remind me|erinnere mich)\b/i;
+/** RULING G-R1: every wake-up phrasing the owner uses reads as one set_alarm construction:
+ *  "wake up at 10:30 and remind me to go to sport", "wake me at 7 and brief me",
+ *  "check in with me in an hour about X", "in 20 minutes remind me", "weck mich um 7", "erinner mich". */
+const WAKE = /\b(?:wake (?:me|up)|weck mich|remind me|erinner(?:e)? mich|check in with me)\b/i;
 const LIST_VERB = /\b(?:list|show|what|which|any|read)\b/i;
 const CANCEL_VERB = /\b(?:cancel|cancel(?:l)?ed|stop|delete|remove|clear|kill|turn off|abbrechen|ausmachen|löschen|stopp)\b/i;
 const SNOOZE = /\b(?:snooze|schlummern|nochmal (?:wecken|klingeln))\b/i;

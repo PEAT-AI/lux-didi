@@ -237,7 +237,10 @@ export class OwnerTasks implements OwnerTaskPort {
     // and a read he asked for ("find the plan in Lux knowledge") never opens what its text names.
     if (!commands.some(command => command.kind === 'open') && commands.length > 0) return;
     if (!OPEN_VERB.test(words) && READ_OBJECT.test(words)) return;
-    if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
+    // A question is not a command, but it is still him looking at the windows he was shown, so it arms
+    // the open when there is a window under discussion and arms nothing on its own.
+    const looking = task.shown.length > 0 || task.openReceipts.size > 0;
+    if (!words.trim() || (QUESTION.test(words) && !looking) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
     // A new owner final is a new selection round. The receipts of the task stay (D4: a retry in the
     // same task replays what already opened), the round itself is armed again.
     task.openGrant = true;

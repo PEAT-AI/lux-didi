@@ -111,10 +111,10 @@ export interface OwnerTaskPort {
   waitForFinal(session: string, signal: AbortSignal): Promise<void>;
   externalContentPresent(session: string): boolean;
   observe(session: string, journalId: string, words: string, observedAt?: number): void;
-  authorize(session: string, kind: ActionKind, target: string, handle?: string, executionId?: string): RequestAuthorization;
-  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string, executionId?: string): RequestAuthorization;
+  authorize(session: string, kind: ActionKind, target: string, handle?: string): RequestAuthorization;
+  claim(session: string, kind: ActionKind, target: string, requestId: string, handle?: string): RequestAuthorization;
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string, executionId?: string): void;
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string, handle?: string): void;
   /** An attempt that reached the native side without opening spends the round and stores no receipt. */
   spend(session: string, kind: ActionKind): void;
   clarify(session: string, kind: ActionKind, field: string): void;
@@ -124,8 +124,6 @@ export interface OwnerTaskPort {
   source(session: string, kind: string, requestId?: string): void;
   sources(session: string): Record<string, number>;
   audit(session: string, kind: ActionKind): { ownerFinals: number; requestAgeMs: number; grantKind: ActionKind; grantState: string };
-  /** A provider rebuild expires the open ask's unspent operations and keeps the ledger. */
-  rebuild(session: string): void;
   release(session: string): void;
 }
 

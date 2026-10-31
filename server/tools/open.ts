@@ -1,7 +1,7 @@
 import type { OwnerTaskPort } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, stripOpenLines, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
+import { HOME_APPS, WEB_KINDS, beginHandleSession, closeExposureWindow, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, stripOpenLines, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
 import { pickSiteDomain, publicQueryOf, type WebSearchPort } from './web-search.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
@@ -157,6 +157,8 @@ export function noteOwnerWords(runId: string, text: string): void {
 export function noteModelOutput(runId: string): void {
   const window = ownerTurn.get(runId);
   if (window) window.modelSpoke = true;
+  // The windows already handed over are the ones he saw; a read after this reply answers the next open.
+  closeExposureWindow();
 }
 export function ownerWords(runId: string): string {
   return (ownerTurn.get(runId)?.turns ?? []).join(' ').slice(-INTENT_CHARS);

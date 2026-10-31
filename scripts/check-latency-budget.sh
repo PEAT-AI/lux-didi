@@ -10,7 +10,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/didi-latency-budget.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 cd server
-npm run build >/dev/null
+npm run build >"$work/build.log" 2>&1 || { cat "$work/build.log" >&2; exit 1; }
 run() {
   node --test --test-reporter=tap --test-timeout=20000 dist/test/latency-budget.test.js "$@"
 }

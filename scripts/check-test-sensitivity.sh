@@ -137,6 +137,12 @@ def run_one(sidecar, builds):
         mutated = command(sidecar['command'], cwd, env)
         if mutated.returncode == 0:
             return 'FAIL', f"the test passed under the mutant: {sidecar['mutant'].get('note', 'no note')}"
+        # The mutant has to break THIS test, not the module it is imported from. Node prints the
+        # failing test's own line, so its absence means a load error or a test that never ran.
+        node_test = sidecar['test']['file'].endswith(('.ts', '.mts', '.js', '.mjs'))
+        if node_test and sidecar['test']['name'] not in (mutated.stdout + mutated.stderr):
+            return 'FAIL', ('the mutant made the run fail without the named test failing '
+                            '(a load error or a test that never ran)')
         return 'PASS', 'the mutant makes the named test fail'
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -183,7 +189,7 @@ def selftest():
     """The runner must report a test that cannot fail, and pass one that can."""
     fixtures = os.path.join(sidecars, 'fixtures')
     status = 0
-    for name, expected in (('cannot-fail', 'FAIL'), ('can-fail', 'PASS')):
+    for name, expected in (('cannot-fail', 'FAIL'), ('can-fail', 'PASS'), ('module-load', 'FAIL')):
         outcome = main_for(os.path.join(fixtures, name))
         if outcome != expected:
             print(f'SELFTEST FAIL: the {name} fixture was reported {outcome}, expected {expected}')

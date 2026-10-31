@@ -220,10 +220,19 @@ def static_pass(head_tree, changed):
         return owner_index().get(name, set())
     changed = set(changed)
     scripts = [f for f in head_tree.files if re.match(r'scripts/check-[^/]+\.sh$', f)]
+    warnings = []
     for script in scripts:
         text = head_tree.read(script) or ''
         staged = staged_sources(head_tree.files, text)
         staged_set = set(staged)
+        # F4: the extractors read literal text. Say so when a check builds or stages in a shape they
+        # cannot see, so a green pass is never mistaken for full coverage.
+        if re.search(r'\bswift build\b', text):
+            warnings.append(f'{script} builds with swift build; its compile units are not extracted')
+        elif 'swiftc' in text and not compile_units(head_tree.files, text):
+            warnings.append(f'{script} runs swiftc without a literal <file>.swift list; its units are not extracted')
+        if '/source/' in text and not staged:
+            warnings.append(f'{script} stages into $out/source but no literal cp source was extracted')
         for holder in staged:
             body = head_tree.read(holder)
             if body is None:
@@ -249,7 +258,9 @@ def static_pass(head_tree, changed):
                               if re.search(r'\b%s\b' % re.escape(n), compiled) is not None)
                 if used:
                     problems.append(f'{script} compiles a unit that uses {used[0]} from {candidate}, but the unit does not name {candidate}')
-    for problem in problems:
+    for warning in dict.fromkeys(warnings):
+        print(f'STATIC WARN: {warning}')
+    for problem in dict.fromkeys(problems):
         print(f'STATIC FAIL: {problem}')
     if problems:
         return 1
@@ -287,23 +298,20 @@ def lint(path):
     return result.returncode == 0
 
 
-def plist_pass(base, head):
-    head_tree = Tree(sha=head)
-    changed = changed_files(base, head)
-    if not any(path.startswith('Sources/') for path in changed):
-        print('PLIST SKIP: no Sources/ change in this range')
-        return 0
-    writers = [f for f in head_tree.files
-               if f.startswith('Sources/') and f.endswith('.swift')
-               and 'StartCalendarInterval' in (head_tree.read(f) or '')]
+def render_writer(tree):
+    """Render the app's own plist writer at a fixed synthetic time, then validate what it emitted.
+
+    A writer that exists at this head and cannot be rendered is a FAILURE, never a pass: the commit
+    that introduces a bad key is exactly where an unrenderable writer would hide it. SKIP is kept only
+    for a range with no writer, or a host without swiftc."""
+    writers = [f for f in tree.files if f.startswith('Sources/') and f.endswith('.swift')
+               and 'StartCalendarInterval' in (tree.read(f) or '')]
     if not writers:
-        print('PLIST SKIP: no Sources/ writer emits StartCalendarInterval at this head')
-        return 0
+        return 'SKIP', 'no Sources/ writer emits StartCalendarInterval at this head'
     if shutil.which('swiftc') is None:
-        print('PLIST SKIP: swiftc is not installed here, so the writer cannot be rendered')
-        return 0
+        return 'SKIP', 'swiftc is not installed here, so the writer cannot be rendered'
     writer = writers[0]
-    text = head_tree.read(writer) or ''
+    text = tree.read(writer) or ''
     code = swift_code(text)
     plist_func = re.search(r'static\s+func\s+plist\s*\(', code)
     # The type that opens nearest above the writer function owns it: a file can hold several types.
@@ -313,43 +321,51 @@ def plist_pass(base, head):
             if found.start() < plist_func.start():
                 owner = found.group(1)
     if owner is None:
-        print(f'PLIST SKIP: {writer} does not expose a static plist(startMs:...) writer to render')
-        return 0
+        return 'FAIL', f'{writer} emits StartCalendarInterval but no static plist(startMs:...) to render'
     work = tempfile.mkdtemp(prefix='didi-plist-')
     try:
-        rendered = os.path.join(work, 'main.swift')
-        with open(rendered, 'w', encoding='utf-8') as handle:
-            handle.write('import Foundation\n'
-                         f'print({owner}.plist(startMs: 1_800_000_000_000, '
-                         'label: "com.lux.didi.alarm.synthetic", appPath: "/Applications/LuxDidi.app"))\n')
-        binary = os.path.join(work, 'render')
         source = os.path.join(work, os.path.basename(writer))
         with open(source, 'w', encoding='utf-8') as handle:
             handle.write(text)
-        build = subprocess.run(['swiftc', '-O', source, rendered, '-o', binary],
+        # The app calls this writer on the main actor; a plain main.swift is a synchronous nonisolated
+        # context and cannot, so the harness is a @MainActor entry point.
+        harness = os.path.join(work, 'Render.swift')
+        with open(harness, 'w', encoding='utf-8') as handle:
+            handle.write('import Foundation\n\n'
+                         '@main\n@MainActor\nstruct Render {\n'
+                         '    static func main() {\n'
+                         f'        print({owner}.plist(startMs: 1_800_000_000_000, '
+                         'label: "com.lux.didi.alarm.synthetic", appPath: "/Applications/LuxDidi.app"))\n'
+                         '    }\n}\n')
+        binary = os.path.join(work, 'render')
+        build = subprocess.run(['swiftc', '-O', source, harness, '-o', binary],
                                capture_output=True, text=True, timeout=300)
         if build.returncode != 0:
-            print('PLIST SKIP: the writer did not compile standalone: '
-                  + (build.stderr.strip().splitlines() or ['no compiler output'])[0])
-            return 0
+            first = (build.stderr.strip().splitlines() or ['no compiler output'])[0]
+            return 'FAIL', f'{writer} exists at this head but does not render: {first}'
         emit = subprocess.run([binary], capture_output=True, text=True, timeout=60)
         if emit.returncode != 0:
-            print(f'PLIST FAIL: rendering {writer} failed: {emit.stderr.strip()[:200]}')
-            return 1
+            return 'FAIL', f'rendering {writer} failed: {emit.stderr.strip()[:200]}'
         candidate = os.path.join(work, 'rendered.plist')
         with open(candidate, 'w', encoding='utf-8') as handle:
             handle.write(emit.stdout)
         problems = validate_plist(emit.stdout.encode())
         if not lint(candidate):
             problems.append('plutil -lint refuses the rendered plist')
-        for problem in problems:
-            print(f'PLIST FAIL: {problem}')
         if problems:
-            return 1
-        print(f'PLIST PASS: {writer} renders a plist with the whitelisted keys only')
-        return 0
+            return 'FAIL', f'{writer}: ' + '; '.join(problems)
+        return 'PASS', f'{writer} renders a plist with the whitelisted keys only'
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def plist_pass(base, head):
+    if not any(path.startswith('Sources/') for path in changed_files(base, head)):
+        print('PLIST SKIP: no Sources/ change in this range')
+        return 0
+    verdict, detail = render_writer(Tree(sha=head))
+    print(f'PLIST {verdict}: {detail}')
+    return 1 if verdict == 'FAIL' else 0
 
 
 def map_mode():

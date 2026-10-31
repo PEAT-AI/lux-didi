@@ -115,6 +115,10 @@ filtered on read, so removing them is an owner decision and never a check or a m
 | Script | Covers |
 | --- | --- |
 | `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Release pull requests only. |
+| `eval-release.sh` | Tier 2 (`docs/evals.md`): the real realtime adapter in text mode over a loopback fake provider. `--dry-run` prints the plan and the price, `--fake-model` replays recorded synthetic turns, `--real` refuses without a matching `--confirm-price`. |
+| `eval-audio-probe.sh` | Tier 2b: a synthetic utterance through the adapter's upload path, provider audio counted and dropped, no audio device. |
+| `eval-mutation-probe.sh` | Honesty probe (a): each known mutation of the guarded eval code makes the self-test fail. |
+| `red-at-base.sh` | Honesty probe (b): a named test must fail at a base commit. |
 
 | `check-live-boundary.sh` | The live-boundary evals (`docs/evals.md`): the scenario files and the phrasing corpus driven through the production live session and its dispatch path, with only the provider transport and the connector I/O replaced. Prints `PASS` / `EXPECTED_RED` / `FAIL` per scenario, then the per-kind false-refusal usability gate and the injection and noncommand safety gate. `EXPECTED_RED` names the base defect it waits on and never counts as a pass; the release train runs it with `--release-gate`. No model call, no network, no audio, about fifteen seconds. |
 

@@ -31,7 +31,9 @@ export const OWNER_TASK_IDLE_MS = 10 * 60_000;
 // A quotation is the owner reading something aloud, so it is content, never a cue.
 const QUOTED = /["“”„'][^"“”„']{0,200}["“”„']/g;
 const NEGATION = /\b(?:don['’]?t|do not|never|no need|stop|nicht|kein(?:e|en|em)?|bloß nicht)\b/i;
-const QUESTION = /^\s*(?:what|when|where|who|which|how|why|did|do|does|can|could|should|would|is|are|was|were|kannst|kann|was|wann|wo|wer|wie|warum|hast du|gibt es)\b|\?\s*$/i;
+/** A question about something grants nothing; a modal request ("can you put an alarm at 07:45")
+ *  is the owner asking for the thing, so the command constructions still read it. */
+const QUESTION = /^\s*(?:what|when|where|who|which|how|why|did|do|does|was|were|have|has|had|is|are|hast du|gibt es|was|wann|wo|wer|wie|warum)\b/i;
 const CANCEL_TASK = /\b(?:forget it|never mind|nevermind|scratch that|cancel that|stop that|abbrechen|vergiss (?:es|das))\b/i;
 /** "I put the meeting in my calendar yesterday" reports the past; it asks for nothing. */
 const PAST_STATEMENT = /\b(?:i|we)\s+(?:already\s+)?(?:put|added|scheduled|booked|cancell?ed|moved|sent|drafted|wrote|created|set|had|habe|hab|hatte)\b/i;
@@ -56,14 +58,14 @@ const DRAFT_VERB = /\b(?:draft|write|compose|send|reply|respond|message|tell|sch
 const MAIL = /\b(?:e-?mails?|mails?|gmail)\b/i;
 const CHAT = /\b(?:mattermost|dm|dms|chat|channel|thread|ping|slack)\b/i;
 
-const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|belongs? in my notes|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
+const SAVE_CUE = /\b(?:remember (?:that|this|to)|note (?:that|this|down)|make a note|take a note|write (?:this|it|that) down|save (?:this|it|that|the (?:note|idea))|store (?:this|it)|keep (?:this|that|it)|retain (?:this|it|that)|put (?:this|it|that) in my (?:vault|notes)|belongs? in my notes|merk dir|notier|speicher|schreib (?:dir |das )?(?:auf|mit))\b/i;
 const OPEN_VERB = /(?:^|[^a-zäöüß])(?:open|launch|show|start|öffne|starte|zeig)(?![a-zäöüß])/i;
 const OPEN_NOUN = /\b(?:app|application|file|document|window|website|site|url|source|folder|mail|calendar|inbox|notes|directions|terminal|finder|browser|settings)\b/i;
 const DOMAIN = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
 const FIND = /\b(?:find|search for|look up)\b/i;
 /** A named destination ("Calculator", "Synthetic Park") is the owner pointing at what to open. */
 const namedDestination = (spoken: string): boolean =>
-  /^(?:[\p{L}][\p{L}\d'’-]*)(?:\s+[\p{L}][\p{L}\d'’-]*){0,3}$/u.test(spoken.replace(/\bplease\b/gi, '').trim());
+  /^\p{Lu}[\p{L}\d'’-]*(?:\s+\p{Lu}[\p{L}\d'’-]*){0,3}$/u.test(spoken.replace(/\bplease\b/gi, '').trim());
 
 const NUMBER_WORDS: Record<string, number> = {
   a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -168,6 +170,10 @@ export class OwnerTasks implements OwnerTaskPort {
       previous.observedAt = observedAt; previous.observedMono = this.clock();
       previous.finals++;
       previous.closed = false;
+      // A split ask may carry its verb and its object in different finals, so the merged ask is read
+      // for kinds the task has not seen; the new final alone is read for amendments and new asks.
+      const seen = new Set(previous.operations.map(operation => operation.kind));
+      this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)));
       this.#apply(previous, ownerCommands(words));
       return;
     }

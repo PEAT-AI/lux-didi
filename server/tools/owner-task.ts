@@ -344,6 +344,7 @@ export class OwnerTasks implements OwnerTaskPort {
 
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const task = this.#live(session);
+    process.stderr.write(`SHOWNDBG session=${session.slice(0, 40)} task=${task === undefined ? '-' : task.id} requestId=${requestId} n=${handles.length}\n`);
     if (task === undefined || task.id !== requestId) return;
     for (const handle of handles) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push(handle);
   }

@@ -15,8 +15,8 @@ export interface ToolDeclaration {
   readonly name: string;
   readonly effect?: 'read' | 'write';
   readonly parameters?: unknown;
-  /** The tool's own predicate. A filler is dropped only while the reduced call still passes it. */
-  readonly validate?: (args: unknown) => boolean;
+  /** The tool's own refusal. The only source of which absent values it will not accept. */
+  readonly rejection?: (args: unknown) => string | undefined;
 }
 
 export interface IntentMatrix {
@@ -104,23 +104,36 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
   const reads = readSet(tool, raw);
   const args: Record<string, unknown> = {};
   const dropped: string[] = [];
-  const fillers: string[] = [];
+  const fillers = new Set<string>();
   for (const [key, value] of Object.entries(raw)) {
     const reason: DropReason | undefined = !KEY.test(key) || (shape.properties.size > 0 && !shape.properties.has(key)) ? 'undeclared'
       : reads !== undefined && !reads.has(key) ? 'not_read'
-        : value === undefined || (tool.effect !== 'write' && isFiller(value)) ? 'absent'
+        : value === undefined ? 'absent'
           : undefined;
-    if (reason === undefined) { args[key] = value; continue; }
-    if (reason === 'absent' && value !== undefined) fillers.push(key);
+    if (reason === undefined) {
+      args[key] = value;
+      if (tool.effect !== 'write' && isFiller(value)) fillers.add(key);
+      continue;
+    }
     dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:${reason}`);
   }
-  // A value the tool's own predicate still needs is not a filler to drop: an empty string a connector
-  // requires to be present, or a key that decides which read this is. The reduced call must stay valid.
-  // A write keeps every value it was sent, because an empty one can be what he meant.
-  if (fillers.length > 0 && tool.validate !== undefined && !tool.validate(args) && tool.validate(raw)) {
-    for (const key of fillers) { args[key] = raw[key]; }
-    const kept = new Set(fillers.map(key => `${key}:absent`));
-    return { args, dropped: dropped.filter(token => !kept.has(token)) };
+  // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a
+  // value, which its own refusal names (`query:empty`, `people:min2`). A tool that never refuses the
+  // empty value keeps it, because it may be the very thing the reader needs present, and a write keeps
+  // every value it was sent. Only a filler is ever removed here, never a real value of a key it reads.
+  const rejection = tool.rejection;
+  if (rejection !== undefined) {
+    const seen = new Set<string>();
+    for (let step = 0; step < 24; step++) {
+      const token = rejection(args);
+      if (token === undefined || seen.has(token)) break;
+      seen.add(token);
+      const field = token.slice(0, token.indexOf(':'));
+      if (!fillers.has(field)) break;
+      delete args[field];
+      fillers.delete(field);
+      dropped.push(`${field}:absent`);
+    }
   }
   return { args, dropped };
 }

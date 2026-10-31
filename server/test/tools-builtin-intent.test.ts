@@ -461,7 +461,7 @@ for (const [said, writeRefused, toolSeen, flagged] of [
 const chat = CONNECTOR_COMPOSED_TOOLS['mattermost']!.find(tool => tool.name === 'mattermost_chat')!;
 const declaration: ToolDeclaration = {
   name: chat.name, effect: 'read', parameters: { type: 'object', ...chat.parameters },
-  validate: (value: unknown): boolean => chat.validate(value as Record<string, unknown>),
+  ...(chat.rejection === undefined ? {} : { rejection: chat.rejection }),
 };
 
 /** C-ARGS test 1: the call the realtime model made on 10-31, all twelve optional keys beside the person's name. */
@@ -510,18 +510,16 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   assert.equal(args['channel'], 'synthetic-channel');
   assert.deepEqual(dropped, ['people:not_read', 'extra:undeclared', 'empty:undeclared']);
   // `{}` and an empty array are fillers at the top level too, but only for keys the tool declares.
+  assert.equal(chat.rejection!(args), 'query:empty', 'the tool still refuses the whitespace it was sent');
+  // Only the absent values the tool itself refuses are dropped. A tool that never names the empty value
+  // keeps it, because the reader may need the key present, and an empty object is kept for a tool with
+  // no refusal rule of its own.
+  const noRefusal = { name: 'conversation_history', effect: 'read' as const, parameters: { type: 'object', properties: { query: {}, limit: {} } } };
+  const kept = normalizeArguments(noRefusal, { query: '', limit: 5 });
+  assert.deepEqual(kept.args, { query: '', limit: 5 }, 'a filler no rule refuses stays as it was sent');
+  assert.deepEqual(kept.dropped, []);
   const own = normalizeArguments({ name: 'trello_read', effect: 'read', parameters: { type: 'object', properties: { view: {}, card: {}, offset: {} } } },
     { view: 'list', card: {}, offset: 0 });
-  assert.deepEqual(own.dropped, ['card:absent'], 'an empty object is a filler, and 0 is a real value');
-  assert.equal(chat.rejection!(args), 'query:empty', 'the tool still refuses the whitespace it was sent');
-  // A filler the tool's own predicate still needs is not a filler to drop, so a connector that requires a
-  // key to be present receives it.
-  const needsPresent = {
-    name: 'synthetic_read', effect: 'read' as const,
-    parameters: { type: 'object', properties: { query: {}, scope: {} }, required: [] },
-    validate: (value: unknown): boolean => typeof value === 'object' && value !== null && 'query' in value,
-  };
-  const kept = normalizeArguments(needsPresent, { query: '', scope: 'synthetic' });
-  assert.deepEqual(kept.args, { query: '', scope: 'synthetic' }, 'the empty value the read needs stays');
-  assert.deepEqual(kept.dropped, []);
+  assert.deepEqual(own.args, { view: 'list', card: {}, offset: 0 }, 'a validate-only tool keeps its fillers');
+  assert.deepEqual(own.dropped, []);
 });

@@ -1,5 +1,6 @@
 import { shapeDriveFile } from '../tools/live-shape.js';
 import { exposeToolResults, nativeActions, type NativeActionFrame } from '../tools/open.js';
+import { exposedHandles } from '../tools/open-handles.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
@@ -362,7 +363,13 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
   assert.equal((await call(h, 'open_source', { handle }))['code'], 'opened');
   assert.equal(native.length, 1, 'a same-target retry is idempotent');
   const second = shapeDriveFile({ name: 'Other synthetic deck', webViewLink: 'https://drive.google.com/file/d/synthetic-other/view' });
-  exposeToolResults([{ name: 'drive_search_files', response: { text: second.text } }]);
+  // G-R5: a read registers the way a live read does (server/live/index.ts:4996), so this fixture
+  // models the real exposure path instead of a registry-only shortcut.
+  {
+    const read = exposeToolResults([{ name: 'drive_search_files', response: { text: second.text } }]);
+    const requests = h.tools!.owner.ownerTasks;
+    requests.shown(session.liveSessionId, requests.currentId(session.liveSessionId)!, read.length > 0 ? read : exposedHandles());
+  }
   assert.equal((await call(h, 'open_source', { handle: second.text.match(/open: (L[0-9]+)/)![1]! }))['code'], 'opened');
   assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
   await assistantBlock(h, 'Those decks are open.');

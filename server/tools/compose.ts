@@ -341,9 +341,7 @@ export function composeResult(outcome: ComposeOutcome): JsonObject {
     const names = outcome.candidates.slice(0, 3);
     const asked = outcome.code === 'recipient_ambiguous'
       ? `I found more than one match: ${names.join(', ')}. Which one did you mean?`
-        : outcome.code === 'recipient_not_named'
-          ? 'I did not catch who it is for. Who should I address it to?'
-          : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
+        : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
     return { status: 'refused', code: outcome.code, candidates: names, say: asked };
   }
   if (outcome.state === 'not_authorized') return notAuthorizedResult(outcome.family, outcome.command);
@@ -374,7 +372,7 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
     const named = ADDRESS_IN_WORDS.exec(context.words)?.[0] ?? namedRecipient(context.words);
     const to = said.includes(input.to.trim().toLowerCase()) ? input.to
       : named === undefined ? undefined : peopleLookupResult({ name: named }).people[0]?.email[0] ?? named;
-    if (to === undefined) return { state: 'recipient', code: 'recipient_not_named', candidates: [] };
+    if (to === undefined) return { state: 'recipient', code: 'recipient_unknown', candidates: [] };
     return await port.draftEmail({ to, subject: input.subject, body: input.body, clientRequestId: context.clientRequestId });
   }
   if (name === 'draft_chat') {

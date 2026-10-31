@@ -50,7 +50,7 @@ export interface ToolFailureEvent {
 export type ComposeOutcome =
   | { state: 'done'; response: JsonObject; clash?: string }
   | { state: 'not_authorized'; family: string; command: string }
-  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown' | 'recipient_not_named'; candidates: string[] }
+  | { state: 'recipient'; code: 'recipient_ambiguous' | 'recipient_unknown'; candidates: string[] }
   | { state: 'unknown'; reason: string }
   | { state: 'failed'; reason: string };
 

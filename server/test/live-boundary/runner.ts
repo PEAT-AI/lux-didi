@@ -66,13 +66,10 @@ const isRefusal = (response: JsonObject | undefined): boolean => {
 
 /** The base reason a corpus kind is still red, so a red kind always names the defect it waits on. */
 const KIND_REASONS: Readonly<Record<string, string>> = {
-  // #107 CG-R4/F13: the grant and the wording no longer refuse these asks. One ask per turn dispatches
-  // 38/42 delete_event and 40/42 draft_email; the rows stay red because this runner drives all 42 asks
-  // through one session and the host stops answering that session's tool calls after the sixth one
-  // (sessionsOpened stays 1, state stays listening, no rebuild), so the unanswered calls read as refusals.
-  delete_event: 'the single session stops answering tool calls after six dispatches, one ask per turn dispatches 38/42; F12 harness lifecycle',
-  draft_email: 'the single session stops answering tool calls after six dispatches, one ask per turn dispatches 40/42; F12 harness lifecycle',
-  draft_chat: 'the single session stops answering tool calls after six dispatches, one ask per turn dispatches 42/42; F12 harness lifecycle',
+  // #107 CG-R4/F13, CG-R5/F15: each retained row names its own measured cause for its own kind.
+  delete_event: 'one session: 42 asks, 3 dispatched, 39 refused, all 39 an unanswered call (the session stops answering after the sixth dispatch); one ask per turn: 38 dispatched, 4 refused, all 4 the same ask "Streich den synthetischen Termin Montag um 2, der fällt aus", unanswered',
+  draft_email: 'one session: 42 asks, 6 dispatched, 36 refused, all 36 an unanswered call; one ask per turn: 40 dispatched, 2 refused, both "Write a mail to the synthetic supplier, subject Synthetic invoice", unanswered',
+  draft_chat: 'one session: 42 asks, 32 dispatched, 10 refused, all 10 code recipient_unknown (the spoken channel does not resolve in a later turn); one ask per turn: 42 dispatched, 0 refused',
   set_alarm: 'the base reads his words with a fixed English lexicon, so German-mixed asks refuse; D2 fix this',
   note: 'stage_lux_note is declared but never answers a model call at the base; C-GRANTS/D2 fix this',
   trello: 'the base allows one dispatch per owner request, so a second create in the corpus refuses; D2/D4 fix this',

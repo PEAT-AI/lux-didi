@@ -40,7 +40,7 @@ test('a non-empty value of a key the intent reads is kept and refused, and every
 });
 
 /** C-ARGS test 5: an empty-result claim over a lookup that never ran is corrected, a real empty result is not. */
-test('the claim guard flags an empty result only when the turn\'s lookup was rejected or failed', () => {
+test('the claim guard flags an empty result only after a rejected lookup, never after a real empty result', () => {
   for (const said of ['It came back empty.', 'Nothing found.', 'There are no results.', 'I found nothing.']) {
     assert.equal(claimsEmptyResult(said, true), true, `${said} is a claim over a read that never ran`);
     assert.equal(claimsEmptyResult(said, false), false, `${said} after a real empty result is the truth, not a claim`);

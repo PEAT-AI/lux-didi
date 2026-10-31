@@ -95,7 +95,7 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
     expression: 'hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE)', count: 1, channel: 'host',
     covers: [
       { file: 'live-session.test.ts', title: 'C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn' },
-      { file: 'args-normalize.test.ts', title: 'the claim guard flags an empty result only when the turn\'s lookup was rejected or failed' },
+      { file: 'args-normalize.test.ts', title: 'the claim guard flags an empty result only after a rejected lookup, never after a real empty result' },
     ],
   },
   {

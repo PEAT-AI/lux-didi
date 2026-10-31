@@ -1,6 +1,7 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
+import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -497,7 +498,8 @@ export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault']]);
+const OWNER_WRITE_RESOURCES = new Map<string, string>([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault'],
+  ...COMPOSE_NAMES.map(name => [name, COMPOSE_IDENTITY.resourceId] as [string, string])]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */

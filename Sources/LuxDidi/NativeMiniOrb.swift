@@ -252,19 +252,75 @@ enum MiniOrbPanelPolicy {
     static let becomesMain = false
 }
 
-/// M3-R2: one press on the orb, three steps. The orb click and the Right Command tap
-/// are the same press, so both ask this one table and the app runs one toggle:
-/// nothing live connects, a live orb mutes the microphone hot, a hot muted orb
-/// brings the microphone back. The names match the page's own answer.
-enum PresenceStep: String, Equatable {
-    case connect
-    case hotMute = "hot-mute"
-    case live
+/// ORB-107: what a press on the floating orb does. Nothing: the owner clicks it by accident, so
+/// the only ways to start or stop a call are the Right Command tap and the explicit menu items.
+/// A press that moved is a drag, and a drag is still the one way to place the orb.
+enum MiniOrbPressPolicy {
+    /// The pointer has to travel this far before a press is a drag rather than a tap.
+    static let dragBand: CGFloat = 4
+
+    static func isTap(down: NSPoint?, up: NSPoint, dragged: Bool) -> Bool {
+        guard !dragged, let down else { return false }
+        return hypot(up.x - down.x, up.y - down.y) < dragBand
+    }
+}
+
+/// ORB-107: every signal that can leave the page believing its surface is hidden re-asserts it,
+/// so one missed `visibilitychange` cannot leave a still orb. Both notification centres are
+/// injected so a test posts each signal itself.
+@MainActor
+final class MiniOrbSurfaceSignals {
+    /// The closed set of reasons a re-assert happens, one per receipt line.
+    enum Reason: String, Equatable {
+        case occlusion, wake, screens, space
+        /// ORB-107: the login launch is its own reason, because it is the case that broke.
+        case launch
+    }
+
+    private let workspace: NotificationCenter
+    private let application: NotificationCenter
+    private let reassert: @MainActor (Reason) -> Void
+    private var observers: [NSObjectProtocol] = []
+    private var occluded = false
+
+    init(workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         application: NotificationCenter = .default,
+         reassert: @escaping @MainActor (Reason) -> Void) {
+        self.workspace = workspace
+        self.application = application
+        self.reassert = reassert
+    }
+
+    func observe() {
+        observe(workspace, NSWorkspace.activeSpaceDidChangeNotification, .space)
+        observe(workspace, NSWorkspace.didWakeNotification, .wake)
+        observe(application, NSApplication.didChangeScreenParametersNotification, .screens)
+    }
+
+    /// The window's own edge: an occlusion that ends is worth a re-assert, and an occlusion that
+    /// starts is not, because the panel is not on screen to paint.
+    func occlusionChanged(_ occluded: Bool) {
+        guard self.occluded != occluded else { return }
+        self.occluded = occluded
+        guard !occluded else { return }
+        reassert(.occlusion)
+    }
+
+    func stop() {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers = []
+    }
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ reason: Reason) {
+        observers.append(center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reassert(reason) }
+        })
+    }
 }
 
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
-/// A transparent overlay owns the whole surface: a drag moves the panel, a click
-/// that did not move asks the orb what the press means.
+/// A transparent overlay owns the whole surface: a drag moves the panel, and a click that did
+/// not move is ignored, because the orb is never touch-sensitive.
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
@@ -283,15 +339,19 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     private var userDragging = false
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
-    private var wakeMonitor: NSObjectProtocol?
+    private var surfaceSignals: MiniOrbSurfaceSignals?
+    private var livenessTimer: Timer?
+    private var lastLiveness = ""
+    private var firstFrameWritten = false
     var onReceipt: (@MainActor ([String: Any]) -> Void)?
+    /// ORB-107: the app re-asserts the page's surface visibility here, so a wake, a Space change,
+    /// a screen change, an occlusion that ends and the login launch all reach the same place.
+    var onSurfaceReassert: (@MainActor (MiniOrbSurfaceSignals.Reason) -> Void)?
 
-    private let onStep: @MainActor (PresenceStep) -> Void
-
-    init(web: WKWebView, frameKey: String = MiniOrbFrameStore.key, onStep: @escaping @MainActor (PresenceStep) -> Void,
+    init(web: WKWebView, frameKey: String = MiniOrbFrameStore.key,
          onExpand: @escaping @MainActor () -> Void = {},
          onReceipt: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
-        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView(); self.onStep = onStep
+        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView()
         self.onReceipt = onReceipt
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
                    styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
@@ -304,7 +364,9 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         hasShadow = false
         hidesOnDeactivate = false
         acceptsMouseMovedEvents = true
-        overlay.onClick = { [weak self] in self?.press() }
+        overlay.onIgnoredClick = { [weak self] in
+            self?.onReceipt?(["event": "orb_click_ignored"])
+        }
         overlay.onExpand = onExpand
         let contextMenu = NSMenu()
         contextMenu.addItem(overlay.fullInterfaceItem())
@@ -331,8 +393,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         MiniOrbFrameStore.resetSavedFrameOnce(.standard)
         restoreFrame()
         observeAppearance()
-        observeScreenChanges()
         followCursor()
+        startLivenessSampling()
     }
 
     override var canBecomeKey: Bool { MiniOrbPanelPolicy.becomesKey }
@@ -343,13 +405,28 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         updateClickThrough()
     }
 
+    /// ORB-107: the Space change and the wake are posted on the workspace's own centre, so both
+    /// are observed there (the Space observer used to sit on the default centre and never fired),
+    /// and every one of them re-asserts the page's surface visibility.
     private func observeAppearance() {
-        NotificationCenter.default.addObserver(self, selector: #selector(activeSpaceChanged),
-                                               name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
-        wakeMonitor = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.didWake() }
+        let signals = MiniOrbSurfaceSignals { [weak self] reason in
+            guard let self else { return }
+            switch reason {
+            case .space:
+                self.onReceipt?(["event": "orb_space_changed", "visible": self.isVisible])
+            case .wake:
+                self.onReceipt?(["event": "orb_wake", "visible": self.isVisible, "orbScreen": self.orbScreenToken])
+            case .screens:
+                self.screenParametersChanged()
+            case .occlusion, .launch:
+                // The occlusion receipt already names its edge, and the app owns the launch line;
+                // both are the re-assert alone.
+                break
             }
+            self.onSurfaceReassert?(reason)
+        }
+        signals.observe()
+        surfaceSignals = signals
     }
 
     /// Mouse-moved monitors also see the cursor while this panel is click-through. A local
@@ -370,6 +447,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     isolated deinit {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+        livenessTimer?.invalidate()
+        surfaceSignals?.stop()
     }
 
     private func updateClickThrough() {
@@ -403,14 +482,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         setFrame(MiniOrbFrameRestore.resolve(saved, screens: menuSafeFrames), display: false)
     }
     /// A display that appears, sleeps or disappears re-places the orb, so it is never stranded on
-    /// a screen that is gone. Registered from init, the only place the panel is born.
-    private func observeScreenChanges() {
-        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged),
-            name: NSApplication.didChangeScreenParametersNotification, object: nil)
-    }
-    /// A screen change re-places the orb and writes nothing: the saved frame belongs to the owner's
-    /// drag, so unplugging a display can never overwrite the position it returns to.
-    @objc private func screenParametersChanged() {
+    /// a screen that is gone. The signal collection registered from init calls this.
+    private func screenParametersChanged() {
         let screens = menuSafeFrames
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
@@ -423,11 +496,11 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         }
     }
     private var screenReceipt = ChangeOnlyGate()
-    @objc private func activeSpaceChanged() { onReceipt?(["event": "orb_space_changed", "visible": isVisible]) }
-    @objc private func didWake() { onReceipt?(["event": "orb_wake", "visible": isVisible, "orbScreen": orbScreenToken]) }
     func windowDidChangeOcclusionState(_ notification: Notification) {
-        onReceipt?(["event": "orb_occlusion", "occluded": !occlusionState.contains(.visible),
-                    "orbScreen": orbScreenToken])
+        let occluded = !occlusionState.contains(.visible)
+        onReceipt?(["event": "orb_occlusion", "occluded": occluded, "orbScreen": orbScreenToken])
+        // ORB-107: the edge back to visible is one of the four re-asserts.
+        surfaceSignals?.occlusionChanged(occluded)
         onVisibilityChanged?()
     }
     func windowDidMove(_ notification: Notification) { rememberFrameIfDragged() }
@@ -440,24 +513,46 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     /// Ask the page which of the three steps this press means. A page that is not ready
     /// yet still gets a press that does something: connect is the step with nothing live,
     /// and it never guesses a mute the owner did not ask for.
-    private func press() {
-        Task { [weak self] in
-            guard let self else { return }
-            let answer = try? await self.webView.evaluateJavaScript("window.didiClickStep ? window.didiClickStep() : null")
-            let step = (answer as? String).flatMap(PresenceStep.init(rawValue:)) ?? .connect
-            self.onStep(step)
+    /// ORB-107: the app reads the page's own loop health once a second and writes a receipt only
+    /// when it changes, so a loop that stops painting while the panel is on screen leaves one
+    /// `orb_frame_liveness alive=false` line instead of a still picture nobody notices.
+    private func startLivenessSampling() {
+        livenessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleLiveness() }
         }
+    }
+
+    private func sampleLiveness() {
+        guard isVisible else { return }
+        webView.evaluateJavaScript("window.didiOrbFrameStats ? window.didiOrbFrameStats() : null") { [weak self] answer, _ in
+            MainActor.assumeIsolated { self?.recordLiveness(answer) }
+        }
+    }
+
+    private func recordLiveness(_ answer: Any?) {
+        guard let stats = answer as? [String: Any],
+              let frames = stats["frames"] as? Int, frames > 0 else { return }
+        if !firstFrameWritten {
+            firstFrameWritten = true
+            onReceipt?(["event": "mini_first_frame", "ms_since_launch": stats["firstFrameMs"] as? Int ?? 0])
+        }
+        let alive = stats["alive"] as? Bool ?? false
+        let bucket = stats["fpsBucket"] as? Int ?? 0
+        let state = "\(alive);\(bucket)"
+        guard state != lastLiveness else { return }
+        lastLiveness = state
+        onReceipt?(["event": "orb_frame_liveness", "alive": alive, "fps_bucket": bucket])
     }
 
     private func rememberFrame() { UserDefaults.standard.set(NSStringFromRect(frame), forKey: frameKey) }
 }
 
-/// Transparent drag-or-click surface above the web view. It captures every mouse
-/// event, so the orb never takes focus; a press that did not drag is a press on
-/// the orb (M3-R2).
+/// Transparent drag surface above the web view. It captures every mouse event, so the orb never
+/// takes focus; a press that did not drag is a tap the owner did not mean, and it does nothing.
 @MainActor
 final class MiniOrbHitView: NSView {
-    var onClick: (@MainActor () -> Void)?
+    /// ORB-107: the only thing a tap on the orb does is leave a receipt.
+    var onIgnoredClick: (@MainActor () -> Void)?
     var onExpand: (@MainActor () -> Void)?
 
     func fullInterfaceItem() -> NSMenuItem {
@@ -474,20 +569,23 @@ final class MiniOrbHitView: NSView {
 
     private var downPoint: NSPoint?
     private var dragged = false
+    /// ORB-107: the panel move, and the one place a remembered frame can come from. A test
+    /// replaces it to observe a drag with no window on screen.
+    var moveOnDrag: (@MainActor (NSEvent) -> Void)?
     override func mouseDown(with event: NSEvent) { downPoint = event.locationInWindow; dragged = false }
     override func mouseDragged(with event: NSEvent) {
         dragged = true
         let panel = window as? MiniOrbPanel
         panel?.dragBegan()
-        window?.performDrag(with: event)
+        if let moveOnDrag { moveOnDrag(event) } else { window?.performDrag(with: event) }
         panel?.dragEnded()
     }
     override func mouseUp(with event: NSEvent) {
         defer { downPoint = nil }
-        guard !dragged, let start = downPoint else { return }
-        let end = event.locationInWindow
-        guard hypot(end.x - start.x, end.y - start.y) < 4 else { return }
-        onClick?()
+        // ORB-107: a tap on the orb starts nothing and stops nothing. It writes one receipt so a
+        // regression that wires a press back to the session shows in the log.
+        guard MiniOrbPressPolicy.isTap(down: downPoint, up: event.locationInWindow, dragged: dragged) else { return }
+        onIgnoredClick?()
     }
 }
 

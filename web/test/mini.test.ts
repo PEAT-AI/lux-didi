@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  clickStep, installMiniClick, installMiniVisuals, isMiniRoute, miniAriaLabel, miniMarkup,
+  installMiniVisuals, isMiniRoute, miniAriaLabel, miniMarkup,
   miniModeButtonMarkup, miniState, pillMuted, pillState, startMiniOrbVisuals, visualState,
-  type MiniState, type PillClickHost, type PillVisualHost, type PresenceStep,
+  type MiniState, type PillVisualHost,
 } from '../src/mini.ts';
 import { ORB_VISUALS, TRANSITION_MS, DEBOUNCE_MS, type OrbVisual } from '../src/orb-states.ts';
 import { presenceRow, presenceState, singleKeyRow, singleKeyState } from '../src/settings-view.ts';
@@ -192,28 +192,76 @@ test('the mini markup and the pill carry no text in any state, only an aria labe
   assert.equal(labels.size, states.length, 'every state says something different to a screen reader');
 });
 
-test('one press, three steps, per state', () => {
-  // M3-R2: the click on the orb and the Right Command tap are the same press.
-  const expected: Record<MiniState, PresenceStep> = {
-    idle: 'connect', error: 'connect', connecting: 'connect',
-    listening: 'hot-mute', thinking: 'hot-mute', tool: 'hot-mute', speaking: 'hot-mute',
-    muted: 'live',
+// ORB-107: the hidden-page death. One hidden tick used to return without rescheduling, so the
+// loop stopped until WebKit happened to send a visibility signal back. The loop now keeps a cheap
+// tick while hidden and the native re-assert repaints at once.
+test('the pill loop keeps a tick while hidden and the native re-assert resumes painting', () => {
+  const { stage, pill } = fakePill('listening');
+  const published: OrbVisual[] = [];
+  const queued: Array<() => void> = [];
+  const globals = globalThis as { window?: unknown; document?: unknown; didiNativeSurfaceVisible?: boolean };
+  const savedWindow = globals.window;
+  const savedDocument = globals.document;
+  const listeners = new Map<string, () => void>();
+  globals.window = {
+    addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+    removeEventListener: (name: string) => listeners.delete(name),
   };
-  for (const [state, step] of Object.entries(expected) as [MiniState, PresenceStep][]) {
-    assert.equal(clickStep(state), step, `${state} means ${step}`);
-  }
-  const host: PillClickHost = {};
-  installMiniClick(host);
-  assert.equal(typeof host.didiClickStep, 'function', 'native asks window.didiClickStep');
-  const saved = (globalThis as { document?: unknown }).document;
+  const page = { hidden: false, addEventListener: () => undefined, removeEventListener: () => undefined };
+  globals.document = page;
+  let clock = 0;
+  const stop = startMiniOrbVisuals({
+    doc: {
+      querySelector: (selector: string) => (selector === '.mini-pill' ? pill : stage) as unknown as Element,
+    },
+    now: () => clock,
+    reducedMotion: () => false,
+    frame: (tick) => { queued.push(tick); return queued.length; },
+    cancel: () => undefined,
+    publish: (_canvas, visual) => published.push(visual),
+  });
   try {
-    const { stage } = fakePill('muted');
-    (globalThis as { document?: unknown }).document = { querySelector: () => stage };
-    assert.equal(host.didiClickStep?.(), 'live', 'the page answers for the state it paints');
-    assert.equal(pillState(null), 'idle', 'no stage is the cold state');
+    const tick = (ms: number) => {
+      clock += ms;
+      const next = queued.shift();
+      assert.ok(next, 'the loop always holds a scheduled tick');
+      next();
+    };
+    // WebKit hides the page, so one tick must not be the last one.
+    page.hidden = true;
+    tick(16);
+    assert.equal(published.length, 0, 'a hidden surface paints nothing');
+    assert.equal(queued.length, 1, 'the hidden loop keeps one cheap tick scheduled, so it cannot stop for good');
+    page.hidden = false;
+    globals.didiNativeSurfaceVisible = true;
+    listeners.get('didi-surface-visibility')?.();
+    assert.equal(published.length, 1, 'the native re-assert paints on the spot');
+    tick(16);
+    tick(16);
+    assert.equal(published.length, 3, 'and the loop keeps painting frame after frame');
   } finally {
-    (globalThis as { document?: unknown }).document = saved;
+    stop();
+    globals.window = savedWindow;
+    globals.document = savedDocument;
+    delete globals.didiNativeSurfaceVisible;
   }
+});
+
+// ORB-107: the owner clicks the orb by accident. Nothing on either orb may start or stop a call;
+// the explicit pills on the full window and the Right Command tap are the only ways in.
+test('neither orb starts or stops a call on a click', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const mini = readFileSync(new URL('../src/mini.ts', import.meta.url), 'utf8');
+  for (const target of ['didi-orb', 'orb-holder', 'orb-stage']) {
+    assert.doesNotMatch(main, new RegExp(`${target}['\"\u0060][^\\n]{0,160}addEventListener\\('(click|pointerdown|mousedown)'`),
+      `the full window's ${target} carries no press handler`);
+  }
+  const bindings = [...main.matchAll(/getElementById\('(voice-[a-z]+)'\)\?\.addEventListener\('click'/g)].map(match => match[1]);
+  assert.deepEqual(bindings, ['voice-start', 'voice-stop', 'voice-mute'],
+    'only the explicit voice pills bind a click on the full window orb');
+  assert.doesNotMatch(mini, /didiClickStep|clickStep|installMiniClick/,
+    'the mini page answers no press, so a click on the floating orb is inert');
+  assert.equal(pillState(null), 'idle', 'no stage is the cold state');
 });
 
 test('every pill state has one visual', () => {

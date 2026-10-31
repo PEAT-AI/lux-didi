@@ -7873,9 +7873,8 @@ test('SI-R2 (#719): post-tool no-item signal re-requests the answer before the d
   await settlePort();
   // C-RESEARCH #107 (#719): a settled batch with a silent continuation is re-requested before the rung, so
   // the owner is not waited out to a dead-air rebuild.
-  const reRequests = hostLines(captureDir).filter(line => line.event === 'live_continuation_re_request');
-  assert.equal(reRequests.length, 1, `the silent continuation is re-requested once: ${JSON.stringify(hostLines(captureDir).map(line => line.event))}`);
-  assert.equal(reRequests[0]!['requested'], true, 'the re-request reached the provider');
+  assert.equal(fake.texts.length, 1, `the silent continuation is re-requested exactly once: ${JSON.stringify(fake.texts)}`);
+  assert.match(fake.texts[0]!, /Answer the owner now from the results you already have/u, 'the re-request reaches the provider');
   assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 0, 'the rung waits for the re-requested answer');
   h.advance(DEAD_AIR_CONTINUATION_MS); scheduler.runDue(); await settlePort();
   // The re-requested response is in flight, so the rung's own grace runs before it nudges.

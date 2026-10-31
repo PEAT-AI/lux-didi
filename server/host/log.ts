@@ -1024,13 +1024,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.generation)) return;
     return { event: 'live_reply_unjournalled', liveSessionId: value.liveSessionId, generation: value.generation };
   }
-  if (value.event === 'live_continuation_re_request') {
-    // C-RESEARCH #107 (#719): closed shape. Whether the one re-request of a silent continuation reached the
-    // provider, and nothing else: no owner words, no result body.
-    if (Object.keys(value).sort().join(',') !== ['event', 'requested'].sort().join(',')) return;
-    if (typeof value.requested !== 'boolean') return;
-    return { event: 'live_continuation_re_request', requested: value.requested };
-  }
   if (value.event === 'live_dead_air_nudge') {
     // Closed shape: the elapsed dead air before a single neutral continuation input was sent.
     if (Object.keys(value).sort().join(',') !== ['event', 'elapsedMs'].sort().join(',')) return;

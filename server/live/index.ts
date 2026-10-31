@@ -2578,12 +2578,10 @@ export class LiveSessionOwner {
     // inside the rung, instead of being waited out to a dead-air rebuild.
     if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
-      let requested = false;
       try {
         const ask = handle.session.sendText;
-        if (typeof ask === 'function') { ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) }); requested = true; }
-      } catch { requested = false; }
-      hostLogEvent({ event: 'live_continuation_re_request', requested });
+        if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
+      } catch { /* a closed transport settles on its own */ }
       this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }

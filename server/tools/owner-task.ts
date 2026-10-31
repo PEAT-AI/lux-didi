@@ -416,6 +416,7 @@ export class OwnerTasks implements OwnerTaskPort {
    */
   rebuild(session: string): void {
     const task = this.#live(session);
+    process.stderr.write(`RB2 session=${session.slice(0,8)} task=${task?.id} ops=${task ? task.operations.map(o => o.kind + ':' + o.state).join(',') : '-'}\n`);
     if (task === undefined) return;
     task.epoch += 1;
     task.operations = task.operations.filter(operation => operation.state === 'done');

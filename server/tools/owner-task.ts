@@ -21,7 +21,7 @@ export interface OwnerOperation {
 }
 interface OwnerTask {
   id: string; journalId: string; words: string; start: number; observedAt: number; observedMono: number; finals: number;
-  operations: OwnerOperation[]; sequence: number; closed: boolean; openArmed: number;
+  operations: OwnerOperation[]; sequence: number; closed: boolean;
   shown: { handle: string; kind: string }[]; sources: Record<string, number>;
 }
 
@@ -187,19 +187,19 @@ export class OwnerTasks implements OwnerTaskPort {
       const seen = new Set(previous.operations.map(operation => operation.kind));
       this.#apply(previous, ownerCommands(merged).filter(command => !seen.has(command.kind)), merged);
       if (!QUESTION.test(merged) && !NEGATION.test(merged) && !PAST_STATEMENT.test(merged)) {
-        this.#apply(previous, ownerCommands(words), words);
-        // The owner named a thing without an open verb: he is still selecting a window, and his own
-        // words are the authority for exactly one local open.
-        if (ownerCommands(words).every(command => command.kind !== 'open')) previous.openArmed++;
+        const commands = ownerCommands(words);
+        this.#apply(previous, commands, words);
+        this.#armOpen(previous, commands, words);
       }
       return;
     }
     const task: OwnerTask = {
       id: `task-${++this.sequence}`, journalId, words, start: this.clock(), observedAt, observedMono: this.clock(), finals: 1,
-      operations: [], sequence: 0, closed: false, openArmed: 0, shown: [], sources: {},
+      operations: [], sequence: 0, closed: false, shown: [], sources: {},
     };
-    this.#apply(task, ownerCommands(words), words);
-    if (ownerCommands(words).every(command => command.kind !== 'open')) task.openArmed++;
+    const commands = ownerCommands(words);
+    this.#apply(task, commands, words);
+    this.#armOpen(task, commands, words);
     this.tasks.set(session, task);
   }
 
@@ -215,6 +215,14 @@ export class OwnerTasks implements OwnerTaskPort {
     }
   }
 
+  /** Opening a window is local and the target is picked from what his own reads exposed, so the
+   *  owner's words are the authority for exactly one open, spent by its committed success. */
+  #armOpen(task: OwnerTask, commands: readonly OwnerCommand[], words: string): void {
+    if (commands.some(command => command.kind === 'open')) return;
+    if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
+    task.operations.push({ operationId: `op-${++task.sequence}`, kind: 'open', fields: { recurrenceAsked: false }, words, state: 'open' });
+  }
+
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const task = this.#live(session);
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
@@ -222,9 +230,7 @@ export class OwnerTasks implements OwnerTaskPort {
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     // Opening a window the owner can see is local and target-selected from what his own reads
     // exposed, so any words of his task authorize it; nothing leaves the machine and nothing sends.
-    if (operation === undefined) return kind === 'open' && task.openArmed > 0
-      && !NEGATION.test(task.words) && !CANCEL_TASK.test(task.words)
-      ? { ...common, code: 'allowed' } : { ...common, code: 'no_owner_request' };
+    if (operation === undefined) return { ...common, code: 'no_owner_request' };
     const bounded = { ...common, words: operation.words };
     const entry = this.ledger.get(`${task.id}:${operation.operationId}`);
     // An empty target is the grant-point probe: it asks only whether the owner's operation exists,
@@ -270,7 +276,6 @@ export class OwnerTasks implements OwnerTaskPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const task = this.#live(session);
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
-    if (kind === 'open') { task.openArmed = Math.max(0, task.openArmed - 1); return; }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);
     if (operation === undefined) return;
     operation.state = 'done'; operation.target = target; operation.receipt = receipt;

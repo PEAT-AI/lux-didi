@@ -31,6 +31,15 @@ test('D2: the same ask grants each kind it names, and nothing it does not', () =
   assert.deepEqual(kinds('the alarm in the movie was loud'), ['set_alarm']);
   assert.deepEqual(kinds('cancel my alarm and show my alarms'), ['list_alarms', 'cancel_alarm']);
   assert.deepEqual(kinds('remember this and open my inbox'), ['lux_note', 'open']);
+  // D2: the owner's own words select exactly one local window; a spent open needs new words.
+  const gate = new OwnerTasks(() => 0);
+  gate.observe('s', 'j1', 'this is the synthetic item');
+  const first = gate.authorize('s', 'open', 'file-1');
+  assert.equal(first.code, 'allowed');
+  gate.commit('s', 'open', 'file-1', { status: 'opened' }, gate.currentId('s')!);
+  assert.equal(gate.authorize('s', 'open', 'file-2').code, 'grant_spent');
+  gate.observe('s', 'j2', 'that file please');
+  assert.equal(gate.authorize('s', 'open', 'file-2').code, 'allowed');
 });
 
 // D2: a bare noun mention, a question, a negation and a past statement grant nothing.

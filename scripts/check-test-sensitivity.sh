@@ -21,7 +21,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 
 run_sidecars() {
 python3 - "$root" "$@" <<'PY'
-import json, os, shutil, subprocess, sys, tempfile
+import contextlib, io, json, os, shutil, subprocess, sys, tempfile
 
 root = sys.argv[1]
 mode = sys.argv[2] if len(sys.argv) > 2 else 'run'
@@ -194,11 +194,14 @@ def selftest():
 
 
 def main_for(directory):
+    """The fixture run's own output is expected to be red: keep it out of the selftest transcript."""
     global sidecars
-    saved = sidecars
-    sidecars = directory
+    saved, sidecars = sidecars, directory
+    captured = io.StringIO()
     try:
-        return 'FAIL' if main() != 0 else 'PASS'
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            code = main()
+        return 'FAIL' if code != 0 else 'PASS'
     finally:
         sidecars = saved
 

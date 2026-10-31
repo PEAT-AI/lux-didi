@@ -69,12 +69,16 @@ function declaredShape(tool: ToolDeclaration): Shape {
   return { properties: new Set(properties), required: new Set(required) };
 }
 
-/** An empty string, a null or an empty array carries no value, and only a key the declaration makes
- *  optional may hold one: a required key still needs a value of its own. */
+/**
+ * The absent value the voice model sends for a property it did not use, matching C-FILLER in
+ * research.ts: undefined, null, the empty string, an empty array and an empty object. False, 0 and
+ * any text at all are real values, so a whitespace-only string is kept and still refused by the tool's
+ * own rule. Only a key the declaration makes optional may hold a filler: a required key needs a value.
+ */
 function isFiller(value: unknown): boolean {
-  if (value === null) return true;
-  if (typeof value === 'string') return value.trim().length === 0;
-  return Array.isArray(value) && value.length === 0;
+  return value === undefined || value === null || value === ''
+    || (Array.isArray(value) && value.length === 0)
+    || (isRecord(value) && Object.keys(value).length === 0);
 }
 
 /** The keys this call reads: the matrix row for its intent, or every declared key when it has none. */
@@ -93,7 +97,7 @@ function readSet(tool: ToolDeclaration, args: Record<string, unknown>): Readonly
  * comes back untouched so the caller's own not-an-object refusal still fires.
  */
 export function normalizeArguments(tool: ToolDeclaration, raw: unknown): NormalizedArguments {
-  if (!isRecord(raw)) return { args: isRecord(raw) ? raw : {}, dropped: [] };
+  if (!isRecord(raw)) return { args: {}, dropped: [] };
   const shape = declaredShape(tool);
   const reads = readSet(tool, raw);
   const args: Record<string, unknown> = {};

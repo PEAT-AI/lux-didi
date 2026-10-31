@@ -499,3 +499,18 @@ test('the claim guard flags an empty result only after a rejected lookup, never 
   }
   assert.equal(claimsEmptyResult('I found three messages from Maya.', true), false, 'a real finding is never corrected');
 });
+
+// C-ARGS F2: the filler rule matches research.ts, so only an absent value is a filler. A whitespace-only
+// string is a value of his, it is kept, and the tool's own rule refuses it as `query:empty`.
+test('the normalizer drops only the absent value research.ts calls a filler', () => {
+  const sent = { intent: 'channel', channel: 'synthetic-channel', query: '   ', people: [], extra: '', empty: {} };
+  const { args, dropped } = normalizeArguments(declaration, sent);
+  assert.equal(args['query'], '   ', 'a whitespace-only value is never dropped');
+  assert.equal(args['channel'], 'synthetic-channel');
+  assert.deepEqual(dropped, ['people:not_read', 'extra:undeclared', 'empty:undeclared']);
+  // `{}` and an empty array are fillers at the top level too, but only for keys the tool declares.
+  const own = normalizeArguments({ name: 'trello_read', effect: 'read', parameters: { type: 'object', properties: { view: {}, card: {}, offset: {} } } },
+    { view: 'list', card: {}, offset: 0 });
+  assert.deepEqual(own.dropped, ['card:absent'], 'an empty object is a filler, and 0 is a real value');
+  assert.equal(chat.rejection!(args), 'query:empty', 'the tool still refuses the whitespace it was sent');
+});

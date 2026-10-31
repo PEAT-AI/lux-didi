@@ -2894,7 +2894,7 @@ export class LiveSessionOwner {
     if (type === 'modelTurnStarted') {
       // LAT-1022: the adapter's voice-activity end of speech is the moment this host first hears that the turn is
       // the model's, so the final's own segment is measured from here. Both stamps are this host's clock.
-      handle.speechEndAt = this.#now();
+      handle.speechEndAt = Math.round(this.#now());
       this.#armWatchdog(handle);
       return;
     }
@@ -4139,7 +4139,7 @@ export class LiveSessionOwner {
             // C-LOGS11: the anchor every final-to-audio latency in this turn is measured from, recorded on the
             // line and joined to the turn by the envelope's turnId, never by a timestamp bracket.
             hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt,
-              ...(handle.speechEndAt === undefined ? {} : { msSinceSpeechEnd: Math.max(0, handle.inputFinalAt - handle.speechEndAt) }) });
+              ...(handle.speechEndAt === undefined ? {} : { msSinceSpeechEnd: Math.max(0, Math.round(handle.inputFinalAt - handle.speechEndAt)) }) });
             const finalTurn = handle.connection.turnId;
             if (finalTurn !== undefined) this.#turnOwnerFinal.set(finalTurn, handle.inputFinalAt);
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.

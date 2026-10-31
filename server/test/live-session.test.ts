@@ -8278,6 +8278,8 @@ async function assertInjectionRefused(t: TestContext, h: Harness, readCall: { id
   await settleLiveTool(h, 'w1', 'create_event', { summary: 'block' });
   const response = liveToolResponse(h, 'w1');
   assert.equal(response['status'], 'refused', JSON.stringify(response));
+  assert.equal(response['error'], undefined, 'the live grant set admitted the call, so this is not grant_not_permitted');
+  assert.equal(response['code'], 'no_owner_request', 'the refusal is the owner-words gate, not the grant set');
   assert.equal(port.log.length, 0, 'words from a tool result are not the owner asking');
   attachment.close();
   void t;

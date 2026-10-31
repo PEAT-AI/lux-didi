@@ -22,7 +22,7 @@ export interface OwnerOperation {
 interface OwnerTask {
   id: string; journalId: string; words: string; start: number; observedAt: number; observedMono: number; finals: number;
   operations: OwnerOperation[]; sequence: number; closed: boolean;
-  openGrant: boolean; openReceipts: Map<string, unknown>;
+  openGrant: boolean; openReceipts: Map<string, { journalId: string; receipt: unknown }>;
   shown: { handle: string; kind: string }[]; sources: Record<string, number>;
 }
 
@@ -252,8 +252,10 @@ export class OwnerTasks implements OwnerTaskPort {
       // One open per handle, each with its own receipt: a handle this task showed answers before any
       // refusal, and a retry of a spent handle returns the receipt it already has (D4).
       const key = handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`;
-      const receipt = task.openReceipts.get(key);
-      if (receipt !== undefined) return { ...common, code: 'idempotent', receipt };
+      // A retry inside the same owner final replays; once he says something new, the target is asked
+      // for again and opens again (G-R3: the retry is the same task, not a new ask).
+      const spent = task.openReceipts.get(key);
+      if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
@@ -310,7 +312,7 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || (requestId !== undefined && task.id !== requestId)) return;
     // One ask is one open, spent by its success; a handle this task showed keeps its own receipt (D4).
     if (kind === 'open') {
-      task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, receipt);
+      task.openReceipts.set(handle !== undefined && handle !== '' ? `handle:${handle}` : `target:${target}`, { journalId: task.journalId, receipt });
       task.openGrant = false; return;
     }
     const operation = task.operations.filter(candidate => candidate.kind === kind).at(-1);

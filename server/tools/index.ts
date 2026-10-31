@@ -998,6 +998,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const refused = 'target' in resolved ? undefined : resolved.code;
           const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
+          // G-R8: an attempt that did not open spends the owner's round, so the audit reports `spent`.
+          if (code !== 'opened') ownerTasks.spend(runId, 'open');
           // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
           // bound it and the class it resolved to, never the words or the address.

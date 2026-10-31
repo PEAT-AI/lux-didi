@@ -586,6 +586,17 @@ export function claimsWithoutCall(input: { text: string; writeRefused: boolean; 
     || claimsRetryWithoutCall(input.text, input.writeRefused);
 }
 /**
+ * C-ARGS/D5: a turn whose lookup was rejected or failed ran nothing, so a claim that a result was empty or
+ * that nothing was found is a claim about a read that never happened. The outcome is the claim guard's own:
+ * one correction line, once, and the owner is never told an empty result stood where nothing ran.
+ */
+/** C-ARGS: the one fixed correction for an empty-result claim made over a lookup that never ran. */
+export const EMPTY_RESULT_CLAIM_LINE = 'Correction: nothing ran, so there is no result. Say plainly that the lookup was not made, and never that it came back empty.';
+export const EMPTY_RESULT_CLAIM = /\b(?:(?:came|comes|come) back empty|empty results?|(?:nothing|none) (?:was )?found|found nothing|no results?|nothing came back)\b/iu;
+export function claimsEmptyResult(text: string, lookupFailed: boolean): boolean {
+  return lookupFailed && EMPTY_RESULT_CLAIM.test(text);
+}
+/**
  * C-TURN8: no tool that reads or writes the owner's own data runs before his first word. Research keeps its own
  * gate in `#researchBatch`; every other owner-data call is refused by `#toolBatch`, before any argument check,
  * with the same shape and the same closed reason. Saves keep their own later gates once he has spoken
@@ -763,6 +774,8 @@ interface ActiveSession {
   answeredWords?: string | undefined;
   /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
   claimWriteRefused: boolean;
+  /** C-ARGS: a lookup this owner turn was rejected on or failed, so an empty-result claim has nothing behind it. */
+  claimLookupFailed: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -2112,7 +2125,7 @@ export class LiveSessionOwner {
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
-      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false,
+      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false, claimLookupFailed: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2649,7 +2662,7 @@ export class LiveSessionOwner {
   /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
   #resetClaimCheck(handle: ActiveSession): void {
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false;
+    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false; handle.claimLookupFailed = false;
     handle.answeredWords = undefined;
   }
 
@@ -2659,16 +2672,20 @@ export class LiveSessionOwner {
    * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
+    // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
+    // and the call it names did run, so the toolSeen silence does not apply to it.
+    const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
     const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
+    if (!(emptyResult || claim) || handle.claimCorrected || handle.muted || (handle.claimToolSeen && !emptyResult)) return;
     handle.claimTimer = this.#schedule(() => {
       handle.claimTimer = undefined;
-      if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
+      if (this.#settled(handle) || handle.inputFinal === false || handle.muted) return;
+      if (handle.claimToolSeen && !emptyResult) return;
       handle.claimCorrected = true;
       hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
-      try { handle.session.sendText({ text: hostNote(CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
+      try { handle.session.sendText({ text: hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
     }, CLAIM_WITHOUT_CALL_MS);
   }
 
@@ -4952,6 +4969,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const response = (responses[index]?.response ?? {}) as JsonObject;
       if ((response['error'] !== undefined || response['status'] === 'refused')
         && handle.registry.find(tool => tool.name === call.name)?.effect === 'write') handle.claimWriteRefused = true;
+      // C-ARGS: the same receipt for a read, because a rejected or failed lookup ran nothing at all.
+      if ((response['error'] !== undefined || response['status'] === 'refused')
+        && handle.registry.find(tool => tool.name === call.name)?.effect === 'read') handle.claimLookupFailed = true;
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;

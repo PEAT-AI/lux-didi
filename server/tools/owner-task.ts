@@ -225,7 +225,9 @@ export class OwnerTasks implements OwnerTaskPort {
     // only when the owner's own words name the destination or name nothing else at all.
     if (commands.some(command => command.kind !== 'open')) return;
     if (!words.trim() || QUESTION.test(words) || NEGATION.test(words) || CANCEL_TASK.test(words) || PAST_STATEMENT.test(words)) return;
-    task.openGrant = true;
+    // A new owner final is a new selection round: the targets spent in the last round no longer
+    // answer for it, so he can name the same window again.
+    task.openGrant = true; task.openReceipts.clear();
   }
 
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {

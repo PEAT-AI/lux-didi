@@ -1412,6 +1412,8 @@ export class LiveSessionOwner {
   /** C-LOGS11: when each turn's owner final landed, so a later native receipt can close that turn's
    *  final-to-audible latency. Session-scoped and pruned with the turn it belongs to. */
   readonly #turnOwnerFinal = new Map<string, number>();
+  /** G-R13: the session's high-water tool step, so a rebuilt handle never reuses an execution id. */
+  readonly #stepHigh = new Map<string, number>();
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
@@ -3326,6 +3328,15 @@ export class LiveSessionOwner {
    * history is the journal seed and whose opening input is the pickup line. Returns false only on a
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
+  /** G-R13: execution ids are `runId:step:index`, so the step must never repeat within a session even
+   *  when a rebuild hands the work to a fresh handle. */
+  #nextStep(handle: ActiveSession): number {
+    const next = Math.max(handle.toolStep, this.#stepHigh.get(handle.liveSessionId) ?? 0) + 1;
+    handle.toolStep = next;
+    this.#stepHigh.set(handle.liveSessionId, next);
+    return next;
+  }
+
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     const ringing = this.#ringingAlarms(handle);
     if (ringing.some(alarm => alarm.rebuilds >= 1)) return false;
@@ -4332,7 +4343,7 @@ export class LiveSessionOwner {
       // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
       // retry). They shared handle.toolStep, so executionId (`runId:step:index`) collided and the journal
       // refused the second batch as tool_intent_exists. Take a fresh step per batch.
-      const step = handle.toolStep++;
+      const step = this.#nextStep(handle);
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
@@ -4742,7 +4753,7 @@ export class LiveSessionOwner {
       if (!authority) return;
       const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      const host = structuredClone(handle.host), step = ++handle.toolStep;
+      const host = structuredClone(handle.host), step = this.#nextStep(handle);
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
@@ -4862,7 +4873,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         registerSignals(unit, extra);
         phase2.push(...extra.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
       }
-      const followBatch = await runBatch(phase2, ++handle.toolStep);
+      const followBatch = await runBatch(phase2, this.#nextStep(handle));
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
       // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed

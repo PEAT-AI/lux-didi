@@ -187,7 +187,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const batch = await runToolCalls(owner, [{ id: randomUUID(), name: 'open_web', args }], {
         registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
         authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 },
-        step: openStep++, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
+        step: openStep++, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true, ownerTasks: owner.ownerTasks,
       });
       assert.equal(batch.error, undefined);
       return batch.accepted.map(entry => entry.response);

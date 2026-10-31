@@ -109,14 +109,6 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
     if (value === undefined) { dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:absent`); continue; }
     args[key] = value;
   }
-  // The keys the chosen intent does not read: the matrix mirrors the tool's own per-intent refusal.
-  if (reads !== undefined) {
-    for (const key of Object.keys(args)) {
-      if (reads.has(key)) continue;
-      delete args[key];
-      dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:not_read`);
-    }
-  }
   // A key the tool never declares is dropped only where the tool itself calls it unknown, so a validator
   // that accepts a wider research-time shape keeps the keys it reads and the declaration still counts them.
   const unknownKey = (value: Record<string, unknown>): boolean => {
@@ -132,6 +124,14 @@ export function normalizeArguments(tool: ToolDeclaration, raw: unknown): Normali
       if (unknownKey(without)) break;
       delete args[offender];
       dropped.push(`${KEY.test(offender) ? offender : 'invalid_key'}:undeclared`);
+    }
+  }
+  // The keys the chosen intent does not read: the matrix mirrors the tool's own per-intent refusal.
+  if (reads !== undefined) {
+    for (const key of Object.keys(args)) {
+      if (reads.has(key)) continue;
+      delete args[key];
+      dropped.push(`${KEY.test(key) ? key : 'invalid_key'}:not_read`);
     }
   }
   // C-ARGS: an absent-value filler is dropped only where the tool itself says the empty value is not a

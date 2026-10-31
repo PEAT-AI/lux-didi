@@ -583,10 +583,9 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected');
   assert.equal(event?.tool, 'trello_read');
-  // C-ARGS: the empty fillers are dropped before validation and reported on their own event, and the
-  // refusal itself names rule tokens only: no key, no length, and never a value of his.
-  assert.deepEqual(events.find(line => line.event === 'tool_arguments_normalized')?.dropped,
-    ['list:absent', 'query:absent', 'window:absent', 'card:absent']);
+  // C-ARGS: a tool whose only rule is its validator keeps the values it was sent, so nothing is dropped
+  // and the refusal itself names rule tokens only: no key, no length, and never a value of his.
+  assert.equal(events.find(line => line.event === 'tool_arguments_normalized'), undefined, 'no value was repaired away');
   assert.deepEqual(event?.violations, [], 'a validate-only tool names no rule, and never a value');
 });
 

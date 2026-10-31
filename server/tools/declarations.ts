@@ -201,7 +201,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (Date.now() >= ctx.control.deadlineMs) throw new Interrupted('deadline');
           dispatched = true;
           return tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
-            revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal: callSignal });
+            revision: host.revision, executionId, ...(call.id !== undefined ? { callId: call.id } : {}), accountId: tool.accountId, resourceId: tool.resourceId, signal: callSignal });
         });
         if (dispatched) {
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');

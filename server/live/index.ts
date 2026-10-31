@@ -3326,6 +3326,9 @@ export class LiveSessionOwner {
     for (const alarm of ringing) alarm.rebuilds += 1;
     handle.sessionTimer?.cancel();
     // D2: a rebuild keeps the owner task, its operations and its ledger; nothing is invalidated here.
+    // G-R10: a rebuild expires the open ask's unspent operations and keeps what already ran, so
+    // provider-seeded history can never authorize while a call id still replays its receipt.
+    this.#tools?.owner.ownerTasks.rebuild(handle.liveSessionId);
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
     // line names the generation it really belongs to instead of the open-time zero.

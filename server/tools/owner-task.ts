@@ -255,7 +255,6 @@ export class OwnerTasks implements OwnerTaskPort {
       // A retry inside the same owner final replays; once he says something new, the target is asked
       // for again and opens again (G-R3: the retry is the same task, not a new ask).
       const spent = task.openReceipts.get(key);
-      process.stderr.write(`OPENDBG key=${key} target=${target.slice(0,80)} journal=${task.journalId} spent=${spent ? spent.journalId : '-'} shown=${task.shown.map(e => e.handle).join(',')}\n`);
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
@@ -344,7 +343,6 @@ export class OwnerTasks implements OwnerTaskPort {
 
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const task = this.#live(session);
-    process.stderr.write(`SHOWNDBG session=${session.slice(0, 40)} task=${task === undefined ? '-' : task.id} requestId=${requestId} n=${handles.length}\n`);
     if (task === undefined || task.id !== requestId) return;
     for (const handle of handles) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push(handle);
   }

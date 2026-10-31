@@ -347,7 +347,6 @@ export function exposeToolResults(results: readonly { id?: string; name?: string
     exposeHandles(JSON.stringify(result.response ?? {}));
     scan(result.response);
   }
-  process.stderr.write(`EXPOSEDBG n=${shown.length} ${shown.map(e => e.handle + ':' + e.kind).join(',')} sample=${JSON.stringify(results[0]?.response ?? {}).slice(0, 120)}\n`);
   return shown;
 }
 

@@ -3490,6 +3490,13 @@ export class LiveSessionOwner {
     // recovery lines read their cause and their socket close code and reason off a receipt instead of a guess. A
     // reopen with no outcome behind it (a mute, a provider window) clears a spent one rather than inheriting it.
     handle.adapterOutcome = outcome;
+    // C-MICWATCH 4: the provider expired a session that never heard the owner's microphone. A rebuild would ring
+    // again into the same dead input, so the call ends by name and the next call starts clean.
+    if (outcome?.code === 'session_timeout' && outcome.recoverable === true && outcome.upstream === undefined && handle.ownerAudioCalls === 0) {
+      hostLogEvent({ event: 'live_input_dead', liveSessionId: handle.liveSessionId, generation: handle.generation });
+      this.#settle(handle, { state: 'failed', code: 'audio_input_dead' }, false, 'ended', null);
+      return false;
+    }
     const now = this.#now();
     // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
     // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model

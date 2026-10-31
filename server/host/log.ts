@@ -1133,6 +1133,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
       muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
   }
+  if (value.event === 'live_input_dead') {
+    // C-MICWATCH 4: a provider session expired with zero owner audio, so the call ended instead of rebuilding.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation)) return;
+    return { event: 'live_input_dead', liveSessionId: value.liveSessionId, generation: value.generation };
+  }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age, connection generation and whether
     // the wait began at a tool result (C-WATCH), so a post-tool wait is never read as an owner-turn wait. A settle

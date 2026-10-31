@@ -12,6 +12,8 @@ import { domainMigrations } from '../../domain/schema.js';
 import { liveProfileIdentity } from '../../live/config.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../../live/index.js';
 import { Store } from '../../runtime/store.js';
+import { createComposeDispatch } from '../../host/compose-dispatch.js';
+import { installPeople, parsePeople } from '../../people/index.js';
 import { createToolsOwner, toolsMigrations } from '../../tools/index.js';
 import type { WebEvidence, WebSearchPort } from '../../tools/web-search.js';
 import { createLuxWriteTransport } from '../../adapters/lux-write/client.js';
@@ -129,6 +131,23 @@ interface FixtureConnector {
 const schemas = (names: readonly string[]): { name: string; inputSchema: JsonObject }[] =>
   names.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
 
+/**
+ * #107 D-COMPOSEGATE: the owner's own roster, the way the runtime supplies it, with synthetic names and
+ * example.invalid addresses only. A spoken name in the phrasing corpus resolves through this, exactly as
+ * it resolves through people.json in a real run.
+ */
+const SYNTHETIC_PEOPLE = {
+  version: 1,
+  people: [
+    { id: 'synthetic-supplier', name: 'Synthetic Supplier', aliases: ['supplier', 'the synthetic supplier', 'synthetic lieferant', 'lieferant', 'synthetischer lieferant'],
+      role: 'Synthetic supplier', circle: 'external', tier: 2, email: ['supplier@synthetic.example.invalid'], mattermost: 'synthetic-supplier' },
+    { id: 'synthetic-landlord', name: 'Synthetic Landlord', aliases: ['landlord', 'the synthetic landlord', 'vermieter', 'synthetischer vermieter'],
+      role: 'Synthetic landlord', circle: 'external', tier: 2, email: ['landlord@synthetic.example.invalid'], mattermost: 'synthetic-landlord' },
+    { id: 'synthetic-sam', name: 'Synthetic Sam', aliases: ['sam', 'synthetic sam'],
+      role: 'Synthetic teammate', circle: 'project', tier: 2, email: ['sam@synthetic.example.invalid'], mattermost: 'synthetic-sam' },
+  ],
+} as const;
+
 const CONNECTORS: readonly FixtureConnector[] = [
   { id: 'calendar', connector: 'calendar', family: 'google', protocol: 'google', endpoint: { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'synthetic-account', resource: 'synthetic-calendar' },
     schemas: schemas(['calendar_list_events', 'calendar_list_calendars']),
@@ -235,9 +254,13 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   const trello = options.trello === true ? fakeTrello(calls, (options.breakConnectors ?? []).includes('trello')) : undefined;
   const vaultTransport = options.vault === false ? undefined : vaultWriter(calls);
   let owner: LiveSessionOwner | undefined;
+  // #107 D-COMPOSEGATE: the host's own compose port and the owner's own people roster, wired the way the
+  // runtime wires them, so a compose write reaches its fixture connector and a spoken name resolves.
+  installPeople(parsePeople(SYNTHETIC_PEOPLE));
   const toolOwner = createToolsOwner({
     store, ownerId: store.assistantId, registry, port,
     ...(options.grantMode === 'explicit' ? {} : { grantMode: 'owner-trusted-reads' as const }),
+    compose: createComposeDispatch({ store, ownerId: store.assistantId, registry, port }),
     lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? null,
     ...(trello ? { trello } : {}),
   });

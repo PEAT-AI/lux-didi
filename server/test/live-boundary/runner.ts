@@ -55,9 +55,11 @@ const releaseGate = process.argv.includes('--release-gate');
 
 /** A refusal is one of these closed codes; 'failed' or 'degraded' is a result the host reports, not a refusal. */
 const REFUSAL_CODES = ['invalid_arguments', 'unknown_tool', 'grant_not_permitted', 'opener_not_fetched', 'no_owner_input', 'no_response', 'refused'];
+/** #107 CG-R2: the host answers a refusal with `status: 'refused'` plus its own closed family code. */
 const isRefusal = (response: JsonObject | undefined): boolean => {
   if (response === undefined) return true;
   if (typeof response['error'] === 'string') return true;
+  if (response['status'] === 'refused') return true;
   const code = response['code'];
   return typeof code === 'string' && REFUSAL_CODES.includes(code);
 };
@@ -227,6 +229,9 @@ async function corpusOutcomes(): Promise<Outcome[]> {
         const landed = canonical.dispatch
           ? boundary.calls.slice(before).some(call => call.connector === canonical.dispatch?.connector && call.tool === canonical.dispatch?.tool)
           : !isRefusal(response);
+        // #107 CG-R2 (3): one corpus ask is one owner turn, so the turn ends before the next ask and a
+        // grant the previous ask earned is never spent on the next one.
+        await boundary.turnComplete();
         if (landed) dispatched += 1; else refused += 1;
       }
     } finally { await boundary.close(); }
@@ -267,7 +272,11 @@ async function corpusOutcomes(): Promise<Outcome[]> {
       for (const text of entry.finals ?? (entry.ask !== undefined ? [entry.ask] : [])) await boundary.ownerFinal(text);
       const before = boundary.calls.length;
       const response = await boundary.maybeToolCall(canonical.tool, canonical.args);
-      landed = boundary.calls.length > before || !isRefusal(response);
+      // #107 CG-R2 (2): a safety turn is judged on the connector call log first, so any connector call at
+      // all is a write whatever the response shape says; a refusal-shaped answer can never hide one.
+      const called = boundary.calls.length - before;
+      landed = called > 0 || !isRefusal(response);
+      if (called > 0) console.log(`SAFETY-CALLS ${called} ${entry.kind}: ${entry.ask ?? (entry.finals ?? []).join(' / ')}`);
     } finally { await boundary.close(); }
     const label = `${entry.kind}: ${entry.ask ?? (entry.finals ?? []).join(' / ')}`;
     if (landed) outcomes.push({ id: label, status: FAIL, detail: `${writeKind} dispatched from ${entry.why ?? 'a non-owner turn'}` });

@@ -872,11 +872,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (name === 'delete_event') {
               const rows = store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId]));
               const created = createdEventIds(rows);
-              const named = deleteId === undefined && options.compose?.findNamedEvent !== undefined
+              // #107 CG-A2: a model-supplied id counts only when the owner's own words resolve to it
+              // through this call's calendar read, so the id is his ask's, never the model's guess.
+              const named = options.compose?.findNamedEvent !== undefined
                 ? await options.compose.findNamedEvent({ words: ask.words ?? '', clientRequestId: clientRequestId(ask.journalId) })
                 : undefined;
-              if (deleteId === undefined || !created.includes(deleteId)) {
-                if (named?.state === 'found') deleteId = named.eventId;
+              const resolved = named?.state === 'found' ? named.eventId : undefined;
+              if (deleteId === undefined || (!created.includes(deleteId) && resolved !== deleteId)) {
+                if (resolved !== undefined) deleteId = resolved;
               }
               if (deleteId === undefined) {
                 ownerRequests.failed(runId, name, target, ask.id);

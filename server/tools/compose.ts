@@ -340,7 +340,9 @@ export function composeResult(outcome: ComposeOutcome): JsonObject {
     const names = outcome.candidates.slice(0, 3);
     const asked = outcome.code === 'recipient_ambiguous'
       ? `I found more than one match: ${names.join(', ')}. Which one did you mean?`
-        : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
+        : outcome.code === 'recipient_not_named'
+          ? 'I did not catch who it is for. Who should I address it to?'
+          : `I could not find ${names.length > 0 ? names.join(', ') : 'that name'} in your people. Who did you mean?`;
     return { status: 'refused', code: outcome.code, candidates: names, say: asked };
   }
   if (outcome.state === 'not_authorized') return notAuthorizedResult(outcome.family, outcome.command);
@@ -351,10 +353,27 @@ export function composeResult(outcome: ComposeOutcome): JsonObject {
 }
 
 /** Run one write through the host port, with the event window and the description built here. */
+/** #107: a literal address he said himself outranks anything a model pinned. */
+const ADDRESS_IN_WORDS = /\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b/i;
+
+/** #107: the last recipient phrase his own words carry, so a name resolves through his roster. */
+function namedRecipient(words: string): string | undefined {
+  const pattern = /\b(?:to|an)\s+(?!e-?mail|mail|message|nachricht|chat|draft|entwurf)((?:(?:the|den|dem|der|die|my|meinen?|unseren?)\s+)?[^.,;:!?]{1,60}?)(?=\s+(?:about|saying|subject|telling|with|regarding|wegen|zum|zur|thema|dass|that)\b|[.,;:!?]|$)/gi;
+  let named: string | undefined;
+  for (const match of words.matchAll(pattern)) named = match[1]?.trim();
+  return named;
+}
+
 export async function runCompose(port: ComposeDispatch, name: ComposeName, args: JsonObject, context: { words: string; clientRequestId: string; now: number; timeZone: string; ownerName?: string }): Promise<ComposeOutcome> {
   if (name === 'draft_email') {
     const input = args as unknown as DraftEmailArguments;
-    return await port.draftEmail({ to: input.to, subject: input.subject, body: input.body, clientRequestId: context.clientRequestId });
+    // #107 D-COMPOSEGATE: the recipient is the one his own words name. An address he never said is data
+    // from somewhere else, so his own address or his own name is used instead, and his roster decides.
+    const said = context.words.toLowerCase();
+    const to = said.includes(input.to.trim().toLowerCase()) ? input.to
+      : ADDRESS_IN_WORDS.exec(context.words)?.[0] ?? namedRecipient(context.words);
+    if (to === undefined) return { state: 'recipient', code: 'recipient_not_named', candidates: [] };
+    return await port.draftEmail({ to, subject: input.subject, body: input.body, clientRequestId: context.clientRequestId });
   }
   if (name === 'draft_chat') {
     const input = args as unknown as DraftChatArguments;

@@ -385,10 +385,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const call = callDTO(input);
       return store.transaction(tx => {
         if (callRow(tx, call)) throw Error('refusal_collision'); validateCallRun(tx, call);
-        // An operation-layer refusal names its layer in `error` and still carries the plain code the
-        // model and the host log read, so `operation_no_owner_request` never hides `no_owner_request`.
-        const layered = reason.startsWith('operation_') ? { status: 'refused', error: reason, code: reason.slice('operation_'.length) } : { status: 'refused', reason };
-        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { ...layered, ...openWebFailure(reason) } : layered, dataClasses: [] }, true);
+        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason }, dataClasses: [] }, true);
       });
     },
     fail(input, status, reason) {
@@ -945,8 +942,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // A dispatch the host made and could not confirm spends the round just the same, without a
           // receipt to replay: the owner's words opened one attempt, not a retryable grant.
           else if (dispatched) ownerTasks.spend(runId, 'open');
-          // A dispatch the host made and could not confirm spends the owner's round just the same.
-          if (dispatched !== undefined && code !== 'opened') ownerTasks.spend(runId, 'open');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           // F13: a request that never reached the native side is a host refusal, not a native action.
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a

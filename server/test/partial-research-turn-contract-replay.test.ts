@@ -261,12 +261,12 @@ test('replay 1: the observed cascade, six model continues after one partial answ
     await research(h, `c${n}`, { action, researchId });
     const reply = await replyFor(h, `c${n}`);
     if (action === 'stop') { assert.notEqual(reply['status'], 'blocked', 'stop is always allowed'); continue; }
-    assert.equal(reply['deliveredCount'], 12, 'refused continue retains all twelve delivered items');
-    assert.deepEqual(reply, BLOCKED('turn_spent', first), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
+    // C-RESEARCH #107: a continue attaches to the job and returns its terminal result, so it is never refused.
+    assert.notEqual(reply['status'], 'blocked', `a continue attaches to the job (call c${n}): ${JSON.stringify(reply)}`);
     await h.advance(20);
   }
-  assert.equal(h.dispatches.length, dispatched, 'no refused continue reached a source');
-  assert.equal(h.receipts.filter(entry => entry['event'] === 'research_blocked').length, 6, 'every refusal leaves one content-free receipt');
+  assert.equal(h.dispatches.length, dispatched, 'no continue reached a source');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'research_blocked').length, 0, 'a continue leaves no refusal receipt');
   // The compliant provider answers from the result it has, and nothing rebuilds the session under it.
   await speaks(h);
   await h.advance(30_000);
@@ -294,7 +294,8 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const first = await replyFor(h, 'n0');
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
-    await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
+    await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'],
+      question: n % 2 === 0 ? `and the hiring plan ${n}` : 'more', topic: 'plan' });
     const reply = await replyFor(h, `n${n}`);
     // C-RESEARCH #107: a continue attaches to the job and returns its terminal result, so it is never refused
     // and never dispatches. Only a bare start ("more") is a spent turn.
@@ -369,7 +370,11 @@ test('replay 6: results of an old provider generation reach no new session, and 
     'the old generation call is never answered into the new session');
   // The rebuilt model reaches for research on its own: nothing the owner said since grants it.
   await research(h, 'g2', { action: 'continue', researchId: '00000000-0000-4000-8000-000000000000' });
-  assert.deepEqual(await replyFor(h, 'g2'), BLOCKED('turn_spent'), 'a rebuild is not an owner turn');
+  // C-RESEARCH #107: a continue starts no work, so a rebuild still grants no research: it is answered from the
+  // job it names, or with the closed unknown-run error when the rebuilt session has no run at all.
+  const afterRebuild = await replyFor(h, 'g2');
+  assert.ok(afterRebuild['status'] === 'blocked' || afterRebuild['error'] === 'unknown_research_run',
+    `a rebuild is not an owner turn: ${JSON.stringify(afterRebuild)}`);
   await research(h, 'g3', start);
   assert.deepEqual(await replyFor(h, 'g3'), BLOCKED('turn_spent'), 'and neither is a replayed opener');
 });

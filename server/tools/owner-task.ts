@@ -248,6 +248,9 @@ export class OwnerTasks implements OwnerTaskPort {
     if (task === undefined || task.closed) return { code: 'no_owner_request' };
     const common = { id: task.id, words: task.words, journalId: task.journalId, observedAt: task.observedAt };
     if (kind === 'open') {
+      // The windows the model was handed belong to this task, not to the handle session: a read that
+      // never rung `shown()` (a harness read, a retry) still counts, once, when the open comes in.
+      this.#syncExposed(task);
       // An empty target is the grant-point probe: it asks whether any open authority exists, and the
       // handler decides replay against spent with its own canonical target.
       if (target === '') {
@@ -262,7 +265,6 @@ export class OwnerTasks implements OwnerTaskPort {
       if (spent !== undefined && spent.journalId === task.journalId) return { ...common, code: 'idempotent', receipt: spent.receipt };
       // A window the model was handed after the last open answers his ask to open what he showed.
       const shown = handle !== undefined && handle !== '' && task.shown.some(entry => entry.handle === handle && entry.seq > task.openSeq);
-      process.stderr.write(`AUTHDBG key=${key} openSeq=${task.openSeq} shown=${JSON.stringify(task.shown)} spentKeys=${JSON.stringify([...task.openReceipts.keys()])}\n`);
       // Neither named by him nor shown by a read of this task: that needs new owner words.
       if (shown || task.openGrant) return { ...common, code: 'allowed' };
       return { ...common, code: task.openReceipts.size > 0 ? 'grant_spent' : 'no_owner_request' };
@@ -347,6 +349,13 @@ export class OwnerTasks implements OwnerTaskPort {
 
   externalContentPresent(session: string): boolean { return this.external.has(session); }
 
+  #syncExposed(task: OwnerTask): void {
+    const fresh = exposedHandles().filter(entry => !task.shown.some(shown => shown.handle === entry.handle));
+    if (fresh.length === 0) return;
+    task.exposure += 1;
+    for (const entry of fresh) task.shown.push({ ...entry, seq: task.exposure });
+  }
+
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const task = this.#live(session);
     if (task === undefined || task.id !== requestId) return;
@@ -354,7 +363,6 @@ export class OwnerTasks implements OwnerTaskPort {
     // every window the model was handed in this task, in the order it saw them.
     const list = handles.length > 0 ? handles : exposedHandles();
     task.exposure += 1;
-    process.stderr.write(`REGDBG task=${task.id} exposure=${task.exposure} list=${list.map(e => e.handle).join(',')}\n`);
     for (const handle of list) if (!task.shown.some(shown => shown.handle === handle.handle)) task.shown.push({ ...handle, seq: task.exposure });
   }
 

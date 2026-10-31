@@ -1,7 +1,6 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-task.js';
-import { exposedHandles } from '../tools/open-handles.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
@@ -4994,7 +4993,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           const shown = exposeToolResults(responses);
-          process.stderr.write(`R4996 shown=${shown.length} exposed=${exposedHandles().length} task=${this.#tools?.owner.ownerTasks.currentId(handle.liveSessionId)} ownerRequestId=${ownerRequestId}\n`);
           if (ownerRequestId) this.#tools?.owner.ownerTasks.shown(handle.liveSessionId, ownerRequestId, shown);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.

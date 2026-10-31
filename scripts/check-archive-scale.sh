@@ -42,9 +42,10 @@ for (const dir of ['chat', 'domain', 'runtime', 'contracts', 'prompt']) cpSync(j
 for (const file of readdirSync(join(root, 'server/adapters/model'))) {
   if (file.endsWith('.ts')) cpSync(join(root, 'server/adapters/model', file), join(out, 'source/adapters/model', file));
 }
-// adapters/model/loop.ts imports ../../tools/declarations.js; stage it so the
-// isolated copy compiles instead of failing TS2307.
+// adapters/model/loop.ts imports ../../tools/declarations.js; stage it and the modules it imports
+// (normalize.js, host-events.js) so the isolated copy compiles instead of failing TS2307.
 cpSync(join(root, 'server/tools/declarations.ts'), join(out, 'source/tools/declarations.ts'));
+cpSync(join(root, 'server/tools/normalize.ts'), join(out, 'source/tools/normalize.ts'));
 // NodeNext must compile as the canonical ESM service, not CommonJS.
 cpSync(join(root, 'server/package.json'), join(out, 'package.json'));
 const files = [];

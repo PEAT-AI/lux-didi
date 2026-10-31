@@ -157,6 +157,28 @@
     },
     {
       "paths": [
+        "config/latency-budgets.json",
+        "server/test/latency-budget.test.ts",
+        "server/host/log.ts",
+        "server/live/**",
+        "server/adapters/live-voice/**"
+      ],
+      "checks": [
+        "scripts/check-latency-budget.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/test/live-boundary/**",
+        "server/live/**",
+        "server/adapters/live-voice/**"
+      ],
+      "checks": [
+        "scripts/check-live-boundary.sh"
+      ]
+    },
+    {
+      "paths": [
         "Sources/**",
         "Tests/**"
       ],

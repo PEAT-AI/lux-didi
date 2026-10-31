@@ -129,9 +129,36 @@ def expand(tree_files, token):
     return [token] if token in tree_files else []
 
 
+def wholesale_sources(tree_files, text):
+    """Every source a check stages by copying whole directories (`find <root> ... -exec cp [-R] {} "$out/source/" \\;`).
+
+    Such a check cannot miss a source its targets import, but the literal extractor below cannot see
+    the copy at all; without this the closure pass would report every import of the whole copied tree
+    as a missing staging entry. The exclusions on the find line (`! -name node_modules` and friends)
+    are honoured, so a directory the check deliberately leaves out stays out.
+    """
+    out = []
+    for line in text.replace('\\\n', ' ').splitlines():
+        found = re.search(r'find\s+(\S+)\s+[^|;]*-exec\s+cp\s+(?:-R\s+)?\{\}\s+"?\$out/source/"?', line)
+        if not found:
+            continue
+        root = found.group(1).rstrip('/')
+        excluded = {name.strip('"\'') for name in re.findall(r'!\s+-name\s+(\S+)', line)}
+        for path in tree_files:
+            if not path.startswith(root + '/'):
+                continue
+            parts = path[len(root) + 1:].split('/')
+            if any(part in excluded for part in parts[:-1]):
+                continue
+            if len(parts) == 1 and parts[0] in excluded:
+                continue
+            out.append(path)
+    return out
+
+
 def staged_sources(tree_files, text):
     """Every source a check script copies into its staging tree (`cp <src...> "$out/source/..."`)."""
-    out = []
+    out = wholesale_sources(tree_files, text)
     for line in text.replace('\\\n', ' ').splitlines():
         found = re.match(r'\s*cp\s+(.+)$', line)
         if not found:

@@ -118,6 +118,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('wake me in one minute');
   assert.match(await call('set_alarm'), /Alarm set/);
   const due = rows().find(row => row.state === 'pending');
+  assert.equal(Number(due.fire_at_utc), now + 60000, 'the due alarm is anchored to the injected host wall clock');
   now += 60000;
   assert.equal((await post('/api/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
   for (let count = 0; count < 10 && !eventWire.includes('alarm_due'); count++) eventWire += new TextDecoder().decode((await reader.read()).value);

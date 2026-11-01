@@ -77,6 +77,10 @@ export const FRESH_OPENING = 'Speak one original opening line now. Do not acknow
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
+/** C-RECONNECT #1072: a seeded open hands the new session this call's own transcript, so it is told whose words are
+ *  whose before it reads them. Without the framing a rebuilt session narrates the owner in the third person ("he
+ *  asked") instead of answering him, because a bare history reads as somebody else's conversation. */
+export const SEED_FRAMING = 'The messages after this one are this call, already in progress. A user message is the owner speaking to you directly; an assistant message is your own earlier speech in this same call. Continue it as one conversation: answer him as "you", and never describe him, his name or what he asked in the third person.';
 const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
 /** A refused setup keeps 300 characters of the provider's own message: enough to name the field, bounded. */
@@ -390,7 +394,9 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     // C-RECOVERY (a): the seed plus every line appended after it stays inside both provider ceilings. The oldest
     // turns go first and the newest turn is condensed, so a 300-fragment call opens instead of being refused.
     const appendedChars = request.openingText !== undefined ? request.openingText.length : freshOpening ? FRESH_OPENING.length : 0;
-    const room = Math.max(0, SEED_MESSAGE_LIMIT - (appendedChars > 0 ? 1 : 0));
+    // C-RECONNECT #1072: a seeded open carries the framing item first, so it costs one of the documented 128 slots.
+    const framed = history.length > 0;
+    const room = Math.max(1, SEED_MESSAGE_LIMIT - (appendedChars > 0 ? 1 : 0) - (framed ? 1 : 0));
     let kept = history.slice(Math.max(0, history.length - room));
     const totalOf = (turns: readonly { text: string }[]): number => turns.reduce((sum, turn) => sum + turn.text.length, 0) + appendedChars;
     while (kept.length > 1 && totalOf(kept) > SEED_CHAR_LIMIT) kept = kept.slice(1);
@@ -399,6 +405,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (totalOf(kept) - last.text.length));
       const keep = Math.max(roomLeft - 3, 0);
       kept = [...kept.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
+    }
+    if (framed) {
+      characters += SEED_FRAMING.length;
+      items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: SEED_FRAMING }] });
     }
     for (const turn of kept) {
       characters += turn.text.length;

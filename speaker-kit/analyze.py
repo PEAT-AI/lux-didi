@@ -117,8 +117,11 @@ def align_offset(rec, ref, fs, search_lo=0, search_hi=None, max_lag_s=8.0):
     # Only full-length overlaps are candidates. Normalization prevents a loud
     # neighbouring transient winning simply because its energy is larger.
     energy = np.concatenate(([0.0], np.cumsum(window * window)))
-    denom = np.sqrt(np.maximum((energy[n:] - energy[:-n]) * np.dot(ref, ref), 1e-30))
+    local_energy = np.maximum(energy[n:] - energy[:-n], 0.)
+    denom = np.sqrt(np.maximum(local_energy * np.dot(ref, ref), 1e-30))
     scores = np.abs(corr) / denom
+    # FFT roundoff against an all-zero padded window is not a match.
+    scores[local_energy <= max(float(np.max(local_energy))*1e-8, 1e-24)] = 0.
     best = int(np.argmax(scores))
     if scores[best] < 0.025:
         raise ValueError("alignment: reference not found (correlation %.4f, expected %.3fs)" % (scores[best], (lo + hi - n) / (2 * fs)))

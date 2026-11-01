@@ -26,7 +26,7 @@ def spectrum(x, fs):
         raise ValueError("insufficient samples for spectrum")
     hop = n // 4
     frames = np.lib.stride_tricks.sliding_window_view(x, n)[::hop]
-    window = np.hanning(n + 1)[:-1]
+    window = np.blackman(n + 1)[:-1]
     p = abs(np.fft.rfft(frames * window, axis=1))**2 / (n * (window**2).sum())
     p[:, 1:-1] *= 2
     f = np.fft.rfftfreq(n, 1/fs)
@@ -39,7 +39,7 @@ def measure(x, gap, fs, hz):
     fg, _, pg = spectrum(gap, fs)
     noise = np.interp(f, fg, pg.mean(axis=1))
     mean = p.mean(axis=1)
-    bands = [abs(f - hz * h) <= 8 for h in range(1, 11)]
+    bands = [abs(f - hz * h) <= 16 for h in range(1, 11)]
     between = (f >= max(35, hz - 15)) & (f <= hz * 10 + 12)
     for band in bands:
         between &= ~band
@@ -77,7 +77,11 @@ def locate(y, fs, entries, pre, gap, timestamps=None):
         mask = np.zeros(len(f), dtype=bool)
         for h in range(1, 11):
             mask |= abs(f-h*hz) <= 8
-        if e['kind'] != 'bass-tone':
+        if e['kind'] in ('voice', 'bass-voice'):
+            mask = np.zeros(len(f), dtype=bool)
+            for voice_hz in e['tones_hz']:
+                mask |= abs(f-voice_hz) <= 12
+        elif e['kind'] != 'bass-tone':
             mask = (f >= 40) & (f <= 4000)
         energy = p[mask].sum(axis=0)
         candidates = []
@@ -98,7 +102,10 @@ def locate(y, fs, entries, pre, gap, timestamps=None):
         separation = best-alternatives[0][0] if alternatives else None
         resolved = best >= MARGIN and (separation is None or separation >= 1)
         rows.append(dict(file=e['file'], start_s=start, end_s=start+dur,
-                         expected_s=expected, source='wall-clock' if stamped else 'ordered ladder',
+                         expected_s=expected,
+                         stamped_end_s=((dt.datetime.fromisoformat(e['playback_end_utc'])-origin).total_seconds()
+                                        if stamped and e.get('playback_end_utc') else None),
+                         source='wall-clock' if stamped else 'ordered ladder',
                          contrast_db=best, separation_db=separation, resolved=resolved,
                          candidates=[dict(start_s=s, contrast_db=v) for v, s in candidates[:3]]))
         starts.append(start)
@@ -125,7 +132,7 @@ def analyze(run):
         if e['kind'] == 'bass-tone':
             row = measure(x, g, fs, e['tone_hz'])
             row.update(file=e['file'], hz=e['tone_hz'], level=e['level_db_peak'],
-                       resolved=align['resolved'])
+                       resolved=align['resolved'], channel=e.get('channel', 'both'))
             tones.append(row)
         elif e['kind'] == 'bass-kick':
             for i in range(16):
@@ -147,21 +154,40 @@ def analyze(run):
                        for hz in e['tones_hz']])
     for row in tones:
         previous = next((r for r in tones if r['hz']==row['hz'] and
+                         r['channel']==row['channel'] and
                          r['level']=={-6:-12, -3:-6}.get(row['level'])), None)
         row['growth_db'] = ({k:row[k]['dbfs']-previous[k]['dbfs']
                              for k in ('fundamental', 'between', 'above_h10')} if previous else None)
+    channel_growth = []
+    for left in tones:
+        if left['channel'] != 'L' or left['growth_db'] is None:
+            continue
+        right = next((r for r in tones if r['channel']=='R' and r['hz']==left['hz'] and
+                      r['level']==left['level'] and r['growth_db'] is not None), None)
+        if right:
+            channel_growth.append(dict(hz=left['hz'], level=left['level'],
+                right_minus_left_growth_db={k:right['growth_db'][k]-left['growth_db'][k]
+                                           for k in left['growth_db']}))
+    voice_change = None
+    if 'voice' in voices and 'bass-voice' in voices:
+        a, b = voices['voice'], voices['bass-voice']
+        voice_change = dict(band_change_db=b['voice_band']['dbfs']-a['voice_band']['dbfs'],
+            tones=[dict(hz=x['hz'], **{key:y[key]['dbfs']-x[key]['dbfs']
+                                      for key in ('carrier', 'lower', 'upper')})
+                   for x, y in zip(a['tones'], b['tones'])])
     tones.sort(key=lambda r:r['score_db'], reverse=True)
     return dict(run=run.name, alignment=alignment, tones=tones, kicks=kicks, voice=voices,
+                voice_change_db=voice_change, channel_growth=channel_growth,
                 limitations='Gap subtraction cannot separate television from speaker noise. '
                 'Harmonics may be intentional. Unresolved timing is provisional, not a fault verdict.')
 
 
 def table(result):
-    lines = ['| Hz | Input dBFS | Between / gap dBFS | Above H10 / gap dBFS | Excess dB | Flutter dB | Timing |',
-             '| --- | --- | --- | --- | --- | --- | --- |']
+    lines = ['| Hz | Channel | Input dBFS | Between / gap dBFS | Above H10 / gap dBFS | Excess dB | Flutter dB | Timing |',
+             '| --- | --- | --- | --- | --- | --- | --- | --- |']
     for r in result['tones']:
-        lines.append('| %g | %g | %.1f / %.1f | %.1f / %.1f | %.1f | %.1f | %s |' % (
-            r['hz'], r['level'], r['between']['dbfs'], r['between']['gap_dbfs'],
+        lines.append('| %g | %s | %g | %.1f / %.1f | %.1f / %.1f | %.1f | %.1f | %s |' % (
+            r['hz'], r['channel'], r['level'], r['between']['dbfs'], r['between']['gap_dbfs'],
             r['above_h10']['dbfs'], r['above_h10']['gap_dbfs'], r['score_db'],
             r['flutter_db'], 'candidate' if not r['resolved'] else 'located'))
     return '\n'.join(lines)

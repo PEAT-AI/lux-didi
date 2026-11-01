@@ -157,8 +157,19 @@ def signals():
     return entries
 
 
-def bass_signals():
-    """48 seconds of stereo audio, excluding gaps; no sustained -1 dBFS sine."""
+def bass_signals(lr=False):
+    """Bass stimuli, or 32 seconds of one-side tones for growth comparisons."""
+    if lr:
+        entries = []
+        t = np.arange(2*FS)/FS
+        for channel in ('L', 'R'):
+            for hz in (60, 100, 150, 200):
+                for level in (-6, -3):
+                    entries.append(dict(file='bass_%s_%d_m%d.wav' % (channel, hz, -level),
+                        kind='bass-tone', channel=channel, tone_hz=hz,
+                        mono=_fade(np.sin(2*np.pi*hz*t)), level_db_peak=float(level),
+                        duration_s=2., sample_rate=FS, bits=24))
+        return entries
     entries = []
     def add(name, kind, x, level, **extra):
         entries.append(dict(file=name + ".wav", kind=kind, channel="both", mono=x,
@@ -186,7 +197,7 @@ def bass_signals():
     return entries
 
 
-def build(out_dir, bass=False):
+def build(out_dir, bass=False, bass_lr=False):
     os.makedirs(out_dir, exist_ok=True)
     files = []
 
@@ -211,7 +222,7 @@ def build(out_dir, bass=False):
             entry.update(extra)
         files.append(entry)
 
-    for entry in (bass_signals() if bass else signals()):
+    for entry in (bass_signals(lr=bass_lr) if bass or bass_lr else signals()):
         extra = {k: v for k, v in entry.items()
                  if k not in ("file", "kind", "channel", "level_db_peak",
                               "duration_s", "sample_rate", "bits", "mono")}
@@ -257,9 +268,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=DEFAULT_OUT, help="output directory (default %(default)s)")
     ap.add_argument("--bass", action="store_true", help="48 seconds of sustained bass and voice controls")
+    ap.add_argument("--bass-lr", action="store_true", help="one-side bass tones (32 s audio)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
-    manifest, path = build(args.out, bass=args.bass)
+    manifest, path = build(args.out, bass=args.bass, bass_lr=args.bass_lr)
     bad = verify(args.out, manifest)
     if not args.quiet:
         for entry in manifest["files"]:

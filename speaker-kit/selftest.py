@@ -372,6 +372,23 @@ def check_virtual_bass_spectrum():
     assert abs(starts[0]-1) < .15
     assert rows[0]['contrast_db'] > 20
     print('SPECTRAL SELFTEST: PASS, virtual bass healthy; 100 Hz at -3 dBFS ranked first')
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory(prefix='speakerkit-lr.') as tmp:
+        manifest, _ = ms.build(tmp, bass_lr=True)
+        assert len(manifest['files']) == 16 and manifest['audio_s'] == 32
+        assert not ms.verify(tmp, manifest)
+        for e in manifest['files']:
+            audio, _ = sf.read(e['path'], always_2d=True)
+            muted = 1 if e['channel'] == 'L' else 0
+            assert not np.any(audio[:, muted])
+        plan = subprocess.run(['bash', str(Path(__file__).with_name('run_kit.sh')),
+                               'offline-lr', '--bass-lr'], capture_output=True, text=True)
+        assert plan.returncode == 0, plan.stderr
+        assert '16 files, 1 s gaps' in plan.stdout
+        assert 'Without --go: no playback' in plan.stdout
+    print('BASS LR PLAN: PASS, 16 one-side files, written level and muted channel verified')
 
 
 def main(argv=None):

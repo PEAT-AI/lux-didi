@@ -35,11 +35,13 @@ usage() {
 label=""
 go=0
 bass=0
+bass_lr=0
 confirm_flag=0
 for arg in "$@"; do
     case "$arg" in
         --go) go=1 ;;
         --bass) bass=1 ;;
+        --bass-lr) bass_lr=1 ;;
         --confirm-no-call) confirm_flag=1 ;;
         -h|--help) usage 0 ;;
         --*) echo "unknown option: $arg" >&2; usage 2 ;;
@@ -51,8 +53,16 @@ case "$label" in
     *[!A-Za-z0-9._-]*) echo "label may only hold letters, digits, dot, underscore, hyphen" >&2; exit 2 ;;
 esac
 
+[ "$bass" -eq 0 ] || [ "$bass_lr" -eq 0 ] || { echo "choose --bass or --bass-lr" >&2; exit 2; }
 signal_args=()
-if [ "$bass" -eq 1 ]; then
+if [ "$bass_lr" -eq 1 ]; then
+    signal_args=(--bass-lr)
+    SIGNALS_DIR=${SPEAKERKIT_SIGNALS:-$RUNS_ROOT/signals-bass-lr}
+    N_FILES=16
+    AUDIO_S=32
+    GAPS_S=15
+    TOTAL_S=48
+elif [ "$bass" -eq 1 ]; then
     signal_args=(--bass)
     SIGNALS_DIR=${SPEAKERKIT_SIGNALS:-$RUNS_ROOT/signals-bass}
     N_FILES=21
@@ -62,6 +72,19 @@ if [ "$bass" -eq 1 ]; then
 fi
 
 print_plan() {
+    if [ "$bass_lr" -eq 1 ]; then
+        cat <<EOF
+speaker-kit one-side bass plan for label "$label"
+  left only then right only: 60, 100, 150, 200 Hz; 2 s at -6 and -3 dBFS
+  16 files, 1 s gaps, 20 ms fades, wall-clock brackets saved per file
+  audio ${AUDIO_S}s + gaps ${GAPS_S}s + pre-roll ${PRE_ROLL_S}s = ${TOTAL_S}s
+  signals: $SIGNALS_DIR
+  Without --go: no playback, mic, device query or file creation.
+  With --go: identical speaker, microphone, slider and no-live-call safeguards.
+  Compare -6 to -3 growth within each channel, not absolute left/right mic level.
+EOF
+        return
+    fi
     if [ "$bass" -eq 1 ]; then
         cat <<EOF
 speaker-kit bass plan for label "$label"

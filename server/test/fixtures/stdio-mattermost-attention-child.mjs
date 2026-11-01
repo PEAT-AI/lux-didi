@@ -21,7 +21,7 @@ const DAY = 24 * HOUR;
 const now = Date.now();
 const iso = (ms) => new Date(ms).toISOString();
 
-const OWNER = { id: 'owner0000000000000000000a', username: 'robert', email: 'robert@example.invalid' };
+const OWNER = { id: 'owner0000000000000000000a', username: 'owner-chat', email: 'owner-chat@example.invalid' };
 
 const post = (id, channel, author, at, message, slug) => ({
   id, username: author, channel, timestamp: iso(at), message,
@@ -29,19 +29,19 @@ const post = (id, channel, author, at, message, slug) => ({
 });
 
 // Mention window: one inside the default seven days, one ten days back.
-const mentionRecent = post('postMentionRecent', 'team-release', 'dana', now - 2 * HOUR, '@robert can you confirm the 3k release?', 'mention-recent');
-const mentionOld = post('postMentionOld', 'team-release', 'dana', now - 10 * DAY, '@robert did you see this last week?', 'mention-old');
+const mentionRecent = post('postMentionRecent', 'team-release', 'dana', now - 2 * HOUR, '@owner-chat can you confirm the 3k release?', 'mention-recent');
+const mentionOld = post('postMentionOld', 'team-release', 'dana', now - 10 * DAY, '@owner-chat did you see this last week?', 'mention-old');
 // A direct conversation, with one owner post and one from Dana.
 const dmDana = post('postDmDana', 'direct-dana', 'dana', now - 1 * HOUR, 'sent you the deck for review', 'dm-dana');
-const dmOwner = post('postDmOwner', 'direct-dana', 'robert', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
+const dmOwner = post('postDmOwner', 'direct-dana', 'owner-chat', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
 // Two threads the owner opened: one waits on Dana, the other the owner answered last.
-const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'robert', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
+const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'owner-chat', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
 const threadOpenReply = post('threadOpenReply', 'direct-dana', 'dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply');
-const threadDoneRoot = post('threadDoneRoot', 'direct-dana', 'robert', now - 6 * HOUR, 'ok to ship?', 'thread-done-root');
-const threadDoneReply = post('threadDoneReply', 'direct-dana', 'robert', now - 4 * HOUR, 'shipped it', 'thread-done-reply');
+const threadDoneRoot = post('threadDoneRoot', 'direct-dana', 'owner-chat', now - 6 * HOUR, 'ok to ship?', 'thread-done-root');
+const threadDoneReply = post('threadDoneReply', 'direct-dana', 'owner-chat', now - 4 * HOUR, 'shipped it', 'thread-done-reply');
 // A public channel thread: the owner opened it, Dana answered last. Nothing mentions the owner,
 // so only a read seeded by the owner's own posts can find it.
-const publicThreadRoot = post('publicThreadRoot', 'team-release', 'robert', now - 7 * HOUR, 'who owns the 3k dock retest?', 'public-thread-root');
+const publicThreadRoot = post('publicThreadRoot', 'team-release', 'owner-chat', now - 7 * HOUR, 'who owns the 3k dock retest?', 'public-thread-root');
 const publicThreadReply = post('publicThreadReply', 'team-release', 'dana', now - 20 * 60 * 1000, 'I can take it tomorrow morning', 'public-thread-reply');
 
 // Deliberately unsorted: the connector owns the order it shows.

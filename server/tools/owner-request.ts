@@ -136,7 +136,16 @@ export class OwnerRequests implements OwnerRequestPort {
   private negated(words: string, kind: ActionKind): boolean {
     const governed = NEGATED_ACTION[kind];
     if (governed === undefined) return false;
-    for (const match of words.matchAll(NEGATED_CLAUSE)) if (governed.test(match[1]!)) return true;
+    for (const match of words.matchAll(NEGATED_CLAUSE)) {
+      // C-NEGATION: a negator in front of "forget" asks him to remember, so it commands the action
+      // it names rather than voiding it. The negator "forget it" itself still cancels what follows.
+      if (/^forget\b/i.test(match[1]!)) continue;
+      if (governed.test(match[1]!)) return true;
+      // A bare cancel that names only the object voids it: "never mind the alarm" sets no alarm. It
+      // must name it in its own clause, because a later final never takes an earlier ask back
+      // ("never mind, no alarm" leaves the alarm he already asked for standing).
+      if (kind === 'set_alarm' && /^(?:never mind|no need to)\s+(?:the |an? |my )?alarm\b/i.test(match[0]!)) return true;
+    }
     return false;
   }
   private settle(request: Request, kind: ActionKind, target: string,

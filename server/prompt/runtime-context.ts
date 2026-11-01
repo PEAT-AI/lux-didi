@@ -144,8 +144,9 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
-    else if (name === 'search_knowledge' || name === 'get_insight') add("Rob's private notes");
+    else if (name === 'search_knowledge' || name === 'get_insight') add('his private notes');
     else if (name === 'remember_note') add('memory');
+    else if (name.startsWith('trello_')) add('Trello board');
     else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }
     // L8-10: the web read is a research source, so the session's own list names it when it can run.
     if (name === 'web_search') add('web search');
@@ -157,7 +158,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
 export function connectorGroupNames(connector: string): string[] {
   if (connector === 'google') return ['calendar', 'mail'];
   if (connector === 'mattermost') return ['team chat'];
-  if (connector === 'lux-knowledge') return ["Rob's private notes"];
+  if (connector === 'lux-knowledge') return ['his private notes'];
   if (connector === 'mongoose') return ['company knowledge'];
   return [connector];
 }
@@ -190,6 +191,6 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
     `Connected now: ${connected}.`,
     ...(input.vault === undefined ? [] : [vaultCapabilityLine(input.vault)].filter((line): line is string => line !== undefined)),
     ...(input.connectors === undefined ? [] : [connectorStateLine(input.connectors)].filter((line): line is string => line !== undefined)),
-    'Naya can read and search; she cannot send anything to anyone.',
+    'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.',
   ].join('\n');
 }

@@ -333,13 +333,13 @@ test('#696: each Mongoose endpoint logs its token proof at connect and after a r
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('#696: a pedro@ token logs match=false and refuses the endpoint until the owner signs in', async () => {
+test('#696: a stranger@example token logs match=false and refuses the endpoint until the owner signs in', async () => {
   const root = mkdtempSync(join(tmpdir(), 'didi-mongoose-stranger-'));
   const dir = join(root, 'provider-config'); mkdirSync(dir, { mode: 0o700 });
   const binding = mongooseBinding('https://mongoose.test/mcp/crm', 'crm')!;
   const seen: Array<{ proven: boolean; match: boolean | null }> = [];
   try {
-    writeMongooseOAuth(dir, 'mongoose-crm', mongooseRecord('crm', mintedMongooseToken('crm', 'pedro@plantix.net'), MONGOOSE_NOW + 3_600_000));
+    writeMongooseOAuth(dir, 'mongoose-crm', mongooseRecord('crm', mintedMongooseToken('crm', 'pedro@example.invalid'), MONGOOSE_NOW + 3_600_000));
     await assert.rejects(
       () => mongooseAccessToken(dir, 'mongoose-crm', binding, { now: () => MONGOOSE_NOW, ownerIdentity: MONGOOSE_OWNER, onIdentity: proof => seen.push({ proven: proof.proven, match: proof.match }) }),
       (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-identity-mismatch');

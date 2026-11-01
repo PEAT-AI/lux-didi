@@ -48,6 +48,14 @@ Google families use separately configured stdio endpoints: `gmail`, `calendar` a
 
 Mattermost also uses the installed archive helper's account flow. A missing session is an authentication limitation, not a successful empty read. New person or conversation reads work only when the child publishes them and the connection grants them. [connectors.md](connectors.md) explains capability fallback.
 
+## Project names, the owner's own setting
+
+`researchProjects` is an optional array of the owner's own project names in the same `mcp.json`. At host start the
+names become the knowledge search hint set: a question that says one of them out loud matches on that project, and
+the search runs exactly as before. It is never shipped in the public tree and it defaults to empty, so a catalog
+without the key has no hint at all. Each name is a string of at most 80 characters, and a key that is not a list of
+names is refused as `invalid_profile` rather than half-applied.
+
 ## Approval modes and changes
 
 The catalog's `grantMode` defaults to `explicit`. `owner-trusted-reads` is an explicit owner choice to approve the local connector's reviewed read envelope after discovery, not permission for all tools a server advertises. The local envelope and the remote read-only declaration constrain admission; writes and unknown effects must not become reads because of a familiar tool name.

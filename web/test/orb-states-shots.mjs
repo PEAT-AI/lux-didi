@@ -19,7 +19,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startFixture } from './fixture.mjs';
 
-const shots = process.env.DIDI_ORB_STATE_SHOTS || '/Users/rob/.lux/reports/lux-didi-stability-1015/m3-shots';
+const shots = process.env.DIDI_ORB_STATE_SHOTS || join(import.meta.dirname, '../test-artifacts/m3-shots');
 await mkdir(shots, { recursive: true });
 
 async function pngSize(path) {

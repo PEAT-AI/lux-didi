@@ -11,6 +11,8 @@ printf '# isolated user config\n' > "$work/npm-user"
 printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
+# The public tree is vanilla (C-VANILLA): no owner mailbox and no owner home path in any tracked file.
+node test/vanilla-tree.integration.mjs
 npm run build
 # Historical comparative proof runs when the pinned release is available; current behavior tests below always run.
 if git cat-file -e c77491b713808192e6314babd8b0bdbb3154cbdf^{commit} 2>/dev/null; then

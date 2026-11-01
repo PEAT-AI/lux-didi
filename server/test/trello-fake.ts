@@ -199,7 +199,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   // The REST surface: api.trello.com/1, key and token as query parameters, exactly the calls the board makes.
   const key = options.key ?? 'fakekey00000000000000000';
   const token = options.token ?? 'faketoken0000000000000000';
-  const member = options.member ?? { id: 'member0fake', username: 'robplantix', email: 'rob@plantix.net', fullName: 'Rob' };
+  const member = options.member ?? { id: 'member0fake', username: 'owner-handle', email: 'owner@example.invalid', fullName: 'Owner' };
   const only = (payload: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> =>
     Object.fromEntries(keys.filter(name => payload[name] !== undefined).map(name => [name, payload[name]]));
 

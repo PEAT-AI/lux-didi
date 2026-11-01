@@ -294,7 +294,7 @@ export const COMPOSE_TOOLS: Readonly<Record<ComposeName, ComposeTool>> = {
     validate: validateCreateEvent,
   },
   delete_event: {
-    description: 'Remove a block on his calendar that this call made, or one he named without ambiguity. Only events Naya created herself.',
+    description: 'Remove a block on his calendar that this call made, or one event he named without ambiguity that a calendar read in this call returned. Any other event is refused.',
     parameters: { type: 'object', properties: { event_id: { type: 'string', description: 'The event this call created, when he means that one.' } }, additionalProperties: false },
     validate: validateDeleteEvent,
   },

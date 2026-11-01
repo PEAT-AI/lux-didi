@@ -475,18 +475,18 @@ test('R8-W9 (F1): a roster person without a direct conversation says so only aft
 });
 
 test('R8-W9 (F2): the owner\'s display name goes with the handle, word by word, and only their own words go', () => {
-  assert.equal(withoutOwner('pilot Robert Smith', 'robert', 'Robert Smith'), 'pilot', 'the whole name is the owner');
-  assert.equal(withoutOwner('pilot robert', 'robert', 'Robert Smith'), 'pilot', 'the handle too');
-  assert.equal(withoutOwner('smith street pilot', 'robert', 'Robert Smith'), 'street pilot', 'a shared surname is the owner\'s word and goes; other words stay');
-  assert.equal(withoutOwner('pilot', 'robert@example.invalid', 'Robert Smith'), 'pilot', 'the part before any @ is the handle');
+  assert.equal(withoutOwner('pilot Robert Smith', 'owner-chat', 'Robert Smith'), 'pilot', 'the whole name is the owner');
+  assert.equal(withoutOwner('pilot owner-chat', 'owner-chat', 'Robert Smith'), 'pilot', 'the handle too');
+  assert.equal(withoutOwner('smith street pilot', 'owner-chat', 'Robert Smith'), 'street pilot', 'a shared surname is the owner\'s word and goes; other words stay');
+  assert.equal(withoutOwner('pilot', 'owner-chat@example.invalid', 'Robert Smith'), 'pilot', 'the part before any @ is the handle');
   assert.equal(withoutOwner('pilot', '', ''), 'pilot', 'no identity, nothing dropped');
 });
 
 test('R8-W9: the owner\'s own handle never becomes a chat search term', async t => {
   const f = await setup(t, 'people');
-  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', query: 'pilot robert' }));
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', query: 'pilot owner-chat' }));
   assert.equal(searches(f.calls())[0]?.['query'], 'pilot', 'the handle is dropped, the topic stays');
-  assert.doesNotMatch(read.read, /robert/u);
+  assert.doesNotMatch(read.read, /owner-chat/u);
 });
 
 test('R8-W9: a name stops at the name, and every person shape is a person ask', () => {

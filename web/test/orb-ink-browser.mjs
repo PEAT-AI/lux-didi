@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
+import {homedir} from 'node:os';
 const artifacts=process.env.DIDI_WEB_ARTIFACTS||join(import.meta.dirname,'../test-artifacts/orb-ink');
 await mkdir(artifacts,{recursive:true});
 const server=createServer(async(req,res)=>{
@@ -23,7 +24,7 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));let browser;
 try{
   browser=await chromium.launch({headless:true,args:(process.env.LUX_BROWSER_GPU_ARGS||'--use-angle=metal --enable-gpu').split(' ').filter(Boolean)});
   const page=await browser.newPage({deviceScaleFactor:2,reducedMotion:'reduce'});
-  if(process.env.LUX_BROWSER_SLOT_TOKEN){const {assertGpu}=await import('/Users/rob/GitHub/lux-harness/skills/pi-control/scripts/pi_browser_launch.mjs');await assertGpu(page);}
+  if(process.env.LUX_BROWSER_SLOT_TOKEN){const {assertGpu}=await import(process.env.PI_BROWSER_LAUNCH || join(homedir(), '.agents/skills/pi-control/scripts/pi_browser_launch.mjs'));await assertGpu(page);}
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>!!window.fixture);
   const result=await page.evaluate(()=>{
     const {Orb,OrbInkSurface,ORB_VISUALS,publishOrbVisual}=window.fixture;

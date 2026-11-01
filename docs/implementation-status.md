@@ -1,11 +1,12 @@
 # Implementation status
 
-State of the source tree at release 10.7.2 (main `4068fa0fcc5aa90d46420481eb6474a0db09dda6`, 2026-11-01). It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
+State of the source tree at release 10.7.3 (main `d12e076791f0af99a4dd9bbe7b060ba8df5d2f73`, 2026-11-01). It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
 
 ## Releases
 
 | Release | Date | What changed for the owner |
 | --- | --- | --- |
+| 10.7.3 | 2026-11-01 | A request phrased "don't forget to ..." executes; the prompt states exactly what she can and cannot do; the public repo carries no owner identity |
 | 10.7.2 | 2026-11-01 | Direct asks (alarms, calendar entries, drafts, notes) execute; outside text from mail, chat or the web can still not trigger a write; a stalled model reconnects silently; the voice engine is built once per call and released cleanly; the call audit view works again |
 | 10.7.1 | 2026-11-01 | Native action checks no longer depend on whether a browser is open; README and CLAUDE.md describe 10.7 |
 | 10.7 | 2026-11-01 | Quit works from every window and always finishes cleanly; the orb no longer starts a call when clicked and its animation cannot freeze after login; a wake-up alarm wakes her and she speaks, even after quit; calendar entries and drafts asked for directly now happen in live calls, and questions, reports or "don't" never write (deleting an event and email drafts still refuse some valid phrasings, tracked for 10.8); Mongoose and knowledge reads follow each server's own paging and shapes; Mattermost chat reads keep the person and channel; one research job per question with honest partial answers; filler arguments repaired and refusals told truthfully; every segment of a turn timed in the host log with a latency budget eval; evals: live-boundary harness, priced release tier (dry run by default), post-call review, combined-tree gate, test-sensitivity mutants, plist check. |

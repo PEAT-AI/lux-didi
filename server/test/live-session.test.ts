@@ -257,7 +257,7 @@ async function harness(t: TestContext, overrides: {
         const text = req.params.name === 'mattermost_list_channels'
           ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
           : req.params.name === 'mattermost_whoami'
-            ? JSON.stringify({ username: 'robert', display_name: 'Robert Peat' })
+            ? JSON.stringify({ username: 'owner-chat', display_name: 'Owner Example' })
             : JSON.stringify(overrides.mattermostData ?? { posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
         return { content: [{ type: 'text', text }] };
       });
@@ -678,7 +678,7 @@ test('L8-10: the runtime context names web search when the session can search th
   const { attachment: withAttachment } = await attached(withWeb);
   const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
   assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
-  assert.ok(connected.split(', ').includes("Rob's private notes"), `the knowledge read stays named: ${connected}`);
+  assert.ok(connected.split(', ').includes('his private notes'), `the knowledge read stays named: ${connected}`);
   withAttachment.close(); await withAttachment.done;
   const without = await harness(t, { tools: true, system: native });
   const { attachment } = await attached(without);
@@ -1350,7 +1350,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ["Rob's private notes", 'memory'],
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['his private notes', 'memory'],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);

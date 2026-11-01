@@ -10,7 +10,9 @@
 # documented canonical wrapper, with one finite wait. A held admission therefore never
 # forces a repeated backend rebuild, and the browser step runs already holding the slot.
 set -euo pipefail
-. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
+lib="$(cd "$(dirname "$0")" && pwd)/lib"
+. "$lib/node-test-files.sh"
+. "$lib/check-groups.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 if [[ "${1:-}" != '--renderer-held' ]]; then
   exec lux-browser-slot run --priority worker --want 1 --wait 900 -- bash "$0" --renderer-held
@@ -49,18 +51,19 @@ for f in server/dist/chat/index.js server/dist/http/server.js server/dist/test/s
   test -s "$f" || { echo "check-selected-memory-ui: missing build output: $f" >&2; exit 1; }
 done
 
+# A red server group must not hide the browser group (#805): both run, then the fail list is printed.
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-status=0
-# New selected-memory HTTP behavior + impacted MEMORY/NCS accept/fingerprint/recovery and
-# CHAT/HTTP regressions, against the real compiled build.
-node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
-  server/dist/test/selected-memory-ui.test.js server/dist/test/memory-context.test.js \
-  server/dist/test/native-conversation.test.js server/dist/test/http.test.js \
-  server/dist/test/chat.test.js \
-  | tee "$log" || status=$?
-grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-selected-memory-ui: zero selected server tests' >&2; exit 1; }
-if [ "$status" -ne 0 ]; then exit "$status"; fi
-
+group_server() {
+  node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
+    server/dist/test/selected-memory-ui.test.js server/dist/test/memory-context.test.js \
+    server/dist/test/native-conversation.test.js server/dist/test/http.test.js \
+    server/dist/test/chat.test.js \
+    | tee "$log" || return 1
+  grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-selected-memory-ui: zero selected server tests' >&2; return 1; }
+}
 # Already holding the one host-wide renderer through the wrapper above.
-node web/test/selected-memory-browser.mjs
+group_browser() { node web/test/selected-memory-browser.mjs || return 1; }
+group server group_server
+group browser group_browser
+group_report

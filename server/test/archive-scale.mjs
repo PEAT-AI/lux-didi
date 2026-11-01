@@ -166,8 +166,11 @@ async function sample(modules, size) {
     const { manifest, ...compiledRequest } = compilePrompt(trace.compileInput);
     assert.deepEqual(manifest, trace.manifest);
     assert.deepEqual(compiledRequest, assembled.value.request);
-    assert.deepEqual(assembled.value.request.contents.map(turn => JSON.parse(turn.parts[0].text).id), selectedIds);
-    assert.equal(JSON.parse(assembled.value.request.contents.at(-1).parts[0].text).text, currentText);
+    // #812: prior turns reach the model as plain role turns (server/prompt/index.ts:230), never as
+    // JSON envelope strings, so the selected history is asserted on its current wire shape.
+    assert.deepEqual(assembled.value.request.contents.map(({ role, parts }) => ({ role, text: parts[0].text })),
+      before.slice(trace.omittedHistoryCount).map(e => ({ role: e.role === 'assistant' ? 'model' : 'user', text: e.text })));
+    assert.equal(assembled.value.request.contents.at(-1).parts[0].text, currentText);
     const classifications = assembled.measurement.classifications.filter(c => c.kind === 'entry');
     assert.deepEqual(classifications.map(c => c.id), allIds);
     for (const [i, subject] of classifications.entries()) {

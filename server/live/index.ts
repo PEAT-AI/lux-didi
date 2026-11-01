@@ -1,6 +1,7 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
+import { advancesExposure } from '../tools/tiers.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
@@ -4991,6 +4992,16 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
         return { id: call.id, name: call.name, response: completed ? accepted.response : refusalResponse(reason) };
       });
+      // C-PERMTIER (P-R7): the fence moves on what the model was actually handed, not only on the research
+      // path. A read that returned text the owner never spoke exposes the turn, so the write the model makes
+      // next is refused until his own next final.
+      for (const [index, call] of event.calls.entries()) {
+        if (projections[index]?.status !== 'completed' || !isReadOnlyTool(call.name)) continue;
+        const source = stepSourceOf(call.name);
+        if (advancesExposure(source)) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, source, ownerRequestId ?? '');
+        // A knowledge result quotes mail, chat and web text, so it exposes the turn like they do.
+        else if (source === 'knowledge') this.#tools!.owner.ownerRequests.expose(handle.liveSessionId);
+      }
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];
       for (const unit of pending) {

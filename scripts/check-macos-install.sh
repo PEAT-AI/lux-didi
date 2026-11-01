@@ -89,13 +89,14 @@ require_proof_state_root() {
 
 if [ "${1:-}" = "--leased-run" ]; then
   work="$2"; proof="$3"; node="$4"; app="$5"; fixture="$6"; payload_sha="$7"
+  export LUX_VERIFICATION_DRIVER="$work/observer"
+  export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
+  real_home="$HOME"
+  # Both guards run before anything is launched, and after real_home is set because they name the owner's root.
   require_proof_identifier "$app"
   require_proof_state_root "$real_home" "$proof_bundle_id"
   [ ! -d "$fixture" ] || require_proof_identifier "$fixture"
   [ ! -d "$fixture" ] || require_proof_state_root "$real_home" "$proof_fixture_bundle_id"
-  export LUX_VERIFICATION_DRIVER="$work/observer"
-  export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
-  real_home="$HOME"
   real_store="$real_home/Library/Application Support/ai.peat.lux-didi-operator/settings.json"
   real_before="$(stat -f '%m' "$real_store" 2>/dev/null || echo absent)"
   # The compile lock is per user on the machine, so pin it before HOME is invented.

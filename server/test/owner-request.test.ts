@@ -647,7 +647,8 @@ test('P-R3 an alarm with no time in his words executes from the model time argum
   requests.observe('s', 'j1', 'set an alarm please', now);
   const ask = requests.authorize('s', 'set_alarm', 'alarm-1');
   assert.equal(ask.code, 'allowed');
-  const parsed = parseAlarmTime(ask.code === 'allowed' ? ask.words : '', now, 'UTC', now + 3_600_000);
+  // C-TIME: the model states a wall clock and the host resolves it, so no epoch is passed any more.
+  const parsed = parseAlarmTime(ask.code === 'allowed' ? ask.words : '', now, 'UTC', { mode: 'relative', amount: 1, unit: 'hours' });
   assert.equal(parsed.status, 'ready');
   assert.equal(parsed.status === 'ready' ? parsed.fireAtUtc : 0, now + 3_600_000);
 });

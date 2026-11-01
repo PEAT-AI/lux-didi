@@ -32,17 +32,26 @@ test('alarm: explicit morning and evening resolve without a model-supplied time'
   if (evening.status === 'ready') assert.equal(evening.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
 });
 
-test('alarm: relative eight hours is host-derived despite model skew', () => {
-  const result = parseAlarmTime('wake me in eight hours', now, tz, now + 8 * 3600000 + 5000);
+test('alarm: a relative span is host-derived despite a disagreeing model field', () => {
+  // C-TIME: the model states a span, the host adds it to its own clock, and the owner's words win.
+  const result = parseAlarmTime('wake me in eight hours', now, tz, { mode: 'relative', amount: 10, unit: 'hours' });
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, now + 8 * 3600000);
-  assert.equal(parseAlarmTime('wake me in eight hours', now, tz, now + 3600000).status, 'ready');
+  if (result.status === 'ready') {
+    assert.equal(result.fireAtUtc, now + 8 * 3600000);
+    assert.equal(result.corrected, 'model_time_differs');
+  }
+  const agreed = parseAlarmTime('wake me in eight hours', now, tz, { mode: 'relative', amount: 8, unit: 'hours' });
+  assert.equal(agreed.status, 'ready');
+  if (agreed.status === 'ready') assert.equal(agreed.corrected, undefined);
 });
 
-test('alarm: without an owner time the model epoch is the fallback', () => {
-  const parsed = parseAlarmTime('set an alarm', now, tz, now + 3600000);
+test('alarm: without an owner time the model structured time executes', () => {
+  const parsed = parseAlarmTime('set an alarm', now, tz, { mode: 'wall', date: { kind: 'tomorrow' }, local_time: '09:00' });
   assert.equal(parsed.status, 'ready');
-  if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, now + 3600000);
+  if (parsed.status === 'ready') {
+    assert.equal(parsed.localTime, '09:00');
+    assert.equal(parsed.source, 'model');
+  }
 });
 
 test('alarm: a resolved instant remains fixed when the system time zone changes', () => {
@@ -147,8 +156,9 @@ for (const words of [
 ]) test(`hear104 time and label: ${words}`, () => {
   const result = parseAlarmTime(words, now, tz);
   assert.equal(result.status, 'ready');
-  if (words.includes('summary')) assert.equal('label' in result && result.label, 'give me a summary');
-  if (words.includes('library')) assert.equal('label' in result && result.label, 'I have to call the library');
+  // C-TIME: the label is the model's argument now, so this asserts the clock survived the subject clause.
+  if (words.includes('summary')) assert.match(result.confirmation, /^Alarm set for /);
+  if (words.includes('library')) assert.equal(result.fireAtUtc, now + 540000);
 });
 
 test('hear104 wake without a period means the next morning, not this evening', () => {
@@ -161,13 +171,13 @@ test('hear104 relative reminder preserves owner label and ignores model-selected
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') {
     assert.equal(result.fireAtUtc, now + 600000);
-    assert.equal(result.label, 'I have to call the library');
+    assert.match(result.confirmation, /^Alarm set for /, 'the read-back replaces the extracted label');
   }
 });
 test('hear104 quarter-to is a time, not a trailing label', () => {
   const result = parseAlarmTime('set an alarm at quarter to eight', now, tz);
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.label, '');
+  if (result.status === 'ready') assert.match(result.confirmation, /^Alarm set for /);
 });
 
 test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
@@ -201,7 +211,7 @@ test('C-RECUR: every day resolves the owner 24-hour wall time and the following 
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready' || !result.series) return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-30T22:30:00+08:00'));
-  assert.match(result.label, /go to bed/);
+  assert.match(result.confirmation, /^Alarm set for /);
   assert.equal(seriesNextFireAt(result.series, result.fireAtUtc), Date.parse('2026-10-31T22:30:00+08:00'));
   assert.equal(seriesText(result.series), 'every day at 22:30 Singapore time');
   assert.match(result.confirmation, /every day at 22:30 Singapore time/);
@@ -212,7 +222,7 @@ test('C-RECUR: every Saturday before and after ten, and the week after the fire'
   assert.equal(before.status, 'ready');
   if (before.status !== 'ready' || !before.series) return;
   assert.equal(before.fireAtUtc, Date.parse('2026-10-31T10:00:00+08:00'));
-  assert.match(before.label, /do one hour of cardio/);
+  assert.match(before.confirmation, /^Alarm set for /);
   assert.equal(seriesNextFireAt(before.series, before.fireAtUtc), Date.parse('2026-11-07T10:00:00+08:00'));
   assert.equal(seriesText(before.series), 'every Saturday at 10:00 Singapore time');
   const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz);
@@ -289,22 +299,22 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
   const wake = parseAlarmTime('wake up at 10:30 and remind me to go to sport', now_, tz);
   assert.equal(wake.status, 'ready');
   if (wake.status === 'ready') {
-    assert.equal(wake.label, 'go to sport');
+    assert.match(wake.confirmation, /^Alarm set for /);
   }
   const brief = parseAlarmTime('wake me at 7 and brief me', now_, tz);
   assert.equal(brief.status, 'ready');
-  if (brief.status === 'ready') assert.match(brief.label, /brief/);
+  if (brief.status === 'ready') assert.match(brief.confirmation, /^Alarm set for /);
   const checkIn = parseAlarmTime('check in with me in an hour about the deck', now_, tz);
   assert.equal(checkIn.status, 'ready');
   if (checkIn.status === 'ready') {
-    assert.equal(checkIn.label, 'the deck');
+    assert.match(checkIn.confirmation, /^Alarm set for /);
     assert.equal(checkIn.fireAtUtc, now_ + 3_600_000);
   }
   for (const ask of ['wake me at 7 and tell me about the deck', 'wake me at 7 and talk to me about the deck',
     'check in with me at 7 about the deck']) {
     const subject = parseAlarmTime(ask, now_, tz);
     assert.equal(subject.status, 'ready', ask);
-    if (subject.status === 'ready') assert.equal(subject.label, 'the deck', ask);
+    if (subject.status === 'ready') assert.match(subject.confirmation, /^Alarm set for /, ask);
   }
   // A stated clock after the subject belongs to the alarm, never to the label.
   for (const ask of ['tell me about the deck at 9', 'talk to me about the deck at 9',
@@ -312,11 +322,11 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
     const clocked = parseAlarmTime(ask, now_, tz);
     assert.equal(clocked.status, 'ready', ask);
     if (clocked.status === 'ready') {
-      assert.equal(clocked.label, 'the deck', ask);
-      assert.doesNotMatch(clocked.label, /\d|\bat\b|\bin\b/, ask);
+      assert.match(clocked.confirmation, /^Alarm set for /, ask);
+      assert.doesNotMatch(clocked.confirmation.replace(/^Alarm set for /, ''), /\d{1,2}:\d{2}.*\d{1,2}:\d{2}/, ask);
     }
   }
   const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
   assert.equal(standaloneBrief.status, 'ready');
-  if (standaloneBrief.status === 'ready') assert.equal(standaloneBrief.label, 'brief me');
+  if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.confirmation, /^Alarm set for /);
 });

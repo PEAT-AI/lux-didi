@@ -26,6 +26,8 @@ interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; target
 interface Request {
   id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; alarmWords?: string; answered?: boolean; pending?: { kind: ActionKind; field: string };
+  /** A clarified or failed ask is spent: the next final is read on its own words. */
+  spent?: boolean;
   sources: Record<string, number>; shown: { handle: string; kind: string }[];
 }
 /** Per tools-owner state. Only finalized spoken or typed owner input may call observe. */
@@ -66,7 +68,7 @@ export class OwnerRequests implements OwnerRequestPort {
     // fresh grant instead of replaying a spent one. Only an unsettled ask merges (the split-ask case).
     const settled = previous !== undefined && [...previous.grants.values()].some(grant =>
       grant.target !== undefined || grant.inFlight === true || (grant.targets?.size ?? 0) > 0);
-    if (previous && !settled && this.clock() - previous.start <= 120000) {
+    if (previous && !settled && previous.spent !== true && this.clock() - previous.start <= 120000) {
       // A split ask grants on the combined turn: the intent and the target may arrive apart.
       const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
@@ -176,6 +178,8 @@ export class OwnerRequests implements OwnerRequestPort {
     if (request?.id === requestId && grant?.inFlight && grant.target === target) {
       delete grant.target; delete grant.inFlight;
     }
+    // C-TIME: a failed ask is spent too, so the next final stands on its own words.
+    if (request?.id === requestId) request.spent = true;
   }
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const request = this.requests.get(session);
@@ -193,7 +197,11 @@ export class OwnerRequests implements OwnerRequestPort {
   }
   clarify(session: string, kind: ActionKind, field: string): void {
     const request = this.requests.get(session);
-    if (request?.grants.has(kind) && (field === 'missing_time' || field === 'missing_timezone' || field === 'unsupported_time_expression')) request.pending = { kind, field };
+    if (!request?.grants.has(kind)) return;
+    request.pending = { kind, field };
+    // C-TIME: a clarified ask is spent, so the next final is read on its own words and a retry is
+    // never merged with the sentence that failed.
+    request.spent = true;
   }
   shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
     const request = this.requests.get(session);
@@ -252,11 +260,11 @@ export function requestRefusal(code: string): { status: 'refused'; code: string;
     no_owner_request: 'There is no current owner request authorizing that action.',
     external_text_only: 'Outside text arrived after your last words; say it again and I will do it.',
     request_expired: 'That owner request has expired.', grant_spent: 'That request has already completed this kind of action.',
-    target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?',
+    target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?', ambiguous_time: 'Morning or evening?', past_time: 'That time has already passed today. Which time should I set?',
     missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',
     time_mismatch: 'The alarm was not set because the requested time differs from yours.',
     rule_mismatch: 'The alarm was not set because the recurrence differs from yours.',
-    invalid_time: 'The alarm was not set because that time is invalid.', alarm_not_active: 'That alarm is not active.',
+    invalid_time: 'The alarm was not set because that time is invalid.', no_alarm: 'There is no alarm to cancel.', several_alarms: 'Which alarm should I cancel?', alarm_not_active: 'That alarm is not active.',
     alarm_failed: 'The alarm action failed; no alarm was set.',
   };
   return { status: 'refused', code, say: sentences[code] ?? 'The host could not authorize that action.' };

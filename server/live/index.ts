@@ -466,6 +466,10 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
+/** C-REBUILD: the ceiling on a response in flight. A rebuild holds while the response the provider announced is
+ *  younger than this from its own creation and never shortens anything else: the rung, the recovery and the debt
+ *  clock keep their values. 12 s is the healthy silent-response max (9,680 ms, n=69) with room to spare. */
+export const MAX_IN_FLIGHT_RESPONSE_AGE_MS = 12_000;
 /** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
 export const DEAD_AIR_CONTINUATION_MS = 2_500;
 /** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
@@ -666,6 +670,8 @@ export function lateFindingsText(source: string, items: readonly string[]): stri
 /** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
 export interface LateCommentaryState {
   now: number; answeredAt: number; alreadySpoken: boolean;
+  /** C-REBUILD B: a response in flight owns the channel, so a finding waits for its terminal, never a timer. */
+  responseInProgress?: boolean | undefined;
   inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
   /**
    * #1028 behaviour 4: when a newer research operation started, or a newer tool call was made, after the

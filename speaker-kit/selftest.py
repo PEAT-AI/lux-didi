@@ -341,6 +341,7 @@ def check_run_dir(signals_dir, work_dir, model=model_hardclip, calibrated=True):
 def check_virtual_bass_spectrum():
     """Missing fundamental is healthy; only non-harmonic buzz is ranked."""
     import analyze_bass as spectral
+    import soundfile as sf
     fs = 16000
     rng = np.random.default_rng(407)
     t = np.arange(2*fs)/fs

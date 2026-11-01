@@ -146,3 +146,19 @@ test('W1-R1: a finished attempt never hides the row own step; only a live one, o
     assert.notEqual(at('unreachable', { attemptId, phase }, { retrying: true }), at('unreachable', undefined, { retrying: true }), `a ${phase} attempt shows on any row`);
   }
 });
+
+test('W1-R2: the wrong-account sentence names the configured owner identity, never a hardcoded one', async () => {
+  const { connectorState, signInAttemptText } = await import('../src/settings-view.ts');
+  const attempt = { attemptId: '0123456789abcdef', phase: 'failed', reason: 'account_mismatch' };
+  const synthetic = 'owner@example.invalid';
+  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose', synthetic),
+    `Signed in with the wrong Google account. Sign in again as ${synthetic}.`);
+  assert.equal(signInAttemptText('Mongoose', attempt),
+    'Signed in with the wrong Google account. Sign in again as the configured owner account.',
+    'with nothing configured the sentence stays generic');
+  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose', '  '),
+    'Signed in with the wrong Google account. Sign in again as the configured owner account.',
+    'a blank identity is nothing configured');
+  const row = connectorState({ id: 'mongoose-data', state: 'error', reasonCode: 'needs_sign_in', ownerIdentity: synthetic, signIn: attempt })!;
+  assert.equal(row.next, `Signed in with the wrong Google account. Sign in again as ${synthetic}.`, 'the row carries the configured identity');
+});

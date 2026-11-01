@@ -467,7 +467,9 @@ test('C-REBUILD C: a real question with no tool work and no response is no longe
   await live.emit({ type: 'inputTranscription', text: 'what is next on my calendar', finished: true });
   // C-RECOVERY (d) pinned this rebuild as the ruled trigger. Council 2026-11-01 removed it for a turn that made
   // no tool call and created no response, and stated the accepted failure: this socket waits for him to speak again.
-  await until(live, () => removed(live).length > 0, RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 4_000);
+  await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 4_000);
+  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 4_000);
+  await live.advance(1_000);
   assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
   assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],

@@ -5101,7 +5101,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the result reaches the new session as text');
 });
 
-test('#538: model text never slides the audible debt, so the OpenAI rung hands over the unspoken result and rebuilds once', async t => {
+test('#538: model text never slides the audible debt, so the OpenAI rung holds the result, then rebuilds once', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
@@ -5126,8 +5126,10 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   assert.equal(fake.closes, 0, 'an announced response is never closed under');
   h.advance(7_000); scheduler.runDue(); await settlePort();
   // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
-  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
-  assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
+  // C-REBUILD B (council 2026-11-01): the announced response owns the wire, so the rung no longer writes the
+  // result into it. The result waits for that response's terminal, and the rebuild below is the path that carries it.
+  assert.equal(fake.closes, 0, 'the held rung never writes the result into a response in flight');
+  assert.equal(fake.textInputs.length, 0, 'the result waits for that response to end');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   assert.equal(fake.closes, 1, 'a model still mute seven seconds later is the one replaced');
@@ -7416,6 +7418,9 @@ test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead o
   const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } as unknown as Parameters<typeof fake.emit>[0]);
   // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
   await ownerInput(fake);
+  // C-REBUILD C: the provider created a response for that turn, so the first mute is still recovered. Without it
+  // the ruling removed that rebuild, and the second-mute door this test guards would never be reached.
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   assert.equal(fake.sessionsOpened, 2, 'the first mute was recovered on a fresh session');
   // A lookup hands its result back, and the ladder spends its rung on that silence.
@@ -7449,8 +7454,10 @@ test('W4-R1: a genuine second mute with no tool result still ends the call', asy
   const scheduler = new DeadlineClock();
   const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   const { session } = await openPort(h, 'watchdog-note-window');
-  // No tool is called at all, so nothing forges a wait the model never had.
+  // No tool is called at all, so nothing forges a wait the model never had. C-REBUILD C: the provider created a
+  // response for that turn, which keeps the first mute recoverable; the repeated mute is what this test guards.
   await ownerInput(fake);
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   await ownerInput(fake);
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));

@@ -1289,6 +1289,12 @@ struct NativeLiveInterruptionSample: Sendable {
         if let fake { return NativeFakeInputSeam(format: fake) }
         return NativeLiveInputNodeSeam(engine: engine)
     }
+    /// The ducking configuration read back from the node, so the journal shows the level that took
+    /// effect instead of the one that was requested.
+    private func logDuckingApplied(_ reading: NativeDuckingReading) {
+        log("audio_ducking_applied", ["advanced": reading.advanced ? "true" : "false",
+                                      "level": reading.level])
+    }
     /// Minimum other-audio ducking, guarded by OS availability.
     static func applyMinimumDucking(to node: AVAudioInputNode) {
         guard #available(macOS 14.0, *) else { return }
@@ -1483,12 +1489,15 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         if useVoiceProcessing {
             do {
-                // C-AUDIO 1: ducking, then the one enable, then the player is attached and
-                // connected. Nothing reconfigures the unit after the graph is built.
-                _ = seam.applyMinimumDucking()
-                graphBuildSteps.append("ducking")
+                // C-AUDIO 1: the one enable, then the ducking configuration, then the player is
+                // attached and connected. The order matters: the enable installs its own
+                // configuration and overwrites a ducking set before it, which is how 10.7.2 lost
+                // the minimum level (-4 dB became -15 dB on every call). The configuration is read
+                // back so the journal carries the level that took effect, never the one requested.
                 try seam.enableVoiceProcessing()
                 graphBuildSteps.append("voice_processing")
+                logDuckingApplied(seam.applyMinimumDucking())
+                graphBuildSteps.append("ducking")
                 hardware = seam.format
                 guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
                     throw NativeLiveAudioError.formatUnavailable

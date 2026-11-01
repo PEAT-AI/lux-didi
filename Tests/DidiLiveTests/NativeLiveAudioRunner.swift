@@ -1405,6 +1405,7 @@ private func checkPrimaryChannelConversion() throws {
 enum AudioGraphLifecycleTests {
     static func run() async throws {
         try await checkStartBuildsTheGraphOnce()
+        try await checkDuckingFollowsTheEnable()
         try await checkUnmuteWaitsForTheSettle()
         try await checkWatchdogRestartWaitsForTheSettle()
         try await checkReleaseWaitsForAPendingConfigurationChange()
@@ -1473,19 +1474,44 @@ enum AudioGraphLifecycleTests {
         try await device.start { _ in }
 
         let steps = device.graphBuildSteps
-        try audioRequire(steps == ["ducking", "voice_processing", "player_attached", "prepare", "start"],
-                         "the graph is built once, in one order: ducking, enable, attach and connect, prepare, start, got \(steps)")
+        try audioRequire(steps == ["voice_processing", "ducking", "player_attached", "prepare", "start"],
+                         "the graph is built once, in one order: enable, ducking, attach and connect, prepare, start, got \(steps)")
         try audioRequire(device.engineStartCount == 1, "one engine start for the call, got \(device.engineStartCount)")
         try audioRequire(device.isVoiceProcessingEnabledForTesting, "voice processing is still on for the start")
         let built = journal.events.filter { $0.name == "audio_graph_built" }
         try audioRequire(built.count == 1, "one audio_graph_built per start, got \(built.count)")
-        try audioRequire(built.first?.fields["steps"] == "ducking,voice_processing,player_attached,prepare,start",
+        try audioRequire(built.first?.fields["steps"] == "voice_processing,ducking,player_attached,prepare,start",
                          "audio_graph_built carries the steps, got \(built.first?.fields["steps"] ?? "none")")
         try audioRequire(built.first?.fields["starts"] == "1" && built.first?.fields["voiceProcessing"] == "true",
                          "and the call's engine start count and voice-processing state")
         try audioRequire(built.first?.fields["configChanges"] != nil,
                          "and the configuration changes the start saw")
 
+        device.releaseForTesting()
+        await device.settleForTesting()
+    }
+
+    /// Step 0d: the ducking configuration only sticks after the enable, because the enable resets it
+    /// to its default level. The fake seam records the order and the read-back the journal carries,
+    /// so a check proves the sequence without the owner's actual start.
+    private static func checkDuckingFollowsTheEnable() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        let seam = NativeFakeInputSeam(format: try format())
+        device.inputSeamForTesting = seam
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+        try audioRequire(seam.steps == ["enable", "ducking"],
+                         "the enable comes first, then the ducking the enable would otherwise reset, got \(seam.steps)")
+        let minimum = NativeDuckingReading(advanced: false,
+                                           level: String(AVAudioVoiceProcessingOtherAudioDuckingConfiguration.Level.min.rawValue))
+        try audioRequire(seam.ducking == minimum,
+                         "minimum ducking is applied with advanced ducking off, got \(String(describing: seam.ducking))")
+        let applied = journal.events.filter { $0.name == "audio_ducking_applied" }
+        try audioRequire(applied.count == 1, "one audio_ducking_applied per start, got \(applied.count)")
+        try audioRequire(applied.first?.fields["advanced"] == "false" && applied.first?.fields["level"] == minimum.level,
+                         "and it journals the configuration read back from the node, got \(String(describing: applied.first?.fields))")
         device.releaseForTesting()
         await device.settleForTesting()
     }

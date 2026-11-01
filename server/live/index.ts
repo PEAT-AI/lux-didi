@@ -4810,7 +4810,6 @@ export class LiveSessionOwner {
     const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
-    if (process.env.DIDI_PROBE) console.error('PROBE batch', JSON.stringify(event.calls.map(call => call.name)), 'inputAt', handle.inputAt);
     // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
     // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
     // before any argument check, with the same shape and the same closed reason.
@@ -5095,8 +5094,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           const shown = exposeToolResults(responses);
-          if (process.env.DIDI_PROBE) console.error('PROBE resp', JSON.stringify(responses.map(entry => ({ n: entry.name, code: entry.response?.['code'], reason: entry.response?.['reason'], error: entry.response?.['error'] }))));
-        if (ownerRequestId) this.#tools?.owner.ownerRequests.shown(handle.liveSessionId, ownerRequestId, shown);
+          if (ownerRequestId) this.#tools?.owner.ownerRequests.shown(handle.liveSessionId, ownerRequestId, shown);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);

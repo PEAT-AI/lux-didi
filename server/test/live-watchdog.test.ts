@@ -464,7 +464,7 @@ test('C-RECOVERY (d): a bare acknowledgement after the model spoke never rebuild
 test('C-REBUILD C: a real question with no tool work and no response is no longer rebuilt', async t => {
   const live = await openLive(t);
   await live.emit({ type: 'outputTranscription', text: 'Monday is clear.', finished: true });
-  await live.emit({ type: 'inputTranscription', text: 'what is next on my calendar', finished: true });
+  await ownerTurnEnd(live);
   // C-RECOVERY (d) pinned this rebuild as the ruled trigger. Council 2026-11-01 removed it for a turn that made
   // no tool call and created no response, and stated the accepted failure: this socket waits for him to speak again.
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 4_000);

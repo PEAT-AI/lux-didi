@@ -10,7 +10,7 @@ import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler
 import { alarmSessionInstructions } from '../live/index.js';
 
 for (const alreadyLive of [false, true]) {
-  test(`alarm mode: ${alreadyLive ? 'live session receives one alarm announcement' : 'unavailable provider gets at most one attempt'}`, t => {
+  test(`alarm mode: ${alreadyLive ? 'live session receives one alarm announcement' : 'unavailable provider gets one retry and no more'}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'synthetic-alarm-mode-'));
     const store = new Store(directory, toolsMigrations);
     const scheduler = new AlarmScheduler({ store, clock: { now: () => 1000, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
@@ -22,11 +22,14 @@ for (const alreadyLive of [false, true]) {
       open: setup => { opens++; assert.equal(setup.alarmId, alarm.id); if (alreadyLive) return 'synthetic-live'; throw Error('synthetic unavailable'); }, degraded: (_id, reason) => degraded.push(reason) });
     const first = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key');
     assert.equal(first.status, alreadyLive ? 'live' : 'unavailable');
-    // A retry with the same caller key never opens a second session for the same occurrence.
-    assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key').status, 'attempted');
-    assert.equal(opens, 1);
+    // A second start is either refused (a session already exists) or the one retry the shell is allowed
+    // while the ring deadline is open. Either way an occurrence never holds two sessions.
+    const second = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key-2');
+    assert.equal(second.status, alreadyLive ? 'attempted' : 'unavailable');
+    if (alreadyLive) assert.equal(second.liveSessionId, 'synthetic-live', 'an opened session is never replaced');
+    assert.equal(opens, alreadyLive ? 1 : 2);
     assert.equal(scheduler.list()[0]?.state, 'ringing', 'provider result cannot stop local ringing');
-    assert.deepEqual(degraded, alreadyLive ? [] : ['provider_unavailable']);
+    assert.deepEqual(degraded, alreadyLive ? [] : ['provider_unavailable', 'provider_unavailable']);
   });
 }
 
@@ -86,11 +89,12 @@ test('alarm mode: one retry is allowed while the ring deadline is open', t => {
   const coordinator = new AlarmSessionCoordinator({ store, hasLiveSession: () => false, now: () => clockNow,
     open: () => { opens++; throw Error('synthetic unavailable'); }, degraded: () => {} });
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-1').status, 'unavailable');
-  // The first attempt opened no session, so one retry may open one while the deadline is still open.
+  assert.equal(opens, 1);
+  // The first attempt opened no session, so a retry may try once more while the deadline is still open.
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-2').status, 'unavailable');
-  assert.equal(opens, 2, 'exactly one retry');
-  // Past the deadline nothing is retried.
+  assert.equal(opens, 2, 'the retry really tries');
+  // Past the deadline nothing is retried, so a relaxed provider cannot resurrect a missed alarm.
   clockNow = ringing.ringDeadlineUtc! + 1;
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-2').status, 'attempted');
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-3').status, 'attempted');
   assert.equal(opens, 2, 'a closed deadline never opens a session');
 });

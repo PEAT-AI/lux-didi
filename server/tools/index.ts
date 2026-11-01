@@ -881,6 +881,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
               say: parsed.confirmation + (parsed.corrected === 'model_time_differs' ? ' I used the time you said.' : '') + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
+          // The scheduler recheck runs after the alarm commits and before the authority receipt is
+          // spent, so a failure here reaches the caller and the retry is still authorized.
+          options.alarms?.recheck();
           if (consumed) {
             ownerRequests.commit(runId, name, requestTarget, actionReceipt);
             if (name !== 'cancel_alarm') {
@@ -892,9 +895,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               }
             }
           }
-          // The scheduler rechecks after any alarm mutation, outside the commit transaction, so a
-          // failure here is visible to the caller and never silently skipped.
-          if (consumed) options.alarms?.recheck();
           return { status: 'completed' as const, result };
         },
       });

@@ -634,6 +634,26 @@ test('C-STEADY104: count-only audit detects unfulfilled spoken lookup claims', (
   });
 });
 
+// C-LABELS 4: the detector counted two fixed phrases, so a quarter of the owner's calls reported one unfulfilled
+// announcement where the records hold seven. It counts what the sentence promises, not the words it picked.
+test('C-LABELS 4: every announced look-up with no call in its turn is counted', () => {
+  withStore(store => {
+    const announced = ["Let's have a look", "Let's see what the invoice says", 'Let me take a look at that', 'I will check it now', 'Give me a second'];
+    for (const [index, text] of announced.entries()) {
+      const id = `announced-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    // A turn that ran the lookup it announced owes nothing, and a turn with no announcement never counts.
+    turn(store, SESSION, 'announced-served', 6, T0 + 6000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['announced-served', 'model', T0 + 6001, "Let's have a look at the numbers"]));
+    call(store, SESSION, 'announced-served', 'looked-up', 'search_knowledge', 'completed', 40, T0 + 6002);
+    turn(store, SESSION, 'plain-answer', 7, T0 + 7000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['plain-answer', 'model', T0 + 7001, 'The invoice is due on the tenth.']));
+    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 4);
+  });
+});
+
 
 test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source directory', () => {
   const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));

@@ -1788,6 +1788,12 @@ struct RootView: View {
 #if !COMPANION_TEST
 @main enum LuxDidiApp {
     @MainActor static func main() {
+        // F4: an Objective-C exception is never swallowed. AppKit used to swallow it at the top of
+        // NSApplication run, which skips Swift's job cleanup and leaves the runtime's current
+        // executor pointing at a dead frame, so the next MainActor.assumeIsolated jumped through
+        // garbage. A process past a swallowed exception is already corrupt, and the crash report now
+        // names the exception instead of a wild pc in a timer. Registered before anything can raise.
+        UserDefaults.standard.register(defaults: ["NSApplicationCrashOnExceptions": true])
         do {
             if let configure = try ConfigureRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) {
                 exit(configure.run())

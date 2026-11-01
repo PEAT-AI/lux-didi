@@ -11,6 +11,10 @@ Investigate the host and call that actually failed. The installed app and a sour
 
 The canonical private database is `state.sqlite`. Operational host logs are under the selected data directory's `logs/`. They are not interchangeable: safe metadata in `host.log` does not make the entire database or every old log safe to share.
 
+## A crash triage starts with the HIExceptions line
+
+The first step of a Didi crash triage is one read only query: `log show --predicate 'process == "LuxDidi" AND category == "HIExceptions"' --style compact --last 1h`. It names the Objective-C exception and the thread that swallowed it, which is what a native audio fault leaves behind; the crash report alone showed only a wild program counter in a Swift runtime frame. The app also registers `NSApplicationCrashOnExceptions`, so a swallowed exception can no longer leave a corrupt process running, and the report names the exception path.
+
 ## Diagnose an account-identity failure first
 
 An identity failure is reported as a closed code and never as an address, a token or a URL:

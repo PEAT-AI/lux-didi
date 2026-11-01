@@ -187,7 +187,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
   await owner('remind me in one minute to check the deck');
-  assert.match(await call('set_alarm'), /Alarm set/);
+  assert.match(await call('set_alarm', { label: 'check the deck' }), /Alarm set/);
   assert.equal(rows().filter(row => row.state === 'pending')[0].label, 'check the deck');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 1320000;

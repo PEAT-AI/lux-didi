@@ -47,6 +47,8 @@ enum State: String, CaseIterable {
     let device: NativeLiveAudioDevice
     private let coordinator: LiveSessionCoordinator
     private let alarmSession: Bool
+    /// C-ALARMSPEECH F-B: the one key this alarm occurrence uses for every attempt it makes.
+    private let alarmKey: String?
     /// C-ALARMSPEECH: whether she ever reached the call. A failure after her first word is not "could not start".
     private var becameAudible = false
     /// C-ALARMSPEECH: an alarm call that never became audible reports one closed reason, so the shell can
@@ -97,6 +99,7 @@ enum State: String, CaseIterable {
         self.latch = latch
         self.journal = NativeLiveJournal(fileURL: logsDirectory?.appendingPathComponent("native-live.log"))
         self.alarmSession = alarmID != nil
+        self.alarmKey = alarmID.map { "alarm:" + $0 }
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID, alarmID: alarmID)
         self.dictationIsCapturing = dictationIsCapturing
         // Production wiring: a real audio journal in the app's logs dir, shared by the owner
@@ -303,7 +306,9 @@ enum State: String, CaseIterable {
                 self.limits = http.limits
                 try Task.checkCancellation()
                 guard self.generation == token else { return }
-                await coordinator.begin(intent)
+                // C-ALARMSPEECH F-B: the alarm's own occurrence key, so a retry replays the session the
+                // first attempt already opened instead of presenting a key the host must refuse.
+                await coordinator.begin(intent, key: self.alarmKey)
             } catch {
                 guard let self, self.generation == token else { return }
                 self.stopAudioAndSummarize(); await coordinator.close()

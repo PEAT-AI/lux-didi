@@ -57,6 +57,13 @@ private actor ProbeSocket: LiveSocket {
     func cancel() async { cancelled = true }
 }
 
+private final class SentKeys: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [String] = []
+    func record(_ key: String) { lock.lock(); seen.append(key); lock.unlock() }
+    var keys: [String] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
 private actor Sockets: LiveSocketConnecting {
     private(set) var connects = 0
     let socket = ProbeSocket()
@@ -91,6 +98,19 @@ private actor Sink: LiveAudioSink {
         try Probe.check(staleSession == nil, "a refused snapshot must leave no session behind")
         let staleConnects = await stale.connects
         try Probe.check(staleConnects == 0, "a refused snapshot must never open a socket, got \(staleConnects)")
+
+        // F-B: an alarm passes its occurrence key, so a retry of the same alarm presents the same key and the
+        // host can replay the session it already opened rather than refusing a second one.
+        let retrySockets = Sockets()
+        let sent = SentKeys()
+        let retryCoordinator = LiveSessionCoordinator(
+            http: AlarmHTTP { intent, key in sent.record(key); return try HostBody.snapshot(echoing: key, intent: intent) },
+            sockets: retrySockets, sink: Sink())
+        await retryCoordinator.begin(intent, key: "alarm:synthetic-alarm-a")
+        let retryState = await retryCoordinator.state
+        try Probe.check(retryState == .attaching, "an alarm occurrence key reaches attaching, got \(retryState)")
+        let retryKeys = sent.keys
+        try Probe.check(retryKeys == ["alarm:synthetic-alarm-a"], "the alarm create carries its occurrence key, got \(retryKeys)")
 
         // A host that echoes the caller key reaches attach on the same body.
         let live = Sockets()

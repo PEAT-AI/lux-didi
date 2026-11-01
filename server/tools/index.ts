@@ -783,13 +783,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');
-            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) {
-              // A recurrence he never said spends nothing: the ask stands, so the retry this response names
-              // is the one-time alarm he asked for.
-              ownerRequests.failed(runId, name, requestTarget, ask.id);
-              return finish({ status: 'refused', reason: 'rule_mismatch', fixNotForSpeech: 'He said no repeat: call set_alarm once more for the same time with kind and weekdays omitted.' });
-            }
-            if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
+            // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused: the
+            // alarm he did ask for is still set.
+            const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
+            // The canary floor belongs to a live session, and the tools schema is also mounted alone (the eval
+            // alarm runner), where no live table exists: ask only when the live schema is present.
+            const canarySession = tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'")
+              ? tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])
+              : undefined;
+            if (canarySession) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
             }
@@ -814,7 +816,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
-              say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
+              say: parsed.confirmation + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {
             ownerRequests.commit(runId, name, requestTarget, actionReceipt);
@@ -841,8 +843,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           async execute(args, context) {
             if (context.runId !== runId || !tool.validate(args) || context.signal.aborted) return { status: 'failed' as const };
             await ownerRequests.waitForFinal(runId, context.signal);
-            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
             const call = store.transaction(tx => {
               const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
               if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
@@ -858,7 +858,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // grant still names its journal, and the authorize below decides whether this is its replay.
             const peek = ownerRequests.authorize(runId, name, '');
             hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
-            if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
+            // C-PERMTIER (REQUIRED 6, P-R1): the authority refusal names its cause before any time parse, so a
+            // fenced or unanswered ask never turns into a missing_time question.
+            if (peek.code !== 'allowed' && peek.code !== 'idempotent') return finish(requestRefusal(peek.code));
+            // C-PERMTIER (REQUIRED 6): his authority is judged before the result gate, so a refusal names its
+            // real cause (no_owner_request, external_text_only) instead of a bare failed.
+            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+            const ownerRefused = peek.code !== 'allowed' && peek.code !== 'idempotent';
+            if ((gate.state !== 'allowed' && !ownerRefused) || context.signal.aborted) return { status: 'failed' as const };
             const target = composeTarget(name, args, clientRequestId(peek.journalId));
             const ask = ownerRequests.authorize(runId, name, target);
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
@@ -916,8 +923,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         async execute(args, context) {
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           await ownerRequests.waitForFinal(runId, context.signal);
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
           const anyKinds = openTool.name === 'open_source' ? anyOpenKinds(words) : [];
           const top = anyKinds.length ? ownerRequests.topShown(runId, anyKinds) : undefined;
@@ -925,6 +930,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const requestTarget = JSON.stringify(effectiveArgs);
           let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          // P-R8/REQUIRED 6: his authority is judged before the result gate, so a refusal names its real cause
+          // (no_owner_request, external_text_only) instead of a bare failed the model cannot explain.
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (eligible && (gate.state !== 'allowed' || context.signal.aborted)) return { status: 'failed' as const };
+          if (context.signal.aborted) return { status: 'failed' as const };
           const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
           const refused = 'target' in resolved ? undefined : resolved.code;
           let dispatched = 'target' in resolved ? resolved.target : undefined;

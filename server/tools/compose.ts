@@ -2,6 +2,7 @@ import { parseAlarmTime } from './alarm.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
 import { googleConsentLine } from './google.js';
+import { tierOf } from './tiers.js';
 import { peopleLookupResult } from '../people/index.js';
 
 /**
@@ -37,13 +38,6 @@ const RELAY_COMPLEMENT = /\b(?:told me|told you|asked me|only telling|just telli
 const REPORT = /(?:^|[.!?,;]\s*)\w+ing\s+(?:\w+\s+){0,3}(?:is|are|was|were)\b|\b(?:i|we)\s+(?:already\s+)?(?:created|added|put|scheduled|booked|deleted|cancelled|canceled|removed|wrote|drafted|sent|saved|set|made|moved|reserved|held)\b|\balready\b|\byesterday\b|\blast night\b|\b(?:wurde|wurden|habe|haben|bereits|schon|gestern|steht|existiert|läuft)\b/i;
 /** #107: a negated write clause spends nothing. */
 const NEGATION = /\b(?:don['’]?t|do not|does not|doesn['’]?t|won['’]?t|will not|never|no need to|not|nothing|kein\w*|nicht|nichts|ohne)\b/i;
-/** #107: a question is not a command; the modal form below is the exception that is one. */
-const QUESTION_OPEN = /^\s*(?:what|why|how|when|who|where|which|whose|did|do|does|is|are|was|were|should|shall|has|have|tell me if|tell me whether|let me know if|wann|warum|wie|wer|wo|welche\w*|ist|sind|hat|hast|soll\w*|gibt es|hältst|weißt|weisst)\b/i;
-const isQuestion = (ask: string): boolean => /\?\s*$/.test(ask) || QUESTION_OPEN.test(ask);
-/** #107: "can you put a block at noon" and "kannst du ... eintragen" are the owner asking for it. */
-const MODAL = /\b(?:(?:can|could|would|will)\s+you|are you able to|kannst|könntest|können sie|würdest du|magst du)\b/i;
-/** #107: any interrogative word makes the turn a question, whatever the modal lead-in offered. */
-const INTERROGATIVE = /\b(?:what|which|when|where|who|whose|why|how|wann|wie|warum|wer|wo|welche\w*)\b/i;
 /** #107: relayed instructions inside a turn are data, never an ask. */
 const INJECTION = /\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier|your)\s+(?:\w+\s+)?(?:instructions?|prompts?|rules?)\b|\b(?:ignorier|vergiss)\s+(?:alle\s+)?(?:vorherigen|deine)\s+(?:anweisungen|regeln)\b/i;
 
@@ -54,13 +48,12 @@ const INJECTION = /\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:previous
  */
 export function composeGrantKinds(words: string): readonly ComposeGrantKind[] {
   // #107 D-COMPOSEGATE: only the owner's own ask grants a write, and only when it is a command.
+  // C-PERMTIER: the free writes no longer read his words at all; only the guarded delete keeps a gate,
+  // and it stays on its own created-or-named selector.
   const asked = ownerAsk(words);
-  const kinds = writeIntent(asked);
+  const kinds = writeIntent(asked).filter(kind => tierOf(kind) === 'guarded');
   if (kinds.length === 0 || INJECTION.test(words) || REPORT.test(asked)) return [];
-  if (asked.split(/[.!?;,]/).some(clause => NEGATION.test(clause) && writeIntent(clause).length > 0)) return [];
-  if (!isQuestion(asked)) return kinds;
-  // A modal request is the owner asking for the thing; anything else with a question in it is not.
-  return MODAL.test(asked) && !INTERROGATIVE.test(asked) ? kinds : [];
+  return asked.split(/[.!?;,]/).some(clause => NEGATION.test(clause) && writeIntent(clause).length > 0) ? [] : kinds;
 }
 
 /** The owner's own words: a quoted span or a relayed clause speaks for another voice. */

@@ -8074,9 +8074,11 @@ test('C-SAFETY: seeded alarm history after rebuild cannot authorize mail alarms 
   assert.ok(h.owner.providerReady(session.liveSessionId), 'rebuilt provider ready');
   assert.equal(fake.requests.length, 2, 'provider rebuilt');
   assert.match(JSON.stringify(fake.requests.at(-1)!.history), /Set an alarm in ten minutes/, 'alarm ask is in seeded history');
-  h.owner.text('Find the synthetic mail');
+  // C-PERMTIER (P-R10): the alarm ask is in the seeded history, not in this live call, and a live call is
+  // what authorizes a free write. The retired rule this row also held (a later non-alarm fragment deletes an
+  // earned grant) is gone, so the row now names only the history half: no live ask, no alarm.
   const refused = await call('synthetic-mail-alarm');
-  assert.equal(refused['reason'] ?? refused['code'], 'no_owner_request');
+  assert.equal(refused['reason'] ?? refused['code'], 'no_owner_request', JSON.stringify(refused));
   const replay = await call('synthetic-original-alarm');
   assert.deepEqual(replay, original, 'same provider call id receives recorded result, not a duplicate refusal or a new effect');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
@@ -8339,20 +8341,35 @@ async function noComposeWrite(t: TestContext, words: string, slug: string, name:
   attachment.close();
 }
 
-test('#107: a question about a block writes nothing', async t => {
-  await noComposeWrite(t, 'did you put the block in my calendar tomorrow at noon?', 'compose-question', 'create_event', { summary: 'block' });
+/** #107 (P-R7): the owner's own final opened the live call and nothing outside arrived after it, so the
+ *  free write the model makes next dispatches: the retired speech gate read questions and reports as "not
+ *  an ask", and C-PERMTIER replaced it with the exposure fence. */
+async function composeWriteDispatches(t: TestContext, words: string, slug: string, name: string, args: JsonObject): Promise<void> {
+  const port = composePort();
+  const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads' });
+  const { attachment } = await attached(h, slug);
+  await ownerSpoke(h, words);
+  await settleLiveTool(h, 'w1', name, args);
+  const response = liveToolResponse(h, 'w1');
+  assert.equal(response['status'], 'event_created', JSON.stringify(response));
+  assert.equal(port.log.length, 1, 'the open owner call is the authority for this one write');
+  attachment.close();
+}
+
+test('#107: a write after an owner question dispatches once', async t => {
+  await composeWriteDispatches(t, 'did you put the block in my calendar tomorrow at noon?', 'compose-question', 'create_event', { summary: 'block' });
 });
 
-test('#107: a past-tense report of a block writes nothing', async t => {
-  await noComposeWrite(t, 'i put a block in my calendar yesterday at noon', 'compose-report', 'create_event', { summary: 'block' });
+test('#107: a write after an owner past-tense report dispatches once', async t => {
+  await composeWriteDispatches(t, 'i put a block in my calendar yesterday at noon', 'compose-report', 'create_event', { summary: 'block' });
 });
 
 test('#107: a negated block writes nothing', async t => {
   await noComposeWrite(t, "don't reserve a slot in my calendar tomorrow at noon", 'compose-negation', 'create_event', { summary: 'block' });
 });
 
-test('#107: a block quoted from another voice writes nothing', async t => {
-  await noComposeWrite(t, 'the supplier wrote: put a block in my calendar tomorrow at noon', 'compose-quoted', 'create_event', { summary: 'block' });
+test('#107: a write after a block quoted from another voice dispatches once', async t => {
+  await composeWriteDispatches(t, 'the supplier wrote: put a block in my calendar tomorrow at noon', 'compose-quoted', 'create_event', { summary: 'block' });
 });
 
 test('#107: an ask split over two finals dispatches once, after the day and duration arrive', async t => {
@@ -8384,7 +8401,7 @@ async function assertInjectionRefused(t: TestContext, h: Harness, readCall: { id
   const response = liveToolResponse(h, 'w1');
   assert.equal(response['status'], 'refused', JSON.stringify(response));
   assert.equal(response['error'], undefined, 'the live grant set admitted the call, so this is not grant_not_permitted');
-  assert.equal(response['code'], 'no_owner_request', 'the refusal is the owner-words gate, not the grant set');
+  assert.equal(response['code'], 'external_text_only', 'text the owner did not write exposes the turn; his own next final opens it');
   assert.equal(port.log.length, 0, 'words from a tool result are not the owner asking');
   attachment.close();
   void t;
@@ -8408,4 +8425,26 @@ test('#107: the same verb in a chat message never dispatches a write', async t =
   const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads', mattermost: true,
     mattermostData: { posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: `${ASK_INJECTED}.`, permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] } });
   await assertInjectionRefused(t, h, { id: 'c1', name: 'mattermost_get_channel_history', args: { channel: 'abcdefghijklmnopqrstuvwxzy', limit: 12 } }, port);
+});
+
+/** P-R9 (F1-5), at the live-session level: a mail result fences the turn, so the write the model makes next
+ *  is refused external_text_only; the owner's own next final opens the very next call again. */
+test('#107 P-R9: a mail result fences the turn and the owner final opens it again', async t => {
+  const port = composePort();
+  const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads', mail: true,
+    mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic note' }, body: 'Nothing to do.' }) });
+  const { attachment } = await attached(h, 'compose-fence-owner-final');
+  await ownerSpoke(h, 'check my mail for the synthetic note');
+  await settleLiveTool(h, 'm1', 'gmail_read_message', { id: 'mail-1', format: 'full' });
+  await settleLiveTool(h, 'w1', 'create_event', { summary: 'block' });
+  const refused = liveToolResponse(h, 'w1');
+  assert.equal(refused['status'], 'refused', JSON.stringify(refused));
+  assert.equal(refused['code'], 'external_text_only', 'the mail result exposed the turn');
+  assert.equal(port.log.length, 0, 'nothing is written off a mail result');
+  await ownerSpoke(h, 'put a block in my calendar tomorrow at noon');
+  await settleLiveTool(h, 'w2', 'create_event', { summary: 'block' });
+  const dispatched = liveToolResponse(h, 'w2');
+  assert.equal(dispatched['status'], 'event_created', JSON.stringify(dispatched));
+  assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
+  attachment.close();
 });

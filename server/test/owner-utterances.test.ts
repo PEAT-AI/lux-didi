@@ -36,11 +36,10 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     code = 'target' in result ? row.nativeCode ?? 'allowed' : result.code;
     endHandleSession(row.id);
   }
-  // The alarm cue is judged on the finalized ask: a split ask carries it across its finals.
-  const noAlarmIntent = row.call.tool === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(row.finals.join(' '));
-  if (noAlarmIntent) assert.equal(code, 'no_owner_request', `${row.id}: no alarm ask`);
-  else assert.equal(code, row.resolve_code ?? row.code);
-  if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
+  // C-PERMTIER: there is no alarm cue to judge. A finalized owner turn is the authority, so the row's
+  // own expectation is the whole assertion.
+  assert.equal(code, row.resolve_code ?? row.code, `${row.id}: ${row.finals.join(' / ')}`);
+  if (row.expectedSay !== undefined) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
     assert.match(refused.say, /no current owner request/i);
@@ -48,9 +47,14 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   }
 });
 
-test('a completed answer cannot authorize a spontaneous new action', () => {
+// C-PERMTIER (P-R1): a model turn neither grants nor revokes. His finalized words are the authority,
+// and only the exposure fence can hold a free write after them.
+test('a completed answer neither grants nor revokes; the fence decides', () => {
   const owner = new OwnerRequests(() => 0);
   owner.observe('synthetic', 'final', 'at seven am');
-  owner.answered('synthetic');
-  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'no_owner_request');
+  owner.answered('synthetic', 'Alarm set for 07:00.');
+  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'allowed');
+  owner.observe('synthetic', 'final-2', 'check my mail');
+  owner.source('synthetic', 'mail');
+  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'external_text_only');
 });

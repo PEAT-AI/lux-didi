@@ -277,8 +277,9 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
       const retry = await call(h, 'stage_lux_note', candidate);
       assert.equal(retry['insightId'], 'synthetic-81');
       assert.equal(h.saved.length, 1, 'same candidate is idempotent');
-      const second = await call(h, 'stage_lux_note', { ...candidate, title: 'Different note' });
-      assert.equal(second['code'], 'grant_spent');
+      // P-R10: a different FREE write is a new write, not a spent grant. Only an exact replay is deduped.
+      const second = await call(h, 'stage_lux_note', { ...candidate, title: 'Different note', body: 'A different synthetic note.' });
+      assert.equal(second['saved'], true, JSON.stringify(second));
     } else {
       assert.equal(result['insightId'], undefined);
       assert.doesNotMatch(String(result['say']), /Saved:/);
@@ -397,8 +398,10 @@ for (const source of ['Lux note', 'forwarded mail']) {
     const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
     await assistantBlock(h, 'The synthetic plan is summarized.');
-    assert.equal((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['code'], 'no_owner_request');
-    assert.equal((await call(h, 'set_alarm', {}))['code'], 'no_owner_request');
+    // C-PERMTIER (P-R1, REQUIRED 6): the injected text reached the model after his last words, so the
+    // refusal names that cause instead of the older no_owner_request; nothing opens and nothing rings.
+    assert.equal((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['code'], 'external_text_only');
+    assert.equal((await call(h, 'set_alarm', {}))['code'], 'external_text_only');
     assert.equal(native.length, 0);
     assert.equal(h.store.transaction(tx => tx.all('SELECT id FROM alarms')).length, 0);
     attachment.close();

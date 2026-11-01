@@ -11,6 +11,7 @@ import {
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
   buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, type EarlierConversationCandidate,
+  EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -804,6 +805,38 @@ test('the earlier-conversations budget is what the rest of the instruction leave
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
   assert.ok(composed.text.includes(NAYA_TOOLS), 'tools are never dropped for summaries');
   assert.equal(composed.earlierConversationsIncluded, true);
+});
+
+test('#108: the earlier-conversations section keeps its own reserve beside a 17k owner style', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
+    summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
+  // The private owner style is not in this repository. Release 10.7.3 carried 16,625 characters of it,
+  // which is what pushed the rest of the instruction past the target; this synthetic one is that size.
+  const style = 'Synthetic style line: she answers the way the owner does and stops when done. '.repeat(267);
+  const profile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'synthetic-17k',
+    displayName: 'Synthetic Owner', style: { text: style, dataClass: 'private' },
+    lore: { text: 'Synthetic lore line about the house, the boat and the Friday delivery. '.repeat(155), dataClass: 'sensitive' } };
+  const records = Array.from({ length: 12 }, (_, i) => ({ id: `n${String(i).padStart(2, '0')}`,
+    text: `Synthetic note ${i}: the mint ships on Friday and the invoice goes out on Monday morning.` }));
+  const build = (earlierSection?: string, earlierReserve?: number) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE,
+    tools: ['search_knowledge'], records, runtimeContext: 'Runtime: one synthetic Mac and one synthetic workspace.', ownerProfile: profile,
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierReserve === undefined ? {} : { earlierReserve }),
+    ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
+  const basis = build(undefined, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+  const budget = earlierConversationsBudget(basis.text.length);
+  const section = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: budget });
+  const composed = build(section.section, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+  const sizes = JSON.stringify({ basis: basis.text.length, budget, section: section.section.length, total: composed.text.length,
+    hardLimit: LIVE_INSTRUCTION_HARD_LIMIT, trustedLimit: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, sections: composed.sections });
+  // #843: the per-section sizes, so a section that grows shows up in this check's own output.
+  console.log('live instruction sizes', sizes);
+  assert.ok(budget >= 1_400, `the section owns a reserve under the hard ceiling (${budget})`);
+  assert.ok(section.section.length > 1_400, `she starts the call with her last calls (${section.section.length} chars)`);
+  assert.equal(composed.earlierConversationsIncluded, true, 'the digest reaches the opener');
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `under the hard ceiling (${composed.text.length})`);
+  assert.ok(composed.text.length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT, `under the 60k trusted limit (${composed.text.length})`);
+  assert.ok(composed.text.includes(NAYA_TOOLS), 'the tool conduct never yields to the summaries');
 });
 
 const standingRecord = (id: string, text: string, status: 'current' | 'dated' | 'open' = 'current') =>

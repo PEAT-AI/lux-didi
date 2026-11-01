@@ -1,5 +1,5 @@
 import type { HostEvidenceRef } from './types.js';
-import { refusalCauseOf, runningStateLine } from './refusal-cause.js';
+import { refusalCauseOf, runningState } from './refusal-cause.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
 import { fold, tokenize } from '../domain/util.js';
@@ -7823,7 +7823,7 @@ export function findingCount(finding: JsonObject): number {
  * record says is running right now, so a turn already spent can never read as work still in progress.
  */
 export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject, running: readonly string[] = []): JsonObject {
-  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false, ...refusalCauseOf(reason), state: runningStateLine(running) };
+  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false, ...refusalCauseOf(reason), state: runningState(running) };
   if (delivered === undefined) return base;
   const findings = Array.isArray(delivered['findings']) ? delivered['findings'] as JsonObject[] : [];
   return { ...base, code: reason, deliveredCount: findings.reduce((count, finding) => count + findingCount(finding), 0), deliveredResults: delivered };

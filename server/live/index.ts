@@ -22,7 +22,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
-import { refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
+import { refusalCauseOf, runningState } from '../tools/refusal-cause.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -4778,7 +4778,7 @@ export class LiveSessionOwner {
             error: error instanceof Error ? error.message : 'research_failed',
             cause: 'The research run itself failed before it could answer.',
             next: 'Nothing is running now, and this turn holds no research result from it.',
-            state: runningStateLine([]),
+            state: runningState([]),
           };
         }
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution

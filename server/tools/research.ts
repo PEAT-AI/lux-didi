@@ -1610,16 +1610,20 @@ export function namedInsightIds(question: string, query?: string): number[] {
 /**
  * K4: the owner's project names, from the corpus's own project tags, matched whole-word and
  * case-insensitively. A name the question says out loud becomes a ranking hint, never a hard filter.
+ * The names are the owner's, so they come from the optional configuration key and never from here:
+ * with no key configured the hint set is empty and every question searches exactly as it would.
  */
-const KNOWN_PROJECTS: readonly string[] = Object.freeze([
-  'Mosquito', 'llama', 'Wriggler', 'plantix', 'lux-harness', 'mongoose', 'dagster-dp-wriggler-pipeline',
-  'dogtation', 'vicuna', 'the-lux-emissary', 'Hawk', 'freya', 'macaca', 'lux-didi', 'claude-lux-knowledge',
-]);
+let PROJECT_NAMES: readonly string[] = Object.freeze([]);
+
+/** The optional configuration key, applied once at start: the owner's project names, or none. */
+export function configureProjectNames(names: readonly string[] | undefined): void {
+  PROJECT_NAMES = Object.freeze((names ?? []).filter(name => typeof name === 'string' && name.trim() !== ''));
+}
 
 /** K4: the project the question names, written the way the corpus tags it, or nothing. */
-export function projectHintOf(question: string): string | undefined {
+export function projectHintOf(question: string, projects: readonly string[] = PROJECT_NAMES): string | undefined {
   const spoken = question.toLowerCase();
-  return KNOWN_PROJECTS.find(project => new RegExp(`(^|[^a-z0-9-])${project.toLowerCase()}([^a-z0-9-]|$)`, 'u').test(spoken));
+  return projects.find(project => new RegExp(`(^|[^a-z0-9-])${project.toLowerCase()}([^a-z0-9-]|$)`, 'u').test(spoken));
 }
 
 /**

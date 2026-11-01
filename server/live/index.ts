@@ -1,6 +1,7 @@
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
+import { advancesExposure } from '../tools/tiers.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
@@ -702,7 +703,9 @@ const LIVE_STEPS_MAX = 8;
 /** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
 const STEP_SOURCES: Record<string, string> = {
   gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
-  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web', research: 'knowledge',
+  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web',
+  // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence.
+  research: 'research',
 };
 
 function stepSourceOf(name: string): string {
@@ -3438,7 +3441,9 @@ export class LiveSessionOwner {
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
     handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
-    if (!handle.quietRebuild) this.#continuity(handle, 'rebuilding', reason ?? undefined);
+    // C-RECONNECT #1072: a mute is not a lost line. The owner's presence never left the call, so the native shell is
+    // not told the call is rebuilding, and nothing rings or chimes; a socket that really dropped still is.
+    if (!handle.quietRebuild && trigger !== 'no_output_after_owner') this.#continuity(handle, 'rebuilding', reason ?? undefined);
     if (this.#settled(handle)) return false;
     // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.
@@ -4075,8 +4080,8 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
-          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
-          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, handle.answeredWords);
+          // C-PERMTIER: the model's turnComplete is not the owner speaking, so it never marks his ask
+          // answered. The ask stands until his own next final or the request window closes.
           handle.answeredWords = undefined;
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
@@ -4452,7 +4457,13 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
-    const budgetedExecute = budgetedReads(handle.researchAdmission, execute);
+    const budgetedExecute = budgetedReads(handle.researchAdmission, async (subs, signal) => {
+      const results = await execute(subs, signal);
+      // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence
+      // even when the connector that carried it is the owner's own knowledge store.
+      if (results.some(result => result.ok)) this.#tools?.owner.ownerRequests.expose(handle.liveSessionId);
+      return results;
+    });
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,
@@ -4983,6 +4994,16 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
         return { id: call.id, name: call.name, response: completed ? accepted.response : refusalResponse(reason) };
       });
+      // C-PERMTIER (P-R7): the fence moves on what the model was actually handed, not only on the research
+      // path. A read that returned text the owner never spoke exposes the turn, so the write the model makes
+      // next is refused until his own next final.
+      for (const [index, call] of event.calls.entries()) {
+        if (projections[index]?.status !== 'completed' || !isReadOnlyTool(call.name)) continue;
+        const source = stepSourceOf(call.name);
+        if (advancesExposure(source)) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, source, ownerRequestId ?? '');
+        // A knowledge result quotes mail, chat and web text, so it exposes the turn like they do.
+        else if (source === 'knowledge') this.#tools!.owner.ownerRequests.expose(handle.liveSessionId);
+      }
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];
       for (const unit of pending) {

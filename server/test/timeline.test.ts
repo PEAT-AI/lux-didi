@@ -15,6 +15,7 @@ import {
   renderAuditSummary, renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
   type CallAudit, type LogInput, type LogStream, type TimelineReport, type TraceRead,
 } from '../trace/timeline.js';
+import * as timelineSurface from '../trace/timeline.js';
 
 interface FixtureFile { file: string; stream: LogStream; text: string[] }
 interface TimelineFixture { liveSessionId: string; otherSessionId: string; pid: number; files: FixtureFile[] }
@@ -665,4 +666,58 @@ test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source d
     chmodSync(target, 0o700);
     rmSync(source, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true });
   }
+});
+
+test('#1072: a dist newer than its source that lacks the refusal probe is rebuilt, and a refused call with no turn is audited with its code', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-refusal-')));
+  const data = join(root, 'data');
+  try {
+    // The store half: one turn and two refusals, one of them on a call that never carried a turn at all.
+    const store = new Store(data, []);
+    try {
+      turn(store, SESSION, 't1', 1, T0);
+      call(store, SESSION, 't1', 'k-1', 'search_knowledge', 'refused', 60, T0 + 100, 'policy_denied');
+      call(store, SESSION, null, 'k-2', 'send_message', 'refused', 5, T0 + 2000, 'owner_only');
+    } finally { store.close(); }
+    mkdirSync(join(data, 'logs'));
+    writeFileSync(join(data, 'logs', 'host.log'), [
+      line(T0, 'clock_sync', { liveSessionId: SESSION, turnId: null, reason: 'call_open' }),
+      line(T0 + 4000, 'live_terminal', { liveSessionId: SESSION, state: 'closed', code: 'voice_stop' }),
+    ].join('\n'));
+    const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
+    const module = fileURLToPath(new URL('../trace/timeline.js', import.meta.url));
+    const tree = join(root, 'checkout');
+    const dist = join(tree, 'server', 'dist', 'trace');
+    mkdirSync(join(tree, 'scripts'), { recursive: true });
+    mkdirSync(dist, { recursive: true });
+    copyFileSync(script, join(tree, 'scripts', 'didi-timeline'));
+    chmodSync(join(tree, 'scripts', 'didi-timeline'), 0o755);
+    writeFileSync(join(tree, 'server', 'package.json'), '{ "name": "synthetic-server", "private": true, "type": "module" }\n');
+    writeFileSync(join(tree, 'server', 'settings.ts'), 'export const settings = 1;\n');
+    // An older build of the same module: every export the views read except the refusal-code probe.
+    const surface = Object.keys(timelineSurface).filter(name => name !== 'traceCallCarriesRefusalCode');
+    writeFileSync(join(dist, 'timeline.js'), `export { ${surface.join(', ')} } from ${JSON.stringify(module)};\n`);
+    const rebuilt = join(root, 'rebuilt.js');
+    writeFileSync(rebuilt, `export * from ${JSON.stringify(module)};\n`);
+    const older = new Date(Date.now() - 3600000);
+    const newer = new Date();
+    // The dist this install shipped is newer than the sources it was made from, so mtime alone calls it fresh.
+    utimesSync(join(dist, 'timeline.js'), newer, newer);
+    for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const npmCalls = join(root, 'npm-calls');
+    const npm = join(bin, 'npm');
+    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(npmCalls)}\ncp ${JSON.stringify(rebuilt)} ${JSON.stringify(join(dist, 'timeline.js'))}\nexit 0\n`);
+    chmodSync(npm, 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
+    const audit = spawnSync(process.execPath, [join(tree, 'scripts', 'didi-timeline'), 'call', 'latest', '--audit', '--data-dir', data], { encoding: 'utf8', env });
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.match(audit.stderr, /server\/dist\/trace\/timeline\.js is missing traceCallCarriesRefusalCode; running: npm --prefix server run build/);
+    assert.deepEqual(readFileSync(npmCalls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build']);
+    assert.match(audit.stdout, /refusals by code .*owner_only=1/);
+    assert.match(audit.stdout, /refusals by code .*policy_denied=1/);
+    assert.match(audit.stdout, /after rebuild, no turn calls=1/);
+    assert.match(audit.stdout, /^- k-2 send_message \S+ 5ms refused owner_only$/m);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

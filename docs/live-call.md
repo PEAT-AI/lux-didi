@@ -55,6 +55,32 @@ The seed a rebuild opens with is built from finished-turn boundaries, with adjac
 
 Two silences are not failures. A bare acknowledgement after the model spoke ("okay", "ok", "mhm", "right", "yeah", "thanks", up to three words and never a question) closes the turn at the watchdog instead of spending a rebuild. When recovery does give up, the call settles `provider_recovery_exhausted`, the native app sounds the existing goodbye tone, and the one `live_session_diagnostics` line for the call is written at settle so its `terminalCode` is the code the call actually ended with, never the field default. A rejected journal write is logged as `host_error` with its closed code (`persistence_failed`), not as a bare `Error`.
 
+## Voice processing and the audio graph (#1101)
+
+`NativeLiveAudioDevice` builds its voice-processing graph once per start and settles every release.
+
+- One build. Ducking is configured first, then voice processing is enabled once, on the input node:
+  enabling either IO node enables the other (`AVAudioIONode.h`: "Voice processing requires both input
+  and output nodes to be in the voice processing mode. Enabling this mode on either of the IO nodes
+  automatically enables it on the other IO node."). The player is attached and connected after that,
+  the engine is prepared once, then started. Nothing reconfigures the unit between those steps, because
+  each reconfiguration asks CoreAudio for another DSP graph build.
+- Settled teardown. A release stops the engine, keeps the engine and player handles alive for
+  `releaseSettleMs` (250 ms), keeps waiting while an `AVAudioEngineConfigurationChange` or a moving
+  default device is still in flight, bounded by `settleConfigWaitLimitMs` (1000 ms), then resets and
+  drops them. Every release-then-build path (unmute, the mic-watchdog restart, route recovery) awaits
+  that settle, so two engines are never alive at once.
+- Journal. `audio_graph_built` carries the build steps in order, whether voice processing was on, the
+  configuration-change notifications seen during the start, and the call's engine start count.
+  `audio_release_settled` carries the settle it waited and whether a configuration change was pending.
+  `logs/audio.log` therefore proves or refutes a start and a release without a recording.
+
+The downlink half of Apple's voice processing cannot be separated from the uplink half: the mode is
+per IO node pair, and the whole `AUVoiceIO` property surface (`AudioUnitProperties.h`) is uplink
+(bypass, AGC, mute output, quality), other-audio ducking, or iOS-only and deprecated. Keeping
+input-side echo cancellation keeps the downlink chain, so we build that graph cleanly and stop
+rebuilding it rather than trying to take her voice out of it.
+
 ## Notes and deletion
 
 Voice can save local memories and owner-requested Lux notes. Composed Lux notes are gated off by default and require staged readback and confirmation; a tool call alone is not a save. Trello card writes have their own board-scoped authority. [Privacy and authority](privacy-and-authority.md) owns these distinctions.

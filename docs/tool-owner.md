@@ -26,7 +26,34 @@ Knowledge reads in two stages. The search answers with summaries; when the ask n
 
 `open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A request expires after 120 seconds on a monotonic clock. Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
 
-A direct ask executes now, without confirmation. A compound ask grants each named kind once. Dispatch reserves an open grant before awaiting the native ack; a same-target retry returns the cached receipt, including an uncertain native outcome, without another effect. A different target after use returns `grant_spent`. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are structured host refusals, not instructions to use another device or repeat a complete ask.
+A direct ask executes now, without confirmation.
+
+### The tier table (C-PERMTIER, 10.7.2)
+
+`server/tools/tiers.ts` is the one closed table. `free` is `set_alarm`, `cancel_alarm`,
+`snooze_alarm`, `list_alarms`, `create_event`, `draft_email`, `draft_chat`, `remember_note`,
+`stage_lux_note`, `save_to_vault`, `trello_write` and every `open_*` tool; everything else is
+`guarded`, so a send tool added later is guarded without any code here. A free tool executes on the
+model's call while the owner's live call is open: no cue regex, no verb and noun set, and no later
+final takes an earned grant back. `delete_event` stays guarded on its created-or-named selector, and
+a refusal always names its cause, which the model may repeat.
+
+The one guard left on the free tier is the injection fence. The host keeps one monotonic order per
+session for the owner's finalized words and for third-party text. Mail bodies, chat messages, web
+pages and research results advance the exposure position immediately before the model sees them;
+reading his own calendar, alarms, notes, vault and Trello does not. A free write executes only when
+the latest owner final is newer than the latest exposure; otherwise it is refused `external_text_only`
+with the plain reason "Outside text arrived after your last words; say it again and I will do it".
+Model turns, assistant speech, tool results and retries never advance the owner position, and a
+refused write is never auto-flushed by a later final: it needs a fresh model call.
+
+Accepted limitation: an unrelated owner final after an external read can still let a reversible
+low-harm write through. That is the price of not asking him to repeat himself, and it is bounded by
+the tier: nothing here sends to another person and nothing here deletes irreversibly.
+
+An alarm's time comes from his words when they carry one, and otherwise from the model's own time
+argument, which is a deterministic parse and never a refusal for lack of an owner phrase. A
+recurrence the model adds without his words for it is dropped and said in the resulting sentence. A compound ask grants each named kind once. Dispatch reserves an open grant before awaiting the native ack; a same-target retry returns the cached receipt, including an uncertain native outcome, without another effect. A different target after use returns `grant_spent`. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are structured host refusals, not instructions to use another device or repeat a complete ask.
 
 A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
 

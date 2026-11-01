@@ -772,16 +772,34 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
 });
 
+// P-R8: the executor itself must complete the dropped-recurrence ask. A throw inside it becomes the
+// opaque handler_outcome the model sees, so this test names the throw before the production path does.
+test('#796 executor: set_alarm completes when the model rule is dropped', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
+  const call = { ...f.intent('run:1:0', 'set_alarm', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
+  f.owner.journal.intent(call);
+  const definition = liveTools(f).find(tool => tool.name === 'set_alarm');
+  assert.ok(definition, 'the live table offers set_alarm');
+  let thrown: unknown, outcome: Awaited<ReturnType<typeof definition.execute>> | undefined;
+  try { outcome = await definition.execute({ kind: 'daily' }, { ...call, signal: f.signal } as never); } catch (error) { thrown = error; }
+  assert.equal(thrown, undefined, `set_alarm threw: ${String(thrown)}`);
+  assert.equal(outcome?.status, 'completed', JSON.stringify(outcome)?.slice(0, 600));
+});
+
 // #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
 test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
-  const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.match(String(refused.result_json), /rule_mismatch/);
-  assert.match(String(refused.result_json), /call set_alarm once more[^"]*kind and weekdays omitted/, String(refused.result_json));
-  assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
-  assert.match(String(refused.result_json), /fixNotForSpeech/);
+  // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
+  // so the one call he made still sets the alarm he did ask for.
+  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
+  // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
+  assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
+  assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
+  assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
+  assert.doesNotMatch(String(dropped.result_json), /series_id/);
   const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 2);
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
 });
@@ -1022,10 +1040,13 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
+  // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
+  // still never posts, and the result says so.
   const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
-  assert.equal(port.log.length, 2, 'saying send it writes nothing new');
+  assert.equal(port.log.length, 3, 'each ask drafts once and nothing is posted');
+  assert.equal(port.log.filter(entry => entry.startsWith('mattermost_save_draft')).length, 3);
   assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
-  assert.match(String(sent.result_json), /no_owner_request|his click|reply box/);
+  assert.match(String(sent.result_json), /his click|reply box/);
 });
 
 test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
@@ -1099,7 +1120,7 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
 });
 
-test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
+test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient writes nothing', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
@@ -1111,7 +1132,9 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  assert.match(String(refused.result_json), /no_owner_request/);
+  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at exactly
+  // one cause: the recipient the harness roster does not hold. It still writes nothing.
+  assert.match(String(refused.result_json), /"code":"recipient_unknown"/, String(refused.result_json));
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {

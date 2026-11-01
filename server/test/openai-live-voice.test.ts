@@ -422,11 +422,63 @@ describe('openai gpt-live adapter', () => {
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
-    assert.deepEqual(start.session['input'], [
+    const seeded = start.session['input'] as { role?: string; content: { text: string }[] }[];
+    // C-RECONNECT #1072: the seed is framed before it is read, so the rebuilt session knows the user turns are the
+    // owner speaking to her rather than a transcript about a third party.
+    assert.equal(seeded[0]?.role, 'developer', 'the framing is host guidance, never the owner\u2019s words');
+    assert.match(seeded[0]!.content[0]!.text, /owner speaking to you directly/u, 'and it marks his turns as his own');
+    assert.deepEqual(seeded.slice(1), [
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Plan the week' }] },
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Monday first' }] },
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Pick up where we left off.' }] },
-    ]);
+    ], 'the framed seeded conversation, then the pickup line');
+  });
+
+  // C-RECONNECT #1072: a rebuilt session reads this call's own transcript, and without a word about whose words are
+  // whose it narrates the owner in the third person ("he asked") instead of answering him. The seed text marks the
+  // owner's turns as the owner speaking to her, in the second person, and leaves his own words untouched.
+  test('#1072: a seeded open tells the new session whose words are whose, so it answers the owner in the second person', async t => {
+    const f = await fixture(t);
+    const history = [
+      { role: 'user' as const, text: 'What did we settle about the bridge?', dataClass: 'ordinary' as const },
+      { role: 'model' as const, text: 'Monday, after the inspection.', dataClass: 'ordinary' as const },
+    ];
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history, openingText: 'Pick up where we left off.', opening: 'model_first' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input[0]?.role, 'developer', 'the framing is host guidance, never the owner\u2019s words');
+    const framing = input[0]!.content[0]!.text;
+    assert.match(framing, /owner speaking to you directly/u, 'the owner\u2019s turns are marked as him speaking to her');
+    assert.match(framing, /your own earlier speech/u, 'and her turns are marked as her own');
+    assert.match(framing, /\byou\b/u, 'the framing is second person');
+    assert.doesNotMatch(framing, /\b(?:he|him|his)\b/u, 'never a third-person narration of the owner');
+    // His own words ride unchanged: the framing marks them, the host never re-narrates them.
+    assert.deepEqual(input.slice(1).map(item => item.content[0]!.text),
+      ['What did we settle about the bridge?', 'Monday, after the inspection.', 'Pick up where we left off.']);
+    assert.equal(input.slice(1).some(item => item.role === 'user' && /^(?:the |he |his )/iu.test(item.content[0]!.text)), false,
+      'no owner turn is rewritten into third-person narration');
+  });
+
+  // B1 (review of 76cd18b3): the framing shares the documented 8,192-token proxy with the turns it introduces. A seed
+  // whose turns fill that proxy exactly is not trimmed, so charging the framing on top of it refused the open that a
+  // long call needs most: the recovery rebuild. The trim reserves the framing instead.
+  test('#1072 B1: a seed that fills the character ceiling still opens, framing first', async t => {
+    const f = await fixture(t);
+    const chunk = 'x'.repeat(8_191);
+    const history = Array.from({ length: 4 }, (_, index) => ({
+      role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `${index}${chunk}`, dataClass: 'ordinary' as const }));
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    const input = start.session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
+    const characters = input.reduce((sum, item) => sum + item.content[0]!.text.length, 0);
+    assert.ok(characters <= 8_192 * 4, `the seed and its framing stay inside the ceiling (${characters})`);
+    assert.ok(input.length > 1, 'the newest turns are kept and condensed, never dropped for the framing');
   });
 
   // C-RECOVERY (a): a long call must still reopen. The adapter keeps the newest turns and the pickup line's slot
@@ -441,8 +493,9 @@ describe('openai gpt-live adapter', () => {
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
     const input = start.session['input'] as { role?: string; content: { text: string }[] }[];
-    assert.equal(input.length, 128, 'the trimmed history plus the pickup line stays at the documented 128 messages');
-    assert.equal(input[0]!.content[0]!.text, 'turn 13', 'the oldest turns are the ones that go');
+    assert.equal(input.length, 128, 'the trimmed history, its framing and the pickup line stay at the documented 128 messages');
+    assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
+    assert.equal(input[1]!.content[0]!.text, 'turn 14', 'the oldest turns are the ones that go, and the framing costs one slot');
     assert.equal(input[126]!.content[0]!.text, 'turn 139', 'the newest turn is always kept');
     assert.equal(input[127]!.content[0]!.text, 'Pick up where we left off.', 'and the pickup line keeps its slot');
   });
@@ -455,10 +508,12 @@ describe('openai gpt-live adapter', () => {
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
-    assert.deepEqual(start.session['input'], [
+    const input = start.session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.deepEqual(input.slice(1), [
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Plan the week' }] },
       { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] },
     ], 'the seeded history is followed by the opening directive');
+    assert.equal(input[0]?.role, 'developer', 'and the seed is framed before it is read');
   });
 
   test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
@@ -554,7 +609,8 @@ describe('openai gpt-live adapter', () => {
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
     const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
     assert.equal(input.length, 128, 'the seed stays within the documented 128 messages');
-    assert.equal(input[0]!.content[0]!.text, 'turn 1', 'the oldest turn makes room for the directive');
+    assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
+    assert.equal(input[1]!.content[0]!.text, 'turn 2', 'the oldest turns make room for the framing and the directive');
     assert.deepEqual(input.at(-1), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
   });
 

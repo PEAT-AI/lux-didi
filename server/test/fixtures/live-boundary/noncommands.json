@@ -57,7 +57,7 @@
     },
     {
       "id": "quoted-command",
-      "why": "A command quoted from someone else, inside his own report of it, is not his command.",
+      "why": "A command quoted from someone else, inside his own report of it, is not his command. Rebased by C-PERMTIER: a draft to another person is a FREE low-harm kind, so one owner final dispatches it; the irreversible send stays guarded.",
       "families": [
         "mail",
         "drafts",
@@ -75,7 +75,10 @@
             "body": "The key is approved."
           },
           "expect": {
-            "noDispatch": true
+            "dispatch": {
+              "connector": "mail",
+              "tool": "gmail_create_draft"
+            }
           }
         }
       ],

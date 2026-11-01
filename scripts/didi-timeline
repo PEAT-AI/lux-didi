@@ -110,12 +110,9 @@ function newestMtime(directory, accept, skip) {
   return newest;
 }
 
-function ensureBuilt() {
+function buildDist(reason) {
   const built = join(SERVER, 'dist', 'trace', 'timeline.js');
-  const source = newestMtime(SERVER, name => /\.(ts|json)$/.test(name), new Set(['node_modules', 'dist']));
-  const build = existsSync(built) ? newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules'])) : Number.NEGATIVE_INFINITY;
-  if (existsSync(built) && build >= source) return;
-  process.stderr.write('didi-timeline: server/dist is missing or older than its source; running: npm --prefix server run build\n');
+  process.stderr.write(`didi-timeline: ${reason}; running: npm --prefix server run build\n`);
   const run = spawnSync('npm', ['--prefix', SERVER, 'run', 'build'], { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
   if (run.error || run.status !== 0) {
     const detail = (run.error !== undefined && run.error !== null ? run.error.message : (run.stderr ?? '')).trim();
@@ -126,10 +123,34 @@ function ensureBuilt() {
   if (!existsSync(built)) fail('the build did not emit server/dist/trace/timeline.js; run: npm --prefix server run build');
 }
 
+function ensureBuilt() {
+  const built = join(SERVER, 'dist', 'trace', 'timeline.js');
+  const source = newestMtime(SERVER, name => /\.(ts|json)$/.test(name), new Set(['node_modules', 'dist']));
+  const build = existsSync(built) ? newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules'])) : Number.NEGATIVE_INFINITY;
+  if (existsSync(built) && build >= source) return;
+  buildDist('server/dist is missing or older than its source');
+}
+
+// #1072: newest-source-by-mtime cannot see a dist that is NEWER than its source and still an older build,
+// such as a shipped artifact, a restored copy, or an emit that skipped a file. The view then dies on a
+// TypeError naming an internal symbol ("traceCallCarriesRefusalCode is not a function") instead of reading.
+// The module's own surface is the honest freshness test: rebuild once when a view's export is missing.
+const TIMELINE_EXPORTS = ['buildAuditSummary', 'buildCallAudit', 'buildCallStory', 'buildTimeline', 'listCalls',
+  'logHealth', 'renderAuditSummary', 'renderCallAudit', 'renderCallList', 'renderCallStory', 'renderLogHealth',
+  'resolveSession', 'scanLogs', 'traceCallCarriesRefusalCode'];
+
 async function traceModule() {
   ensureBuilt();
   const built = new URL('../server/dist/trace/timeline.js', `file://${__filename}`);
-  return import(built.href);
+  const module = await import(built.href);
+  const missing = TIMELINE_EXPORTS.filter(name => typeof module[name] !== 'function');
+  if (missing.length === 0) return module;
+  buildDist(`server/dist/trace/timeline.js is missing ${missing.join(', ')}`);
+  // A query string gives the rebuilt file its own module instance: the plain URL is cached for this process.
+  const rebuilt = await import(`${built.href}?rebuilt=${Date.now()}`);
+  const stillMissing = TIMELINE_EXPORTS.filter(name => typeof rebuilt[name] !== 'function');
+  if (stillMissing.length > 0) fail(`server/dist/trace/timeline.js still lacks ${stillMissing.join(', ')} after a build; run: npm --prefix server run build`);
+  return rebuilt;
 }
 
 function storeReader(database) {

@@ -313,17 +313,23 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
     private func play(_ buffer: AVAudioPCMBuffer, loops: Bool) -> Bool {
         rampTask?.cancel()
         rampTask = nil
-        if connectedFormat != buffer.format {
-            if connectedFormat != nil { engine.disconnectNodeOutput(player) }
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
-            connectedFormat = buffer.format
-        }
-        engine.prepare()
+        // Every AVFAudio call below can raise instead of returning, and the ring is not worth a
+        // process: the one Objective-C guard reports it and the ring stays silent.
+        if DIDIAVFAudioGuard({
+            if connectedFormat != buffer.format {
+                if connectedFormat != nil { engine.disconnectNodeOutput(player) }
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
+                connectedFormat = buffer.format
+            }
+            engine.prepare()
+        }) != nil { return false }
         do { try engine.start() } catch { return false }
         player.volume = 1
-        player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
-        player.play()
+        if DIDIAVFAudioGuard({
+            player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
+        }) != nil { return false }
+        if DIDIAVFAudioGuard({ player.play() }) != nil { return false }
         return true
     }
 
@@ -552,6 +558,20 @@ struct ShellAlarm: Codable, Equatable, Sendable {
 
 /// Pure ownership policy; native effects are injected so local tests never touch power or notifications.
 @MainActor final class AlarmShellPolicy {
+    /// #108: the one moment the system notification ask may appear: an alarm is armed, the permission is
+    /// still undetermined, and no call is live. The old gate asked only at ring time, which is too late for
+    /// the notification, and could land inside a call, which is never acceptable.
+    static func asksNotificationPermission(alarms: [ShellAlarm], permissionRequested: Bool,
+                                          sessionLive: Bool) -> Bool {
+        guard !permissionRequested, !sessionLive else { return false }
+        return hasActive(alarms)
+    }
+
+    /// #108 (review F1): the assertion, the ask and their retries are for an actually active alarm.
+    /// The host sends every row it ever stored, and a finished row keeps its place in the table.
+    static func hasActive(_ alarms: [ShellAlarm]) -> Bool {
+        alarms.contains { $0.state == "pending" || $0.state == "ringing" }
+    }
     static func menuTitle(alarmCaption: String?, pendingCall: Bool) -> String {
         alarmCaption ?? (pendingCall ? "•" : "")
     }

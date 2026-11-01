@@ -43,6 +43,18 @@ Admitted paging is host-owned and bounded. Partial coverage remains partial; rec
 
 A post-tool continuation asks the provider for a response with a bare `response.create`: no output modalities, no instructions, no voice. The delegated backend can answer that request with text and no audio at all (2026-10-27 07:02:59Z: 112 response tokens, `delegation_closed`, `playback_level` at -120 dB, and no `session.output_audio.delta`), and the adapter has no path for a delegated response's text, so the answer is generated and never spoken. The host cannot make the provider speak, so it notices the shape: when a response ends after writing text for an owed answer and no audible frame arrived, `#deliverUnspoken` hands the result to the live session at that end, exactly once, with no ladder wait. `live_response_latency` records the provider's share of the wait separately (owner final words, response announced, first audio). The audible-debt rung stays at 8 s, and a response the owner cannot hear buys it `DEAD_AIR_RESPONSE_GRACE_MS` (500 ms) instead of the seven seconds that made the 2026-10-27 calls wait 15 s.
 
+### Fewer rebuilds, by holding them rather than shortening anything (C-REBUILD)
+
+Three shapes were measured on the 10-25 to 11-01 window (19 owner rebuilds): 7 tore down a response in flight under 9.7 s old, 2 followed a response's end within 4 s, and 8 had no response at all for 29 s or more. The council's ruling is one rule applied three times: a rebuild trigger may only be lengthened or removed, never shortened, and no filler speech may answer a silence he was happy to leave.
+
+**A response in flight holds the rebuild to its ceiling.** `inFlightResponseHold` compares the host's own monotonic stamp of the response's creation with `MAX_IN_FLIGHT_RESPONSE_AGE_MS` (12,000 ms, against a longest healthy silent response of 9,680 ms over 69 responses). A rebuild that arrives first is held for exactly the remaining age, on the timer the step already owns, so a response that finishes inside the wait cancels it and one that does not is rebuilt at the ceiling exactly as before. `RESPONSE_WATCHDOG_NUDGE_MS` (8,000), `RESPONSE_WATCHDOG_RECOVERY_MS` (7,000) and `AUDIBLE_DEBT_RUNG_MS` (8,000) are untouched. `live_rebuild_held` names the reason, the response's age, the wait taken and the count.
+
+**Nothing is written into a response that is in flight.** The unspoken result is not handed over at the rung while a response is open: it waits for that response's own terminal, which is the continuation path that carries it, and if the response is torn down instead it travels in the new session's opening. A late finding is held the same way, without a timer: `lateCommentarySilence` returns `response_in_flight` and `lateHoldMs` gives that reason no delay, so the finding stays in the ledger for the next continuation and only a torn down generation leaves it there for good.
+
+**An owner turn that asked for nothing is no longer a rebuild trigger.** `silentOwnerTurn` names a turn with owner words, no tool call and no response created. Its rebuild is removed, and the accepted failure is stated: a socket that is really dead on such a turn waits until he speaks again, and his next final recovers through the triggers still in force. `session_window`, `line_dropped` and a provider close are unchanged. `live_rebuild_removed` names the reason and the count.
+
+**A rebuild settles what it tears down.** A response the provider announced and never terminated is written as `response.terminal` with status `superseded` when the session closes, so the trace store never keeps a response pending for the life of a call.
+
 ## Recovery is not replay
 
 Provider-drop handling is implemented by `#recoverFromDrop` and `#openRecovery` inside `LiveSessionOwner`. Failed resumption can fall back to a fresh open; exhausted recovery settles with `provider_recovery_exhausted`. Neither path grants another research operation or permission to replay an uncertain remote write.
@@ -80,6 +92,34 @@ per IO node pair, and the whole `AUVoiceIO` property surface (`AudioUnitProperti
 (bypass, AGC, mute output, quality), other-audio ducking, or iOS-only and deprecated. Keeping
 input-side echo cancellation keeps the downlink chain, so we build that graph cleanly and stop
 rebuilding it rather than trying to take her voice out of it.
+
+Every thin AVFAudio call that can raise instead of returning (attach, connect, installTap, prepare,
+removeTap, scheduleBuffer, play) goes through `Sources/LuxDidi/AVFAudioGuard.h`, the one Objective-C
+file, because only Objective-C can catch what AVFAudio raises: in Swift the exception unwinds the
+frame and leaves the concurrency runtime's current executor pointing at a dead stack. The guard
+throws `NativeAudioGraphException`, the call ends, and `audio_graph_exception` in `logs/audio.log`
+names the call and the exception. It is a boundary check, never a fallback.
+
+The tap installs with `format: nil`, so AVFAudio uses the node's own current output format and can
+never compare a stale client format against the hardware: on the headset route that comparison
+raised `Format mismatch: input hw 1 ch 48000 Hz, client format 1 ch 16000 Hz` and failed the tap.
+The capture buffer takes its converter from the first buffer it actually receives, so nothing
+downstream depends on the format read before the tap.
+
+A call start writes `logs/call-start.json` before presence starts, with the pid, the wall time and
+the output transport, and clears it once a capture frame and one model chunk have both arrived or
+the call ends cleanly. A launch that finds a marker younger than two minutes from another pid logs
+`launch_after_failed_start` in native-live.log and does not auto connect: on 2026-11-01 three
+crashes in 35 s each launched straight back into the same fault. The app stays open and a key press
+still starts a call, and the orb visuals are unchanged.
+
+The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
+`NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
+processing, constructs a real input node, pins a device or stops and resets a real engine: measured
+before this seam existed, the test binaries caused 907 speaker DSP graph rebuilds against 12 from
+real calls (see the 2026-11-01 audio investigation). Real voice processing coverage is now the
+owner-only command `scripts/owner-audio-hardware-proof.sh`, which no check calls and which starts no
+engine, so nothing is audible.
 
 ## Notes and deletion
 

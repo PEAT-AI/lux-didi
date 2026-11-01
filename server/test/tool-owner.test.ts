@@ -794,13 +794,15 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
   // so the one call he made still sets the alarm he did ask for.
-  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
+  // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
+  const eleven = { mode: 'wall', date: { kind: 'today' }, local_time: '11:00' };
+  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily', time: eleven }), { kind: 'daily', time: eleven }, 1);
   // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
   assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
   assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
   assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
   assert.doesNotMatch(String(dropped.result_json), /series_id/);
-  const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 2);
+  const set = await liveExecute(f, alarmCall('run:1:1', { time: eleven }), { time: eleven }, 2);
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
 });
 
@@ -1061,7 +1063,8 @@ test('W1030 create_event: the window comes from his words, a colleague stays uni
   const start = Number(line.split(':')[1]);
   const end = Number(line.split(':')[2]);
   assert.equal(end - start, 3_600_000, 'one hour from his words');
-  assert.match(line, /Zara/);
+  // C-TIME shape 7: the sentence never names a person, so no invented name reaches the description.
+  assert.doesNotMatch(line, /Zara/);
   assert.match(line, /not invited|no invitations were sent/i);
   assert.match(String(outcome.result_json), /"attendees":0/);
   assert.match(String(outcome.result_json), /"invitations":"none"/);

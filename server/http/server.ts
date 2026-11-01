@@ -1,4 +1,4 @@
-import { HostLog } from '../host/log.js';
+import { ALARM_SPEECH_FAILED_REASONS, HostLog } from '../host/log.js';
 import { AlarmSessionCoordinator, type AlarmScheduler, type AlarmShellBridge, type AlarmRecheck } from '../host/alarm-scheduler.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
@@ -82,6 +82,12 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
   const alarmStreams = new Set<() => void>();
+  // The same caller key shape the Live create route accepts, so one key can never mean two things.
+  const alarmKeyPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
+  /** Whether an existing alarm session is the one this caller key already opened, so a retry replays it. */
+  const replayable = (service: NonNullable<typeof live>, sessionId: string, key: string): boolean => {
+    try { return service.snapshot(sessionId).idempotencyKey === key; } catch { return false; }
+  };
   let streamCount = 0;
   const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
@@ -91,6 +97,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const diagnosticLog = new HostLog(store.directory);
   const alarmSessions = options.alarms && live ? new AlarmSessionCoordinator({ store,
     hasLiveSession: () => !['idle', 'ended', 'error'].includes(live.current().state),
+    now,
     open: (setup, key) => {
       if (!live.createAlarm) throw Error('alarm_speech_unavailable');
       return live.createAlarm(setup, key, { clientId: 'local-admin', auditId: randomUUID(), authorityEpoch: store.authorityEpoch }).liveSessionId;
@@ -185,10 +192,20 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
           const body = await readBody(req);
           if (url.pathname === '/api/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
+            // C-ALARMSPEECH: the native validator requires the key it sent back on the snapshot, so this route
+            // honours `Idempotency-Key` like every other create route instead of naming the session itself.
+            const idempotencyKey = req.headers['idempotency-key'];
+            if (typeof idempotencyKey !== 'string' || !alarmKeyPattern.test(idempotencyKey)) {
+              send(res, 400, { error: { code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A caller key is required.' } }); return;
+            }
             // Alarm starts use the same cached calendar digest as an ordinary call.
             if (live) await live.prepareCalendar();
-            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
+            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName, idempotencyKey);
             if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
+            // A retried start of the same occurrence replays the one session it already opened.
+            if (attempt?.status === 'attempted' && attempt.liveSessionId && live && replayable(live, attempt.liveSessionId, idempotencyKey)) {
+              send(res, 200, success(live.snapshot(attempt.liveSessionId))); return;
+            }
             if (attempt?.status === 'live' && attempt.liveSessionId && live) { send(res, 200, success(live.snapshot(attempt.liveSessionId))); return; }
             send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
           }
@@ -202,11 +219,23 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const notificationState = body.notificationState === 'allowed' || body.notificationState === 'denied' || body.notificationState === 'not_asked'
               ? body.notificationState : undefined;
             shell.report({ assertion: body.assertion, notifications: body.notifications, ...(notificationState ? { notificationState } : {}) });
+            // #108: the shell now names the IOKit status behind a refused idle sleep assertion, so an
+            // alarm_degraded row for the assertion carries a code instead of a bare false.
+            const assertionCode = typeof body.assertionCode === 'number' ? body.assertionCode : undefined;
             const health = shell.health();
             if (health.degraded) for (const alarm of scheduler.list().filter(row => row.state === 'pending' || row.state === 'ringing')) {
-              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason, ...(reason === 'assertion_failed' && assertionCode !== undefined ? { assertionCode } : {}) });
             }
             send(res, 200, success(health)); return;
+          }
+          if (url.pathname === '/api/v1/alarms/speech-failed' && typeof body.id === 'string') {
+            // C-ALARMSPEECH: a spoken alarm that never opened is reported by the shell, with one closed
+            // reason, so the host log can never be silent about it.
+            if (!ALARM_SPEECH_FAILED_REASONS.some(reason => reason === body.reason)) {
+              send(res, 400, { error: { code: 'UNKNOWN_REASON', message: 'A closed speech failure reason is required.' } }); return;
+            }
+            diagnosticLog.event({ event: 'alarm_speech_failed', alarmId: body.id, reason: body.reason });
+            send(res, 200, success({ status: 'ok' })); return;
           }
           const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
           if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {

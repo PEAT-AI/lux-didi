@@ -24,6 +24,9 @@ export function toolOutcomeOf(response: Readonly<Record<string, unknown>>): Tool
   // F11: an open that answered `opened`, and an alarm that answered `set` with its id, are settlements.
   if (code === 'opened') return { outcome: 'completed' };
   if (status === 'set' && typeof response.id === 'string' && response.id.trim().length > 0) return result('completed');
+  // C-LABELS 3: a calendar create that answered `event_created` with its id is a settlement too, so a working
+  // write is never audited as an unknown outcome.
+  if (status === 'event_created' && typeof response.event_id === 'string' && response.event_id.trim().length > 0) return result('completed');
   if (status !== undefined && !['answered', 'complete', 'completed', 'ok', 'success', 'scheduled', 'created', 'set', 'available'].includes(String(status))) return { outcome: 'unknown' };
   const collections = ['findings', 'messages', 'results', 'items', 'cards', 'posts'].filter(key => Array.isArray(response[key]));
   if (collections.length > 0 && collections.every(key => (response[key] as unknown[]).length === 0)) return { outcome: 'empty' };

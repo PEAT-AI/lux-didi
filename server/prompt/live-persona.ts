@@ -84,7 +84,7 @@ export const NAYA_OPEN_SURFACE = `${OPEN_TOOL_GUIDANCE}\n"Open in my browser" me
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
-Act on direct asks without asking permission; never send him to his own device for a tool you have. You can set, list, cancel and snooze an alarm by voice; it rings only on an awake Mac.
+Act on direct asks without asking permission; never send him to his own device for a tool you have. Alarms: this ask's time, no earlier ones, say the read-back, ring only on an awake Mac
 
 Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
 
@@ -484,9 +484,19 @@ export const EARLIER_CONVERSATIONS_HEADER =
   'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner\'s words now win.';
 export const EARLIER_CONVERSATIONS_MAX_CHARS = LIVE_INSTRUCTION_TARGET_CHARS;
 export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-/** The space the earlier-conversations section may use: what the other sections leave under the target. */
+/** #108: the earlier-conversations reserve. Release 10.7.3 carried 1,162 to 1,639 characters of these
+ *  summaries before the owner style grew; the sections that may yield hold this much of the hard
+ *  ceiling free for them. */
+export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_600;
+/** The space the earlier-conversations section may use: its own reserve under the hard ceiling, so the
+ *  leftovers of a target the other sections already blew past cannot starve it (#108). A roomy
+ *  instruction still gives the section what the target leaves; a full one gives it the reserve, bounded
+ *  by the room that actually exists, so a section can shrink but never break the ceiling. */
 export function earlierConversationsBudget(otherSectionsChars: number): number {
-  return Math.max(0, LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length);
+  const room = LIVE_INSTRUCTION_HARD_LIMIT - otherSectionsChars - separator.length;
+  if (room <= 0) return 0;
+  const underTarget = LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length;
+  return Math.min(room, Math.max(EARLIER_CONVERSATIONS_RESERVE_CHARS, underTarget));
 }
 
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
@@ -852,7 +862,12 @@ export function composeLiveSessionInstruction(input: {
   readonly now?: number; readonly timeZone?: string;
   /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
   readonly calendar?: string;
+  /** C-MEMORYTRUTH: the alarms table at the moment of the seed, so an armed alarm reaches the next call. */
+  readonly alarms?: string;
   readonly earlierConversations?: string;
+  /** #108: the room held free for the earlier-conversations section, so the sections that yield (the
+   *  notes, which she can read on demand) make it instead of the summary section taking the leftovers. */
+  readonly earlierReserve?: number;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
@@ -876,7 +891,11 @@ export function composeLiveSessionInstruction(input: {
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   // R7: the warm digest is one lead line, so the model reads it as today's calendar and not as a note.
   const digest = input.calendar?.trim();
-  const calendar = digest?.length ? `Today: ${digest}` : undefined;
+  const alarmList = input.alarms?.trim();
+  // C-MEMORYTRUTH: the armed alarms ride the day's state line, beside the digest, so what is actually armed
+  // reaches the seed whatever an earlier summary said about it.
+  const calendar = [digest?.length ? `Today: ${digest}` : undefined, alarmList?.length ? `Armed alarms: ${alarmList}` : undefined]
+    .filter((line): line is string => line !== undefined).join('\n') || undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
   const style = owner.filter(section => section.id === 'owner-style').map(section => section.text);
   const lore = owner.filter(section => section.id === 'owner-lore').map(section => clipOwnerLore(section.text));
@@ -904,6 +923,9 @@ export function composeLiveSessionInstruction(input: {
     const openingOptions: Entry[] = input.openingOptions?.length ? [{ id: 'opening-options', text: input.openingOptions }] : [];
     if (!native) return [
       { id: 'base', text: input.text },
+      // C-MEMORYTRUTH: an armed alarm is a fact of the store, not a warm digest, so a start without a frozen
+      // accepted prompt still carries it.
+      ...(calendar !== undefined ? [{ id: 'calendar' as const, text: calendar }] : []),
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
@@ -938,11 +960,18 @@ export function composeLiveSessionInstruction(input: {
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = [], peopleText?: string): string => assemble(entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
+  // #108: the notes are the section that yields for the earlier-conversations reserve, because she can
+  // read a note on demand and cannot read a past call at all. Never the tool conduct, never the base.
+  const ceiling = Math.min(input.trustedChars, LIVE_INSTRUCTION_HARD_LIMIT);
+  const baseChars = wrap([], undefined).length;
+  const earlierReserve = Math.max(0, Math.min(input.earlierReserve ?? 0, EARLIER_CONVERSATIONS_RESERVE_CHARS,
+    ceiling - baseChars - separator.length));
+  const composeChars = earlierReserve === 0 ? input.trustedChars : ceiling - earlierReserve - separator.length;
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];
   for (const record of [...plainRecords].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
     const rendered = `<memory-record>\n${JSON.stringify({ id: record.id, text: record.text })}\n</memory-record>`;
     const memoryChars = [preface, ...records, rendered].join(separator).length;
-    if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered], undefined).length > input.trustedChars) omitted.push({ id: record.id, reason: 'budget' });
+    if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered], undefined).length > composeChars) omitted.push({ id: record.id, reason: 'budget' });
     else { records.push(rendered); selectedIds.push(record.id); }
   }
   // The earlier-conversations section yields before the note sections: it is added only when it fits over them.
@@ -954,7 +983,7 @@ export function composeLiveSessionInstruction(input: {
     if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
-  const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= input.trustedChars;
+  const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= (earlierReserve === 0 ? input.trustedChars : ceiling);
   const earlierSection = earlierIncluded ? earlier : undefined;
   // W15 (W15-R2): the roster takes what every other section leaves, so a full lore plus a long roster
   // still composes under the hard limit; it is trimmed and the trim is logged, never thrown.

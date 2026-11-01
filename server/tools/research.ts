@@ -1,4 +1,5 @@
 import type { HostEvidenceRef } from './types.js';
+import { refusalCauseOf, runningStateLine } from './refusal-cause.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
 import { fold, tokenize } from '../domain/util.js';
@@ -2719,6 +2720,8 @@ export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   const guidance = REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question","topic":"the names and nouns"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.';
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
+    // C-TOOLTRUTH: the cause she can repeat and what this refusal did not do, so no invented cause is needed.
+    ...refusalCauseOf(reason),
     // Requirement 4: the byte-identical retry is told it already had this answer, before it spends a third one.
     guidance: reason === 'entity_rewrite' && entityRetryStopped ? `This exact request was already refused in this owner turn: ${guidance}` : guidance,
   };
@@ -3032,7 +3035,9 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   not_connected: label => `${label} is not connected`,
   not_configured: label => `${label} is not set up`,
   grant_missing: (label, source) => source === 'chat' ? `${label} needs owner approval: approve Mattermost in the terminal with node server/dist/config/mcp-cli.js approve, as documented in docs/mcp-configuration.md; there is no Settings approval control` : `${label} needs permission`,
-  provider_failed: label => `${label} failed when I asked`,
+  // C-TOOLTRUTH: the host holds no cause for a connector's own failure, so the line says that instead of
+  // leaving her to guess one, and it names what did not happen.
+  provider_failed: label => `${label} failed and the reason is not known: nothing was read from it`,
   skipped_by_route: label => `I did not read ${label} this time`,
   // C-RESEARCH #107: the task's own read ceiling stopped this source before it was read.
   read_ceiling: label => `${label} was cut by this task's read ceiling before I read it`,
@@ -7813,8 +7818,12 @@ export function findingCount(finding: JsonObject): number {
   return typeof finding['text'] === 'string' && finding['text'].trim() !== '' ? 1 : 0;
 }
 
-export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {
-  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+/**
+ * C-TOOLTRUTH: the refusal she is handed carries the true cause, what happens next, and what the host's own
+ * record says is running right now, so a turn already spent can never read as work still in progress.
+ */
+export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject, running: readonly string[] = []): JsonObject {
+  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false, ...refusalCauseOf(reason), state: runningStateLine(running) };
   if (delivered === undefined) return base;
   const findings = Array.isArray(delivered['findings']) ? delivered['findings'] as JsonObject[] : [];
   return { ...base, code: reason, deliveredCount: findings.reduce((count, finding) => count + findingCount(finding), 0), deliveredResults: delivered };
@@ -7866,6 +7875,8 @@ export class ResearchAdmission {
   /** C-RESEARCH #107: the one host-owned job the current owner question owns, stable across a provider rebuild. */
   #job: { id: string; key: string; question: string } | undefined;
   #jobs = 0;
+  /** C-TOOLTRUTH: the owner question of the operation running right now, undefined when nothing runs. */
+  #working: string | undefined;
   /** C-RESEARCH #107: provider reads this job has spent, shared across every connector. */
   #reads = 0;
   ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; this.#job = undefined; refusedEntityRequest = undefined; entityRetryStopped = false; }
@@ -7930,6 +7941,14 @@ export class ResearchAdmission {
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */
+  /**
+   * C-TOOLTRUTH: the one operation this host is actually running, in the owner's own question. It lives on the
+   * admission object, which outlives a provider rebuild, so a rebuilt session still answers what is running.
+   */
+  working(question: string): void { this.#working = question; }
+  settledWork(): void { this.#working = undefined; }
+  /** The host's own record of running work, as names a refusal can repeat. */
+  running(): readonly string[] { return this.#working === undefined ? [] : [`the research for "${this.#working}"`]; }
   delivered(researchId?: string): void {
     this.#deliveredAt = this.#turns;
     this.#answered = false;

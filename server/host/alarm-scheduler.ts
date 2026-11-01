@@ -185,17 +185,33 @@ export class AlarmShellBridge {
 /** Reserve an occurrence before creating a session, so failures and reconnects cannot retry it. */
 export class AlarmSessionCoordinator {
   constructor(private readonly options: {
-    store: StorePort; hasLiveSession(): boolean;
+    store: StorePort; hasLiveSession(): boolean; now(): number;
     open(setup: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string): string;
     degraded(id: string, reason: 'live_session_no_channel' | 'provider_unavailable'): void;
   }) {}
-  attempt(id: string, ownerDisplayName: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
-    const alarm = this.options.store.transaction(tx => {
+  attempt(id: string, ownerDisplayName: string, idempotencyKey: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
+    // One occurrence, one session: the attempt row binds this alarm to the first caller key it saw, so a
+    // retried start with that key replays that session instead of ringing up a second one.
+    const reserved = this.options.store.transaction(tx => {
       const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
-      if (!row || !tx.run('INSERT OR IGNORE INTO alarm_session_attempts(alarm_id) VALUES(?)', [id])) return undefined;
-      return read(row);
+      if (!row) return undefined;
+      const prior = tx.get('SELECT live_session_id FROM alarm_session_attempts WHERE alarm_id=?', [id]);
+      if (prior) {
+        const opened = prior['live_session_id'] === null ? undefined : String(prior['live_session_id']);
+        // While the occurrence is still ringing inside its own deadline, and only while the row holds no
+        // session, a create attempt is allowed again: that is the one retry the shell makes. The host does
+        // not count attempts, so a caller that kept asking would keep trying; what the host does guarantee
+        // is that an occurrence never holds two live sessions, because a successful attempt writes the id
+        // and every later key is refused.
+        const deadline = row['ring_deadline_utc'] === null ? 0 : Number(row['ring_deadline_utc']);
+        if (opened !== undefined || !(deadline > this.options.now())) return { prior: opened };
+      }
+      tx.run('INSERT OR IGNORE INTO alarm_session_attempts(alarm_id) VALUES(?)', [id]);
+      return { alarm: read(row) };
     });
-    if (!alarm) return { status: 'attempted' };
+    if (!reserved) return { status: 'attempted' };
+    if (!('alarm' in reserved) || !reserved.alarm) return { status: 'attempted', ...(reserved.prior ? { liveSessionId: reserved.prior } : {}) };
+    const alarm = reserved.alarm;
     const alreadyLive = this.options.hasLiveSession();
     try {
       const scheduledTime = new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit' }).format(alarm.fireAtUtc);
@@ -205,7 +221,7 @@ export class AlarmSessionCoordinator {
         return row ? seriesText(seriesRuleOf(row)) : undefined;
       });
       const setup: import('../live/types.js').SeriesAlarmSetup = { ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc!, ...(series ? { series } : {}) };
-      const liveSessionId = this.options.open(setup, `alarm:${id}`);
+      const liveSessionId = this.options.open(setup, idempotencyKey);
       this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
       return { status: alreadyLive ? 'live' : 'created', liveSessionId };
     } catch {

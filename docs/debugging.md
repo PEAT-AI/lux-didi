@@ -11,6 +11,10 @@ Investigate the host and call that actually failed. The installed app and a sour
 
 The canonical private database is `state.sqlite`. Operational host logs are under the selected data directory's `logs/`. They are not interchangeable: safe metadata in `host.log` does not make the entire database or every old log safe to share.
 
+## A crash triage starts with the HIExceptions line
+
+The first step of a Didi crash triage is one read only query: `log show --predicate 'process == "LuxDidi" AND category == "HIExceptions"' --style compact --last 1h`. It names the Objective-C exception and the thread that swallowed it, which is what a native audio fault leaves behind; the crash report alone showed only a wild program counter in a Swift runtime frame. The app also registers `NSApplicationCrashOnExceptions`, so a swallowed exception can no longer leave a corrupt process running, and the report names the exception path.
+
 ## Diagnose an account-identity failure first
 
 An identity failure is reported as a closed code and never as an address, a token or a URL:
@@ -42,7 +46,7 @@ node scripts/didi-timeline latest --data-dir /absolute/host/data --json
 node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/host/data --json
 ```
 
-`didi-timeline call <session|latest>` assembles one call's ordered story from the store and every log, and `didi-timeline doctor` reports log health and the lines no session can be attributed to.
+`didi-timeline call <session|latest>` assembles one call's ordered story from the store and every log, `didi-timeline marks` prints every `Mark distortion` press with or without a call, and `didi-timeline doctor` reports log health and the lines no session can be attributed to.
 
 ## Review a call in one command
 
@@ -83,6 +87,45 @@ The envelope is what makes the join possible: every host log line emitted inside
 
 A voice that changes inside one call is read from two closed events, never from listening back, because no audio is kept. `live_voice_profile` is written once per model response that played audio, with `liveSessionId`, `generation`, a closed `responseId`, `audibleMs`, `f0Hz` (median fundamental over voiced frames), `f0P10Hz`, `f0P90Hz`, `voicedRatio` and `rmsDbfs`, measured on the output PCM the host already forwarded to playback. `live_voice_shift` follows the profile it was measured against when that response's median F0 differs from the session's running median by more than the configured ratio (default 1.35x, roughly the female-to-male speaking-pitch gap). `didi-timeline call <session>` prints the `f0Hz` column per response, so a female-to-male switch shows as a ratio beyond the band on one `live_voice_shift` line, not as an inference: a `voicedRatio` near zero means the response was mostly silence or noise and its pitch line should not be read as a voice at all.
 
+## When she sounds wrong: read a distortion mark
+
+The owner presses the status menu item `Mark distortion` at the moment he hears the distortion. One
+press appends one `audio_distortion_mark` line to `native-live.log`; nothing is recorded, in memory or
+on disk, and no device property is written. A mark works with no call running, which is the case he
+reports, and it carries the call id only when a call was running.
+
+```sh
+node scripts/didi-timeline marks
+node scripts/didi-timeline marks --json
+node scripts/didi-timeline call latest        # marks made inside a call appear in the story
+/usr/bin/log show --start "<t-5m>" --end "<t+1m>" --style compact \
+  --predicate 'process == "coreaudiod" OR eventMessage CONTAINS "setPlayState" OR process == "audiomxd"'
+```
+
+`marks` prints every press in the day's logs, oldest first, including the ones no call can be
+attributed to. The last line counts them and says how many happened inside a call. Run the `log show`
+command around the mark's own timestamp when the Mac's own audio daemon may be involved.
+
+| Field | Means |
+| --- | --- |
+| `output` | the output device UID and its transport: `built-in`, `Bluetooth`, `USB` |
+| `volume` | every volume control the device publishes, as `element=value`; a device with a master and two channels lists three, and an unreadable control is left out rather than shown as zero |
+| `voiceProcessing` | `on`, or `off/<reason>`. With no call it reads `off/no_call`; inside a call the reason is `output_not_builtin`, `device_busy` or `vpio_failed` |
+| `engine` | the build generation this mark belongs to. Two marks with the same number heard the same engine |
+| `lastChange` | what last moved the graph: `route_change`, `configuration_change` or `none` |
+| `ducking` | what the build asked for and what CoreAudio read back, so a lost minimum ducking is visible |
+| `overSamples` | samples at or over -3 dBFS in the window that was open, measured on the decoded provider PCM before any OS processing |
+| `flatTopRuns` | runs of identical loud samples, diagnostic only: a flat top is what clipping looks like in PCM |
+| `overloads` | processor overload notifications on this output since the call's build |
+| `load` | the load average as the press found it |
+
+`playback_level` in `audio.log` carries `outputVolume`, `voiceProcessing`, `overSamples` and
+`flatTopRuns` too, so a level line reads with the slider and the voice stage it was played at.
+`output_volume` records the same device, transport and volume set before call preparation, after route
+selection, after teardown and on every default-device change; `output_volume_changed` records a
+volume property notification on the current output. A notification never says who changed the volume,
+so no record claims a writer.
+
 ## Read one line of host.log
 
 Every host.log line carries the same envelope, so a call can be assembled without guessing:
@@ -101,7 +144,7 @@ The silence lines carry no static `cause` at all: `live_heard_silence` and `live
 | `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
 | `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
 
-A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
+A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`, and a `shell_lost` close) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. On a `live_terminal` and a `session_end` the `cause` follows the code in the record: `shell_lost` is the supervised shell disappearing, so `cause=host`; `session_lost` is the app's socket closing with no terminal frame while the host kept running, so `cause=provider`; every end the app asked for stays `cause=owner`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
 
 Host lines carry no content: no utterance, query, address or body. The assembled utterance of a closed turn lives in `trace_utterance` where `final=1`, which is what answers "what was said"; `live_journal` keeps the fragments and an empty closing row, so every concatenating reader still yields each turn once.
 

@@ -1,4 +1,5 @@
-import { parseAlarmTime } from './alarm.js';
+import { parseAlarmTime, validateTimeSpec } from './alarm.js';
+import type { TimeSpec } from './time-check.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
 import { googleConsentLine } from './google.js';
@@ -78,7 +79,7 @@ function writeIntent(words: string): ComposeGrantKind[] {
 
 export interface DraftEmailArguments { to: string; subject: string; body: string }
 export interface DraftChatArguments { person?: string; channel?: string; root_id?: string; message: string }
-export interface CreateEventArgs { summary: string; duration_minutes?: number }
+export interface CreateEventArgs { summary: string; time?: TimeSpec; duration_minutes?: number }
 export interface DeleteEventArgs { event_id?: string }
 
 const isText = (value: unknown, max = 512): value is string => typeof value === 'string' && value.length >= 1 && value.length <= max;
@@ -97,7 +98,8 @@ export function validateDraftChat(args: unknown): args is DraftChatArguments {
   return args['person'] !== undefined || args['root_id'] === undefined;
 }
 export function validateCreateEvent(args: unknown): args is CreateEventArgs {
-  if (!keys(args, ['summary', 'duration_minutes']) || !isText(args['summary'], 200)) return false;
+  if (!keys(args, ['summary', 'time', 'duration_minutes']) || !isText(args['summary'], 200)) return false;
+  if (args['time'] !== undefined && !validateTimeSpec(args['time'])) return false;
   const minutes = args['duration_minutes'];
   return minutes === undefined || (Number.isSafeInteger(minutes) && Number(minutes) >= 5 && Number(minutes) <= 720);
 }
@@ -172,7 +174,9 @@ function durationMinutes(words: string): number {
 function hourMinute(text: string): { hour: number; minute: number } | undefined {
   const digits = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
   const words = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b(?:\s+(thirty|fifteen))?\s*(am|pm)?\b/i.exec(text);
-  const hour = digits ? Number(digits[1]) : words ? NUMBERS[words[1]!.toLowerCase()] ?? 0 : 0;
+  // No clock at all stays no clock: a question about the calendar never reads as midnight.
+  const hour = digits ? Number(digits[1]) : words ? NUMBERS[words[1]!.toLowerCase()] ?? 0 : undefined;
+  if (hour === undefined) return undefined;
   const minute = digits ? Number(digits[2] ?? 0) : words && words[2] ? (words[2].toLowerCase() === 'thirty' ? 30 : 15) : 0;
   if (!Number.isInteger(hour) || hour > 23 || minute > 59) return undefined;
   const meridiem = (digits?.[3] ?? words?.[3])?.toLowerCase();
@@ -180,16 +184,21 @@ function hourMinute(text: string): { hour: number; minute: number } | undefined 
   return { hour: settled, minute };
 }
 
-const NOT_A_NAME = new Set(['on', 'at', 'for', 'in', 'and', 'from', 'tomorrow', 'today', 'tonight', 'next', 'this', 'the', 'a', 'an', 'my', 'our', 'about', ...WEEKDAY_WORDS.flatMap(day => day.split('|'))]);
 
-/** People he named alongside the event; they are described, never invited. */
-export function namedOthers(words: string, ownerName?: string): string[] {
-  const match = /\b(?:with|and|together with)\s+([\p{L}][\p{L}'.-]*(?:\s+[\p{L}][\p{L}'.-]*)?)/u.exec(words);
-  if (!match) return [];
-  const tokens = match[1]!.trim().split(/\s+/).filter(token => !NOT_A_NAME.has(token.toLowerCase()));
-  const name = tokens.join(' ');
+/**
+ * C-TIME shape 7: only a real invitee argument names a person. Nothing is guessed from the sentence,
+ * so "and it is" never becomes someone, and an owner-only block describes nobody it invented.
+ *
+ * Position on review finding 6: `create_event` has no invitee argument, by the owner-only event
+ * design, so the production call passes `undefined` and this returns empty every time. The seam is
+ * kept, and named here, because it is the one place a roster match or an invitee argument would land
+ * if that design ever changes; deleting it would hide the fact that no such argument exists.
+ */
+export function namedOthers(invitee: string | undefined, ownerName?: string): string[] {
+  const name = invitee?.trim();
+  if (!name || name.length > 200) return [];
   if (ownerName !== undefined && name.toLowerCase() === ownerName.toLowerCase()) return [];
-  return name.length > 0 ? [name] : [];
+  return [name];
 }
 
 /**
@@ -213,10 +222,10 @@ export function englishDayWords(words: string): string {
  * The event window the host trusts: a named weekday settles the date locally, anything else rides
  * the alarm parser's normalisation, and the model's own epoch is never used.
  */
-export function eventWindow(words: string, now: number, timeZone: string, ownerName?: string): EventWindow {
+export function eventWindow(words: string, now: number, timeZone: string, ownerName?: string, modelTime?: TimeSpec): EventWindow {
   const match = DURATION.exec(words);
   const cleaned = (match ? `${words.slice(0, match.index)} ${words.slice(match.index + match[0].length)}` : words).trim();
-  const names = namedOthers(words, ownerName);
+  const names = namedOthers(undefined, ownerName);
   const duration = durationMinutes(words) * 60000;
   const weekday = WEEKDAY_WORDS.findIndex(day => new RegExp(`\\b(?:${day})\\b`, 'i').test(cleaned));
   if (weekday >= 0) {
@@ -229,9 +238,11 @@ export function eventWindow(words: string, now: number, timeZone: string, ownerN
     if (startUtc <= now) { ahead += 7; startUtc = zonedInstant(year, month, day + ahead, time.hour, time.minute, timeZone); }
     return { status: 'ready', startUtc, endUtc: startUtc + duration, timeZone, names };
   }
-  const parsed = parseAlarmTime(englishDayWords(cleaned), now, timeZone);
+  const parsed = parseAlarmTime(englishDayWords(cleaned), now, timeZone, modelTime);
   if (parsed.status === 'ready') return { status: 'ready', startUtc: parsed.fireAtUtc, endUtc: parsed.fireAtUtc + duration, timeZone: parsed.tz, names };
-  if (parsed.status === 'clarify') return { status: 'clarify', reason: parsed.reason === 'unsupported_time_expression' ? 'unsupported_time_expression' : 'missing_time' };
+  // An open hour ("at 11") or a stated today already past reads on the event's own clock below; only
+  // words with no time at all ask the owner back.
+  if (parsed.status === 'clarify' && parsed.reason === 'missing_time') return { status: 'clarify', reason: 'missing_time' };
   const time = hourMinute(cleaned);
   if (!time) return { status: 'clarify', reason: 'missing_time' };
   const [year, month, day] = localParts(now, timeZone) as [number, number, number, number, number, number];
@@ -377,9 +388,9 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
     if (input.event_id === undefined) return { state: 'failed', reason: 'event_not_named' };
     return await port.deleteEvent({ eventId: input.event_id, clientRequestId: context.clientRequestId });
   }
-  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName);
-  if (window.status !== 'ready') return { state: 'failed', reason: window.reason };
   const input = args as unknown as CreateEventArgs;
+  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName, input.time);
+  if (window.status !== 'ready') return { state: 'failed', reason: window.reason };
   const description = window.names.length > 0 ? `${input.summary}. Owner-only block; ${window.names.join(', ')} is named here and was not invited.` : `${input.summary}. Owner-only block; no invitations were sent.`;
   return await port.createEvent({ summary: input.summary, startUtc: window.startUtc, endUtc: window.endUtc, timeZone: window.timeZone, description, clientRequestId: context.clientRequestId });
 }

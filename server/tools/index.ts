@@ -28,8 +28,9 @@ import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './reme
 import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
+import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, alarmReadBack, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
 import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
@@ -44,6 +45,19 @@ function dispatchedFailureCode(reason: string): ToolFailureCode {
   return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
 }
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
+const TIME_PARAMETER = {
+  type: 'object',
+  description: 'The time he stated in this ask, never an earlier one. mode wall: his local clock and the day he named, in his zone. mode relative: a span he said.',
+  properties: {
+    mode: { type: 'string', enum: ['wall', 'relative'] },
+    date: { type: 'object', description: 'wall only: today, tomorrow, next_weekday with weekday 0 Sunday to 6 Saturday, or iso YYYY-MM-DD.' },
+    local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never a UTC conversion.' },
+    timezone: { type: 'string', description: 'Only when he named a zone; an IANA name such as Europe/Berlin.' },
+    amount: { type: 'number', description: 'relative only: a positive count. unit: minutes or hours.' },
+    unit: { type: 'string', enum: ['minutes', 'hours'] },
+  },
+  additionalProperties: false,
+} as const;
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
@@ -385,7 +399,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const call = callDTO(input);
       return store.transaction(tx => {
         if (callRow(tx, call)) throw Error('refusal_collision'); validateCallRun(tx, call);
-        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason }, dataClasses: [] }, true);
+        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason, ...refusalCauseOf(reason) }, dataClasses: [] }, true);
       });
     },
     fail(input, status, reason) {
@@ -394,7 +408,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code, ...refusalCauseOf(code) }, dataClasses: [] });
       });
     },
   };
@@ -715,8 +729,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
-        description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
-        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional UTC milliseconds. Omit when the owner said a time; the host parses their words and ignores any differing model epoch.' }, kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Only when he said a repeat word of his own: every day, weekdays, every Monday. Omit it for a one-time alarm; the host refuses a repeat he did not say.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Only with a weekly repeat he said: 0 Sunday to 6 Saturday, verified against his own words. Omit otherwise.' } }, additionalProperties: false },
+        description: `${name}: Call it when he asks. Give the time he said in this ask as the time object; the host converts it in its own zone. Say the read-back as returned. An alarm rings only on an awake Mac.`,
+        parameters: {
+          type: 'object',
+          properties: {
+            ...(name === 'set_alarm' || name === 'snooze_alarm' ? { time: TIME_PARAMETER, label: { type: 'string', description: 'Two to six words for the reminder, taken from his ask. Never the whole sentence. Omit when he named no subject.' } } : {}),
+            ...(name === 'snooze_alarm' || name === 'cancel_alarm' ? { id: { type: 'string', description: 'The alarm id from the last result. Omit when you do not have one.' } } : {}),
+            ...(name === 'set_alarm' ? { kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Only when he said a repeat word of his own: every day, weekdays, every Monday. Omit it for a one-time alarm; the host drops a repeat he did not say.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Only with a weekly repeat he said: 0 Sunday to 6 Saturday, verified against his own words. Omit otherwise.' } } : {}),
+          },
+          additionalProperties: false,
+        },
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
@@ -761,50 +783,89 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             }
             const now = options.alarms?.now() ?? Date.now();
             if (name === 'cancel_alarm') {
-              if (!args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
-              const target = String(input.id);
+              const active = listPendingAlarms(tx).filter(entry => entry.state === 'pending' || entry.state === 'ringing');
+              const asked = typeof input.id === 'string' && input.id.length > 0 ? String(input.id) : undefined;
+              const known = asked ? tx.get('SELECT id,state FROM alarms WHERE id=?', [asked]) : undefined;
+              // "Not active" is said only about an id that is truly finished: a wrong or missing id is
+              // not a refusal, it is the owner asking to stop the alarm they have.
+              if (asked && known && !active.some(entry => entry.id === asked) && !alarmSeriesRow(tx, asked)) {
+                return finish({ status: 'refused', reason: 'alarm_not_active' });
+              }
               // The owner's own words choose one occurrence ("skip this Saturday") or the whole series, so a
               // series id the model picked never widens an occurrence ask into a series cancel.
-              const series = parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesRow(tx, target) ?? alarmSeriesOfOccurrence(tx, target) : undefined;
+              const series = asked && parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesRow(tx, asked) ?? alarmSeriesOfOccurrence(tx, asked) : undefined;
               if (series) {
                 const cancelled = cancelAlarmSeries(tx, series.id);
                 consumed = ask.journalId;
                 return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
                   say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
               }
+              const armed = (): JsonObject => {
+                const alarms = listPendingAlarms(tx).slice(0, 5).map(entry => {
+                  const read = alarmReadBack(entry.fireAtUtc, entry.tz);
+                  return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
+                });
+                return { alarms, say: alarms.map(alarm => `${alarm.weekday} at ${alarm.local_time}${alarm.label ? `, ${alarm.label}` : ''}`).join('; ') };
+              };
+              // Exactly one alarm is armed: that is the one "cancel the alarm" means.
+              let occurrence = asked ? (alarmSeriesRow(tx, asked) ? pendingOccurrenceOf(tx, asked) : asked) : undefined;
+              if (!occurrence) {
+                if (active.length === 1) occurrence = active[0]!.id;
+                else if (!active.length) return finish({ status: 'clarify', reason: 'no_alarm', say: 'There is no alarm to cancel.' });
+                else {
+                  const list = armed();
+                  return finish({ status: 'clarify', reason: 'several_alarms', ...list, say: `You have ${active.length} alarms: ${list.say}. Which one?` });
+                }
+              }
               // One occurrence: a series id stands for that series' single pending occurrence.
-              const occurrence = alarmSeriesRow(tx, target) ? pendingOccurrenceOf(tx, target) : target;
-              if (!occurrence || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              const cancelled = tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now]);
+              if (!cancelled) return finish({ status: 'refused', reason: 'alarm_not_active' });
               materialiseSeriesOccurrence(tx, occurrence, now);
               consumed = ask.journalId;
-              return finish({ status: 'cancelled', id: args.id, scope: 'occurrence', say: 'Alarm cancelled.' });
+              const row = tx.get('SELECT fire_at_utc,tz,label FROM alarms WHERE id=?', [occurrence]);
+              const read = row ? alarmReadBack(Number(row.fire_at_utc), String(row.tz)) : undefined;
+              return finish({ status: 'cancelled', id: occurrence, scope: 'occurrence',
+                ...(read ? { local_time: read.localTime, weekday: read.weekday, date: read.date } : {}),
+                say: read ? `Cancelled the ${read.spoken} alarm.` : 'Alarm cancelled.' });
             }
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '', ask.observedAt ?? now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
-            if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
+            // C-TIME: the host resolves the wall clock. A snooze keeps the zone of the alarm it moves;
+            // every other ask reads the host zone unless the model named one, and the model never does
+            // the UTC arithmetic. The owner's words of this ask may override or complete the model fields.
+            const snoozeRow = name === 'snooze_alarm' && input.id
+              ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id, now])
+              : undefined;
+            if (name === 'snooze_alarm' && !snoozeRow) return finish({ status: 'refused', reason: 'alarm_not_active' });
+            const hostZone = String(options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '',
+              ask.observedAt ?? now, snoozeRow ? String(snoozeRow.tz) : hostZone, input.time);
+            // Five is enough to say what still stands, and it keeps the receipt small.
+            const armed = name === 'set_alarm' ? listPendingAlarms(tx).slice(0, 5).map(entry => {
+              const read = alarmReadBack(entry.fireAtUtc, entry.tz);
+              return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
+            }) : [];
+            // A clarify still names what is armed, so she can say the old alarm stands.
+            if (parsed.status !== 'ready') {
+              ownerRequests.clarify(runId, name, parsed.reason);
+              return finish({ ...parsed, ...(armed.length ? { armed } : {}) });
+            }
+            if (parsed.corrected) hostLogEvent({ event: 'alarm_time_corrected', corrected: parsed.corrected, source: parsed.source });
+            const label = (input.label ?? '').slice(0, 80);
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');
-            // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused: the
-            // alarm he did ask for is still set.
+            // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused:
+            // the alarm he did ask for is still set.
             const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
-            // The canary floor belongs to a live session, and the tools schema is also mounted alone (the eval
-            // alarm runner), where no live table exists: ask only when the live schema is present.
+            // The canary floor belongs to a live session, and the tools schema is also mounted alone (the
+            // eval alarm runner), where no live table exists: ask only when the live schema is present.
             const canarySession = tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'")
               ? tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])
               : undefined;
             if (canarySession) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
-            if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
-              hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
-            }
-            let alarmTz = parsed.tz;
-            if (name === 'snooze_alarm') {
-              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;
-              if (!old || !args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
-              alarmTz = String(old.tz);
-              tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
-            }
+            const alarmTz = parsed.tz;
+            if (name === 'snooze_alarm') tx.run("UPDATE alarms SET state='done' WHERE id=?", [String(input.id)]);
             const seriesId = name === 'set_alarm' && parsed.series ? randomUUID() : undefined;
-            if (seriesId && parsed.series) insertAlarmSeries(tx, { id: seriesId, rule: parsed.series, label: parsed.label, createdJournalId: ask.journalId });
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, parsed.label, ask.journalId]);
+            if (seriesId && parsed.series) insertAlarmSeries(tx, { id: seriesId, rule: parsed.series, label, createdJournalId: ask.journalId });
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, label, ask.journalId]);
             // A series keeps exactly one materialised occurrence, linked to its rule.
             if (seriesId) linkAlarmOccurrence(tx, context.executionId, seriesId);
             if (name === 'snooze_alarm') {
@@ -814,10 +875,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             }
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
+            // C-TIME read-back: weekday, date, local time, zone and the id, so she says what was committed.
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
+              local_time: parsed.localTime, date: parsed.date, weekday: parsed.weekday, label,
+              ...(parsed.corrected ? { corrected: parsed.corrected } : {}),
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
-              say: parsed.confirmation + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
+              say: parsed.confirmation + (parsed.corrected === 'model_time_differs' ? ' I used the time you said.' : '') + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
+          // The scheduler recheck runs after the alarm commits and before the authority receipt is
+          // spent, so a failure here reaches the caller and the retry is still authorized.
+          options.alarms?.recheck();
           if (consumed) {
             ownerRequests.commit(runId, name, requestTarget, actionReceipt);
             if (name !== 'cancel_alarm') {
@@ -828,7 +895,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 for (const reason of options.alarms?.health().reasons ?? ['shell_unreachable']) hostLogEvent({ event: 'alarm_degraded', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason });
               }
             }
-            options.alarms?.recheck();
           }
           return { status: 'completed' as const, result };
         },

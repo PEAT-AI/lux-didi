@@ -119,14 +119,69 @@ extension LaunchKind {
     }
 }
 
+/// F6: the call start marker. Written synchronously before a call starts with the pid, the wall time
+/// and the output transport, and cleared once the call has proved it works in both directions or
+/// ends cleanly. A marker left behind means that call never got there, so the next launch reads it
+/// and does not auto connect. Content free: no audio, no text, no account.
+enum CallStartMarker {
+    /// A start older than this is not a loop any more.
+    static let window: TimeInterval = 120
+    static let fileName = "call-start.json"
+
+    struct Record: Equatable {
+        let pid: Int32
+        let startedAt: Date
+        let transport: String
+    }
+
+    static func url(in logsDirectory: URL) -> URL { logsDirectory.appendingPathComponent(fileName) }
+
+    /// Writes the record, replacing any older one. A marker that cannot be written is reported and
+    /// never thrown: it must not stop a call the owner asked for.
+    @discardableResult
+    static func write(_ record: Record, to url: URL) -> Bool {
+        let fields: [String: Any] = ["pid": Int(record.pid),
+                                     "startedAt": record.startedAt.timeIntervalSince1970,
+                                     "transport": record.transport]
+        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) else {
+            return false
+        }
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+
+    static func read(_ url: URL) -> Record? {
+        guard let data = try? Data(contentsOf: url),
+              let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = fields["pid"] as? Int,
+              let startedAt = fields["startedAt"] as? TimeInterval else { return nil }
+        return Record(pid: Int32(pid), startedAt: Date(timeIntervalSince1970: startedAt),
+                      transport: fields["transport"] as? String ?? "unknown")
+    }
+
+    static func clear(_ url: URL) { try? FileManager.default.removeItem(at: url) }
+
+    /// The marker another process left inside the window, or nil when there is nothing to refuse.
+    static func previousStartDied(_ url: URL, now: Date,
+                                  pid: Int32 = Int32(ProcessInfo.processInfo.processIdentifier)) -> Record? {
+        guard let record = read(url), record.pid != pid else { return nil }
+        let age = now.timeIntervalSince(record.startedAt)
+        guard age >= 0, age < window else { return nil }
+        return record
+    }
+}
+
 /// ORBFIRST: whether a launch opens a session by itself. A launch connects once, only when the
 /// host is up and the orb page is hostable, and a refusal is final for that launch so a denied
 /// microphone or a refused audio owner never loops.
 enum OrbFirstAutoConnect {
     enum Action: Equatable { case connect, wait, never }
 
-    static func decide(kind: LaunchKind, serviceReady: Bool, pageHostable: Bool, attempted: Bool) -> Action {
-        guard kind.autoConnects, !attempted else { return .never }
+    /// F6: `previousStartDied` is the crash-loop guard. A launch that finds a call start younger
+    /// than two minutes from another pid never auto connects, because three crashes in 35 s each
+    /// launched straight back into the same native fault. The owner's own press still starts a call.
+    static func decide(kind: LaunchKind, serviceReady: Bool, pageHostable: Bool, attempted: Bool,
+                       previousStartDied: Bool = false) -> Action {
+        guard kind.autoConnects, !attempted, !previousStartDied else { return .never }
         return serviceReady && pageHostable ? .connect : .wait
     }
 
@@ -134,6 +189,18 @@ enum OrbFirstAutoConnect {
     /// with a digest instead of racing it. Four seconds, then the call starts and the digest reads absent.
     static let calendarBoundMs = 4000
     static let calendarStepMs = 200
+
+    /// #108: the host's own tools-status shape decides. Each row is
+    /// `{ id, connector, state, tools }` (server/host/mcp.ts status): the calendar endpoint is id
+    /// `calendar` on connector `google` (server/host/runtime.ts selectCalendarEndpoint), and its state
+    /// is `connected`. There is no `ready` state and no connector called `calendar`, which is why the
+    /// launch used to spend the whole four second bound.
+    static func calendarPublished(in status: [String: Any]) -> Bool {
+        guard let endpoints = status["endpoints"] as? [[String: Any]] else { return false }
+        return endpoints.contains {
+            $0["id"] as? String == "calendar" && $0["state"] as? String == "connected"
+        }
+    }
 
     /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
     @MainActor static func waitForCalendar(published: () async -> Bool,

@@ -55,13 +55,16 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
   assert.deepEqual(replay, { status: 'completed', result: { id: recorded.result_id, sha256: recorded.result_sha256 } }, 'recorded execution returns the same durable result');
   assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, 'replay never creates another alarm');
   // C-RECUR: a replayed recurring set_alarm creates no second series, link or occurrence.
-  const recurring: ToolCallIntent = { ...intent, executionId: randomUUID(), callId: randomUUID() };
+  const recurringArgs = { time: { mode: 'wall', date: { kind: 'next_weekday', weekday: 6 }, local_time: '10:00' } };
+  const recurring: ToolCallIntent = { ...intent, executionId: randomUUID(), callId: randomUUID(),
+    argumentsHash: createHash('sha256').update(JSON.stringify(recurringArgs)).digest('hex') };
   owner.observeAlarmOwner(session.liveSessionId, 'synthetic-recurring-journal', 'every saturday at ten remind me to do one hour of cardio', Date.now());
   assert.equal(owner.journal.intent(recurring), 'fresh');
-  await assert.rejects(tool.execute(args, { ...recurring, signal }), /synthetic_crash_after_commit/);
+  // C-TIME T-R1: the model states the wall clock the owner's words name, so the series is created.
+  await assert.rejects(tool.execute(recurringArgs, { ...recurring, signal }), /synthetic_crash_after_commit/);
   const counts = () => store.transaction(tx => [Number(tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), Number(tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), Number(tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences')?.n)]);
   assert.deepEqual(counts(), [2, 1, 1], 'one series with exactly one linked pending occurrence');
-  await tool.execute(args, { ...recurring, signal });
+  await tool.execute(recurringArgs, { ...recurring, signal });
   assert.deepEqual(counts(), [2, 1, 1], 'a replayed recurring set_alarm creates nothing');
   await service.shutdown(); store.close();
   const recovered = new Store(directory, migrations);

@@ -32,7 +32,7 @@ cp server/tools/vault-write.ts "$out/source/tools/"
 # W7: the Trello tool descriptions are voice content too.
 cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"
-cp server/tools/declarations.ts server/tools/normalize.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts server/tools/google.ts server/tools/lux-knowledge.ts server/tools/mongoose.ts server/tools/mattermost.ts "$out/source/tools/"
+cp server/tools/refusal-cause.ts server/tools/declarations.ts server/tools/normalize.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts server/tools/google.ts server/tools/lux-knowledge.ts server/tools/mongoose.ts server/tools/mattermost.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 # W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
 # staging tree carries that module and its import closure too.
@@ -48,7 +48,7 @@ cp server/connectors/*.ts "$out/source/connectors/"
 # The live-voice adapters import the alarm mode marker, so stage its module too.
 cp server/live/alarm-mode.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"
-cp server/config/files.ts "$out/source/config/"
+cp server/config/files.ts server/config/owner-profile.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"
 cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts server/test/research-schema-parity.test.ts server/test/research-web.test.ts server/test/research-routed.test.ts server/test/research-calendar.test.ts server/test/research-coverage.test.ts server/test/research-drive.test.ts server/test/chat-prompt.test.ts "$out/source/test/"
 # W11-R1: server/test/research-mail-query.test.ts lands from fix/w11-mail-queries-1021; stage it

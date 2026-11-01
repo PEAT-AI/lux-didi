@@ -10,6 +10,7 @@ import { openAudit } from '../tools/open.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
+import { turnScriptBucket, turnScriptCounts } from '../live/index.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
@@ -266,13 +267,29 @@ test('live_turn_open carries the silence duration only (#303)', () => {
 
 test('live_turn_script is a closed enum of script buckets with character counts only', () => {
   const UUID = '11111111-1111-4111-8111-111111111111';
-  const turn = { event: 'live_turn_script', liveSessionId: UUID, script: 'mixed', latinChars: 40, devanagariChars: 3, afterTool: true, interrupted: false };
+  const turn = { event: 'live_turn_script', liveSessionId: UUID, script: 'mixed', latinChars: 40, devanagariChars: 3, teluguChars: 2, kannadaChars: 1, afterTool: true, interrupted: false };
   assert.deepEqual(safeEvent(turn), turn);
-  assert.equal(safeEvent({ ...turn, script: 'cyrillic' }), undefined, 'only the three script buckets exist');
+  assert.equal(safeEvent({ ...turn, script: 'cyrillic' }), undefined, 'only the known script buckets exist');
   assert.equal(safeEvent({ ...turn, text: 'SYNTHETIC-SPOKEN-TEXT' }), undefined, 'any key that could carry text fails closed');
   assert.equal(safeEvent({ ...turn, latinChars: 1.5 }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...turn, teluguChars: -1 }), undefined, 'a negative count is refused');
   assert.equal(safeEvent({ ...turn, afterTool: 'yes' }), undefined, 'the flags are booleans');
   assert.equal(safeEvent({ ...turn, liveSessionId: 'not-a-session' }), undefined, 'a foreign id is refused');
+});
+
+// #540: the output monitor counted Devanagari only, so a Telugu or Kannada leak went unnoticed.
+test('#540: the output monitor counts Telugu and Kannada as their own scripts', () => {
+  assert.deepEqual(turnScriptCounts('\u0c24\u0c46\u0c32\u0c41\u0c17\u0c41'), { latinChars: 0, devanagariChars: 0, teluguChars: 6, kannadaChars: 0 });
+  assert.deepEqual(turnScriptCounts('\u0c95\u0ca8\u0ccd\u0ca8\u0ca1'), { latinChars: 0, devanagariChars: 0, teluguChars: 0, kannadaChars: 5 });
+  assert.equal(turnScriptBucket(turnScriptCounts('\u0c24\u0c46\u0c32\u0c41\u0c17\u0c41')), 'telugu');
+  assert.equal(turnScriptBucket(turnScriptCounts('\u0c95\u0ca8\u0ccd\u0ca8\u0ca1')), 'kannada');
+  assert.equal(turnScriptBucket(turnScriptCounts('\u0926\u0947\u0935\u0928\u093e\u0917\u0930\u0940')), 'devanagari');
+  assert.equal(turnScriptBucket(turnScriptCounts('plain words')), 'latin');
+  assert.equal(turnScriptBucket(turnScriptCounts('\u0c24\u0c46\u0c32\u0c41\u0c17\u0c41 plain')), 'mixed', 'two scripts in one turn stay mixed');
+  // The receipt is the monitor's only output: each count travels, and a turn that carries no Telugu says zero.
+  const UUID = '11111111-1111-4111-8111-111111111111';
+  const receipt = { event: 'live_turn_script', liveSessionId: UUID, script: 'telugu', latinChars: 0, devanagariChars: 0, teluguChars: 6, kannadaChars: 0, afterTool: false, interrupted: false };
+  assert.deepEqual(safeEvent(receipt), receipt);
 });
 
 test('conversation_summary_injection keeps counts and a size, never ids or text', () => {
@@ -806,4 +823,18 @@ test('LAT-1022: a research_source receipt carries its start instant', () => {
   assert.deepEqual(safeEvent({ ...source, startedAt: 1_700_000_000_000 }), { ...source, startedAt: 1_700_000_000_000 }, 'the start instant is kept');
   assert.equal(safeEvent({ ...source, startedAt: 12.5 }), undefined, 'a fractional instant is refused');
   assert.equal(safeEvent({ ...source, startedAt: -1 }), undefined, 'a negative instant is refused');
+});
+
+// C-ALARMSPEECH: a spoken alarm that could not open is never silent, and never leaks the label.
+test('host log: alarm_speech_failed admits one closed reason and the alarm id only', () => {
+  assert.deepEqual(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch' }),
+    { event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch' });
+  for (const reason of ['create_refused', 'create_unknown', 'audio_failed', 'socket_lost', 'already_live', 'start_refused']) {
+    assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason })?.reason, reason);
+  }
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'refused' }), undefined,
+    'an open reason is not a closed one');
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch', label: 'go to sport' }),
+    undefined, 'the private label never enters this line');
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', reason: 'socket_lost' }), undefined, 'the line names the alarm');
 });

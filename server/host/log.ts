@@ -60,7 +60,13 @@ export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_afte
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */
 export const NATIVE_END_REASONS = ['invalid_output', 'child_exit', 'logout', 'shutdown', 'user_stop', 'app_quit',
-  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change'] as const;
+  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change',
+  // C-LABELS 1: the supervised shell ended the host instead of the app asking. A crash closes stdin with
+  // no stop frame, so the app never sent a word for it and the host names the loss itself.
+  'shell_lost',
+  // C-LABELS 2: the app held a call whose socket closed with no terminal frame. Nothing was pressed, so
+  // neither the owner's Stop nor the app's Quit describes it.
+  'session_lost'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
 /** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */
@@ -199,12 +205,18 @@ const SPEECH_END_REASONS = ['quiet', 'hesitation'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
+const isSafeWord = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
 const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification', 'alarm_relaunch'];
 /** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
 const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError', 'Unknown'];
+
+/** C-ALARMSPEECH: the closed reasons an alarm call can fail to open. The shell and the host log name the
+ * same small set, so a silent release is impossible and no free text reaches the log. */
+export const ALARM_SPEECH_FAILED_REASONS = ['snapshot_mismatch', 'create_refused', 'create_unknown', 'audio_failed', 'socket_lost', 'already_live', 'start_refused'] as const;
+export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number];
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -218,6 +230,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'skewMs']) || !Number.isSafeInteger(value.skewMs)) return;
     return { event: 'alarm_model_time_ignored', skewMs: value.skewMs };
   }
+  if (value.event === 'alarm_time_corrected') {
+    // C-TIME: which source settled the instant, as closed words only, never a time or a label.
+    if (!closedKeys(value, ['event', 'corrected', 'source']) || !isSafeWord(value.corrected) || !isSafeWord(value.source)) return;
+    return { event: 'alarm_time_corrected', corrected: value.corrected, source: value.source };
+  }
   if (value.event === 'alarm_scheduler_started') {
     // #751: a count only. A label or a time here would be the owner's schedule in the diagnostic log.
     if (!closedKeys(value, ['event', 'pending']) || !isSafeCount(value.pending)) return;
@@ -229,7 +246,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || typeof value.scheduledMs !== 'number' || !Number.isFinite(value.scheduledMs)
       || typeof value.actualMs !== 'number' || !Number.isFinite(value.actualMs)
       || !ALARM_LOG_REASONS.some(reason => reason === value.reason)) return;
-    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason };
+    // #108: a refused idle sleep assertion carries the IOKit status, a count and never a label.
+    const assertionCode = value.event === 'alarm_degraded' && value.reason === 'assertion_failed'
+      && typeof value.assertionCode === 'number' && Number.isInteger(value.assertionCode) ? value.assertionCode : undefined;
+    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason,
+      ...(assertionCode === undefined ? {} : { assertionCode }) };
 
   }
   if (value.event === 'alarm_announced') {
@@ -238,6 +259,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
     if (value.mode !== 'new_session' && value.mode !== 'in_call') return;
     return { event: 'alarm_announced', alarmId: value.alarmId, mode: value.mode };
+  }
+  if (value.event === 'alarm_speech_failed') {
+    // C-ALARMSPEECH: she could not open, so the line names the alarm and one closed reason, never the label.
+    if (!closedKeys(value, ['alarmId', 'event', 'reason'])) return;
+    if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
+    if (!ALARM_SPEECH_FAILED_REASONS.some(reason => reason === value.reason)) return;
+    return { event: 'alarm_speech_failed', alarmId: value.alarmId, reason: value.reason };
   }
   if (value.event === 'alarm_relaunch_scheduled') {
     // #107: the one relaunch agent is armed for the next due time, in seconds from now.
@@ -1225,6 +1253,39 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
     return { event: 'turn_failed', reason: value.reason };
   }
+  if (value.event === 'live_late_note_ledger') {
+    // C-REBUILD B: a held late finding whose response was torn down stays in the research ledger. Named, counted,
+    // and never a send.
+    if (!closedKeys(value, ['event', 'reason', 'generation'])) return;
+    if (!isSafeMember(value.reason, ['generation_torn_down'])) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_late_note_ledger', reason: value.reason, generation: value.generation };
+  }
+  if (value.event === 'live_watchdog_hold') {
+    // C-REBUILD: a watchdog deadline held back, with the reason it was held. Counts and enums only.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'delayMs'])) return;
+    if (!isSafeMember(value.reason, ['owner_speaking'])) return;
+    for (const field of ['generation', 'delayMs']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_watchdog_hold', reason: value.reason, generation: value.generation, delayMs: value.delayMs };
+  }
+  if (value.event === 'live_rebuild_held') {
+    // C-REBUILD A: a rebuild that stood down because a response was in flight, with its named reason, that
+    // response's age, the wait it took instead and how many times this call has held. A count, never an absence.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'ageMs', 'holdMs', 'heldCount'])) return;
+    if (!isSafeMember(value.reason, ['response_in_flight'])) return;
+    for (const field of ['generation', 'ageMs', 'holdMs', 'heldCount']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_rebuild_held', reason: value.reason, generation: value.generation, ageMs: value.ageMs,
+      holdMs: value.holdMs, heldCount: value.heldCount };
+  }
+  if (value.event === 'live_rebuild_removed') {
+    // C-REBUILD C: the owner turn whose rebuild was removed. The reason is the council's own: no tool work and no
+    // response created, so nothing was owed to the provider and a dead socket waits for him to speak again.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'turnAgeMs', 'removedCount'])) return;
+    if (!isSafeMember(value.reason, ['owner_turn_no_tool_no_response'])) return;
+    for (const field of ['generation', 'turnAgeMs', 'removedCount']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_rebuild_removed', reason: value.reason, generation: value.generation,
+      turnAgeMs: value.turnAgeMs, removedCount: value.removedCount };
+  }
   if (value.event === 'live_rebuild') {
     // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
@@ -1254,12 +1315,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.
-    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'script', 'latinChars', 'devanagariChars', 'afterTool', 'interrupted'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'script', 'latinChars', 'devanagariChars', 'teluguChars', 'kannadaChars', 'afterTool', 'interrupted'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.liveSessionId)) return;
-    if (!isSafeMember(value.script, ['latin', 'devanagari', 'mixed'])) return;
-    if (!isSafeCount(value.latinChars) || !isSafeCount(value.devanagariChars)) return;
+    if (!isSafeMember(value.script, ['latin', 'devanagari', 'telugu', 'kannada', 'mixed'])) return;
+    if (!isSafeCount(value.latinChars) || !isSafeCount(value.devanagariChars) || !isSafeCount(value.teluguChars) || !isSafeCount(value.kannadaChars)) return;
     if (typeof value.afterTool !== 'boolean' || typeof value.interrupted !== 'boolean') return;
-    return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, afterTool: value.afterTool, interrupted: value.interrupted };
+    return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, teluguChars: value.teluguChars, kannadaChars: value.kannadaChars, afterTool: value.afterTool, interrupted: value.interrupted };
   }
   if (value.event === 'live_state') {
     // F7/GL2-R1: one closed-shape transition record per projected state change, with the state it came from
@@ -1770,6 +1831,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
     if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
     return { event: 'provider_error_unclassified', type: value.type, code: value.code, param: value.param };
+  }
+  if (value.event === 'first_response_audio_unsupported') {
+    // C-POSTTOOL switch a: the provider refused the delegated audio output, at most once per session, so the
+    // field, its code and its parameter are the whole receipt.
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'first_response_audio_unsupported', type: value.type, code: value.code, param: value.param };
   }
   if (value.event === 'responses_validation_failed') {
     // S4a-R4: the backend refused its own delegation config. The refused field, once per session.

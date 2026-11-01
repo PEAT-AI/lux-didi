@@ -17,6 +17,9 @@ enum PresenceState: String, Equatable, Sendable {
 /// The receipt's `trigger` field: what asked the machine to move.
 enum PresenceTrigger: String, Equatable, Sendable {
     case hotkey, click, app, timer, sleep, error
+    /// C-ALARMSPEECH: a due alarm opened this session, so the ring stops when she is audible and the
+    /// owner's key acts on that call instead of failing on a cold machine.
+    case alarm
     /// #589: the owner's own words ended the call, so the goodbye sounds as the session closes.
     case voice
 }
@@ -48,7 +51,8 @@ struct PresencePosture: Equatable {
 struct PresenceEffects {
     var openSession: @MainActor (UInt64) -> Void = { _ in }
     var cancelConnecting: @MainActor () -> Void = {}
-    var closeSession: @MainActor () -> Void = {}
+    /// C-LABELS 2: why the session closes, so a dropped socket is never written down as the owner's Stop.
+    var closeSession: @MainActor (NativeLiveEndReason) -> Void = { _ in }
     var setCaptureMuted: @MainActor (Bool) -> Void = { _ in }
     var cancelPlayback: @MainActor () -> Void = {}
     var providerInputMute: @MainActor (Bool) -> Void = { _ in }
@@ -123,8 +127,14 @@ final class NativePresence {
         PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed, muted: mutedHeld)
     }
 
-    func start(_ trigger: PresenceTrigger) {
-        guard state == .cold else { return }
+    /// C-ALARMSPEECH: the alarm occurrence this start opens, consumed by the one session it starts.
+    private(set) var pendingAlarmID: String?
+    func takeAlarmID() -> String? { defer { pendingAlarmID = nil }; return pendingAlarmID }
+    func start(_ trigger: PresenceTrigger, alarmID: String? = nil) {
+        // C-ALARMSPEECH F-C: the id belongs to the session this start opens. A start that does not connect
+        // must not leave it behind for the next one, or an owner connect could open as the alarm session.
+        guard state == .cold else { pendingAlarmID = nil; return }
+        pendingAlarmID = alarmID
         connect(trigger)
     }
 
@@ -153,10 +163,11 @@ final class NativePresence {
 
     /// #613: the socket closed without a decoded terminal frame, so nothing is known about the call
     /// and no microphone may stay open for it. Presence goes cold now and never reconnects to find out.
+    /// C-LABELS 2: nothing was pressed, so the end is the session's own loss and never the owner's Stop.
     func sessionUncertain(_ generation: UInt64) {
         guard generation == self.generation, state != .cold else { return }
         latch.ownerStopped()
-        teardown(.error)
+        teardown(.error, reason: .sessionLost)
     }
 
     /// The session that carried this generation ended. A stale generation is the session
@@ -215,7 +226,7 @@ final class NativePresence {
         effects.cancelPlayback()
         effects.providerInputMute(true)
         connectingTrigger = nil
-        if warm { mutedWarm = true; mutedAt = now() } else { effects.closeSession() }
+        if warm { mutedWarm = true; mutedAt = now() } else { effects.closeSession(.userStop) }
     }
 
     /// The unmute: a session the mute kept opens its fence again on the same generation, and a
@@ -288,13 +299,13 @@ final class NativePresence {
         effects.cancelConnecting()
     }
 
-    private func teardown(_ trigger: PresenceTrigger) {
+    private func teardown(_ trigger: PresenceTrigger, reason: NativeLiveEndReason = .userStop) {
         generation &+= 1
         mutedWarm = false
         if state != .connecting { effects.setCaptureMuted(true) }
         connectingTrigger = nil
         move(to: .cold, trigger: trigger)
-        effects.closeSession()
+        effects.closeSession(reason)
     }
 
     private func move(to next: PresenceState, trigger: PresenceTrigger) {

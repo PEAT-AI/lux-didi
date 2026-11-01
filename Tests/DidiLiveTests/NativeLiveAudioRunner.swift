@@ -365,9 +365,15 @@ private func checkFormatChangeRebuild() throws {
     let configuration = NativeLiveAudioDevice.minimumDuckingConfiguration()
     try audioRequire(!configuration.enableAdvancedDucking.boolValue && configuration.duckingLevel == .min,
                      "minimum ducking with advanced ducking off")
-    if #available(macOS 14.0, *) {
-        NativeLiveAudioDevice.applyMinimumDucking(to: AVAudioEngine().inputNode)
+    // The applied configuration read back, on the fake seam: no real engine, no input node, and an
+    // assertion that can fail, which the old discarded call could not.
+    guard let seamFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+        throw NativeLiveAudioError.formatUnavailable
     }
+    let seam = NativeFakeInputSeam(format: seamFormat)
+    let reading = seam.applyMinimumDucking()
+    try audioRequire(!reading.advanced && reading.level == String(configuration.duckingLevel.rawValue),
+                     "the applied configuration reads back as minimum with advanced ducking off, got \(reading)")
     print("PASS other-audio ducking set to the minimum while voice processing is on")
 }
 
@@ -761,6 +767,35 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS memory guard continuation retains current frame and rejects external mute generation; hardware=false")
 }
 
+/// F5: one orbBands call longer than 100 ms is journaled as `orb_clock_stall` with its duration and
+/// the same call at normal speed writes nothing. The stall is measured on the injected clock, so the
+/// proof never sleeps.
+@MainActor private func checkOrbClockStallIsMeasured() async throws {
+    final class ScriptedClock: @unchecked Sendable {
+        var calls = 0
+        let base = Date(timeIntervalSince1970: 1000)
+        /// The stall a case asks for, added on the second reading of the call.
+        let stall: TimeInterval
+        init(stall: TimeInterval) { self.stall = stall }
+        func next() -> Date { calls += 1; return base.addingTimeInterval(calls >= 2 ? stall : 0) }
+    }
+    for (stall, expected) in [(0.0, 0), (0.15, 1)] {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let clock = ScriptedClock(stall: stall)
+        let device = NativeLiveAudioDevice(journal: journal, now: { clock.next() })
+        _ = device.orbBands()
+        let stalls = journal.events.filter { $0.name == "orb_clock_stall" }
+        try audioRequire(stalls.count == expected,
+                         "a \(Int(stall * 1000)) ms orbBands writes \(expected) orb_clock_stall, got \(stalls.count)")
+        if expected == 1 {
+            let durationMs = Int(stalls.first?.fields["durationMs"] ?? "") ?? 0
+            try audioRequire(durationMs >= 100 && durationMs <= 160,
+                             "the line carries the measured duration, got \(String(describing: stalls.first?.fields))")
+        }
+    }
+    print("PASS orbBands journals a stall over 100 ms with its duration and nothing at normal speed")
+}
+
 @MainActor private func checkPlaybackGapMetrics() async throws {
     let scenarios: [(Int16, Int16, Int, Int)] = [
         (0, 0, 0, 0), (5000, 5000, 0, 0), (5000, 5000, 25, 1),
@@ -1099,7 +1134,8 @@ private func checkPrimaryChannelConversion() throws {
         catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
         do { try checkOneReleaseRecord() }
         catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
-        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
+        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics()
+             try await checkOrbClockStallIsMeasured() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }
         catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
@@ -1114,6 +1150,11 @@ private func checkPrimaryChannelConversion() throws {
                 try audioRequire(presentation.text != state.rawValue, "raw case never reaches Live presentation")
             }
         } catch { fatalError("Live presentation: \(error)") }
+        // The two negotiation blocks below build a real AVAudioEngine graph, and this Mac backs that
+        // graph with its default device: CoreAudio logs "Creating DefaultDeviceAggregate" for it. The
+        // routine check therefore states the gap instead of opening a device, and the owner proves it
+        // with DIDI_OWNER_HARDWARE_PROOF=1, the same guard the owner-only hardware command uses.
+        if ProcessInfo.processInfo.environment["DIDI_OWNER_HARDWARE_PROOF"] == "1" {
         do {
             // An attached mixer stands in for the output node: no hardware, tap or engine start.
             let graph = AVAudioEngine(), player = AVAudioPlayerNode(), output = AVAudioMixerNode()
@@ -1134,6 +1175,10 @@ private func checkPrimaryChannelConversion() throws {
                 throw NSError(domain: "invalid output format accepted", code: 1)
             } catch NativeLiveAudioError.formatUnavailable { }
         } catch { fatalError("Playback negotiation: \(error)") }
+        } else {
+            print("UNVERIFIED hardware: playback format negotiation against the real output node (owner-only, DIDI_OWNER_HARDWARE_PROOF=1)")
+        }
+        if ProcessInfo.processInfo.environment["DIDI_OWNER_HARDWARE_PROOF"] == "1" {
         do {
             // P3: the same graph at 1.08x. The stretcher sits between the player and the mixer, her pitch
             // never moves, and the format the player emits is untouched.
@@ -1153,7 +1198,12 @@ private func checkPrimaryChannelConversion() throws {
             let plainGraph = AVAudioEngine(), plainPlayer = AVAudioPlayerNode(), plainOutput = AVAudioMixerNode()
             plainGraph.attach(plainOutput)
             let inserted = try NativeLiveAudioDevice.connectPlayback(engine: plainGraph, player: plainPlayer, outputNode: plainOutput)
-            try audioRequire(inserted == nil, "rate 1.0 inserts no unit")
+                try audioRequire(inserted == nil, "rate 1.0 inserts no unit")
+        } catch { fatalError("Rate graph: \(error)") }
+        } else {
+            print("UNVERIFIED hardware: the 1.08x stretcher and the 1.0 graph shape (owner-only, DIDI_OWNER_HARDWARE_PROOF=1)")
+        }
+        do {
             // P3: a drain at 1.08x is shorter than its source audio, so turn end follows audible time.
             try audioRequire(NativePlaybackQueue.ms(24000) == 1000, "rate 1.0 keeps today's integer milliseconds")
             let scaled = NativePlaybackQueue.ms(24000, rate: 1.08)
@@ -1405,6 +1455,7 @@ private func checkPrimaryChannelConversion() throws {
 enum AudioGraphLifecycleTests {
     static func run() async throws {
         try await checkStartBuildsTheGraphOnce()
+        try await checkDuckingFollowsTheEnable()
         try await checkUnmuteWaitsForTheSettle()
         try await checkWatchdogRestartWaitsForTheSettle()
         try await checkReleaseWaitsForAPendingConfigurationChange()
@@ -1473,19 +1524,44 @@ enum AudioGraphLifecycleTests {
         try await device.start { _ in }
 
         let steps = device.graphBuildSteps
-        try audioRequire(steps == ["ducking", "voice_processing", "player_attached", "prepare", "start"],
-                         "the graph is built once, in one order: ducking, enable, attach and connect, prepare, start, got \(steps)")
+        try audioRequire(steps == ["voice_processing", "ducking", "player_attached", "prepare", "start"],
+                         "the graph is built once, in one order: enable, ducking, attach and connect, prepare, start, got \(steps)")
         try audioRequire(device.engineStartCount == 1, "one engine start for the call, got \(device.engineStartCount)")
         try audioRequire(device.isVoiceProcessingEnabledForTesting, "voice processing is still on for the start")
         let built = journal.events.filter { $0.name == "audio_graph_built" }
         try audioRequire(built.count == 1, "one audio_graph_built per start, got \(built.count)")
-        try audioRequire(built.first?.fields["steps"] == "ducking,voice_processing,player_attached,prepare,start",
+        try audioRequire(built.first?.fields["steps"] == "voice_processing,ducking,player_attached,prepare,start",
                          "audio_graph_built carries the steps, got \(built.first?.fields["steps"] ?? "none")")
         try audioRequire(built.first?.fields["starts"] == "1" && built.first?.fields["voiceProcessing"] == "true",
                          "and the call's engine start count and voice-processing state")
         try audioRequire(built.first?.fields["configChanges"] != nil,
                          "and the configuration changes the start saw")
 
+        device.releaseForTesting()
+        await device.settleForTesting()
+    }
+
+    /// Step 0d: the ducking configuration only sticks after the enable, because the enable resets it
+    /// to its default level. The fake seam records the order and the read-back the journal carries,
+    /// so a check proves the sequence without the owner's actual start.
+    private static func checkDuckingFollowsTheEnable() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        let seam = NativeFakeInputSeam(format: try format())
+        device.inputSeamForTesting = seam
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+        try audioRequire(seam.steps == ["enable", "ducking", "attach", "connect"],
+                         "the enable comes first, then the ducking the enable would otherwise reset, then the graph, got \(seam.steps)")
+        let minimum = NativeDuckingReading(advanced: false,
+                                           level: String(AVAudioVoiceProcessingOtherAudioDuckingConfiguration.Level.min.rawValue))
+        try audioRequire(seam.ducking == minimum,
+                         "minimum ducking is applied with advanced ducking off, got \(String(describing: seam.ducking))")
+        let applied = journal.events.filter { $0.name == "audio_ducking_applied" }
+        try audioRequire(applied.count == 1, "one audio_ducking_applied per start, got \(applied.count)")
+        try audioRequire(applied.first?.fields["advanced"] == "false" && applied.first?.fields["level"] == minimum.level,
+                         "and it journals the configuration read back from the node, got \(String(describing: applied.first?.fields))")
         device.releaseForTesting()
         await device.settleForTesting()
     }

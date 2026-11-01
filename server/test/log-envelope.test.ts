@@ -114,6 +114,35 @@ test('C-LOG-ENVELOPE: the call context ends with its terminal line', async t => 
   assert.equal('generation' in records[2]!, false);
 });
 
+// C-LABELS 1: how a call ended names who ended it. A shell that vanished is the host's, never the owner's.
+test('C-LABELS 1: the terminal cause follows the code that ended the call', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-terminal-cause-'));
+  t.after(() => { clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  const log = new HostLog(root);
+  const ends: readonly (readonly [number, string, string])[] = [[0, 'shell_lost', 'host'], [1, 'app_quit', 'owner'], [2, 'user_stop', 'owner'], [3, 'voice_stop', 'owner']];
+  for (const [generation, code] of ends) {
+    setLogContext({ liveSessionId: SESSION, generation });
+    log.terminal({ state: 'closed', code });
+  }
+  const records = await lines(root);
+  assert.deepEqual(records.map(record => [record.event, record.code, record.cause]), ends.map(([, code, cause]) => ['live_terminal', code, cause]));
+});
+
+// C-LABELS 2: a session the app could not vouch for is the provider's loss, never the owner's Stop.
+test('C-LABELS 2: a session_end that names a lost session is not the owner\'s', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-session-lost-'));
+  t.after(() => { clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  const log = new HostLog(root);
+  const detach = attachHostLogSink(log);
+  t.after(() => detach());
+  for (const [generation, reason] of [[0, 'session_lost'], [1, 'user_stop'], [2, 'shell_lost']] as const) {
+    setLogContext({ liveSessionId: SESSION, generation });
+    hostLogEvent({ event: 'session_end', reason, msAfterStop: 0 });
+  }
+  const records = await lines(root);
+  assert.deepEqual(records.map(record => [record.reason, record.cause]), [['session_lost', 'provider'], ['user_stop', undefined], ['shell_lost', 'host']]);
+});
+
 test('C-LOG-ENVELOPE: a clock_sync line ties one process clock to wall time', async t => {
   const root = await mkdtemp(join(tmpdir(), 'didi-envelope-clock-'));
   t.after(() => rm(root, { recursive: true, force: true }));

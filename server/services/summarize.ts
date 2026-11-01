@@ -4,6 +4,7 @@ import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
+import { guardWriteClaims, writeFacts } from '../domain/write-claims.js';
 import * as summaries from '../domain/summaries.js';
 
 /**
@@ -273,6 +274,35 @@ const FAILURE_BY_REASON: Readonly<Record<string, SummaryFailureCode>> = {
   model_request_failed: 'provider',
 };
 
+export interface GuardedDistillation {
+  readonly summary: string;
+  readonly openLoop: string | null;
+  readonly dropped: number;
+  readonly kept: number;
+  readonly settled: number;
+}
+
+/**
+ * C-MEMORYTRUTH: the settled receipts and the alarms table decide what the stored text may claim. A summary
+ * that claims a write no receipt settled, or denies one the table holds, loses that sentence; the log
+ * carries counts only, never the owner's words.
+ */
+export function guardDistilledClaims(
+  parsed: { readonly summary: string; readonly openLoop: string | null },
+  outcomes: readonly ToolOutcome[],
+): GuardedDistillation {
+  const facts = writeFacts(outcomes);
+  const summary = guardWriteClaims(parsed.summary, facts);
+  const loop = parsed.openLoop === null ? null : guardWriteClaims(parsed.openLoop, facts);
+  return {
+    summary: summary.text,
+    openLoop: loop && loop.text !== '' ? loop.text : null,
+    dropped: summary.dropped + (loop?.dropped ?? 0),
+    kept: summary.kept + (loop?.kept ?? 0),
+    settled: facts.settled.size,
+  };
+}
+
 function failureCode(result: ModelResult): SummaryFailureCode {
   if (result.status === 'deadline') return 'deadline';
   if (result.status === 'cancelled') return 'cancelled';
@@ -390,7 +420,18 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'model_skip' });
           return;
         }
-        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'complete', summary: parsed.summary, openLoop: parsed.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+        // C-MEMORYTRUTH: the receipts decide what the stored text may claim, not the model and not the
+        // assistant's spoken account.
+        const guarded = guardDistilledClaims(parsed, toolOutcomes);
+        if (guarded.dropped !== 0) {
+          emit({ event: 'conversation_summary_claims_dropped', liveSessionId, dropped: guarded.dropped, kept: guarded.kept, settled: guarded.settled });
+        }
+        if (!guarded.summary) {
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'unsupported_write_claim', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+          emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'unsupported_write_claim' });
+          return;
+        }
+        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'complete', summary: guarded.summary, openLoop: guarded.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
         emit({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }

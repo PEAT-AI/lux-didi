@@ -12,7 +12,8 @@ import {
   peopleSnapshot, peopleSection, lookupPeople, personByEmail, ambiguityQuestion, PEOPLE_LOOKUP_DECLARATION,
   peopleLookupResult, validatePeopleLookup, type PeopleSnapshot,
 } from '../people/index.js';
-import { LIVE_INSTRUCTION_HARD_LIMIT, composeLiveSessionInstruction, ownerProfileSections } from '../prompt/index.js';
+import { LIVE_INSTRUCTION_HARD_LIMIT, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveSessionInstruction, ownerProfileSections } from '../prompt/index.js';
+import { alarmSessionInstructions } from '../live/index.js';
 import { validateOwnerProfile } from '../prompt/index.js';
 import { safeEvent } from '../host/log.js';
 import { compileMailQuery } from '../tools/research.js';
@@ -290,4 +291,32 @@ test('people: a full lore plus a 130 person roster still composes under the hard
   assert.equal(trimmed.length, 1, JSON.stringify(events));
   assert.ok((trimmed[0]!.dropped ?? 0) > 0);
   installPeople(null);
+});
+
+// C-ALARMSPEECH: the alarm block is appended after composition, so its size escapes the composer's own
+// limit and needs its own measurement. This prints the real number for a 17k owner style and refuses to
+// trade a safety line for the byte count: nothing here trims and nothing here raises a ceiling silently.
+test('alarm speech: the composed alarm instruction with a 17k owner style stays under the trusted ceiling', () => {
+  const profile = validateOwnerProfile({
+    schemaVersion: 1, kind: 'profile', ownerId: 'owner-1', profileVersion: 'test',
+    displayName: 'Owner Example',
+    style: { text: `# Style\n${'s'.repeat(17_000)}`, dataClass: 'ordinary' },
+    lore: { text: '# Lore\nsynthetic', dataClass: 'ordinary' },
+  }, 'owner-1');
+  const composed = composeLiveSessionInstruction({
+    text: '# BASE\n' + 'b'.repeat(5086), tools: ['research', 'mattermost_chat'], records: [],
+    trustedChars: LIVE_INSTRUCTION_HARD_LIMIT, ownerProfile: profile, accentSelection: 'indian-strong',
+  });
+  const alarmBlock = alarmSessionInstructions({ ownerDisplayName: 'Owner Example', scheduledTime: '08:00',
+    label: 'go to sport', alarmId: 'synthetic-alarm-1', ringDeadlineUtc: 1_900_000_000_000 });
+  // The one screen-and-socket prompt the host accepts: the same two parts live/index.ts joins.
+  const total = composed.text.length + '\n\n'.length + alarmBlock.length;
+  console.log(`ALARM_INSTRUCTION_SIZE total=${total} composed=${composed.text.length} alarmBlock=${alarmBlock.length} `
+    + `composerLimit=${LIVE_INSTRUCTION_HARD_LIMIT} trustedLimit=${TRUSTED_SYSTEM_CODE_UNIT_LIMIT}`);
+  assert.ok(total < TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    `${total} over the trusted ceiling ${TRUSTED_SYSTEM_CODE_UNIT_LIMIT}`);
+  // The whole alarm block is present, so the number above is not a number the composer trimmed.
+  assert.match(alarmBlock, /\[alarm mode\]/);
+  assert.match(alarmBlock, /go to sport/);
+  assert.match(alarmBlock, /Owner Example/);
 });

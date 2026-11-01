@@ -11,6 +11,7 @@ import {
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
   buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, type EarlierConversationCandidate,
+  EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -371,10 +372,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '54bce101dcc476fa155a9ac3395c56b3f2a88d616740f6228658a88188a0026d');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '3b1ce0a43707afa9220046832c4e541762b9990692e0f326404f521693595a5e');
+  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -740,6 +741,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
   // PT-1101: the write paragraph names the delete cases, the absent RSVP, the refusal cause and the exposure fence
   // (+91 chars, 8_266 measured); the bound carries it as TR-R5 re-pins a house budget, no reviewed rule trimmed.
+  // C-TIME: the alarm sentence was substituted at the same length, so the bound does not move.
   const cap = 8_300;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
@@ -804,6 +806,38 @@ test('the earlier-conversations budget is what the rest of the instruction leave
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
   assert.ok(composed.text.includes(NAYA_TOOLS), 'tools are never dropped for summaries');
   assert.equal(composed.earlierConversationsIncluded, true);
+});
+
+test('#108: the earlier-conversations section keeps its own reserve beside a 17k owner style', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
+    summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
+  // The private owner style is not in this repository. Release 10.7.3 carried 16,625 characters of it,
+  // which is what pushed the rest of the instruction past the target; this synthetic one is 17,000.
+  const style = 'Synthetic style line: she answers the way the owner does and stops when done. '.repeat(220).slice(0, 17_000);
+  const profile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'synthetic-17k',
+    displayName: 'Synthetic Owner', style: { text: style, dataClass: 'private' },
+    lore: { text: 'Synthetic lore line about the house, the boat and the Friday delivery. '.repeat(155), dataClass: 'sensitive' } };
+  const records = Array.from({ length: 12 }, (_, i) => ({ id: `n${String(i).padStart(2, '0')}`,
+    text: `Synthetic note ${i}: the mint ships on Friday and the invoice goes out on Monday morning.` }));
+  const build = (earlierSection?: string, earlierReserve?: number) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE,
+    tools: ['search_knowledge'], records, runtimeContext: 'Runtime: one synthetic Mac and one synthetic workspace.', ownerProfile: profile,
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierReserve === undefined ? {} : { earlierReserve }),
+    ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
+  const basis = build(undefined, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+  const budget = earlierConversationsBudget(basis.text.length);
+  const section = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: budget });
+  const composed = build(section.section, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+  const sizes = JSON.stringify({ basis: basis.text.length, budget, section: section.section.length, total: composed.text.length,
+    hardLimit: LIVE_INSTRUCTION_HARD_LIMIT, trustedLimit: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, sections: composed.sections });
+  // #843: the per-section sizes, so a section that grows shows up in this check's own output.
+  console.log('live instruction sizes', sizes);
+  assert.ok(budget >= 1_400, `the section owns a reserve under the hard ceiling (${budget})`);
+  assert.ok(section.section.length > 1_400, `she starts the call with her last calls (${section.section.length} chars)`);
+  assert.equal(composed.earlierConversationsIncluded, true, 'the digest reaches the opener');
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `under the hard ceiling (${composed.text.length})`);
+  assert.ok(composed.text.length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT, `under the 60k trusted limit (${composed.text.length})`);
+  assert.ok(composed.text.includes(NAYA_TOOLS), 'the tool conduct never yields to the summaries');
 });
 
 const standingRecord = (id: string, text: string, status: 'current' | 'dated' | 'open' = 'current') =>

@@ -8,7 +8,7 @@
 #
 # Usage:
 #   scripts/build-macos-app.sh <app-dir> [--assets DIR] [--install-id UUID]
-#                              [--release-commit SHA] [--cache DIR]
+#                              [--release-commit SHA] [--cache DIR] [--bundle-id ID]
 #   scripts/build-macos-app.sh --check-web-shell DIR   (assert one shell tree only)
 #
 # Asset bundle layout (accepted producer output, scripts/build-asset-bundle.sh):
@@ -27,6 +27,7 @@ assets=""
 install_id=""
 release_commit=""
 cache=""
+bundle_id=""
 web_shell_check=""
 
 # The composed shell must be self-consistent: index.html present, every /assets/
@@ -50,6 +51,7 @@ while [ $# -gt 0 ]; do
     --install-id) install_id="${2:?--install-id needs a uuid}"; shift 2;;
     --release-commit) release_commit="${2:?--release-commit needs a sha}"; shift 2;;
     --cache) cache="${2:?--cache needs a directory}"; shift 2;;
+    --bundle-id) bundle_id="${2:?--bundle-id needs an identifier}"; shift 2;;
     --check-web-shell) web_shell_check="${2:?--check-web-shell needs a directory}"; shift 2;;
     -h|--help) sed -n '2,20p' "$0"; exit 0;;
     -*) echo "build-macos-app.sh: unknown option $1" >&2; exit 2;;
@@ -84,14 +86,27 @@ fi
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# A proof build may need its own identifier so LaunchServices can never resolve it to the release app
+# (an installed Lux Didi answering a launch is not the app under test). Set before any signing.
+if [ -n "$bundle_id" ]; then
+  /usr/bin/plutil -replace CFBundleIdentifier -string "$bundle_id" "$app/Contents/Info.plist" \
+    || { echo "build-macos-app.sh: could not set bundle identifier $bundle_id" >&2; exit 2; }
+  echo "build-macos-app.sh: bundle identifier $bundle_id" >&2
+fi
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 # Canonical native compile identity. Production never defines COMPANION_TEST.
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw Resources/Info.plist)"
 [[ "$minimum_macos" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo 'build-macos-app.sh: macOS minimum must be a numeric version' >&2; exit 2; }
+# The AVFAudio boundary guard is the one Objective-C file: only Objective-C can catch the exception
+# AVFAudio raises where Swift would leave a dead executor behind, so it compiles here and is linked in.
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun clang -fobjc-arc -O2 \
+  -target "arm64-apple-macosx$minimum_macos" \
+  -c Sources/LuxDidi/AVFAudioGuard.m -o "$cache/AVFAudioGuard.o"
 "$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
   -target "arm64-apple-macosx$minimum_macos" \
-  -module-cache-path "$cache" -parse-as-library Sources/LuxDidi/*.swift \
+  -module-cache-path "$cache" -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library Sources/LuxDidi/*.swift \
+  "$cache/AVFAudioGuard.o" \
   -o "$app/Contents/MacOS/LuxDidi"
 
 if [ -n "$assets" ]; then

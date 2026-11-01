@@ -21,6 +21,8 @@ import Foundation
         var muted: [Bool] = []
         var opened: [UInt64] = []
         var receipts: [[String: Any]] = []
+        /// C-LABELS 2: the reason each close carried, so `user_stop` is provable rather than assumed.
+        var closeReasons: [NativeLiveEndReason] = []
         var clock: Double = 0
     }
 
@@ -29,6 +31,8 @@ import Foundation
         try voiceStopKeepsTheGenerationFence()
         try theLatchIsTheOwnerStart()
         try await theCalendarWaitIsBounded()
+        try theCalendarProbeMatchesTheRealStatusShape()
+        try theNotificationAskHasOneMoment()
         try aRefusedGoodbyeIsRecorded()
         try theUncertainMappingReachesPresence()
         try await aStopDuringRecoveryNeverRestarts()
@@ -53,6 +57,8 @@ import Foundation
         try require(record.opened.isEmpty, "nothing reconnects to resolve the uncertainty")
         try require(record.muted == [true], "the capture fence is cut exactly once")
         try require(record.calls.contains("close"), "the session is closed")
+        // C-LABELS 2: nothing was pressed, so the end is the lost session and never the owner's Stop.
+        try require(record.closeReasons == [.sessionLost], "the uncertain path names session_lost, not user_stop")
         try require(record.calls.last == "close", "the fence and the close are the whole teardown")
         let receipt = record.receipts.last
         try require(receipt?["to"] as? String == "cold", "the receipt names the cold move")
@@ -82,6 +88,8 @@ import Foundation
         presence.endAfterHostTerminal(voiceStop: true, generation: generation)
         try require(record.calls.contains("goodbye"), "the current voice stop sounds the goodbye")
         try require(presence.state == .cold, "the current voice stop ends cold")
+        // C-LABELS 2: the owner's own stop keeps its own reason; only the uncertain path renames its end.
+        try require(record.closeReasons == [.userStop], "a voice stop still logs user_stop")
     }
 
     /// Fix 2, the latch contract the conversation's interruption recovery re-checks after its await.
@@ -132,6 +140,56 @@ import Foundation
         try require(late == OrbFirstAutoConnect.calendarBoundMs,
             "the wait stops at the four second bound")
         try require(OrbFirstAutoConnect.calendarBoundMs == 4000, "the bound is four seconds")
+    }
+
+    /// #108: the host's own tools status carries the endpoint id and the state `connected`
+    /// (server/host/mcp.ts status, server/host/runtime.ts calendar endpoint). The probe used to
+    /// want a connector named "calendar" in a state "ready", which the host never says, so every
+    /// launch spent the whole four second bound. This shape is the host's, not an injected probe.
+    @MainActor static func theCalendarProbeMatchesTheRealStatusShape() throws {
+        let status: [String: Any] = ["endpoints": [
+            ["id": "gmail", "connector": "google", "state": "connected", "tools": 6],
+            ["id": "calendar", "connector": "google", "state": "connected", "tools": 3],
+        ]]
+        try require(OrbFirstAutoConnect.calendarPublished(in: status),
+            "the host's calendar row publishes the digest")
+        let mailOnly: [String: Any] = ["endpoints": [
+            ["id": "gmail", "connector": "google", "state": "connected", "tools": 6],
+        ]]
+        try require(!OrbFirstAutoConnect.calendarPublished(in: mailOnly), "mail is not the calendar")
+        let failed: [String: Any] = ["endpoints": [
+            ["id": "calendar", "connector": "google", "state": "error", "tools": 0],
+        ]]
+        try require(!OrbFirstAutoConnect.calendarPublished(in: failed), "an error row never publishes")
+        try require(!OrbFirstAutoConnect.calendarPublished(in: ["endpoints": []]),
+            "no endpoints publish nothing")
+        try require(!OrbFirstAutoConnect.calendarPublished(in: [:]),
+            "a body without endpoints publishes nothing")
+    }
+
+    /// #108: the system notification ask has exactly one moment: an alarm is armed, the owner has
+    /// not been asked yet, and no call is live. A prompt during a call is never acceptable.
+    @MainActor static func theNotificationAskHasOneMoment() throws {
+        let armed = [ShellAlarm(id: "a", fireAtUtc: 1_800_000_000_000, tz: "UTC", state: "pending", ringDeadlineUtc: nil)]
+        try require(AlarmShellPolicy.asksNotificationPermission(alarms: armed, permissionRequested: false, sessionLive: false),
+            "an armed alarm with no call live asks once")
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: armed, permissionRequested: false, sessionLive: true),
+            "a live call never shows the ask")
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: armed, permissionRequested: true, sessionLive: false),
+            "the ask happens once")
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: [], permissionRequested: false, sessionLive: false),
+            "no alarm asks nothing")
+        let ringing = [ShellAlarm(id: "b", fireAtUtc: 1_800_000_000_000, tz: "UTC", state: "ringing", ringDeadlineUtc: nil)]
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: ringing, permissionRequested: false, sessionLive: true),
+            "a ringing alarm during a call still never interrupts with a system prompt")
+        // #108 (review F1): the host sends every row it ever stored, so a finished row is not active and
+        // never keeps the assertion retry or the ask alive.
+        let finished = [ShellAlarm(id: "c", fireAtUtc: 1_700_000_000_000, tz: "UTC", state: "done", ringDeadlineUtc: nil),
+                        ShellAlarm(id: "d", fireAtUtc: 1_700_000_000_000, tz: "UTC", state: "cancelled", ringDeadlineUtc: nil)]
+        try require(!AlarmShellPolicy.hasActive(finished), "a table of finished alarms has nothing active")
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: finished, permissionRequested: false, sessionLive: false),
+            "a finished alarm asks nothing")
+        try require(AlarmShellPolicy.hasActive(finished + armed), "one pending row is active among finished rows")
     }
 
     /// Acceptance 4: a goodbye the device refuses is recorded, and the mic release is not delayed.
@@ -264,7 +322,7 @@ import Foundation
         PresenceEffects(
             openSession: { generation in record.opened.append(generation); record.calls.append("open") },
             cancelConnecting: { record.calls.append("cancelConnecting") },
-            closeSession: { record.calls.append("close") },
+            closeSession: { reason in record.calls.append("close"); record.closeReasons.append(reason) },
             setCaptureMuted: { muted in record.calls.append("fence"); record.muted.append(muted) },
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },

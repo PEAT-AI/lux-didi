@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { fixture, CANARY } from '../dist/test/live-voice-fixture.js';
 
 const serviceRoot = process.env.DIDI_ALARM_SERVICE_ROOT ?? resolve(import.meta.dirname, '..');
@@ -105,7 +106,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('wake me');
   assert.match(await call('set_alarm'), /missing_time/);
   await owner('in one minute');
-  assert.match(await call('set_alarm', { fire_at_utc: now + 65000 }), /Alarm set/);
+  assert.match(await call('set_alarm', { time: { mode: 'relative', amount: 1, unit: 'minutes' } }), /Alarm set/);
   const first = String(rows()[0].id);
   await owner('show my alarms');
   assert.match(await call('list_alarms'), new RegExp(first));
@@ -117,15 +118,26 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('wake me in one minute');
   assert.match(await call('set_alarm'), /Alarm set/);
   const due = rows().find(row => row.state === 'pending');
+  assert.equal(Number(due.fire_at_utc), now + 60000, 'the due alarm is anchored to the injected host wall clock');
   now += 60000;
   assert.equal((await post('/api/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
-  for (let count = 0; count < 10 && !eventWire.includes('alarm_due'); count++) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.equal(rows().find(row => row.id === due.id).state, 'ringing', 'recheck settles the due alarm before shell delivery');
+  // Earlier mutations can queue any number of state snapshots ahead of the due frame. Read the ordered
+  // stream to the event under this test's existing deadline, not an unrelated ten-chunk ceiling.
+  const hasDueFrame = () => eventWire.split('\n\n').slice(0, -1).some(frame => {
+    const data = frame.split('\n').find(line => line.startsWith('data: '));
+    if (!data) return false;
+    const event = JSON.parse(data.slice(6));
+    return event.type === 'alarm_due' && event.alarm.id === String(due.id);
+  });
+  while (!hasDueFrame()) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.ok(hasDueFrame(), 'the shell receives this alarm due event, not an earlier occurrence');
   assert.match(eventWire, /alarm_due/);
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   const attempts = f.attempts;
   const announcementStart = f.frames.length;
-  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
+  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
   await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
@@ -138,8 +150,31 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   peer.terminate();
   now += 300000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
-  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' });
+  // C-ALARMSPEECH: the native validator requires its own key back (LiveSessionCoordinator.swift
+  // `snapshot.idempotencyKey == key`), so this route honours the key the client sends. A missing key is
+  // refused before any session exists, which is also proof the check runs ahead of the attempt table.
+  const noKey = await fetch(origin + '/api/v1/alarms/session', { method: 'POST', headers,
+    body: JSON.stringify({ id: 'synthetic-alarm-no-key', ownerDisplayName: 'Synthetic Owner' }) });
+  assert.equal(noKey.status, 400, JSON.stringify(await noKey.json()));
+  const alarmKey = randomUUID();
+  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
   assert.equal(alarmCreated.status, 201, JSON.stringify(alarmCreated.body));
+  assert.equal(alarmCreated.body.data.idempotencyKey, alarmKey);
+  // The installed check compares the two keys itself, so the fact survives outside this runner.
+  t.diagnostic(`alarm route key echo: sent=${alarmKey} returned=${alarmCreated.body.data.idempotencyKey} `
+    + `equal=${alarmKey === alarmCreated.body.data.idempotencyKey}`);
+  // One alarm occurrence, one session: the same key replays the same session, a different key opens none.
+  const alarmRetry = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
+  assert.equal(alarmRetry.status, 200, JSON.stringify(alarmRetry.body));
+  assert.equal(alarmRetry.body.data.liveSessionId, alarmCreated.body.data.liveSessionId);
+  const alarmSecondKey = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID());
+  assert.equal(alarmSecondKey.status, 409, JSON.stringify(alarmSecondKey.body));
+  // C-ALARMSPEECH: the shell reports the failure with one closed reason, so she is never silent again.
+  const reported = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'snapshot_mismatch' });
+  assert.equal(reported.status, 200, JSON.stringify(reported.body));
+  const openReason = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'refused' });
+  assert.equal(openReason.status, 400, JSON.stringify(openReason.body));
+  assert.deepEqual(Object.keys(reported.body.data), ['status'], 'the failure report returns no alarm content');
   sessionId = alarmCreated.body.data.liveSessionId;
   const setupStart = f.frames.length;
   peer = await attach(sessionId);
@@ -147,12 +182,12 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
-  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID())).status, 409);
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
   await owner('remind me in one minute to check the deck');
-  assert.match(await call('set_alarm'), /Alarm set/);
+  assert.match(await call('set_alarm', { label: 'check the deck' }), /Alarm set/);
   assert.equal(rows().filter(row => row.state === 'pending')[0].label, 'check the deck');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 1320000;
@@ -179,7 +214,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   await post('/api/v1/alarms/shell', { assertion: true, notifications: false, notificationState: 'not_asked' });
-  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' });
+  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${labelAlarm}`);
   assert.equal(labelled.status, 201, JSON.stringify(labelled.body));
   const labelStart = f.frames.length;
   sessionId = labelled.body.data.liveSessionId;
@@ -195,7 +230,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   f.refuseUpgrades(503);
-  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' });
+  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${outageAlarm.id}`);
   assert.equal(outageCreated.status, 201);
   const beforeOutage = f.attempts;
   const failedPeer = new WebSocket(`${origin.replace('http', 'ws')}/api/v1/live-sessions/${outageCreated.body.data.liveSessionId}/audio`, { headers });

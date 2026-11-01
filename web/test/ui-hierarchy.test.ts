@@ -33,14 +33,15 @@ test('the old serif hero and its history disclosure are gone from the standard U
   assert.doesNotMatch(source, /voice-heading/);
 });
 
-test('installed proof opens collapsed saved history through its summary before selecting a session', () => {
-  const disclosureClick = installedProof.indexOf('#conversation-history');
-  const sessionClick = installedProof.indexOf('row.click()');
-  assert.ok(disclosureClick > 0);
-  assert.ok(installedProof.slice(disclosureClick, sessionClick).includes('summary'));
-  assert.ok(installedProof.slice(disclosureClick, sessionClick).includes('.click()'));
-  assert.ok(disclosureClick < sessionClick);
-  assert.match(installedProof, /summary\.click\(\); return !history\.open/);
+test('installed proof opens the shipped right panel and checks canonical record text, never retired saved history', () => {
+  const visible = installedProof.slice(installedProof.indexOf('private static func visible('), installedProof.indexOf('private static func inspect('));
+  assert.ok(visible.includes("document.querySelector('#panel-toggle-right[aria-expanded="));
+  assert.ok(visible.includes('?.click(); true'));
+  assert.ok(visible.includes('document.body.innerText.includes('));
+  assert.ok(visible.includes('if try await js(web, check) as? Bool == true { return true }'));
+  assert.doesNotMatch(installedProof, /collapseSavedHistory/);
+  assert.doesNotMatch(installedProof, /document\.querySelector\(['"]#conversation-history/);
+  assert.doesNotMatch(source, /id=["']conversation-history["']/);
 });
 
 test('FE1 the feed is one surface, patched in place and never rebuilt on a poll', () => {

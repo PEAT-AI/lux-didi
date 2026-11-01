@@ -60,6 +60,13 @@ export interface LiveVoiceAdapterOptions {
   /** The task procedure a delegated backend is given after the adapter's own voice-backend template under a
    *  blank line (wagon S4b fills it). Absent, the backend sees the template alone. */
   backendProcedure?: string;
+  /** C-POSTTOOL switch a, default OFF: a post-tool `response.create` names audio output, so the first response
+   *  after a tool speaks instead of writing silent backend text. A provider that refuses the field turns it off
+   *  for the session, and the probe decides whether it ships. */
+  firstResponseAudio?: boolean;
+  /** C-POSTTOOL switch b, default OFF: a tighter backend brevity line, so a silent first response is shorter.
+   *  No token cap is set. */
+  backendBrevityTight?: boolean;
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }

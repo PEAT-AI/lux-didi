@@ -245,3 +245,42 @@ test('L8-Q03: the turn a rebuild interrupts is closed as recovered, never left o
   assert.equal(after[0]!['close_reason'], 'recovered', `the interrupted turn is closed by the rebuild: ${JSON.stringify(after)}`);
   assert.ok(after.every(row => row['closed_at'] !== null), `no turn is left open across the rebuild: ${JSON.stringify(after)}`);
 });
+
+// C-REBUILD: a rebuild tears the provider session down under a response the provider announced and never
+// terminated, so the store kept that response pending for the life of the call (t59 and t64 in 47bf2e88 still
+// listed theirs 381 s and 457 s later). A teardown settles it, as superseded, at the moment it happens.
+test('C-REBUILD: a rebuild settles the response it tears down as superseded', async t => {
+  const r = await replay(t, { tools: true, scripts: [{ latencyMs: TOOL_LATENCY_MS }], callMaxMs: 120_000 });
+  try {
+    await r.ready();
+    await elapsedBy(r, 30); await r.endInput();
+    await elapsedBy(r, 950); await ownerSays('synthetic rebuild question', 900)(r);
+    await elapsedBy(r, 1_000); await delegation('d_1', 'resp_1')(r);
+    await elapsedBy(r, 1_010); await announced('resp_1', 'd_1')(r);
+    await elapsedBy(r, 1_200);
+    await r.deliver({
+      type: 'response.event', delegation_id: 'd_1',
+      event: {
+        type: 'response.output_item.done',
+        item: { type: 'function_call', call_id: 'call_1', name: 'search_knowledge',
+          arguments: JSON.stringify({ query: 'synthetic rebuild sweep', limit: 2 }) },
+      },
+    });
+    // The answer is announced and never completes: it is the response the ladder finds in flight and past its
+    // ceiling, so the rebuild is due on its own clock.
+    await elapsedBy(r, 2_900); await announced('resp_1b', 'd_1')(r);
+    await r.advance(60_000);
+    await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
+    const rebuiltAt = r.clock.now();
+    const rows = r.store.transaction(tx => tx.all(
+      "SELECT status, terminal_reason FROM trace_response WHERE live_session_id=? AND provider_response_id='resp_1b'",
+      [r.liveSessionId]));
+    assert.deepEqual(rows.map(row => [row['status'], row['terminal_reason']]), [['superseded', 'superseded']],
+      `the torn down response is settled at the rebuild: ${JSON.stringify(rows)}`);
+    // Only what existed before the rebuild: the session it opened is still speaking for the call it now owns.
+    const open = r.store.transaction(tx => tx.all(
+      "SELECT response_key FROM trace_response WHERE live_session_id=? AND terminal_at IS NULL AND created_at<?",
+      [r.liveSessionId, rebuiltAt]));
+    assert.deepEqual(open, [], `no response is left pending by a rebuild: ${JSON.stringify(open)}`);
+  } finally { await r.release(); }
+});

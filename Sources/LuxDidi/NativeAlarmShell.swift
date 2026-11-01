@@ -23,15 +23,26 @@ import UserNotifications
     private var notificationsAllowed = false
     private var notificationState: NotificationPermission = .notAsked
     private var permissionRequested = false
+    /// #108: the last IOKit answer for the idle sleep assertion, reported so a refusal has a code.
+    private var assertionStatus = kIOReturnSuccess
+    private var permissionWait: Task<Void, Never>?
+    private var assertionWait: Task<Void, Never>?
     private var attempted = Set<String>()
+    /// The occurrences that already used their one speech retry, so a retry can never become a loop.
+    private var retried = Set<String>()
+    /// The ring deadline each due occurrence arrived with, so a retry can tell the window is still open.
+    private var ringDeadlines: [String: Int] = [:]
     /// #107: every alarm mutation reaches the relaunch agent through this one callback.
     var onAlarms: (([ShellAlarm]) -> Void)?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private let session = URLSession(configuration: .ephemeral)
     private lazy var policy = AlarmShellPolicy(acquire: { [weak self] in
         guard let self else { return false }
-        return IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn), "Lux Didi pending alarm" as CFString, &self.assertion) == kIOReturnSuccess
+        // #108: the IOReturn is kept, so a refusal is attributable instead of being a bare false.
+        let status = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn), "Lux Didi pending alarm" as CFString, &self.assertion)
+        self.assertionStatus = status
+        return status == kIOReturnSuccess
     }, release: { [weak self] in
         guard let self, self.assertion != 0 else { return }
         IOPMAssertionRelease(self.assertion); self.assertion = 0
@@ -77,6 +88,8 @@ import UserNotifications
     func stop() {
         stopped = true
         task?.cancel(); task = nil
+        permissionWait?.cancel(); permissionWait = nil
+        assertionWait?.cancel(); assertionWait = nil
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll(); policy.stop(); ring.stopAlarm(); onCaption(nil)
         session.invalidateAndCancel()
@@ -98,43 +111,99 @@ import UserNotifications
             if let deadline = deadlines.max() { ring.startAlarm(deadlineMs: deadline) } else { ring.stopAlarm() }
             // #107: the permission is never a guess: the pending state is reported as not_asked
             // while the request runs, and the resolved state replaces it.
-            if !permissionRequested && rows.contains(where: { $0.state == "pending" || $0.state == "ringing" }) {
-                permissionRequested = true
-                report()
-                Task { [weak self] in
-                    guard let self else { return }
-                    let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
-                    guard !self.stopped else { return }
-                    self.notificationsAllowed = allowed; self.notificationState = Self.permissionState(authorized: allowed)
-                    // Re-register pending rows after permission resolves, never more than one request per id.
-                    self.policy.refreshNotifications(self.alarms, notificationsAllowed: self.notificationsAllowed)
-                    self.onCaption(self.policy.caption); self.report()
-                }
+            // #108: the ask has one moment, an armed alarm with no call live. A call never sees it.
+            if AlarmShellPolicy.asksNotificationPermission(alarms: rows, permissionRequested: permissionRequested,
+                                                          sessionLive: Self.sessionIsLive(sessionState())) {
+                requestNotificationPermission()
             }
-            else { report() }
+            else {
+                report()
+                awaitIdleForNotificationPermission()
+                retryIdleSleepAssertion()
+            }
         }
         if frame.type == "alarm_due", let alarm = frame.alarm, let deadline = alarm.ringDeadlineUtc,
            deadline > Int(Date().timeIntervalSince1970 * 1000) {
             // #107: a live session gets the existing alarm-mode host note; nothing chimes into it.
             let live = Self.sessionIsLive(sessionState())
-            let started = !live && ring.startAlarm(deadlineMs: deadline)
             if live { ring.stopAlarm() }
+            ringDeadlines[alarm.id] = deadline
             if attempted.insert(alarm.id).inserted {
                 if live { noteLiveSession(alarm.id) }
                 else {
-                    if started { post("ring-started", body: ["id": alarm.id]) }
+                    // C-ALARMSPEECH: the call opens before the first chime, so the device reading the
+                    // microphone path takes is not our own ring, and echo cancellation stays on built-in.
                     onDue(alarm.id)
+                    if ring.startAlarm(deadlineMs: deadline) { post("ring-started", body: ["id": alarm.id]) }
                 }
             }
         }
     }
+    /// #108: the one ask, and its single moment. `permissionRequested` keeps it to one system prompt.
+    private func requestNotificationPermission() {
+        permissionRequested = true
+        report()
+        Task { [weak self] in
+            guard let self else { return }
+            let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: Self.notificationAuthorizationOptions)) == true
+            guard !self.stopped else { return }
+            self.notificationsAllowed = allowed; self.notificationState = Self.permissionState(authorized: allowed)
+            // Re-register pending rows after permission resolves, never more than one request per id.
+            self.policy.refreshNotifications(self.alarms, notificationsAllowed: self.notificationsAllowed)
+            self.onCaption(self.policy.caption); self.report()
+        }
+    }
+    /// #108: an ask that arrived inside a call waits for the call to end, in bounded ten second steps, so
+    /// the prompt has one reachable moment and never interrupts a call. Thirty minutes, then the next frame.
+    private func awaitIdleForNotificationPermission() {
+        guard permissionWait == nil, !permissionRequested,
+              AlarmShellPolicy.asksNotificationPermission(alarms: alarms, permissionRequested: false, sessionLive: true)
+        else { return }
+        permissionWait = Task { [weak self] in
+            for _ in 0..<180 {
+                try? await Task.sleep(for: .seconds(10))
+                guard let self, !self.stopped else { return }
+                guard AlarmShellPolicy.hasActive(self.alarms) else { self.permissionWait = nil; return }
+                if AlarmShellPolicy.asksNotificationPermission(alarms: self.alarms,
+                        permissionRequested: self.permissionRequested, sessionLive: Self.sessionIsLive(self.sessionState())) {
+                    self.permissionWait = nil
+                    self.requestNotificationPermission()
+                    return
+                }
+            }
+            self?.permissionWait = nil
+        }
+    }
+    /// #108: one transient IOKit refusal is reported and then retried once, five seconds on, so an armed
+    /// alarm is not left without its idle sleep assertion for the whole window. The guard is an actually
+    /// active row, never a non-empty table: the host sends every row it ever stored, and a finished alarm
+    /// must not keep a retry alive (review F1).
+    private func retryIdleSleepAssertion() {
+        guard assertionWait == nil, AlarmShellPolicy.hasActive(alarms), !policy.assertionHeld else { return }
+        assertionWait = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !self.stopped else { return }
+            self.assertionWait = nil
+            guard AlarmShellPolicy.hasActive(self.alarms), !self.policy.assertionHeld else { return }
+            self.policy.apply(self.alarms, notificationsAllowed: self.notificationsAllowed)
+            self.onCaption(self.policy.caption)
+            self.report()
+        }
+    }
     /// #107: the report carries the permission the shell observed, never one it assumed.
-    static func shellReport(assertion: Bool, notificationsAllowed: Bool, state: NotificationPermission) -> [String: Any] {
-        ["assertion": assertion, "notifications": notificationsAllowed, "notificationState": state.rawValue]
+    /// #108: and the IOKit status of the assertion, so `assertion_failed` is never a bare false.
+    static func shellReport(assertion: Bool, notificationsAllowed: Bool, state: NotificationPermission,
+                           assertionCode: Int32 = 0) -> [String: Any] {
+        ["assertion": assertion, "notifications": notificationsAllowed, "notificationState": state.rawValue,
+         "assertionCode": Int(assertionCode)]
     }
     private func report() {
-        post("shell", body: Self.shellReport(assertion: alarms.isEmpty || policy.assertionHeld,
-                                             notificationsAllowed: notificationsAllowed, state: notificationState))
+        // #108 (review F1): the assertion is answered only for an actually active alarm, so a table of
+        // finished rows never reports a false `assertion_failed`.
+        let active = AlarmShellPolicy.hasActive(alarms)
+        post("shell", body: Self.shellReport(assertion: !active || policy.assertionHeld,
+                                             notificationsAllowed: notificationsAllowed, state: notificationState,
+                                             assertionCode: policy.assertionHeld ? 0 : assertionStatus))
     }
     /// #107: the host log carries the relaunch agent's state, observed rather than assumed.
     func reportRelaunch(_ event: AlarmRelaunchEvent) {
@@ -145,14 +214,35 @@ import UserNotifications
         }
     }
     func noteLiveSession(_ id: String) {
-        // Route the occurrence into the live call without a competing chime.
-        post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()])
+        // Route the occurrence into the live call without a competing chime. The key is the occurrence's
+        // own, so a repeated note replays the session instead of opening a second one.
+        post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()], key: "alarm:" + id)
     }
-    private func post(_ route: String, body: [String: Any]) {
+    private func post(_ route: String, body: [String: Any], key: String? = nil) {
         guard var request = try? authority.request(authority.origin.appendingPathComponent("api/v1/alarms/" + route), epoch),
               let data = try? JSONSerialization.data(withJSONObject: body) else { return }
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         Task { _ = try? await session.data(for: request) }
+    }
+    /// C-ALARMSPEECH: the one path a failed alarm takes. The chime keeps ringing, the host log names the
+    /// closed reason, and one immediate notification says so.
+    func speechFailed(_ alarmID: String, reason: String) {
+        post("speech-failed", body: ["id": alarmID, "reason": reason])
+        if notificationsAllowed {
+            let request = UNNotificationRequest(identifier: Self.speechFailedIdentifier(alarmID),
+                                                content: Self.speechFailedContent(), trigger: nil)
+            UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        }
+        retryOnce(alarmID)
+    }
+    /// C-ALARMSPEECH: one real retry, and only while the ring deadline is open. It never extends the
+    /// deadline and it never changes a normal call's watchdogs; the second failure is final.
+    private func retryOnce(_ alarmID: String) {
+        guard !retried.contains(alarmID), let deadline = ringDeadlines[alarmID],
+              deadline > Int(Date().timeIntervalSince1970 * 1000) else { return }
+        retried.insert(alarmID)
+        onDue(alarmID)
     }
     /// #107: the conversation is live in every state but idle, ended and failed, so an alarm that
     /// arrives while she is thinking or speaking stays inside that call.
@@ -160,6 +250,18 @@ import UserNotifications
         state != .idle && state != .ended && state != .failed
     }
     static func permissionState(authorized: Bool) -> NotificationPermission { authorized ? .allowed : .denied }
+    /// C-ALARMSPEECH: a sound is part of the alarm's authorization, so a notification that says she could
+    /// not start is not silent even when the chime has already been dismissed.
+    nonisolated static let notificationAuthorizationOptions: UNAuthorizationOptions = [.alert, .sound]
+    /// C-ALARMSPEECH: she could not open. The line never carries the alarm label and never carries the
+    /// private note text, and its own identifier is what keeps the ringing sweep from removing it.
+    nonisolated static func speechFailedContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Alarm"; content.body = "Naya could not start. Your alarm is still ringing."
+        content.sound = .default
+        return content
+    }
+    nonisolated static func speechFailedIdentifier(_ alarmID: String) -> String { "alarm-failed:" + alarmID }
     static func notificationContent() -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = "Alarm"; content.body = "Your alarm is due."

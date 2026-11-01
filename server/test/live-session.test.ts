@@ -56,13 +56,14 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
+import { refusalCauseOf } from '../tools/refusal-cause.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../live/schema.js';
@@ -143,6 +144,10 @@ async function harness(t: TestContext, overrides: {
   grantMode?: 'explicit' | 'owner-trusted-reads';
   /** #107: the posts one chat read returns, so an injected ask can arrive in a message body. */
   mattermostData?: Record<string, unknown>;
+  /** #669: the channels the fixture lists, so a miss can carry three closest names. */
+  mattermostChannels?: readonly Record<string, unknown>[];
+  /** #669 F1: the child declares the query and types properties, as the real people-mode child does. */
+  mattermostListProperties?: boolean;
   releaseEvidenceError?: boolean;
   history?: boolean;
   mattermost?: boolean;
@@ -244,7 +249,9 @@ async function harness(t: TestContext, overrides: {
     let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let mattermostSdk: Server | undefined;
     let mattermostTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
+    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: overrides.mattermostListProperties && name === 'mattermost_list_channels'
+      ? { type: 'object', properties: { query: { type: 'string' }, types: { type: 'array', items: { type: 'string' } } } }
+      : { type: 'object' } }));
     if (overrides.mattermost) {
       mattermostEndpoint = { id: 'mattermost', url: 'https://fixture.invalid/mattermost', account: 'account', resource: 'resource' };
       registry.register(mattermostEndpoint); registry.enable(mattermostEndpoint.id); registry.allowEgress(mattermostEndpoint.id);
@@ -255,7 +262,9 @@ async function harness(t: TestContext, overrides: {
         calls.push({ name: req.params.name, args: req.params.arguments });
         await overrides.mattermostWork?.();
         const text = req.params.name === 'mattermost_list_channels'
-          ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
+          // #669 F1: a child that ranks its own list answers a query it cannot place with no rows at all.
+          ? JSON.stringify({ channels: overrides.mattermostListProperties && typeof (req.params.arguments as Record<string, unknown> | undefined)?.['query'] === 'string'
+            ? [] : overrides.mattermostChannels ?? [{ name: 'town-square', display_name: 'Town Square' }] })
           : req.params.name === 'mattermost_whoami'
             ? JSON.stringify({ username: 'owner-chat', display_name: 'Owner Example' })
             : JSON.stringify(overrides.mattermostData ?? { posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
@@ -842,6 +851,23 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'the five second net never fires');
 }
 
+// C-LABELS 2, F-3: a session the app declared lost is over as surely as a Stop, so the pump must treat its
+// terminal the same way: the terminal goes out first and the queued speech behind it is never delivered.
+test('C-LABELS 2: a session_lost terminal outranks queued speech the way a Stop does', async () => {
+  const frames: unknown[] = [];
+  const socket = { OPEN: 1, readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); },
+    close: () => { socket.readyState = 3; } };
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'session_lost' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('a lost session outranks queued speech and backpressure'); },
+  };
+  await pumpOutput(socket as unknown as PumpSocket, attachment as unknown as Parameters<typeof pumpOutput>[1], () => { assert.fail('not detached'); }, 1_000);
+  assert.deepEqual(frames.map(frame => JSON.parse(String(frame))),
+    [{ type: 'terminal', state: 'closed', code: 'session_lost', complete: true }], 'the lost terminal is the only frame, with no queued audio behind it');
+});
+
 test('an output pump whose socket goes CLOSING mid-answer detaches once and ends the session as consumer_closed', async t => {
   await pumpIntoDeadSocket(t, false);
 });
@@ -863,6 +889,37 @@ test('a Quit ends the live session as app_quit, never as the Stop button', async
   const end = receipts.filter(record => record.event === 'session_end');
   assert.equal(end.length, 1, 'one receipt for the Quit');
   assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+});
+
+// C-LABELS 1: the app names its end on the wire before stdin closes; a shell that vanished names nothing, and
+// EOF with no stop frame is the shell's loss rather than the owner's Quit.
+test('C-LABELS 1: a shell that vanished ends the live session as shell_lost, never as app_quit', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const quitSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => quitSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'shell-lost');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  await h.owner.shutdown('shell_lost');
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'shell_lost', msAfterStop: 0 }]);
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'shell_lost' }, 'the terminal names the shell, not the owner');
+});
+
+// C-LABELS 2: a session the app could not vouch for is named apart from the owner's own Stop, and the host
+// repeats the word the app sent instead of inventing its own.
+test('C-LABELS 2: a Stop naming a lost session logs session_lost, never user_stop', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, {});
+  const { attachment } = await attached(h);
+  attachment.close('session_lost');
+  // C-LABELS 2, F-1: the terminal code is the fact the audit reads, so it names the lost session too. A
+  // `session_end` that says session_lost over a `live_terminal` that says user_stop is two labels for one end.
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'session_lost' });
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'session_lost', msAfterStop: 0 }]);
 });
 
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
@@ -3672,6 +3729,41 @@ test('#651: an unknown channel reaches research as its own closed code', async t
   assert.match(reply, /"unavailable":\{"chat":"channel_not_found"\}/, 'the reply header keeps the code the chat read gave');
 });
 
+// #669: a named channel the connector does not know voices up to three closest names, so the owner hears the
+// channel she probably meant instead of only hearing that the name is unknown.
+test('#669: a channel the connector does not know voices three closest names', async t => {
+  const h = await harness(t, { tools: true, mattermost: true, mattermostChannels: [
+    { name: 'singapore-summit', display_name: 'Singapore Summit' },
+    { name: 'singapore-office', display_name: 'Singapore Office' },
+    { name: 'singapore-standup', display_name: 'Singapore Standup' },
+    { name: 'town-square', display_name: 'Town Square' },
+  ] });
+  await attached(h, 'closest-names');
+  const question = 'what did they say in the singapore waterworks channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the singapore waterworks channel' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /I do not know a channel called /, 'the reply names the unknown channel');
+  assert.match(reply, /The closest names I have are Singapore Summit, Singapore Office and Singapore Standup\./,
+    `the reply voices the three closest names the connector refused with: ${reply}`);
+});
+
+// #669 F1: the real child declares query and types, so its own ranked list answers a miss with no rows; the
+// refusal still has to voice the three closest names from the channel index.
+test('#669: a child that ranks its own list still voices the closest names on a miss', async t => {
+  const h = await harness(t, { tools: true, mattermost: true, mattermostListProperties: true, mattermostChannels: [
+    { name: 'singapore-summit', display_name: 'Singapore Summit' },
+    { name: 'singapore-office', display_name: 'Singapore Office' },
+    { name: 'singapore-standup', display_name: 'Singapore Standup' },
+    { name: 'town-square', display_name: 'Town Square' },
+  ] });
+  await attached(h, 'closest-names-child');
+  const question = 'what did they say in the singapore waterworks channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the singapore waterworks channel' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /The closest names I have are Singapore Summit, Singapore Office and Singapore Standup\./,
+    `the child-ranked miss voices the three closest names from the index: ${reply}`);
+});
+
 // #651 FAILREASON-R1: a read the connector cut at its own budget is said as a timeout, never as a source
 // that failed for no stated reason, so the owner hears why nothing came back.
 test('#651: a timed-out chat read reaches research as a timeout', async t => {
@@ -4800,6 +4892,10 @@ test('#472: a late source result reaches the model while the session is live', a
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
   release();
@@ -4807,8 +4903,14 @@ test('#472: a late source result reaches the model while the session is live', a
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  // C-REBUILD B (council 2026-11-01): a note landing while a response is in flight is held, not written into it,
+  // and that response's own terminal is the one event that speaks it. This guard pinned the pre-ruling behaviour.
+  assert.equal(late[0]!['destination'], 'held', `a response in flight holds the note: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.texts.length, 0, 'nothing is written into the response in flight');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')).length, 1,
+    'the response terminal speaks the held note exactly once');
   assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
   assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
   assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
@@ -5101,7 +5203,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the result reaches the new session as text');
 });
 
-test('#538: model text never slides the audible debt, so the OpenAI rung hands over the unspoken result and rebuilds once', async t => {
+test('#538: model text never slides the audible debt, so the OpenAI rung holds the result, then rebuilds once', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
@@ -5126,15 +5228,23 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   assert.equal(fake.closes, 0, 'an announced response is never closed under');
   h.advance(7_000); scheduler.runDue(); await settlePort();
   // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
-  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
-  assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
+  // C-REBUILD B (council 2026-11-01): the announced response owns the wire, so the rung no longer writes the
+  // result into it. The result waits for that response's terminal, and the rebuild below is the path that carries it.
+  assert.equal(fake.closes, 0, 'the held rung never writes the result into a response in flight');
+  assert.equal(fake.textInputs.length, 0, 'the result waits for that response to end');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  // C-REBUILD A: the announced response holds the rebuild until its ceiling, so the waits below run until the
+  // ladder really reaches its decision instead of assuming one recovery delay is enough.
+  for (let spent = 0; spent < RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 30_000 && fake.closes === 0; spent += 500) {
+    h.advance(500); scheduler.runDue(); await settlePort();
+  }
   assert.equal(fake.closes, 1, 'a model still mute seven seconds later is the one replaced');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the new session is handed the result once');
   h.advance(4_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.textInputs.length, 2, 'the delivery is never replayed twice');
+  // C-REBUILD B: the rung no longer writes the result into the response in flight, so the one handover is the
+  // rebuild's own, and it is never replayed.
+  assert.equal(fake.textInputs.length, 1, 'the delivery is never replayed twice');
   // The recreated session answers audibly, which is what the owner hears.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await settlePort();
@@ -7416,6 +7526,9 @@ test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead o
   const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } as unknown as Parameters<typeof fake.emit>[0]);
   // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
   await ownerInput(fake);
+  // C-REBUILD C: the provider created a response for that turn, so the first mute is still recovered. Without it
+  // the ruling removed that rebuild, and the second-mute door this test guards would never be reached.
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   assert.equal(fake.sessionsOpened, 2, 'the first mute was recovered on a fresh session');
   // A lookup hands its result back, and the ladder spends its rung on that silence.
@@ -7449,8 +7562,10 @@ test('W4-R1: a genuine second mute with no tool result still ends the call', asy
   const scheduler = new DeadlineClock();
   const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   const { session } = await openPort(h, 'watchdog-note-window');
-  // No tool is called at all, so nothing forges a wait the model never had.
+  // No tool is called at all, so nothing forges a wait the model never had. C-REBUILD C: the provider created a
+  // response for that turn, which keeps the first mute recoverable; the repeated mute is what this test guards.
   await ownerInput(fake);
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   await ownerInput(fake);
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));
@@ -7779,10 +7894,15 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
   await settlePort();
   assert.equal(scheduler.list()[0]!.state, 'ringing', 'speech in an unrelated call cannot acknowledge a due alarm');
-  const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true,
+  const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true, now: () => clock.now,
     open: setup => h.owner.announceAlarm(setup)!.liveSessionId, degraded: () => assert.fail('unexpected degradation') });
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').liveSessionId, session.liveSessionId);
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').status, 'attempted');
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key').liveSessionId, session.liveSessionId);
+  // The retry replays the session this key already opened, and a different key opens none.
+  const retried = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key');
+  assert.equal(retried.status, 'attempted');
+  assert.equal(retried.liveSessionId, session.liveSessionId);
+  // A different key names the same occurrence, so it is refused at the route, never opened again.
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-other-key').status, 'attempted');
   assert.equal(fake.sessionsOpened, 1);
   assert.equal(fake.texts.length, 1);
   assert.match(fake.texts[0]!, /call the bank/);
@@ -8120,7 +8240,8 @@ test('C-SAFETY review: changed-name replay is refused before normal execution af
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'synthetic-shared-call', name: 'set_alarm', args: {} }] }));
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 2);
-  assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch' });
+  // C-TOOLTRUTH: the replay refusal also states its true cause and that nothing ran, so she can repeat why.
+  assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch', ...refusalCauseOf('replay_identity_mismatch') });
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a changed name cannot reuse the recorded id to create an alarm');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))?.n, 1, 'the original recorded identity stays immutable');
 });
@@ -8263,11 +8384,17 @@ function liveToolResponse(h: Harness, id: string): Record<string, unknown> {
 test('#107: a direct owner ask writes one calendar block through the live grant set', async t => {
   const port = composePort();
   const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads' });
+  const outcomes: Record<string, unknown>[] = [];
+  const outcomeSink = attachHostLogSink({ event: raw => { outcomes.push(raw as Record<string, unknown>); } });
+  t.after(() => outcomeSink());
   const { attachment } = await attached(h, 'compose-create');
   await ownerSpoke(h, 'put a block in my calendar tomorrow at noon for two hours');
   await settleLiveTool(h, 'w1', 'create_event', { summary: 'block' });
   const response = liveToolResponse(h, 'w1');
   assert.equal(response['status'], 'event_created', JSON.stringify(response));
+  // C-LABELS 3: the audit's own outcome word for a calendar write that came back created. An unknown
+  // outcome reads as a failure the owner never had, so an unanswered audit hides a working call.
+  assert.deepEqual(outcomes.filter(record => record.event === 'tool_call_outcome' && record.tool === 'create_event').map(record => record.outcome), ['completed']);
   assert.equal(port.log.length, 1, 'one write for one ask');
   const { clientRequestId, startUtc, endUtc, ...asked } = JSON.parse(port.log[0]!) as Record<string, unknown>;
   assert.deepEqual(asked, { command: 'calendar.insert_event', summary: 'block', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -8447,4 +8574,42 @@ test('#107 P-R9: a mail result fences the turn and the owner final opens it agai
   assert.equal(dispatched['status'], 'event_created', JSON.stringify(dispatched));
   assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
   attachment.close();
+});
+
+test('C-REBUILD B: a held note with no terminal before teardown stays ledger only', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const lateHeld = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(lateHeld.length, 1, 'one receipt for the source that landed later');
+  assert.equal(lateHeld[0]!['destination'], 'held', `a response in flight holds it: ${JSON.stringify(lateHeld[0])}`);
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'nothing is written into the response in flight');
+  // No terminal ever arrives: the teardown names the ledger-only disposition and speaks nothing.
+  h.owner.revoke(session.liveSessionId);
+  await settlePort();
+  const ledger = receipts.filter(entry => entry['event'] === 'live_late_note_ledger');
+  assert.equal(ledger.length, 1, 'a held note lost with its generation is named');
+  assert.equal(ledger[0]!['reason'], 'generation_torn_down');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'and nothing is spoken into a session that is gone');
 });

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolOutcomeOf } from '../live/tool-outcome.js';
+import { ADMISSION_BLOCK_REASONS, RESEARCH_REFUSAL_REASONS, ResearchAdmission, admissionBlocked, researchRepair } from '../tools/research.js';
+import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, REFUSAL_CAUSES, refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
 
 const cases = [
   [{ status: 'refused', code: 'no_owner_request' }, 'refused', 'no_owner_request'],
@@ -24,6 +26,9 @@ const cases = [
   [{ code: 'opened', kind: 'url', title: 'Synthetic site' }, 'completed', undefined],
   [{ status: 'set', id: 'synthetic-alarm-id', fire_at_utc: 'synthetic-time' }, 'completed', undefined],
   [{ status: 'set' }, 'unknown', undefined],
+  // C-LABELS 3: a calendar create that answered event_created with its id is a settlement, not an unknown.
+  [{ status: 'event_created', event_id: 'synthetic-event-id', start: 'synthetic-time', end: 'synthetic-time' }, 'completed', undefined],
+  [{ status: 'event_created' }, 'unknown', undefined],
   // G5: a dispatched failure keeps the reason the connector gave next to the collapsed code it maps to,
   // so `tool_call_outcome` can say whether it was an argument refusal or a grant/catalogue miss.
   [{ status: 'failed', code: 'sdk_protocol_rejected', reason: 'invalid-arguments' }, 'failed', 'invalid-arguments'],
@@ -94,3 +99,70 @@ for (const provider of ['openai', 'gemini'] as const) {
     });
   }
 }
+
+// C-TOOLTRUTH (10.8): F7. Every refusal a tool hands the model states its true cause in one plain sentence the
+// model can repeat, plus what will or will not happen next. A code whose honest cause the host does not hold
+// says so and never guesses, so nothing she is handed invites an invented cause.
+test('C-TOOLTRUTH every closed refusal code carries a plain cause and a next line', () => {
+  for (const code of [...ADMISSION_BLOCK_REASONS, ...RESEARCH_REFUSAL_REASONS, ...HOST_REFUSAL_CODES]) {
+    const { cause, next } = refusalCauseOf(code);
+    assert.ok(cause.trim().length > 20, `${code}: the cause is one plain sentence, got ${cause}`);
+    assert.match(cause, /^[A-Z].*\.$/u, `${code}: the cause is a finished sentence, got ${cause}`);
+    assert.match(next, /^[A-Z].*\.$/u, `${code}: the next line is a finished sentence, got ${next}`);
+    // A cause is a statement the host can back. It never asks the owner for anything, and it never asks the
+    // model to ask the owner for anything the host did not itself decide.
+    assert.doesNotMatch(cause, /[?\u2013\u2014]/u, `${code}: the cause is a statement, got ${cause}`);
+    assert.doesNotMatch(cause, /\b(ask|tell|repeat|say|request)\b/iu, `${code}: the cause instructs nobody, got ${cause}`);
+    assert.notEqual(cause.toLowerCase().replace(/[^a-z]+/gu, ' ').trim(), code.replace(/_+/gu, ' '),
+      `${code}: the cause names the reason, it does not echo the code`);
+  }
+});
+
+test('C-TOOLTRUTH a refusal code the table does not know says the reason is not known', () => {
+  const { cause, next } = refusalCauseOf('a_code_this_host_never_closed');
+  assert.equal(cause, 'the reason is not known');
+  assert.equal(CAUSE_NOT_KNOWN, 'the reason is not known');
+  assert.match(next, /^[A-Z].*\.$/u);
+  assert.doesNotMatch(next, /[?\u2013\u2014]/u);
+  // The code stays visible as closed metadata, and nothing is invented about it.
+  assert.match(next, /a_code_this_host_never_closed/u);
+  assert.match(refusalCauseOf('not a code').next, /an unnamed code/u);
+});
+
+// C-TOOLTRUTH: the refused argument shape she is handed carries the cause and what it did not do.
+test('C-TOOLTRUTH a refused research argument carries its cause and that nothing was searched', () => {
+  const reply = researchRepair('topic_required');
+  assert.equal(reply['reason'], 'topic_required');
+  assert.equal(reply['cause'], REFUSAL_CAUSES.topic_required.cause);
+  assert.equal(reply['next'], 'Nothing was searched.');
+});
+
+// C-TOOLTRUTH: F6. The rebuild shape that lost her sense of what had finished: the result reached her, the
+// provider generation was replaced, and nothing was running afterwards. The refusal she receives then says
+// from the host's own record that nothing is running, and it never reads as work in progress.
+test('C-TOOLTRUTH after a rebuild the turn_spent refusal says nothing is running', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
+  admission.delivered('synthetic-run-1');
+  // The rebuild: the same admission object outlives the generation, and no scheduler run survives it.
+  const reply = admissionBlocked('turn_spent', undefined, admission.running());
+  assert.deepEqual(admission.running(), []);
+  assert.equal(reply['state'], 'Nothing is running now.');
+  assert.equal(reply['cause'], REFUSAL_CAUSES.turn_spent.cause);
+  assert.equal(reply['next'], REFUSAL_CAUSES.turn_spent.next);
+  assert.doesNotMatch(JSON.stringify(reply), /still (reading|looking|searching)|results? (is|are) (still )?(coming|on the way)/iu);
+});
+
+// C-TOOLTRUTH: while one run really is in flight the refusal names it from the host's own record, and the
+// record is the same object across a rebuild.
+test('C-TOOLTRUTH the state line names the running work and clears when it settles', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  admission.working('synthetic web question');
+  assert.deepEqual(admission.running(), ['the research for "synthetic web question"']);
+  assert.equal(runningStateLine(admission.running()), 'Running now: the research for "synthetic web question".');
+  admission.settledWork();
+  assert.deepEqual(admission.running(), []);
+  assert.equal(admissionBlocked('no_turn_since_result', undefined, admission.running())['state'], 'Nothing is running now.');
+});

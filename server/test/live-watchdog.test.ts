@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -77,7 +77,8 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
     if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery'
-      || record.event === 'live_rebuild' || record.event === 'live_idle_arm') receipts.push(record);
+      || record.event === 'live_rebuild' || record.event === 'live_idle_arm'
+    || record.event === 'live_rebuild_removed' || record.event === 'live_rebuild_held') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
@@ -116,6 +117,7 @@ const phases = (live: Live): unknown[] => live.receipts.filter(record => record.
 const continuityEvents = (live: Live): unknown[] => live.output
   .filter((chunk): chunk is Extract<LiveOutputChunk, { kind: 'marker' }> => chunk.kind === 'marker')
   .filter(chunk => chunk.marker.kind === 'continuity').map(chunk => chunk.marker.event);
+const removed = (live: Live): Record<string, unknown>[] => live.receipts.filter(record => record.event === 'live_rebuild_removed');
 const rebuildTriggers = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_rebuild').map(record => record.trigger);
 const openingText = (live: Live): string | undefined => live.fake.requests.at(-1)?.openingText;
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
@@ -133,6 +135,9 @@ async function until(live: Live, condition: () => boolean, budgetMs = 60_000): P
 test('a mute owner turn is nudged once and then recovered on a fresh seeded session', async t => {
   const live = await openLive(t);
   await ownerTurnEnd(live);
+  // C-REBUILD C: a response the provider created keeps this turn a real ask, so the watchdog path under test is
+  // the one the removal left alone. The response is older than its ceiling by the rebuild step, so nothing holds.
+  await live.emit({ type: 'modelTurnStarted' });
   assert.deepEqual(phases(live), ['armed'], 'the ended owner turn owes a reply');
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 2_000);
   assert.equal(live.fake.sessionsOpened, 1, 'a nudge is not a recovery');
@@ -251,6 +256,9 @@ test('model output after the nudge disarms the watchdog', async t => {
 test('a second mute inside the window settles the call honestly instead of looping', async t => {
   const live = await openLive(t);
   await ownerTurnEnd(live);
+  // C-REBUILD C: a response the provider created keeps this turn a real ask, so the watchdog path under test is
+  // the one the removal left alone. The response is older than its ceiling by the rebuild step, so nothing holds.
+  await live.emit({ type: 'modelTurnStarted' });
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.equal(live.fake.sessionsOpened, 2);
   await flush();
@@ -271,6 +279,9 @@ test('a weak uplink inside the watched wait settles uplink_starved instead of bl
   const live = await openLive(t, { connection: () => ({ quality, ...(quality === 'weak' ? { weakAt: clockNow() } : {}) }) });
   clockNow = live.now;
   await ownerTurnEnd(live);
+  // C-REBUILD C: a response the provider created keeps this turn a real ask, so the watchdog path under test is
+  // the one the removal left alone. The response is older than its ceiling by the rebuild step, so nothing holds.
+  await live.emit({ type: 'modelTurnStarted' });
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.equal(terminalCode(live), undefined, 'the first recovery is not a terminal');
   await flush();
@@ -290,6 +301,9 @@ test('a weak spell before the watched wait does not relabel a later model timeou
   const live = await openLive(t, { connection: () => ({ quality, ...(quality === 'weak' ? { weakAt: clockNow() } : weakAt === undefined ? {} : { weakAt }) }) });
   clockNow = live.now;
   await ownerTurnEnd(live);
+  // C-REBUILD C: a response the provider created keeps this turn a real ask, so the watchdog path under test is
+  // the one the removal left alone. The response is older than its ceiling by the rebuild step, so nothing holds.
+  await live.emit({ type: 'modelTurnStarted' });
   quality = 'weak';
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   weakAt = live.now() - 1_000;
@@ -368,6 +382,9 @@ test('a port with different declarations runs the same watchdog path', async t =
   for (const capabilities of [{}, { supportsResumption: true, supportsInterruption: true, outputModalities: ['audio'] as const }]) {
     const live = await openLive(t, { capabilities });
     await ownerTurnEnd(live);
+    // C-REBUILD C: a response the provider created keeps this turn a real ask, so the watchdog path under test is
+    // the one the removal left alone. The response is older than its ceiling by the rebuild step, so nothing holds.
+    await live.emit({ type: 'modelTurnStarted' });
     await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
     assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered']);
     assert.equal(live.fake.sessionsOpened, 2, 'the recovery is fresh seeded even when resumption is supported');
@@ -445,13 +462,24 @@ test('C-RECOVERY (d): a bare acknowledgement after the model spoke never rebuild
 });
 
 // C-RECOVERY (d), the contrast the ruling demands: a real question is still an owed answer and still rebuilds.
-test('C-RECOVERY (d): a real question after the model spoke still rebuilds as today', async t => {
+test('C-REBUILD C: a real question with no tool work and no response is no longer rebuilt', async t => {
   const live = await openLive(t);
   await live.emit({ type: 'outputTranscription', text: 'Monday is clear.', finished: true });
-  await live.emit({ type: 'inputTranscription', text: 'what is next on my calendar', finished: true });
-  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 4_000);
-  assert.equal(live.fake.sessionsOpened, 2, 'a question still earns a rebuild');
-  assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'and the rebuild names owner speech');
+  await ownerTurnEnd(live);
+  // C-RECOVERY (d) pinned this rebuild as the ruled trigger. Council 2026-11-01 removed it for a turn that made
+  // no tool call and created no response, and stated the accepted failure: this socket waits for him to speak again.
+  await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 4_000);
+  // C-REBUILD A holds a rebuild while the announced response is younger than its ceiling, so the decision is
+  // reached once the ceiling has passed rather than one recovery delay after the nudge.
+  for (let spent = 0; spent < RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 20_000 && removed(live).length === 0; spent += 250) {
+    await live.advance(250);
+  }
+  assert.equal(removed(live).length > 0, true,
+    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))} trace=${JSON.stringify(live.receipts.filter(record => record.event === 'live_watchdog_hold'))}; inputFinal=${(live.owner.get(live.liveSessionId) as unknown as { inputFinal?: unknown }).inputFinal === undefined ? 'nofield' : 'field'} lastWords=${JSON.stringify(live.receipts.filter(record => record.event === 'live_debt').length)}`);
+  assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
+  assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
+  assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],
+    'the decision names what it stood down for');
 });
 
 // C-RECOVERY (d): the acknowledgement class is closed, so no paraphrase or question can hide inside it.

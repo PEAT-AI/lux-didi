@@ -3,7 +3,7 @@ import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { clearLogContext, clockSync } from './events.js';
-import { supervisionRequested } from './supervision.js';
+import { supervisionEndReason, supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { installPeople, loadPeople } from '../people/index.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
@@ -613,7 +613,12 @@ export async function startHost(config: HostConfig) {
   try {
     startupStage = 'owner';
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
-    if (owner.status === 'error') throw new ConfigError('invalid_profile');
+    if (owner.status === 'error') {
+      // #698: the start line names the key the owner can fix; the class and code stay closed tokens.
+      const error = new ConfigError('invalid_profile');
+      if (owner.line !== undefined) error.message = owner.line;
+      throw error;
+    }
     // W15: the owner's people roster is read once here, from the directory the owner profile itself
     // resolves to; a malformed file is loud and leaves the roster absent, never partial.
     const people = config.ownerProfilePath === undefined ? { status: 'absent' as const } : loadPeople(config.ownerProfilePath);
@@ -750,7 +755,9 @@ export async function startHost(config: HostConfig) {
           // the summary. Wait for that summary here, bounded, while the store it writes to is still open;
           // a forced kill skips this and the next host start finishes the work instead.
           alarms.stop();
-          await live.shutdown();
+          // C-LABELS 1: the shell's own end reason reaches the live session, so a crash is never recorded
+          // as the owner's Quit. Unsupervised starts and signals name nothing and stay app_quit.
+          await live.shutdown(supervisionEndReason());
           await mcp.close();
           await summarizer.settleOnExit().catch(() => undefined);
         } finally { logExit('ready', 'close'); store.close(); stopDiagnostics(); }

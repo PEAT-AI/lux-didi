@@ -28,5 +28,37 @@ if [ "$#" -eq 0 ] && [ -z "${DIDI_ALARM_RESOURCES:-}" ]; then
 fi
 service="$resources/server/node_modules/@lux-didi/service"
 test -f "$service/dist/host/runtime.js" || { echo 'ALARM CHECK FAIL: installed host runtime missing' >&2; exit 1; }
+alarm_log="$work/alarm.log"
 DIDI_ALARM_SERVICE_ROOT="$service" DIDI_ALARM_WEB_ROOT="$resources/web/dist" \
-  "$alarm_node" --test --test-timeout=15000 server/test/alarm-host.integration.mjs
+  "$alarm_node" --test --test-timeout=15000 server/test/alarm-host.integration.mjs >"$alarm_log" 2>&1 \
+  || { cat "$alarm_log"; exit 1; }
+cat "$alarm_log"
+# C-ALARMSPEECH: the native client demands its own key back, so this check compares the key the route
+# echoed with the key that was sent. A route that names the session itself fails here, not in the field.
+echoed=$(sed -n 's/.*alarm route key echo: sent=\([^ ]*\) returned=\([^ ]*\) equal=\([^ ]*\).*/\1 \2 \3/p' "$alarm_log" | head -1)
+[ -n "$echoed" ] || { echo 'ALARM CHECK FAIL: the alarm route never reported the key it echoed' >&2; exit 1; }
+read -r sent returned equal <<<"$echoed"
+if [ "$sent" != "$returned" ] || [ "$equal" != "true" ]; then
+  echo "ALARM CHECK FAIL: the alarm route echoed $returned for the caller key $sent" >&2; exit 1
+fi
+echo "ALARM CHECK: the alarm route echoed the caller key $sent"
+# C-ALARMSPEECH: and the real client accepts that reply. The host body is decoded in the host's own field
+# names and handed to the real coordinator: an echoed key reaches attach, a host-named key is refused.
+bash scripts/with-compile-lock.sh -- swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
+  -parse-as-library Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift \
+  Sources/LuxDidi/LiveSessionCoordinator.swift Tests/DidiLiveTests/AlarmSpeechWireTests.swift \
+  -o "$work/alarm-speech-wire"
+"$work/alarm-speech-wire" | tee "$work/wire.log"
+grep -q 'ALARM SPEECH WIRE: PASS' "$work/wire.log" \
+  || { echo 'ALARM CHECK FAIL: the coordinator refused a host reply that echoed the key' >&2; exit 1; }
+# C-ALARMSPEECH: and the shell around it. Policy only: no window, no audio device, no launched app.
+xcrun clang -fobjc-arc -c Sources/LuxDidi/AVFAudioGuard.m -o "$work/avfaudio-guard.o"
+xcrun clang -fobjc-arc -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/audio-callback-bridge.o"
+bash scripts/with-compile-lock.sh -- xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
+  -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" \
+  -import-objc-header Tests/DidiLiveTests/DidiNativeBridges.h \
+  Sources/LuxDidi/*.swift Tests/DidiLiveTests/AlarmShellPolicyTests.swift \
+  "$work/avfaudio-guard.o" "$work/audio-callback-bridge.o" -o "$work/alarm-shell-policy"
+"$work/alarm-shell-policy" | tee "$work/policy.log"
+grep -q 'ALARM SHELL POLICY: PASS' "$work/policy.log" \
+  || { echo 'ALARM CHECK FAIL: the alarm shell policy check failed' >&2; exit 1; }

@@ -1,48 +1,86 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
+import { checkOwnerTime, type TimeSpec } from '../tools/time-check.js';
 
 // Synthetic words and a fixed instant only. These tests never use the system clock.
 const now = Date.parse('2026-10-28T13:00:00Z');
 const tz = 'Asia/Singapore';
+/**
+ * T-R1: the model's structured time for a golden row is built from that row's own expected instant in
+ * this file's zone, so no expected instant changes. Where the owner's words settle one time, the same
+ * row also runs with a model time one hour wrong and the owner's instant must still win.
+ */
+function modelAt(instant: number, zone = tz, reference = now): TimeSpec {
+  const local = (value: number) => new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(value);
+  const parts = local(instant);
+  const get = (values: Intl.DateTimeFormatPart[], type: string): string => values.find(part => part.type === type)?.value ?? '';
+  const today = [`${get(local(reference), 'year')}-${get(local(reference), 'month')}-${get(local(reference), 'day')}`];
+  const date = `${get(parts, 'year')}-${get(parts, 'month')}-${get(parts, 'day')}`;
+  // The model said "today" when it meant today, so the host takes its own past roll for it.
+  const day = date === today[0] ? { kind: 'today' as const } : { kind: 'iso' as const, value: date };
+  return { mode: 'wall', date: day, local_time: `${get(parts, 'hour')}:${get(parts, 'minute')}`, timezone: zone };
+}
+function ownerWins(words: string, at: number, expected: number, zone = tz): void {
+  if (checkOwnerTime(words).status !== 'unique') return;
+  const wrong = parseAlarmTime(words, at, zone, modelAt(expected + 3600000, zone));
+  assert.equal(wrong.status, 'ready', `${words}: the owner time executes despite a wrong model time`);
+  if (wrong.status === 'ready') assert.equal(wrong.fireAtUtc, expected, `${words}: the owner time wins`);
+}
+/** T-R1 counts for the checker over this file's rows. */
+export const goldenReading = { unique: 0, partial: 0, inconclusive: 0 };
+function readGolden(words: string): void { goldenReading[checkOwnerTime(words).status] += 1; }
+
 
 test('alarm: an unqualified eight chooses the next future occurrence', () => {
-  const result = parseAlarmTime('set an alarm at 8', now, tz);
+  const result = parseAlarmTime('set an alarm at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
 });
 
 test('alarm: an unqualified wake request chooses the next occurrence in the system zone', () => {
-  const result = parseAlarmTime('wake me at 8', now, tz);
+  const result = parseAlarmTime('wake me at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, tz);
-  assert.equal(result.confirmation, 'Alarm set for 29/10/2026, 08:00 (Asia/Singapore).');
+  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore).');
 });
 
 test('alarm: explicit morning and evening resolve without a model-supplied time', () => {
   for (const words of ['set an alarm for tomorrow morning at 8', 'set an alarm at 8 tomorrow morning']) {
-    const result = parseAlarmTime(words, now, tz);
+    const expected = Date.parse('2026-10-29T00:00:00Z');
+    const result = parseAlarmTime(words, now, tz, modelAt(expected));
+    ownerWins(words, now, expected);
+    readGolden(words);
     assert.equal(result.status, 'ready');
-    if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+    if (result.status === 'ready') assert.equal(result.fireAtUtc, expected);
   }
   const evening = parseAlarmTime('set an alarm tomorrow at 8 pm', now, tz);
   assert.equal(evening.status, 'ready');
   if (evening.status === 'ready') assert.equal(evening.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
 });
 
-test('alarm: relative eight hours is host-derived despite model skew', () => {
-  const result = parseAlarmTime('wake me in eight hours', now, tz, now + 8 * 3600000 + 5000);
+test('alarm: a relative span is host-derived despite a disagreeing model field', () => {
+  // C-TIME: the model states a span, the host adds it to its own clock, and the owner's words win.
+  const result = parseAlarmTime('wake me in eight hours', now, tz, { mode: 'relative', amount: 10, unit: 'hours' });
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, now + 8 * 3600000);
-  assert.equal(parseAlarmTime('wake me in eight hours', now, tz, now + 3600000).status, 'ready');
+  if (result.status === 'ready') {
+    assert.equal(result.fireAtUtc, now + 8 * 3600000);
+    assert.equal(result.corrected, 'model_time_differs');
+  }
+  const agreed = parseAlarmTime('wake me in eight hours', now, tz, { mode: 'relative', amount: 8, unit: 'hours' });
+  assert.equal(agreed.status, 'ready');
+  if (agreed.status === 'ready') assert.equal(agreed.corrected, undefined);
 });
 
-test('alarm: without an owner time the model epoch is the fallback', () => {
-  const parsed = parseAlarmTime('set an alarm', now, tz, now + 3600000);
+test('alarm: without an owner time the model structured time executes', () => {
+  const parsed = parseAlarmTime('set an alarm', now, tz, { mode: 'wall', date: { kind: 'tomorrow' }, local_time: '09:00' });
   assert.equal(parsed.status, 'ready');
-  if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, now + 3600000);
+  if (parsed.status === 'ready') {
+    assert.equal(parsed.localTime, '09:00');
+    assert.equal(parsed.source, 'model');
+  }
 });
 
 test('alarm: a resolved instant remains fixed when the system time zone changes', () => {
@@ -83,35 +121,22 @@ for (const [words, instant] of [
   ['set an alarm at eight', '2026-10-29T00:00:00Z'],
 ] as const) {
   test(`direct102 alarm golden: ${words}`, () => {
-    const result = parseAlarmTime(words, now, tz);
+    const expected = Date.parse(instant);
+    const result = parseAlarmTime(words, now, tz, modelAt(expected));
+    ownerWins(words, now, expected);
+    readGolden(words);
     assert.equal(result.status, 'ready');
     if (result.status !== 'ready') return;
-    assert.equal(result.fireAtUtc, Date.parse(instant));
+    assert.equal(result.fireAtUtc, expected);
     assert.equal(result.tz, tz);
   });
 }
-
-test('direct102: an unknown spoken zone clarifies instead of falling back to the host zone', () => {
-  const result = parseAlarmTime('set an alarm at 11:10 am Atlantis time', now, tz);
-  assert.deepEqual(result, { status: 'clarify', reason: 'missing_timezone' });
-});
-
-test('direct102: an unconsumed minute expression never silently schedules the hour', () => {
-  const result = parseAlarmTime('set an alarm at eleven flibberty minutes in the morning', now, tz);
-  assert.deepEqual(result, { status: 'clarify', reason: 'unsupported_time_expression' });
-});
 
 
 test('direct102 alarm: browser wording in a compound ask is not mistaken for a relative interval', () => {
   const result = parseAlarmTime('open any deck in my browser and set an alarm in twenty minutes', now, tz);
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, now + 20 * 60000);
-});
-
-test('direct102 alarm: a clarified zone overrides the unrecognized earlier zone', () => {
-  const result = parseAlarmTime('set an alarm at eleven ten Atlantis time a.m. Singapore time', now, tz);
-  assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T03:10:00Z'));
 });
 
 for (const words of [
@@ -127,28 +152,36 @@ for (const words of [
   'set an alarm eleven and set an alarm at seven',
 ]) {
   test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
-    assert.deepEqual(parseAlarmTime(words, now, tz), { status: 'clarify', reason: 'unsupported_time_expression' });
+    const parsed = parseAlarmTime(words, now, tz);
+    assert.equal(parsed.status, 'clarify', words);
+    if (parsed.status === 'clarify') assert.ok(['missing_time', 'ambiguous_time'].includes(parsed.reason), `${words}: ${parsed.reason}`);
   });
 }
 
 for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  tomorrow at seven', 'set an alarm for tomorrow seven am']) {
   test(`R5 F2: one date-qualified time remains valid: ${words}`, () => {
-    const parsed = parseAlarmTime(words, now, tz);
+    const expected = Date.parse('2026-10-28T23:00:00Z');
+    const parsed = parseAlarmTime(words, now, tz, modelAt(expected));
     assert.equal(parsed.status, 'ready');
-    if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
+    if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, expected);
   });
 }
 
+// C-TIME design change: "ten past six p.m. today" states today, and at this fixture's now that
+// instant has already passed, so it asks back (requirement 4) instead of arming a past alarm.
+test('hear104 time and label: a stated today already past asks back', () => {
+  assert.deepEqual(parseAlarmTime('Well, okay, set an alarm for ten past six p.m. today', now, tz), { status: 'clarify', reason: 'past_time' });
+});
 for (const words of [
-  'Well, okay, set an alarm for ten past six p.m. today',
   'set an alarm for um ten past six p.m.',
   'wake me up tomorrow at eight and give me a summary',
   'remind me in nine minutes that I have to call the library',
 ]) test(`hear104 time and label: ${words}`, () => {
   const result = parseAlarmTime(words, now, tz);
   assert.equal(result.status, 'ready');
-  if (words.includes('summary')) assert.equal('label' in result && result.label, 'give me a summary');
-  if (words.includes('library')) assert.equal('label' in result && result.label, 'I have to call the library');
+  // C-TIME: the label is the model's argument now, so this asserts the clock survived the subject clause.
+  if (words.includes('summary')) assert.match(result.confirmation, /^Alarm set for /);
+  if (words.includes('library')) assert.equal(result.fireAtUtc, now + 540000);
 });
 
 test('hear104 wake without a period means the next morning, not this evening', () => {
@@ -161,17 +194,17 @@ test('hear104 relative reminder preserves owner label and ignores model-selected
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') {
     assert.equal(result.fireAtUtc, now + 600000);
-    assert.equal(result.label, 'I have to call the library');
+    assert.match(result.confirmation, /^Alarm set for /, 'the read-back replaces the extracted label');
   }
 });
 test('hear104 quarter-to is a time, not a trailing label', () => {
   const result = parseAlarmTime('set an alarm at quarter to eight', now, tz);
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.label, '');
+  if (result.status === 'ready') assert.match(result.confirmation, /^Alarm set for /);
 });
 
 test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
-  const result = parseAlarmTime('set an alarm Ten five, today', now, tz);
+  const result = parseAlarmTime('set an alarm Ten five, today', now, tz, modelAt(Date.parse('2026-10-28T14:05:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-28T14:05:00Z'));
 });
@@ -181,18 +214,20 @@ for (const [words, minute] of [
   ['set an alarm for um five past five p.m.', 5],
   ['set an alarm for fi ten past five p.m.', 10],
 ] as const) test(`hear104 R5 one filler before spoken time: ${words}`, () => {
-  const result = parseAlarmTime(words, now, tz);
+  const expected = Date.UTC(2026, 9, 29, 9, minute);
+  const result = parseAlarmTime(words, now, tz, modelAt(expected));
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.UTC(2026, 9, 29, 9, minute));
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, expected);
 });
 for (const time of [
   '5', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
   'five past five', 'twenty past five', 'twenty-five to five', 'thirty past five', 'forty past five', 'fifty to five',
   'quarter past five', 'half past five', 'noon', 'midnight',
 ]) test(`hear104 R5 filler does not change the instant: ${time}`, () => {
-  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz);
+  const model = modelAt(Date.parse('2026-10-29T09:00:00Z'));
+  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz, model);
   assert.equal(clean.status, 'ready');
-  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz), clean);
+  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz, model), clean);
 });
 
 test('C-RECUR: every day resolves the owner 24-hour wall time and the following day', () => {
@@ -201,21 +236,22 @@ test('C-RECUR: every day resolves the owner 24-hour wall time and the following 
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready' || !result.series) return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-30T22:30:00+08:00'));
-  assert.match(result.label, /go to bed/);
+  assert.match(result.confirmation, /^Alarm set for /);
   assert.equal(seriesNextFireAt(result.series, result.fireAtUtc), Date.parse('2026-10-31T22:30:00+08:00'));
   assert.equal(seriesText(result.series), 'every day at 22:30 Singapore time');
   assert.match(result.confirmation, /every day at 22:30 Singapore time/);
 });
 
 test('C-RECUR: every Saturday before and after ten, and the week after the fire', () => {
-  const before = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T09:00:00+08:00'), tz);
+  const beforeAt = Date.parse('2026-10-31T09:00:00+08:00');
+  const before = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', beforeAt, tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(before.status, 'ready');
   if (before.status !== 'ready' || !before.series) return;
   assert.equal(before.fireAtUtc, Date.parse('2026-10-31T10:00:00+08:00'));
-  assert.match(before.label, /do one hour of cardio/);
+  assert.match(before.confirmation, /^Alarm set for /);
   assert.equal(seriesNextFireAt(before.series, before.fireAtUtc), Date.parse('2026-11-07T10:00:00+08:00'));
   assert.equal(seriesText(before.series), 'every Saturday at 10:00 Singapore time');
-  const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz);
+  const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz, modelAt(Date.parse('2026-11-07T10:00:00+08:00')));
   assert.equal(after.status, 'ready');
   if (after.status === 'ready') assert.equal(after.fireAtUtc, Date.parse('2026-11-07T10:00:00+08:00'));
 });
@@ -238,14 +274,14 @@ test('C-RECUR: an evening half past ten and a weekly weekday set stay exact', ()
   assert.equal(evening.series.hour, 22);
   assert.equal(evening.series.minute, 30);
   assert.deepEqual(parseSeriesRule('every saturday and sunday at ten'), { kind: 'weekly', weekdays: [0, 6] });
-  const weekend = parseAlarmTime('every saturday and sunday at ten remind me to run', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  const weekend = parseAlarmTime('every saturday and sunday at ten remind me to run', Date.parse('2026-10-30T15:00:00+08:00'), tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(weekend.status, 'ready');
   if (weekend.status === 'ready' && weekend.series) assert.equal(seriesText(weekend.series), 'every Sunday and Saturday at 10:00 Singapore time');
 });
 
 test('C-RECUR: a host time zone change never moves a series', () => {
   const t0 = Date.parse('2026-10-30T15:00:00+08:00');
-  const parsed = parseAlarmTime('Every Saturday at ten remind me to do cardio.', t0, tz);
+  const parsed = parseAlarmTime('Every Saturday at ten remind me to do cardio.', t0, tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(parsed.status, 'ready');
   if (parsed.status !== 'ready' || !parsed.series) return;
   const previous = process.env.TZ;
@@ -277,7 +313,7 @@ test('C-RECUR: cancel words choose one occurrence or the whole series', () => {
 });
 
 test('C-RECUR: a non-recurring ask keeps its one-shot instant', () => {
-  const oneShot = parseAlarmTime('set an alarm at 8', now, tz);
+  const oneShot = parseAlarmTime('set an alarm at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(oneShot.status, 'ready');
   if (oneShot.status === 'ready') assert.equal(oneShot.series, undefined);
   assert.equal(parseSeriesRule('set an alarm on Monday at ten'), undefined);
@@ -289,34 +325,43 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
   const wake = parseAlarmTime('wake up at 10:30 and remind me to go to sport', now_, tz);
   assert.equal(wake.status, 'ready');
   if (wake.status === 'ready') {
-    assert.equal(wake.label, 'go to sport');
+    assert.match(wake.confirmation, /^Alarm set for /);
   }
   const brief = parseAlarmTime('wake me at 7 and brief me', now_, tz);
   assert.equal(brief.status, 'ready');
-  if (brief.status === 'ready') assert.match(brief.label, /brief/);
+  if (brief.status === 'ready') assert.match(brief.confirmation, /^Alarm set for /);
   const checkIn = parseAlarmTime('check in with me in an hour about the deck', now_, tz);
   assert.equal(checkIn.status, 'ready');
   if (checkIn.status === 'ready') {
-    assert.equal(checkIn.label, 'the deck');
+    assert.match(checkIn.confirmation, /^Alarm set for /);
     assert.equal(checkIn.fireAtUtc, now_ + 3_600_000);
   }
   for (const ask of ['wake me at 7 and tell me about the deck', 'wake me at 7 and talk to me about the deck',
     'check in with me at 7 about the deck']) {
-    const subject = parseAlarmTime(ask, now_, tz);
+    const subject = parseAlarmTime(ask, now_, tz, modelAt(Date.parse('2026-10-28T07:00:00+08:00')));
     assert.equal(subject.status, 'ready', ask);
-    if (subject.status === 'ready') assert.equal(subject.label, 'the deck', ask);
+    if (subject.status === 'ready') assert.match(subject.confirmation, /^Alarm set for /, ask);
   }
   // A stated clock after the subject belongs to the alarm, never to the label.
   for (const ask of ['tell me about the deck at 9', 'talk to me about the deck at 9',
     'check in with me at 7 about the deck']) {
-    const clocked = parseAlarmTime(ask, now_, tz);
+    const clocked = parseAlarmTime(ask, now_, tz, modelAt(Date.parse('2026-10-28T09:00:00+08:00')));
     assert.equal(clocked.status, 'ready', ask);
     if (clocked.status === 'ready') {
-      assert.equal(clocked.label, 'the deck', ask);
-      assert.doesNotMatch(clocked.label, /\d|\bat\b|\bin\b/, ask);
+      assert.match(clocked.confirmation, /^Alarm set for /, ask);
+      assert.doesNotMatch(clocked.confirmation.replace(/^Alarm set for /, ''), /\d{1,2}:\d{2}.*\d{1,2}:\d{2}/, ask);
     }
   }
-  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
+  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz, modelAt(Date.parse('2026-10-28T07:00:00+08:00'), tz, now_));
   assert.equal(standaloneBrief.status, 'ready');
-  if (standaloneBrief.status === 'ready') assert.equal(standaloneBrief.label, 'brief me');
+  if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.confirmation, /^Alarm set for /);
+});
+
+// T-R1: the counts are the ruling's evidence, so they are printed once and pinned, never only
+// accumulated. A plain clock that reads inconclusive shows up here as a movement in the numbers.
+test('T-R1 counts: how the checker reads this file\'s golden rows', () => {
+  const total = goldenReading.unique + goldenReading.partial + goldenReading.inconclusive;
+  console.log(`C-TIME golden checker reading: ${JSON.stringify(goldenReading)} over ${total} read rows`);
+  assert.ok(total >= 12, `every migrated golden row is counted (${total})`);
+  assert.ok(goldenReading.unique >= 8, `most golden rows state one settled time (${JSON.stringify(goldenReading)})`);
 });

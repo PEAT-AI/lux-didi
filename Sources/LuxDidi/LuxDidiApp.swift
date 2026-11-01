@@ -96,7 +96,7 @@ import WebKit
         // call arrives as the alarm-mode host note instead of a chime and a second conversation.
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
             sessionState: { [weak self] in self?.live?.state ?? .idle },
-            onDue: { [weak self] id in _ = self?.startLive(alarmID: id) },
+            onDue: { [weak self] id in self?.onAlarmDue?(id) },
             onCaption: { [weak self] caption in self?.alarmCaption = caption })
         shell.onAlarms = { [weak self] rows in
             guard let self else { return }
@@ -436,12 +436,12 @@ import WebKit
     /// The status menu's item travels through the web state machine and comes back as a bridge
     /// command, so its trigger is armed here and consumed by exactly that one Stop.
     var stopTrigger = LiveStopTriggerLatch()
-    func stopLive(trigger: LiveStopTrigger = .other) {
+    func stopLive(reason: NativeLiveEndReason = .userStop, trigger: LiveStopTrigger = .other) {
         let named = stopTrigger.take(trigger)
         let conversation = live
         orbLevels?.stop(); orbLevels = nil
         conversation?.stopCapture()
-        Task { await conversation?.stop(trigger: named) }
+        Task { await conversation?.stop(reason: reason, trigger: named) }
     }
 
     // MARK: - Presence effects (council 2026-10-17, option C)
@@ -462,6 +462,11 @@ import WebKit
         }
         liveJournal.append(record)
     }
+    /// F6: the call start marker sits beside audio.log and native-live.log, and holds no content.
+    var callStartMarkerURL: URL? { liveLogsDirectory.map { CallStartMarker.url(in: $0) } }
+    /// F6: one content free native-live.log record, so the launch that refused a call is on record.
+    func appendNativeRecord(_ record: [String: Any]) { liveJournal.append(record) }
+
     /// SOUND-R1: a dropped call the host is rebuilding rings the reconnect while presence stays live.
     func ringRebuildStarted() { connectingRing.rebuildStarted() }
     /// SOUND-R1: the rebuilt call is live again, so a reconnect ring ends with the arrival chime.
@@ -574,9 +579,17 @@ import WebKit
     var onPresenceMute: ((Bool) -> Void)?
     var onPresenceStart: ((String?) -> Void)?
     var onPresenceStop: (() -> Void)?
+    /// C-ALARMSPEECH: whether a reopen right now is the relaunch agent's own fire, not a Dock click.
+    func takeAlarmRelaunch(nowMs: Int) -> Bool { alarmRelaunch.takeOwnStart(nowMs: nowMs) }
+    /// C-ALARMSPEECH: the shell owns the loud failure path, and it is reachable from the delegate.
+    func alarmSpeechFailed(_ alarmID: String, reason: String) { alarmShell?.speechFailed(alarmID, reason: reason) }
+    /// C-ALARMSPEECH: a due alarm starts through presence, which the delegate owns.
+    var onAlarmDue: ((String) -> Void)?
 
-    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void) {
+    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void,
+                      alarm: @escaping (String) -> Void = { _ in }) {
         onPresenceStart = start
+        onAlarmDue = alarm
         onPresenceStop = { [weak presence] in presence?.stop(.app) }
         onPresenceMute = { [weak presence] muted in
             if muted { presence?.mute(.app) } else { presence?.unmute(.app) }
@@ -680,6 +693,9 @@ struct RootView: View {
         super.init()
     }
     let hotkey = GlobalHotkey()
+    /// C-AUDIOMARK 0b and 2: the read-only output volume journal, alive from launch on the same
+    /// native-live.log sink the status item writes. A mark must work with no call running.
+    private lazy var volumeMonitor = NativeOutputVolumeMonitor(journal: model.surfaceReceiptLog)
     let liveShortcuts = NativeShortcuts()
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
@@ -712,7 +728,8 @@ struct RootView: View {
     private lazy var presence = NativePresence(effects: PresenceEffects(
         openSession: { [weak self] generation in self?.openPresenceSession(generation) },
         cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
-        closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
+        // C-LABELS 2: the presence says why it closed, so a lost session is never logged as the owner's Stop.
+        closeSession: { [weak self] reason in self?.model.stopLive(reason: reason, trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         providerInputMute: { [weak self] muted in self?.model.setPresenceProviderInputMute(muted) },
@@ -767,6 +784,29 @@ struct RootView: View {
     private var keyboardMonitor: Any?
     private var statusClickMonitor: Any?
     private var statusScreenMonitor: NSObjectProtocol?
+    /// #108: the last surface_visible state a re-assert wrote, so a repeat writes nothing.
+    private var reassertReceipt = ChangeOnlyGate()
+    private var screensReassert: MiniOrbSurfaceSignals.Reason?
+    private lazy var screensReassertSignal = TrailingSignal { [weak self] in
+        MainActor.assumeIsolated {
+            guard let self, let reason = self.screensReassert else { return }
+            self.screensReassert = nil
+            self.performReassertSurface(reason)
+        }
+    }
+    /// #108: the screen notification can arrive once per animation frame; the status receipt is one
+    /// trailing call per 250 ms and is written only when what it says changed, the way the orb's own
+    /// orb_screen_parameters receipt is (review F2).
+    private var statusReceipt: StatusSurfaceReceipt?
+    private lazy var statusScreenSignal = TrailingSignal { [weak self] in
+        MainActor.assumeIsolated {
+            guard let self else { return }
+            let receipt = StatusItemPresentation.state(button: self.statusItem.button)
+            guard receipt != self.statusReceipt else { return }
+            self.statusReceipt = receipt
+            self.appendSurface(receipt)
+        }
+    }
     private var menuTracking = StatusMenuTracking()
     private let menuLogger = Logger(subsystem: "LuxDidi", category: "menu")
     private var terminationMonitor: NSObjectProtocol?
@@ -839,6 +879,8 @@ struct RootView: View {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // C-AUDIOMARK 0b and 2: the output volume journal runs from launch, with or without a call.
+        volumeMonitor.start()
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
@@ -864,17 +906,19 @@ struct RootView: View {
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
         model.onMiniMode = { [weak self] in self?.showMiniOrb() }
-        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
+        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) },
+                           alarm: { [weak self] id in self?.alarmDue(id) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: StatusItemPresentation.length)
         let symbol = StatusItemPresentation.resolve(
             symbol: NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya"))
         statusItem.button?.image = symbol.image
         statusItem.button?.title = symbol.title
+        statusReceipt = StatusItemPresentation.state(button: statusItem.button)
         appendSurface(StatusItemPresentation.state(button: statusItem.button))
         statusScreenMonitor = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.appendSurface(StatusItemPresentation.state(button: self?.statusItem.button)) }
+                MainActor.assumeIsolated { self?.statusScreenSignal.signal() }
             }
         let menu = NSMenu()
         menu.delegate = self
@@ -887,6 +931,9 @@ struct RootView: View {
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Open Naya app", action: #selector(showFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Settings", action: #selector(openSettingsFromMenu), keyEquivalent: "")
+        // C-AUDIOMARK 1: one press records the moment the owner hears the distortion. Deliberately no
+        // key equivalent: a new global key could clash with a key he already uses.
+        menu.addItem(withTitle: "Mark distortion", action: #selector(markDistortion), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
         // #3p: the one line that says why a silent key is silent, in the status menu the
@@ -1101,8 +1148,17 @@ struct RootView: View {
     /// final for the launch: the orb shows its error look and nothing retries.
     private func autoConnectIfReady() {
         let pageHostable = coordinator.miniShown || miniShell?.state == .ready
+        // F6: a start marker left inside two minutes by another pid means that call never proved
+        // itself, so this launch does not repeat it. The app stays open and a press still calls.
+        let died = model.callStartMarkerURL.flatMap { CallStartMarker.previousStartDied($0, now: Date()) }
+        if let died {
+            model.appendNativeRecord(["event": "launch_after_failed_start", "kind": launchKind.rawValue,
+                                "ageMs": Int(Date().timeIntervalSince(died.startedAt) * 1000),
+                                "transport": died.transport])
+        }
         switch OrbFirstAutoConnect.decide(kind: launchKind, serviceReady: model.shell != nil,
-                                          pageHostable: pageHostable, attempted: autoConnectAttempted) {
+                                          pageHostable: pageHostable, attempted: autoConnectAttempted,
+                                          previousStartDied: died != nil) {
         case .connect:
             autoConnectAttempted = true
             Task { [weak self] in
@@ -1119,14 +1175,12 @@ struct RootView: View {
         }
     }
 
-    /// #613: the calendar connector is published when the host's tools status names it ready.
+    /// #613: the calendar connector is published when the host's tools status names the calendar
+    /// endpoint connected. #108: the row is read by OrbFirstAutoConnect, so the shape is proven.
     private func calendarPublished() async -> Bool {
         guard let client = model.client,
-              let value = try? await client.connectedRead("api/v1/tools/status"),
-              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
-        return endpoints.contains {
-            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
-        }
+              let value = try? await client.connectedRead("api/v1/tools/status") else { return false }
+        return OrbFirstAutoConnect.calendarPublished(in: value)
     }
 
     /// ORBFIRST: the app window is created on demand, so presenting it may be the first time it
@@ -1376,6 +1430,26 @@ struct RootView: View {
     @objc func toggleMiniOrb() {
         if coordinator.fullShown { coordinator.closeFull() } else { coordinator.presentFull(activating: true) }
     }
+    /// C-AUDIOMARK 1: one press records the moment the owner heard the distortion. Metadata only: the
+    /// device and its volumes, the voice stage and its bypass reason, the engine generation and the
+    /// last graph change, the ducking requested and read back, the recent playback counters and the
+    /// load average. It works with no call running, and the journal adds the call id when there is one.
+    @objc func markDistortion() {
+        let load = NativeDistortionMark.currentLoadAverage()
+        let mark = model.live?.device.distortionMark(loadAverage: load) ?? Self.markWithoutCall(load: load)
+        // F1: the conversation adopts the session id on the audio journal, never on the app's own
+        // native-live journal, so the call id is read here and passed in with the mark.
+        let callID = AudioOwner.shared.journal?.sessionID
+        model.surfaceReceiptLog.append(NativeDistortionMark.record(for: mark, callID: callID))
+    }
+    /// A mark taken with no call: no engine, no voice stage, so nothing about either is claimed.
+    private static func markWithoutCall(load: (Double, Double, Double)) -> NativeDistortionMark {
+        NativeDistortionMark(output: NativeLiveAudioDevice.outputVolumeSnapshot(), voiceProcessing: false,
+                             bypassReason: "no_call", engineGeneration: 0, lastChange: "none",
+                             duckingRequested: "none", duckingReadBack: "none",
+                             peakDb: "unknown", rmsDb: "unknown", overSamples: 0, flatTopRuns: 0,
+                             processorOverloads: 0, loadAverage: load)
+    }
     /// MINI2: the single key on or off. Turning it on asks for the grant again,
     /// because the owner just said yes to the key.
     @objc func toggleSingleKey() {
@@ -1433,20 +1507,52 @@ struct RootView: View {
         miniOrb.showSurface(trigger: .hotkey)
     }
 
+    /// C-ALARMSPEECH: the alarm opens through presence, so the machine reaches LIVE, the chime stops
+    /// when she is audible, and the owner's key acts on that call instead of finding a cold orb.
+    private func alarmDue(_ alarmID: String) { startPresence(alarmID: alarmID) }
+
     private func stopPresence() { presence.stop(.app) }
 
-    private func startPresence(pickupJobID: String? = nil) {
+    private func startPresence(pickupJobID: String? = nil, alarmID: String? = nil) {
         coordinator.allowPresenceReveal()
         if model.live == nil { presence.sessionEnded(presence.generation) }
         presencePickupJobID = pickupJobID
-        presence.start(.app)
+        // F6: written synchronously before the presence start, on the automatic and the key press
+        // path alike, so a launch after a start that never proved itself knows not to repeat it.
+        writeCallStartMarker()
+        presence.start(alarmID == nil ? .app : .alarm, alarmID: alarmID)
+    }
+
+    private func writeCallStartMarker() {
+        guard let url = model.callStartMarkerURL else { return }
+        let record = CallStartMarker.Record(pid: Int32(ProcessInfo.processInfo.processIdentifier),
+                                            startedAt: Date(),
+                                            transport: NativeLiveAudioDevice.currentOutputTransport)
+        if !CallStartMarker.write(record, to: url) {
+            model.appendNativeRecord(["event": "call_start_marker_failed"])
+        }
+    }
+
+    private func clearCallStartMarker() {
+        guard let url = model.callStartMarkerURL else { return }
+        CallStartMarker.clear(url)
     }
 
     private func openPresenceSession(_ generation: UInt64) {
         let job = presencePickupJobID
         presencePickupJobID = nil
+        let alarmID = presence.takeAlarmID()
         liveGeneration = generation
-        if !model.startLive(pickupJobID: job) { presence.fail(generation) }
+        guard model.startLive(pickupJobID: job, alarmID: alarmID) else {
+            presence.fail(generation)
+            if let alarmID { model.alarmSpeechFailed(alarmID, reason: "start_refused") }
+            return
+        }
+        // F6: both directions proved means this start is not one to refuse on the next launch.
+        model.live?.device.onCallProvedBothWays = { [weak self] in self?.clearCallStartMarker() }
+        if let alarmID {
+            model.live?.onSpeechFailed = { [weak self] reason in self?.model.alarmSpeechFailed(alarmID, reason: reason) }
+        }
     }
 
     private func presenceTransitioned(_ state: NativeLiveConversation.State, generation: UInt64) {
@@ -1461,6 +1567,8 @@ struct RootView: View {
         case .ready: presence.ready(generation)
         case .failed: presence.fail(generation)
         case .ended:
+            // F6: a call that ended cleanly is not a start that died.
+            clearCallStartMarker()
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true,
@@ -1491,12 +1599,23 @@ struct RootView: View {
     /// bypasses the visibility dedupe and writes the same `surface_visible` receipt the sync does,
     /// so the log shows which reason asked.
     private func reassertSurface(_ reason: MiniOrbSurfaceSignals.Reason) {
+        // #108: the OS repeats the screen notification once per animation frame for up to two seconds.
+        // A screen change is one trailing re-assert per 250 ms, and every other reason stays immediate.
+        // The orb's own frame re-place is untouched: this only coalesces the page evaluation and receipt.
+        guard reason == .screens else { performReassertSurface(reason); return }
+        screensReassert = reason
+        screensReassertSignal.signal()
+    }
+    private func performReassertSurface(_ reason: MiniOrbSurfaceSignals.Reason) {
         let generation = coordinator.generation
         let fullVisible = coordinator.fullShown && window?.isVisible == true && window?.isMiniaturized == false
         let miniVisible = coordinator.miniShown && miniPanel?.isVisible == true
         model.shell?.reassertSurfaceVisible(fullVisible, generation: generation)
         miniShell?.reassertSurfaceVisible(miniVisible, generation: generation)
         let recipient = fullVisible ? model.shell : miniVisible ? miniShell : nil
+        // #108: the page is re-asserted every time, and the receipt is written only when what it says
+        // changed, the way orb_screen_parameters gates its own.
+        guard reassertReceipt.changed("\(reason.rawValue);\(fullVisible);\(miniVisible);\(generation)") else { return }
         model.recordSurfaceReceipt(surfaceVisibleReceipt(recipient: recipient, fullVisible: fullVisible,
                                                          miniVisible: miniVisible, reason: reason.rawValue))
     }
@@ -1647,6 +1766,13 @@ struct RootView: View {
     /// created, nothing becomes key and the app never activates; the menu item, the hotkey and an
     /// install relaunch still open the full window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // C-ALARMSPEECH: the relaunch agent's own reopen is not a Dock click. It logs its own kind and
+        // shows nothing extra; the alarm speaks when it is due.
+        if model.takeAlarmRelaunch(nowMs: Int(Date().timeIntervalSince1970 * 1000)) {
+            model.appendPresenceReceipt(LaunchKind.alarmRelaunch.launchRecord)
+            model.forwardLaunchReceipt(LaunchKind.alarmRelaunch)
+            return false
+        }
         model.appendPresenceReceipt(LaunchKind.reopen.launchRecord)
         model.forwardLaunchReceipt(LaunchKind.reopen)
         _ = coordinator.presentOrbFromDock()
@@ -1788,6 +1914,12 @@ struct RootView: View {
 #if !COMPANION_TEST
 @main enum LuxDidiApp {
     @MainActor static func main() {
+        // F4: an Objective-C exception is never swallowed. AppKit used to swallow it at the top of
+        // NSApplication run, which skips Swift's job cleanup and leaves the runtime's current
+        // executor pointing at a dead frame, so the next MainActor.assumeIsolated jumped through
+        // garbage. A process past a swallowed exception is already corrupt, and the crash report now
+        // names the exception instead of a wild pc in a timer. Registered before anything can raise.
+        UserDefaults.standard.register(defaults: ["NSApplicationCrashOnExceptions": true])
         do {
             if let configure = try ConfigureRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) {
                 exit(configure.run())

@@ -12,9 +12,12 @@ import { test, type TestContext } from 'node:test';
 import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ReadStream } from 'node:tty';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { ConfigError } from '../config/files.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
@@ -23,7 +26,7 @@ import { projectGoogleResult } from '../tools/google.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { toolsMigrations } from '../tools/schema.js';
-import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
+import { SUPERVISION_FLAG, supervise, supervisionRequested } from '../host/supervision.js';
 import { HostLog, clearLogContext, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
@@ -351,6 +354,22 @@ test('host fails fatal configuration/listener/descriptor startup and releases it
     assert.equal((await once(help, 'exit'))[0], 0);
     assert.match(text, /loopback-only/);
   } finally { await new Promise<void>(resolve => blocker.close(() => resolve())); await rm(dir, { recursive: true, force: true }); }
+});
+
+// #698 F2: the plain line is the one wire between the loader and the refusal the owner reads, so pin it here.
+test('#698: a host start refuses an unknown owner-profile key with a line that names it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-owner-key-'));
+  try {
+    await chmod(dir, 0o700);
+    const profile = join(dir, 'profile.json');
+    await writeFile(profile, JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture',
+      displayName: 'Example', style: { text: 'SYNTHETIC style', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'private' },
+      features: { composedNotes: true } }), { mode: 0o600 });
+    await assert.rejects(startHost({ dataDir: join(dir, 'state'), webRoot, port: 0, ownerProfilePath: profile }),
+      (error: unknown) => error instanceof ConfigError && error.code === 'invalid_profile'
+        && /unknown key "features"/.test(error.message) && /live\.json/.test(error.message),
+      'the refused start names the key and where the composed-notes switch belongs');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('supervised actual child reports bounded matching readiness, closes on pipe EOF and preserves data', async () => {
@@ -894,6 +913,61 @@ test('the installed app config dir is refused with one line naming --data-dir, a
   // The refusal is keyed off the named supervision marker, not a literal repeated in this file.
   assert.equal(supervisionRequested(['node', 'host/index.js', SUPERVISION_FLAG]), true);
   assert.equal(supervisionRequested(['node', 'host/index.js', '--data-dir', '/tmp/x']), false);
+});
+
+/** C-LABELS 1: the supervision pipe as a plain stream, so the wire contract is provable with no host. */
+function supervisionPipe(): { input: ReadStream; write: (frame: unknown) => void; end: () => void } {
+  const raw = new PassThrough();
+  return { input: raw as unknown as ReadStream, write: frame => { raw.write(`${JSON.stringify(frame)}\n`); }, end: () => { raw.end(); } };
+}
+const START_FRAME = (nonce: string): Record<string, unknown> => ({ type: 'start', schemaVersion: 1, nonce });
+
+test('C-LABELS 1: a supervised pipe that ends with no stop frame names its end shell_lost', async () => {
+  const pipe = supervisionPipe();
+  const supervision = supervise(pipe.input);
+  const nonce = randomUUID();
+  const closed = new Promise<Error | undefined>(resolve => supervision.watch(error => resolve(error)));
+  pipe.write(START_FRAME(nonce));
+  assert.equal(await supervision.nonce, nonce);
+  assert.equal(supervision.endReason, undefined, 'a running host has named no end yet');
+  pipe.end();
+  assert.equal(await closed, undefined, 'the shell going quiet is not a supervision failure');
+  assert.equal(supervision.endReason, 'shell_lost', 'EOF with no stop frame is the shell that was lost');
+});
+
+test('C-LABELS 1: the one stop frame names the end the app chose, and stdin still closes behind it', async () => {
+  const pipe = supervisionPipe();
+  const supervision = supervise(pipe.input);
+  const closed = new Promise<Error | undefined>(resolve => supervision.watch(error => resolve(error)));
+  pipe.write(START_FRAME(randomUUID()));
+  await supervision.nonce;
+  pipe.write({ type: 'stop', schemaVersion: 1, reason: 'app_quit' });
+  pipe.end();
+  assert.equal(await closed, undefined);
+  assert.equal(supervision.endReason, 'app_quit', 'the app said why, so the host never has to guess');
+});
+
+test('C-LABELS 1: any other post-start frame is still a supervision failure', async () => {
+  const frames: unknown[] = [
+    { type: 'stop', schemaVersion: 1, reason: 'app_quit', extra: 'not-allowed' },
+    { type: 'stop', schemaVersion: 2, reason: 'app_quit' },
+    { type: 'stop', schemaVersion: 1 },
+    { type: 'stop', schemaVersion: 1, reason: 'not_a_live_end_reason' },
+    { type: 'ready', schemaVersion: 1 },
+    'not-an-object',
+  ];
+  for (const frame of frames) {
+    const pipe = supervisionPipe();
+    const supervision = supervise(pipe.input);
+    const closed = new Promise<Error | undefined>(resolve => supervision.watch(error => resolve(error)));
+    pipe.write(START_FRAME(randomUUID()));
+    await supervision.nonce;
+    pipe.write(frame);
+    const error = await closed;
+    assert.ok(error instanceof Error, `still refused: ${JSON.stringify(frame)}`);
+    assert.match(error.message, /supervision/i);
+    assert.equal(supervision.endReason, undefined, 'a refused frame never names an end reason');
+  }
 });
 
 test('the entry refuses to start an unsupervised host on the installed app config dir', async () => {

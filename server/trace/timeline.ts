@@ -131,6 +131,13 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
 /** L8-Q04: the failure receipts of one call: rejected commands, stalls, failed responses and failed calls. */
 const FAILED_RESPONSE_REASONS = new Set(['failed', 'provider_error', 'timeout']);
 const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
+/** C-LABELS 4: every way a model announces the look-up it is about to run. A turn that says one of these and
+ *  runs no call after it promised the owner something it never did, whatever words it chose to promise it.
+ *  A fragment may carry a `%` of its own: the scheduled filler puts other words between the two halves. */
+const ANNOUNCED_LOOKUPS = ['looking this up', 'looking that up', 'looking it up', 'looking into it', "i'll check",
+  'i will check', 'let me check', 'let me look', 'let me see', 'let me find', 'let me pull', 'let me take a look',
+  'let me have a look', "let's check", "let's see", "let's look", "let's take a look", "let's have a look",
+  'take a look', 'have a look', 'pull that up', 'one second%checking', 'checking now'] as const;
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
@@ -195,16 +202,15 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   const journalAvailable = !!read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_journal'");
   const claimText = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END' : 'u.text';
   const claimFinal = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END' : 'u.final';
+  // C-LABELS 4: the detector matched two fixed phrases, so a call whose model said "let's have a look" or
+  // "let's see" reported one unfulfilled announcement where the records held seven. It now counts every way a
+  // model announces a look-up it then owes, and still only a turn that ran no call after saying it.
   const announcedClaimsWithoutCall = Number(read.get(`SELECT COUNT(DISTINCT u.turn_id) AS count
     FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
     ${journalAvailable ? 'LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id' : ''}
     WHERE t.live_session_id=? AND u.role='model'
       AND (${claimFinal})=1
-      AND (lower(${claimText}) LIKE '%looking this up%'
-        OR lower(${claimText}) LIKE '%looking that up%'
-        OR lower(${claimText}) LIKE '%looking it up%'
-        OR lower(${claimText}) LIKE '%let me check%'
-        OR lower(${claimText}) LIKE '%one second%checking%')
+      AND (${ANNOUNCED_LOOKUPS.map(phrase => `lower(${claimText}) LIKE '%${phrase.replaceAll("'", "''")}%'`).join('\n        OR ')})
       AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
 
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
@@ -480,6 +486,8 @@ export interface CallStory {
 /** The event families a call is debugged by. Everything else is noise in this view, so it is counted. */
 const LOG_EVENT_KIND: Record<string, CallEntryKind> = {
   live_state: 'state', audio_owned: 'state', audio_released: 'state', audio_started: 'state', live_interrupted: 'state',
+  // C-AUDIOMARK: the owner's own presses and the volume journal, so one call reads with its marks in place.
+  audio_distortion_mark: 'state', output_volume: 'state', output_volume_changed: 'state', processor_overload: 'state',
   live_first_audio: 'model', live_answer_audio: 'model', gptlive_turn_complete: 'model', live_turn_script: 'model',
   live_voice_profile: 'model', live_voice_shift: 'model',
   live_handshake: 'model', live_provider_open: 'model', live_provider_ready: 'model',
@@ -495,6 +503,10 @@ const LOG_DETAIL_KEYS = [
   'state', 'from', 'cause', 'connector', 'reason', 'phase', 'outcome', 'code', 'endpointId', 'proven', 'match',
   'researchId', 'sources', 'tools', 'calls', 'ms', 'msSinceReady', 'msSinceOpen', 'msSinceArrived', 'deadAirMs',
   'queuedMs', 'toolPending', 'failureClass', 'closeReason', 'terminalReason',
+  // C-AUDIOMARK: a mark and a volume line are read for these, so their values print with the entry.
+  'outputUid', 'outputTransport', 'outputVolume', 'outputVolumeControls', 'voiceProcessing',
+  'voiceProcessingBypass', 'engineGeneration', 'lastChange', 'duckingRequested', 'duckingReadBack',
+  'overSamples', 'flatTopRuns', 'processorOverloads', 'loadAverage', 'count',
   // C-PITCH: the voice column, so one call's responses read as a pitch line and a shift stands out.
   'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'responseId', 'ratio', 'medianHz', 'sessionMedianHz',
 ] as const;
@@ -1035,4 +1047,51 @@ export function renderAuditSummary(summary: AuditSummary): string {
   if (summary.failuresByToolAndCode.length === 0) out.push(summary.refusalsMeasured ? 'none' : MISSING);
   out.push(`final to audio n=${summary.finalToAudio.count} p50=${auditMs(summary.finalToAudio.p50)} p90=${auditMs(summary.finalToAudio.p90)}`);
   return `${out.join('\n')}\n`;
+}
+
+/**
+ * C-AUDIOMARK: one owner mark as the log recorded it. Marks are printed by their own command because
+ * the owner hears the distortion with no call running, and a line no call can be attributed to never
+ * reaches the call story. Metadata only: a device id, volumes, counters and a load average.
+ */
+export interface DistortionMark {
+  at: number | null; monoMs: number | null; liveSessionId: string | null;
+  outputUid: string | null; transport: string | null; volumes: string | null;
+  voiceProcessing: boolean | null; bypass: string | null; engineGeneration: number | null;
+  lastChange: string | null; overSamples: number | null; flatTopRuns: number | null;
+  processorOverloads: number | null; loadAverage: string | null;
+}
+
+export function buildDistortionMarks(scan: LogScan): DistortionMark[] {
+  return scan.lines
+    .filter(line => line.event === 'audio_distortion_mark')
+    .sort((left, right) => (left.at ?? 0) - (right.at ?? 0) || (left.monoMs ?? 0) - (right.monoMs ?? 0))
+    .map(line => ({
+      at: line.at, monoMs: line.monoMs, liveSessionId: line.liveSessionId,
+      outputUid: name(line.record.outputUid), transport: name(line.record.outputTransport),
+      volumes: name(line.record.outputVolume), voiceProcessing: bool(line.record.voiceProcessing),
+      bypass: name(line.record.voiceProcessingBypass), engineGeneration: count(line.record.engineGeneration),
+      lastChange: name(line.record.lastChange), overSamples: count(line.record.overSamples),
+      flatTopRuns: count(line.record.flatTopRuns), processorOverloads: count(line.record.processorOverloads),
+      loadAverage: name(line.record.loadAverage),
+    }));
+}
+
+function bool(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+export function renderDistortionMarks(marks: readonly DistortionMark[]): string {
+  if (marks.length === 0) return 'no distortion marks in the logs\n';
+  const lines = marks.map(mark => {
+    const voice = mark.voiceProcessing === null ? 'unknown' : mark.voiceProcessing ? 'on' : `off/${mark.bypass ?? 'unknown'}`;
+    return `${wall(mark.at)} mono=${mark.monoMs ?? '-'} call=${mark.liveSessionId ?? 'none'} ` +
+      `output=${mark.outputUid ?? 'unknown'} transport=${mark.transport ?? 'unknown'} volume=${mark.volumes ?? 'unknown'} ` +
+      `voiceProcessing=${voice} engine=${mark.engineGeneration ?? '-'} lastChange=${mark.lastChange ?? '-'} ` +
+      `overSamples=${mark.overSamples ?? '-'} flatTopRuns=${mark.flatTopRuns ?? '-'} ` +
+      `overloads=${mark.processorOverloads ?? '-'} load=${mark.loadAverage ?? '-'}`;
+  });
+  const withCall = marks.filter(mark => mark.liveSessionId !== null).length;
+  lines.push(`${marks.length} marks, ${withCall} inside a call`);
+  return `${lines.join('\n')}\n`;
 }

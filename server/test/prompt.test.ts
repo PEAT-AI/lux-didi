@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadOwnerProfile } from '../config/owner-profile.js';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_VOICE_TOOLS, NAYA_BACKEND_PROCEDURE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
@@ -289,6 +293,24 @@ test('owner text is never truncated and unknown classes/fields and wrong owner a
   ]) assert.throws(() => compilePrompt({ ...input(), ownerProfile } as CompileInput));
   rejects('budget', () => compilePrompt({ ...input(), ownerProfile: syntheticOwner,
     budgets: { ...input().budgets, trustedChars: 1 } } as CompileInput));
+});
+
+// #698: the composed-notes switch lives in the provider's live.json, so a wrong key in the owner profile has to
+// say which key is wrong and where the switch really belongs, instead of a bare invalid_profile.
+test('#698: an unknown owner-profile key is named in the host start line', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-profile-key-'));
+  chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'synthetic.json');
+  const profile = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC style', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'private' },
+    features: { composedNotes: true } };
+  writeFileSync(path, JSON.stringify(profile), { mode: 0o600 });
+  const loaded = loadOwnerProfile({ path, ownerId: 'synthetic-owner' });
+  assert.equal(loaded.status, 'error', 'an unknown key still refuses the start');
+  const line = loaded.status === 'error' ? loaded.line : undefined;
+  assert.match(String(line), /features/, 'the plain line names the key the owner wrote');
+  assert.match(String(line), /live\.json/, 'and says where the composed-notes switch belongs');
 });
 
 test('owner fields retain expanded UTF-16 content exactly under the shared complete-system ceiling', () => {

@@ -434,12 +434,13 @@ test('#795 the live call site keeps a calendar grant across the question the mod
   f.send({ serverContent: { inputTranscription: { text: 'put cardio in my calendar at 11', finished: true } } });
   assert.ok(await settled(() => granted() === 'allowed'), `the ask grants before any question: ${granted()}`);
   f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true }, generationComplete: true, turnComplete: true } });
-  await settled(() => granted() === 'no_owner_request');
-  const afterQuestion = granted();
+  // C-PERMTIER (P-R1): the model's question no longer withdraws his ask, so the grant never lapses after it.
+  assert.equal(granted(), 'allowed');
   f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
+  const joined = await settled(() => owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals === 2);
   const allowed = await settled(() => granted() === 'allowed');
-  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()} (after the question it read ${afterQuestion}); ask=${JSON.stringify(owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio'))} current=${String(owner.ownerRequests.currentId(session.liveSessionId))}`);
-  assert.equal(owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals, 2, 'one ask, answered after a question');
+  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()}`);
+  assert.ok(joined, 'one ask, answered after a question');
 });
 
 // #797: the retry claim is only checkable after a refused write, and a call that did happen silences it.

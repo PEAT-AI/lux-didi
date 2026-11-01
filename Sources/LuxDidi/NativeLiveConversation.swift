@@ -47,6 +47,8 @@ enum State: String, CaseIterable {
     let device: NativeLiveAudioDevice
     private let coordinator: LiveSessionCoordinator
     private let alarmSession: Bool
+    /// C-ALARMSPEECH: whether she ever reached the call. A failure after her first word is not "could not start".
+    private var becameAudible = false
     /// C-ALARMSPEECH: an alarm call that never became audible reports one closed reason, so the shell can
     /// stop ringing out a chime over a silence nobody explained.
     var onSpeechFailed: ((String) -> Void)?
@@ -203,6 +205,7 @@ enum State: String, CaseIterable {
         latch.startRequested()
         generation &+= 1; let token = generation
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
+        becameAudible = false
         pendingEndReason = nil
         hostVoiceStop = false
         hostTerminalCode = nil
@@ -218,6 +221,7 @@ enum State: String, CaseIterable {
                 switch event {
                 case .active where self.state == .pausedForInput: break
                 case .active:
+                    self.becameAudible = true
                     self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
                     // Every native line written inside this call now carries its session id.
                     self.adoptSession(await coordinator.sessionID)
@@ -249,6 +253,11 @@ enum State: String, CaseIterable {
                     self.stopAudioAndSummarize(); self.state = .failed
                     self.failure = NativeLivePresentation.failure(reason)
                     self.logFailure(reason, beforeCreate: beforeCreate)
+                    // C-ALARMSPEECH F-A: a host refusal is a `.failed`, not an unknown outcome, so this
+                    // branch is why a 409 alarm create used to stay silent. It reports the same way.
+                    if let reported = Self.alarmSpeechFailure(reason, audible: self.becameAudible, alarm: self.alarmSession) {
+                        self.reportSpeechFailure(reported, beforeCreate: beforeCreate)
+                    }
                 case .createUnknown:
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.latch.ownerStopped()
@@ -396,6 +405,12 @@ enum State: String, CaseIterable {
         case .unavailable, .staleOperation, .transport:
             return "create_unknown"
         }
+    }
+    /// C-ALARMSPEECH F-A: the one decision both failure branches share. An alarm reports only when she never
+    /// became audible, so an alarm that spoke and then failed never claims she could not start.
+    nonisolated static func alarmSpeechFailure(_ error: LiveClientError, audible: Bool, alarm: Bool) -> String? {
+        guard alarm, !audible else { return nil }
+        return speechFailureReason(error)
     }
     /// One line for the release that used to be silent, and one report the shell can act on.
     private func reportSpeechFailure(_ reason: String, beforeCreate: Bool) {

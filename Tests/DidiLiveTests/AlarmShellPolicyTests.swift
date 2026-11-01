@@ -55,6 +55,20 @@ enum AlarmShellProbe {
         try check(NativeAlarmShell.notificationAuthorizationOptions.contains(.sound),
                   "alarm notifications are authorized with sound")
 
+        // 1b. F-A: a refused alarm create is a `.failed(.conflict)`, not an unknown outcome, and that is the
+        // branch a host 409 takes. It reports the same closed reason the host log accepts, once, and never
+        // claims she could not start after she already spoke.
+        try check(NativeLiveConversation.alarmSpeechFailure(.conflict, audible: false, alarm: true) == "create_refused",
+                  "a refused alarm create reports create_refused")
+        try check(NativeLiveConversation.alarmSpeechFailure(.grantMismatch, audible: false, alarm: true) == "snapshot_mismatch",
+                  "a grant mismatch reports snapshot_mismatch")
+        try check(NativeLiveConversation.alarmSpeechFailure(.socketClosed(code: 1006, reason: nil), audible: false, alarm: true) == "socket_lost",
+                  "a lost socket reports socket_lost")
+        try check(NativeLiveConversation.alarmSpeechFailure(.conflict, audible: true, alarm: true) == nil,
+                  "an alarm that spoke never claims she could not start")
+        try check(NativeLiveConversation.alarmSpeechFailure(.conflict, audible: false, alarm: false) == nil,
+                  "a normal call never reports an alarm speech failure")
+
         // 2. The call opens before the first chime, so the microphone path is claimed before our own ring
         // and echo cancellation stays on built-in. And a failed alarm gets exactly one retry.
         let authority = (URL(string: "http://127.0.0.1:1/")!,

@@ -20,7 +20,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
-import { runningStateLine } from '../tools/refusal-cause.js';
+import { refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -4377,11 +4377,11 @@ export class LiveSessionOwner {
       if (!row) { remaining.push(call); continue; }
       const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
       let response: JsonObject;
-      if (stored.toolName !== call.name) response = { status: 'refused', reason: 'replay_identity_mismatch' };
+      if (stored.toolName !== call.name) response = { status: 'refused', reason: 'replay_identity_mismatch', ...refusalCauseOf('replay_identity_mismatch') };
       else {
         const gate = await this.#tools.owner.resultGate.authorize({ ...host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
           contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
-        response = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
+        response = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable', ...refusalCauseOf('recorded_result_unavailable') };
       }
       const responses = [{ id: call.id, name: call.name, response }];
       exposeToolResults(responses);

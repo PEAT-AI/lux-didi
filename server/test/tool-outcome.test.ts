@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolOutcomeOf } from '../live/tool-outcome.js';
-import { ADMISSION_BLOCK_REASONS, RESEARCH_REFUSAL_REASONS, ResearchAdmission, admissionBlocked } from '../tools/research.js';
-import { CAUSE_NOT_KNOWN, REFUSAL_CAUSES, refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
+import { ADMISSION_BLOCK_REASONS, RESEARCH_REFUSAL_REASONS, ResearchAdmission, admissionBlocked, researchRepair } from '../tools/research.js';
+import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, REFUSAL_CAUSES, refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
 
 const cases = [
   [{ status: 'refused', code: 'no_owner_request' }, 'refused', 'no_owner_request'],
@@ -101,7 +101,7 @@ for (const provider of ['openai', 'gemini'] as const) {
 // model can repeat, plus what will or will not happen next. A code whose honest cause the host does not hold
 // says so and never guesses, so nothing she is handed invites an invented cause.
 test('C-TOOLTRUTH every closed refusal code carries a plain cause and a next line', () => {
-  for (const code of [...ADMISSION_BLOCK_REASONS, ...RESEARCH_REFUSAL_REASONS]) {
+  for (const code of [...ADMISSION_BLOCK_REASONS, ...RESEARCH_REFUSAL_REASONS, ...HOST_REFUSAL_CODES]) {
     const { cause, next } = refusalCauseOf(code);
     assert.ok(cause.trim().length > 20, `${code}: the cause is one plain sentence, got ${cause}`);
     assert.match(cause, /^[A-Z].*\.$/u, `${code}: the cause is a finished sentence, got ${cause}`);
@@ -121,6 +121,17 @@ test('C-TOOLTRUTH a refusal code the table does not know says the reason is not 
   assert.equal(CAUSE_NOT_KNOWN, 'the reason is not known');
   assert.match(next, /^[A-Z].*\.$/u);
   assert.doesNotMatch(next, /[?\u2013\u2014]/u);
+  // The code stays visible as closed metadata, and nothing is invented about it.
+  assert.match(next, /a_code_this_host_never_closed/u);
+  assert.match(refusalCauseOf('not a code').next, /an unnamed code/u);
+});
+
+// C-TOOLTRUTH: the refused argument shape she is handed carries the cause and what it did not do.
+test('C-TOOLTRUTH a refused research argument carries its cause and that nothing was searched', () => {
+  const reply = researchRepair('topic_required');
+  assert.equal(reply['reason'], 'topic_required');
+  assert.equal(reply['cause'], REFUSAL_CAUSES.topic_required.cause);
+  assert.equal(reply['next'], 'Nothing was searched.');
 });
 
 // C-TOOLTRUTH: F6. The rebuild shape that lost her sense of what had finished: the result reached her, the

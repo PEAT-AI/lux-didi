@@ -17,9 +17,16 @@ export interface RefusalCause {
 /** The one sentence a code with no honest cause on record gets, in the brief's own words. */
 export const CAUSE_NOT_KNOWN = 'the reason is not known';
 
+/**
+ * The live layer's own replay refusals. The host holds the cause for both, so neither may fall to the unknown.
+ * Every other code a tool refuses with that is not in this table or the research table is reported as unknown.
+ */
+export const HOST_REFUSAL_CODES = ['replay_identity_mismatch', 'recorded_result_unavailable'] as const;
+export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
+
 const NOTHING_SEARCHED = 'Nothing was searched.';
 
-export const REFUSAL_CAUSES: Readonly<Record<AdmissionBlockReason | ResearchRefusalReason, RefusalCause>> = Object.freeze({
+export const REFUSAL_CAUSES: Readonly<Record<AdmissionBlockReason | ResearchRefusalReason | HostRefusalCode, RefusalCause>> = Object.freeze({
   // The admission blocks (C-RESEARCH-CONTRACT T-03 codes, unchanged): one research operation per owner turn.
   no_owner_turn: {
     cause: 'No owner turn has started in this session, so there is no owner question to research.',
@@ -68,13 +75,24 @@ export const REFUSAL_CAUSES: Readonly<Record<AdmissionBlockReason | ResearchRefu
   lookup_history: { cause: 'A history lookup must read memory alone, with no query and no mail, and this one did not.', next: NOTHING_SEARCHED },
   lookup_mail: { cause: 'A mail lookup must read mail alone, with no query, and this one did not.', next: NOTHING_SEARCHED },
   no_owner_input: { cause: 'No owner turn is open in this session, so there is nothing to research against.', next: 'Nothing starts until the owner speaks.' },
+  // The host's own replay refusals, so a result replayed into a rebuilt session never hides its cause.
+  replay_identity_mismatch: {
+    cause: 'This call id was already recorded for a different tool, so this call was refused rather than replayed.',
+    next: 'Nothing ran for this call.',
+  },
+  recorded_result_unavailable: {
+    cause: 'The result this call id was recorded with is not available to this session any more.',
+    next: 'Nothing ran for this call.',
+  },
 });
 
 /** The cause and the next line for a closed code, or the honest unknown for a code this host cannot explain. */
 export function refusalCauseOf(code: string): RefusalCause {
   const known = (REFUSAL_CAUSES as Readonly<Record<string, RefusalCause | undefined>>)[code];
   if (known !== undefined) return known;
-  return { cause: CAUSE_NOT_KNOWN, next: 'Nothing ran for this call, and no cause is invented for it.' };
+  // The code is metadata, never arbitrary prose: only a closed-shape token is repeated to the model.
+  const named = /^[A-Za-z0-9_]{1,96}$/u.test(code) ? code : 'an unnamed code';
+  return { cause: CAUSE_NOT_KNOWN, next: `Nothing ran for this call: the host refused it with ${named} and holds no plain cause for it.` };
 }
 
 /**

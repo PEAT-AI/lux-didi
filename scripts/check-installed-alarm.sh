@@ -52,9 +52,13 @@ bash scripts/with-compile-lock.sh -- swiftc -swift-version 6 -strict-concurrency
 grep -q 'ALARM SPEECH WIRE: PASS' "$work/wire.log" \
   || { echo 'ALARM CHECK FAIL: the coordinator refused a host reply that echoed the key' >&2; exit 1; }
 # C-ALARMSPEECH: and the shell around it. Policy only: no window, no audio device, no launched app.
+xcrun clang -fobjc-arc -c Sources/LuxDidi/AVFAudioGuard.m -o "$work/avfaudio-guard.o"
+xcrun clang -fobjc-arc -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/audio-callback-bridge.o"
 bash scripts/with-compile-lock.sh -- xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
   -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" \
-  Sources/LuxDidi/*.swift Tests/DidiLiveTests/AlarmShellPolicyTests.swift -o "$work/alarm-shell-policy"
+  -import-objc-header Tests/DidiLiveTests/DidiNativeBridges.h \
+  Sources/LuxDidi/*.swift Tests/DidiLiveTests/AlarmShellPolicyTests.swift \
+  "$work/avfaudio-guard.o" "$work/audio-callback-bridge.o" -o "$work/alarm-shell-policy"
 "$work/alarm-shell-policy" | tee "$work/policy.log"
 grep -q 'ALARM SHELL POLICY: PASS' "$work/policy.log" \
   || { echo 'ALARM CHECK FAIL: the alarm shell policy check failed' >&2; exit 1; }

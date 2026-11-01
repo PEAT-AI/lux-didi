@@ -557,9 +557,6 @@ class Session implements LiveVoiceSession {
   /** C-POSTTOOL switch a as the session is running it: off from the start unless the provider config asks for
    *  it, and off for the rest of the session once the provider refuses the field. */
   private firstResponseAudio: boolean;
-  /** C-POSTTOOL: whether the response that is active now has made audio audible. An audible frame clears an owed
-   *  continuation, and a response that is cut or fails re-arms it, because that speech was not the answer. */
-  private activeResponseSpoke = false;
   /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
   private continuationsSent = 0;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
@@ -598,7 +595,6 @@ class Session implements LiveVoiceSession {
 
   /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
   private openResponseTiming(): void {
-    this.activeResponseSpoke = false;
     this.logResponseFirstAudio();
     this.firstResponseTiming = { kind: this.continuationsSent === 0 ? 'first' : 'continuation', createdAt: this.clock.now(), firstItemAt: null, firstAudioAt: null };
   }
@@ -923,7 +919,6 @@ class Session implements LiveVoiceSession {
     // resets any window that is waiting for the answer to end.
     const level = pcm16RmsDbfs(pcm);
     const audible = level >= AUDIBLE_RMS_DBFS;
-    if (audible) this.responseSpoke();
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
     // Contract invariant (ruling W1-R1): output audio is never dropped. An input transcript never silences the
@@ -957,21 +952,9 @@ class Session implements LiveVoiceSession {
    * modelled playback queue and the 2000 ms turn idle), which is what lets LISTENING and THINKING appear while the
    * provider keeps streaming.
    */
-  /** C-POSTTOOL: the first audible frame of the active response is that response answering, so a continuation
-   *  it owed is no longer owed and no second create speaks the same answer twice. Every path that makes audio
-   *  audible for the owner, the delta and the released assignment, passes here; `endResponse` re-arms the flag
-   *  when the response did not complete, since a cut or failed answer is still owed. */
-  private responseSpoke(): void {
-    // Late playback from an ended response cannot answer the continuation its tool results still owe.
-    if (!this.delegatedOutstanding) return;
-    this.activeResponseSpoke = true;
-    this.continuationOwed = false;
-  }
-
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
-      this.responseSpoke();
       this.noteResponseTiming('firstAudioAt');
       if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
         this.continuationTiming.firstAudioAt = this.clock.now();
@@ -1316,11 +1299,6 @@ class Session implements LiveVoiceSession {
       // F4: the silent rescue asks for one more response, never a tool lock. On 10-30 this flag became
       // `lastAnswerNow` and the corrected retry after an invalid_arguments refusal was refused as
       // `research_cap_reached`; the real research cap below keeps that code for itself.
-      this.continuationOwed = true;
-    }
-    // C-POSTTOOL: a spoken response that is cut or fails did not deliver its answer, so the continuation its
-    // speech cleared is owed again, exactly as before the guard. A completed response owes nothing.
-    if (!completed && this.activeResponseSpoke && !this.continuationOwed && this.continuationCalls > 0) {
       this.continuationOwed = true;
     }
     // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here

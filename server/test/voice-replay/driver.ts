@@ -746,6 +746,10 @@ export function trace(input: Replay): string {
   const terminal = input.projections.find(entry => entry.lifecycle === 'terminal');
   const outcome = terminal ? `${terminal.terminal ?? 'unknown'}${terminal.terminalCode === null ? '' : `:${terminal.terminalCode}`}` : 'open';
   const fill = `${input.inaudibleFrames} fill frames`;
-  return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
+  const batches = input.batches.map(batch => ({ epoch: batch.epoch, calls: batch.callIds,
+    resultAt: batch.at - input.clock.startedAt,
+    createsAt: batch.creates.map(command => command.at - input.clock.startedAt),
+    playbackStarts: input.receipts.map(receipt => receipt.at - receipt.durationMs - input.clock.startedAt) }));
+  return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nbatch evidence: ${JSON.stringify(batches)}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
 }
 

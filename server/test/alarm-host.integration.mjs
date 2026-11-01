@@ -121,7 +121,17 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(Number(due.fire_at_utc), now + 60000, 'the due alarm is anchored to the injected host wall clock');
   now += 60000;
   assert.equal((await post('/api/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
-  for (let count = 0; count < 10 && !eventWire.includes('alarm_due'); count++) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.equal(rows().find(row => row.id === due.id).state, 'ringing', 'recheck settles the due alarm before shell delivery');
+  // Earlier mutations can queue any number of state snapshots ahead of the due frame. Read the ordered
+  // stream to the event under this test's existing deadline, not an unrelated ten-chunk ceiling.
+  const hasDueFrame = () => eventWire.split('\n\n').slice(0, -1).some(frame => {
+    const data = frame.split('\n').find(line => line.startsWith('data: '));
+    if (!data) return false;
+    const event = JSON.parse(data.slice(6));
+    return event.type === 'alarm_due' && event.alarm.id === String(due.id);
+  });
+  while (!hasDueFrame()) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.ok(hasDueFrame(), 'the shell receives this alarm due event, not an earlier occurrence');
   assert.match(eventWire, /alarm_due/);
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
@@ -177,7 +187,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
   await owner('remind me in one minute to check the deck');
-  assert.match(await call('set_alarm'), /Alarm set/);
+  assert.match(await call('set_alarm', { label: 'check the deck' }), /Alarm set/);
   assert.equal(rows().filter(row => row.state === 'pending')[0].label, 'check the deck');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 1320000;

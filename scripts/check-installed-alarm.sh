@@ -42,3 +42,12 @@ if [ "$sent" != "$returned" ] || [ "$equal" != "true" ]; then
   echo "ALARM CHECK FAIL: the alarm route echoed $returned for the caller key $sent" >&2; exit 1
 fi
 echo "ALARM CHECK: the alarm route echoed the caller key $sent"
+# C-ALARMSPEECH: and the real client accepts that reply. The host body is decoded in the host's own field
+# names and handed to the real coordinator: an echoed key reaches attach, a host-named key is refused.
+bash scripts/with-compile-lock.sh -- swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
+  -parse-as-library Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift \
+  Sources/LuxDidi/LiveSessionCoordinator.swift Tests/DidiLiveTests/AlarmSpeechWireTests.swift \
+  -o "$work/alarm-speech-wire"
+"$work/alarm-speech-wire" | tee "$work/wire.log"
+grep -q 'ALARM SPEECH WIRE: PASS' "$work/wire.log" \
+  || { echo 'ALARM CHECK FAIL: the coordinator refused a host reply that echoed the key' >&2; exit 1; }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The single runner for the live suites. Every group runs to the end, each result is printed as it
 # happens, and the complete fail list is printed before the script exits non-zero (#805), so one red
-# group never hides the reds behind it. scripts/check-group-runner-selftest.sh proves that property.
+# group never hides the reds behind it. scripts/lib/check-groups-selftest.sh proves that property, and
+# the first group below runs it so the property keeps a real call site.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/check-groups.sh"
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
@@ -92,7 +93,12 @@ group_canary() {
   node --test test/canary.test.mjs || return 1
 }
 
+# The runner's own proof: a red in group 1 must not hide a red in group 3. Synthetic shell groups only,
+# no build and no network, so it runs first and cheaply on every execution of this check.
+group_selftest() { bash "$(pwd)/scripts/lib/check-groups-selftest.sh" || return 1; }
+
 # Every group runs even when an earlier one failed; the fail list is complete before the exit.
+group selftest group_selftest
 group build group_build
 group guidance group_guidance
 group boundary group_boundary

@@ -484,9 +484,16 @@ export const EARLIER_CONVERSATIONS_HEADER =
   'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner\'s words now win.';
 export const EARLIER_CONVERSATIONS_MAX_CHARS = LIVE_INSTRUCTION_TARGET_CHARS;
 export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-/** The space the earlier-conversations section may use: what the other sections leave under the target. */
+/** #108: the earlier-conversations reserve. Release 10.7.3 carried 1,162 to 1,639 characters of these
+ *  summaries before the owner style grew; the sections that may yield hold this much of the hard
+ *  ceiling free for them. */
+export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_600;
+/** The space the earlier-conversations section may use: its own reserve under the hard ceiling, so the
+ *  leftovers of a target the other sections already blew past cannot starve it (#108). Bounded by the
+ *  room that actually exists, so a full instruction shrinks the section instead of breaking the ceiling. */
 export function earlierConversationsBudget(otherSectionsChars: number): number {
-  return Math.max(0, LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length);
+  const room = LIVE_INSTRUCTION_HARD_LIMIT - otherSectionsChars - separator.length;
+  return room <= 0 ? 0 : Math.min(room, EARLIER_CONVERSATIONS_RESERVE_CHARS);
 }
 
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
@@ -853,6 +860,9 @@ export function composeLiveSessionInstruction(input: {
   /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
   readonly calendar?: string;
   readonly earlierConversations?: string;
+  /** #108: the room held free for the earlier-conversations section, so the sections that yield (the
+   *  notes, which she can read on demand) make it instead of the summary section taking the leftovers. */
+  readonly earlierReserve?: number;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
@@ -938,11 +948,18 @@ export function composeLiveSessionInstruction(input: {
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = [], peopleText?: string): string => assemble(entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
+  // #108: the notes are the section that yields for the earlier-conversations reserve, because she can
+  // read a note on demand and cannot read a past call at all. Never the tool conduct, never the base.
+  const ceiling = Math.min(input.trustedChars, LIVE_INSTRUCTION_HARD_LIMIT);
+  const baseChars = wrap([], undefined).length;
+  const earlierReserve = Math.max(0, Math.min(input.earlierReserve ?? 0, EARLIER_CONVERSATIONS_RESERVE_CHARS,
+    ceiling - baseChars - separator.length));
+  const composeChars = earlierReserve === 0 ? input.trustedChars : ceiling - earlierReserve - separator.length;
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];
   for (const record of [...plainRecords].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
     const rendered = `<memory-record>\n${JSON.stringify({ id: record.id, text: record.text })}\n</memory-record>`;
     const memoryChars = [preface, ...records, rendered].join(separator).length;
-    if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered], undefined).length > input.trustedChars) omitted.push({ id: record.id, reason: 'budget' });
+    if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered], undefined).length > composeChars) omitted.push({ id: record.id, reason: 'budget' });
     else { records.push(rendered); selectedIds.push(record.id); }
   }
   // The earlier-conversations section yields before the note sections: it is added only when it fits over them.
@@ -954,7 +971,7 @@ export function composeLiveSessionInstruction(input: {
     if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
-  const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= input.trustedChars;
+  const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= (earlierReserve === 0 ? input.trustedChars : ceiling);
   const earlierSection = earlierIncluded ? earlier : undefined;
   // W15 (W15-R2): the roster takes what every other section leaves, so a full lore plus a long roster
   // still composes under the hard limit; it is trimmed and the trim is logged, never thrown.

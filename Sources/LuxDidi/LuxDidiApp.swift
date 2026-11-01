@@ -1119,14 +1119,12 @@ struct RootView: View {
         }
     }
 
-    /// #613: the calendar connector is published when the host's tools status names it ready.
+    /// #613: the calendar connector is published when the host's tools status names the calendar
+    /// endpoint connected. #108: the row is read by OrbFirstAutoConnect, so the shape is proven.
     private func calendarPublished() async -> Bool {
         guard let client = model.client,
-              let value = try? await client.connectedRead("api/v1/tools/status"),
-              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
-        return endpoints.contains {
-            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
-        }
+              let value = try? await client.connectedRead("api/v1/tools/status") else { return false }
+        return OrbFirstAutoConnect.calendarPublished(in: value)
     }
 
     /// ORBFIRST: the app window is created on demand, so presenting it may be the first time it

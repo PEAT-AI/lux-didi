@@ -135,6 +135,18 @@ enum OrbFirstAutoConnect {
     static let calendarBoundMs = 4000
     static let calendarStepMs = 200
 
+    /// #108: the host's own tools-status shape decides. Each row is
+    /// `{ id, connector, state, tools }` (server/host/mcp.ts status): the calendar endpoint is id
+    /// `calendar` on connector `google` (server/host/runtime.ts selectCalendarEndpoint), and its state
+    /// is `connected`. There is no `ready` state and no connector called `calendar`, which is why the
+    /// launch used to spend the whole four second bound.
+    static func calendarPublished(in status: [String: Any]) -> Bool {
+        guard let endpoints = status["endpoints"] as? [[String: Any]] else { return false }
+        return endpoints.contains {
+            $0["id"] as? String == "calendar" && $0["state"] as? String == "connected"
+        }
+    }
+
     /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
     @MainActor static func waitForCalendar(published: () async -> Bool,
                                 sleep: (Int) async -> Void,

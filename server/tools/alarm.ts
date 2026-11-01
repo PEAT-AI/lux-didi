@@ -133,6 +133,8 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
   // The owner constrained part of it: combine, and override only the fields they constrained.
   if (checked.status === 'partial') {
     if (checked.hour !== undefined) {
+      // "at six" fixes the hour but not half of the day, so a model time must settle the meridian.
+      if (!clock) return { status: 'clarify', reason: 'ambiguous_time' };
       let hour = checked.hour;
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
       const minute = checked.minute ?? clock?.minute ?? 0;

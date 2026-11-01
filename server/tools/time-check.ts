@@ -212,5 +212,5 @@ export function checkOwnerTime(words: string): OwnerTimeCheck {
   const localTime = `${String(clock.hour).padStart(2, '0')}:${String(clock.minute).padStart(2, '0')}`;
   if (clock.exact) return { status: 'unique', localTime, ...(day ? { day } : {}) };
   // "at six" names an hour but not half of the day: the model may settle the meridian.
-  return { status: 'partial', hour: clock.hour, minute: clock.minute, ...(day ? { day } : {}) };
+  return { status: 'partial', hour: clock.hour, ...(day ? { day } : {}) };
 }

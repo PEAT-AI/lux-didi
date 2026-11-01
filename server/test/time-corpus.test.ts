@@ -83,10 +83,11 @@ async function alarmHarness(t: TestContext) {
 }
 
 test('C-TIME corpus: the owner time wins through the real alarm handler', async t => {
-  const h = await alarmHarness(t);
   assert.ok(corpus.length >= 60, `the corpus carries at least sixty messy shapes, saw ${corpus.length}`);
+  // Each row is its own owner turn and its own live session, so no row can arm an alarm for another.
   for (const row of corpus) {
-    await t.test(row.id, async () => {
+    await t.test(row.id, async rowT => {
+      const h = await alarmHarness(rowT);
       h.clock.now = Date.parse(row.now);
       h.options.timezone = row.tz;
       if (row.words2 !== undefined) {

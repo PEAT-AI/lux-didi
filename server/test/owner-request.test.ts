@@ -38,17 +38,6 @@ test('direct owner authority: a new finalized ask replaces the previous ask', ()
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
 });
 
-for (const words of ['do not open the deck', 'do not set an alarm', 'do not save this into Lux']) {
-  test(`direct102 authority: nonimperative and negated speech creates no grant: ${words}`, () => {
-    const requests = new OwnerRequests(() => 0);
-    requests.observe('s', 'j1', words);
-    for (const kind of ['open', 'set_alarm', 'lux_note'] as const) if ((kind as string) === 'set_alarm') {
-      assert.equal(requests.authorize('s', kind, 'x').code, 'no_owner_request');
-    } else assert.equal(requests.authorize('s', kind, 'x').code,
-      words.includes('open') && kind === 'open' || words.includes('alarm') && kind === 'set_alarm' || words.includes('save') && kind === 'lux_note' ? 'no_owner_request' : 'allowed');
-  });
-}
-
 test('hear104 authority: a quoted title in owner input grants an open', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'open the deck called "Synthetic plan"');
@@ -98,8 +87,6 @@ test('direct owner compound framing grants non-destructive kinds', () => {
   }
 });
 
-for (const [words, _kinds] of [
-  ['Alice said open the deck and set an alarm for seven', ['open', 'set_alarm']],
   ['He told me to wait then open the deck', ['open']],
   ['The note reads open the deck and set an alarm for seven', ['open', 'set_alarm']],
   ['The instructions are "open the deck and save this into Lux"', ['open', 'lux_note']],

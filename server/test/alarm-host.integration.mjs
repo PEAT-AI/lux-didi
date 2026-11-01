@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { fixture, CANARY } from '../dist/test/live-voice-fixture.js';
 
 const serviceRoot = process.env.DIDI_ALARM_SERVICE_ROOT ?? resolve(import.meta.dirname, '..');
@@ -138,8 +139,22 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   peer.terminate();
   now += 300000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
-  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' });
+  // C-ALARMSPEECH: the native validator requires its own key back (LiveSessionCoordinator.swift
+  // `snapshot.idempotencyKey == key`), so this route honours the key the client sends. A missing key is
+  // refused before any session exists, which is also proof the check runs ahead of the attempt table.
+  const noKey = await fetch(origin + '/api/v1/alarms/session', { method: 'POST', headers,
+    body: JSON.stringify({ id: 'synthetic-alarm-no-key', ownerDisplayName: 'Synthetic Owner' }) });
+  assert.equal(noKey.status, 400, JSON.stringify(await noKey.json()));
+  const alarmKey = randomUUID();
+  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
   assert.equal(alarmCreated.status, 201, JSON.stringify(alarmCreated.body));
+  assert.equal(alarmCreated.body.data.idempotencyKey, alarmKey);
+  // One alarm occurrence, one session: the same key replays the same session, a different key opens none.
+  const alarmRetry = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
+  assert.equal(alarmRetry.status, 200, JSON.stringify(alarmRetry.body));
+  assert.equal(alarmRetry.body.data.liveSessionId, alarmCreated.body.data.liveSessionId);
+  const alarmSecondKey = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID());
+  assert.equal(alarmSecondKey.status, 409, JSON.stringify(alarmSecondKey.body));
   sessionId = alarmCreated.body.data.liveSessionId;
   const setupStart = f.frames.length;
   peer = await attach(sessionId);

@@ -82,6 +82,12 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
   const alarmStreams = new Set<() => void>();
+  // The same caller key shape the Live create route accepts, so one key can never mean two things.
+  const alarmKeyPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
+  /** Whether an existing alarm session is the one this caller key already opened, so a retry replays it. */
+  const replayable = (service: NonNullable<typeof live>, sessionId: string, key: string): boolean => {
+    try { return service.snapshot(sessionId).idempotencyKey === key; } catch { return false; }
+  };
   let streamCount = 0;
   const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
@@ -185,10 +191,20 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
           const body = await readBody(req);
           if (url.pathname === '/api/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
+            // C-ALARMSPEECH: the native validator requires the key it sent back on the snapshot, so this route
+            // honours `Idempotency-Key` like every other create route instead of naming the session itself.
+            const idempotencyKey = req.headers['idempotency-key'];
+            if (typeof idempotencyKey !== 'string' || !alarmKeyPattern.test(idempotencyKey)) {
+              send(res, 400, { error: { code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A caller key is required.' } }); return;
+            }
             // Alarm starts use the same cached calendar digest as an ordinary call.
             if (live) await live.prepareCalendar();
-            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
+            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName, idempotencyKey);
             if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
+            // A retried start of the same occurrence replays the one session it already opened.
+            if (attempt?.status === 'attempted' && attempt.liveSessionId && live && replayable(live, attempt.liveSessionId, idempotencyKey)) {
+              send(res, 200, success(live.snapshot(attempt.liveSessionId))); return;
+            }
             if (attempt?.status === 'live' && attempt.liveSessionId && live) { send(res, 200, success(live.snapshot(attempt.liveSessionId))); return; }
             send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
           }

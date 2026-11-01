@@ -20,9 +20,10 @@ for (const alreadyLive of [false, true]) {
     const degraded: string[] = [];
     const coordinator = new AlarmSessionCoordinator({ store, hasLiveSession: () => alreadyLive,
       open: setup => { opens++; assert.equal(setup.alarmId, alarm.id); if (alreadyLive) return 'synthetic-live'; throw Error('synthetic unavailable'); }, degraded: (_id, reason) => degraded.push(reason) });
-    const first = coordinator.attempt(alarm.id, 'Synthetic Owner');
+    const first = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key');
     assert.equal(first.status, alreadyLive ? 'live' : 'unavailable');
-    coordinator.attempt(alarm.id, 'Synthetic Owner');
+    // A retry with the same caller key never opens a second session for the same occurrence.
+    assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key').status, 'attempted');
     assert.equal(opens, 1);
     assert.equal(scheduler.list()[0]?.state, 'ringing', 'provider result cannot stop local ringing');
     assert.deepEqual(degraded, alreadyLive ? [] : ['provider_unavailable']);

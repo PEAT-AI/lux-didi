@@ -7781,8 +7781,12 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   assert.equal(scheduler.list()[0]!.state, 'ringing', 'speech in an unrelated call cannot acknowledge a due alarm');
   const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true,
     open: setup => h.owner.announceAlarm(setup)!.liveSessionId, degraded: () => assert.fail('unexpected degradation') });
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').liveSessionId, session.liveSessionId);
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').status, 'attempted');
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key').liveSessionId, session.liveSessionId);
+  // The retry replays the session this key already opened, and a different key opens none.
+  const retried = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key');
+  assert.equal(retried.status, 'attempted');
+  assert.equal(retried.liveSessionId, session.liveSessionId);
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-other-key').liveSessionId, undefined);
   assert.equal(fake.sessionsOpened, 1);
   assert.equal(fake.texts.length, 1);
   assert.match(fake.texts[0]!, /call the bank/);

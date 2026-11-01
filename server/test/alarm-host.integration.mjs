@@ -126,7 +126,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   const attempts = f.attempts;
   const announcementStart = f.frames.length;
-  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
+  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
   await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
@@ -162,7 +162,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
-  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID())).status, 409);
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
@@ -194,7 +194,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   await post('/api/v1/alarms/shell', { assertion: true, notifications: false, notificationState: 'not_asked' });
-  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' });
+  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${labelAlarm}`);
   assert.equal(labelled.status, 201, JSON.stringify(labelled.body));
   const labelStart = f.frames.length;
   sessionId = labelled.body.data.liveSessionId;
@@ -210,7 +210,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   f.refuseUpgrades(503);
-  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' });
+  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${outageAlarm.id}`);
   assert.equal(outageCreated.status, 201);
   const beforeOutage = f.attempts;
   const failedPeer = new WebSocket(`${origin.replace('http', 'ws')}/api/v1/live-sessions/${outageCreated.body.data.liveSessionId}/audio`, { headers });

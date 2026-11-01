@@ -63,6 +63,7 @@ import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
+import { refusalCauseOf } from '../tools/refusal-cause.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../live/schema.js';
@@ -8120,7 +8121,8 @@ test('C-SAFETY review: changed-name replay is refused before normal execution af
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'synthetic-shared-call', name: 'set_alarm', args: {} }] }));
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 2);
-  assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch' });
+  // C-TOOLTRUTH: the replay refusal also states its true cause and that nothing ran, so she can repeat why.
+  assert.deepEqual(fake.toolResponses[1]![0]!.response, { status: 'refused', reason: 'replay_identity_mismatch', ...refusalCauseOf('replay_identity_mismatch') });
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a changed name cannot reuse the recorded id to create an alarm');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tool_calls WHERE call_id=?', ['synthetic-shared-call']))?.n, 1, 'the original recorded identity stays immutable');
 });

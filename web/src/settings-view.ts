@@ -136,8 +136,7 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const attempt = record(row.signIn);
   const speaks = attempt !== undefined && (['running', 'waiting', 'finishing'].includes(String(attempt.phase))
     || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing', 'needs_restart'].includes(reason)));
-  // The owner identity the page may name comes from the same configured catalogue field the host validates.
-  const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, 'mongoose', text(row.ownerIdentity)) : undefined;
+  const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, 'mongoose') : undefined;
   // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
   return { id, state: label, next: progress ?? step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
 }
@@ -301,7 +300,7 @@ export function signInFailureNotice(reason: string): string {
 }
 
 /** One sentence per step and per failure class of a sign-in attempt, from the closed tokens the host sends. */
-const attemptSentences: Record<string, (label: string, server: SignInServer, owner: string) => string> = {
+const attemptSentences: Record<string, (label: string, server: SignInServer) => string> = {
   running: label => `Starting the sign-in to ${label}.`,
   waiting: label => `The ${label} sign-in page was handed to your browser. Finish there, and the connector reconnects by itself.`,
   finishing: label => `${label} accepted the sign-in in the browser. Saving it now.`,
@@ -314,8 +313,8 @@ const attemptSentences: Record<string, (label: string, server: SignInServer, own
   browser_unavailable: label => `Your browser could not be opened for the ${label} sign-in. Use the Sign in button to try again.`,
   callback_failed: label => `The browser's answer was refused or did not match this ${label} sign-in, so nothing was saved. Try again.`,
   callback_timeout: label => `The ${label} sign-in timed out waiting for the browser. Use the Sign in button to try again.`,
-  // Council 2026-10-26: never the rejected address, only the configured owner account and what to do.
-  account_mismatch: (_label, _server, owner) => `Signed in with the wrong Google account. Sign in again as ${owner}.`,
+  // Council 2026-10-26, V-R1: never the rejected address and never one either, only what to do.
+  account_mismatch: () => 'Signed in with the wrong Google account. Sign in again with the account Didi is configured for.',
   token_refused: (label, server) => `${server.name} refused the sign-in at the last step, so nothing was saved for ${label}. Try again.`,
   store_failed: label => `The ${label} sign-in finished, but it could not be saved on this Mac. Try again.`,
   did_not_finish: label => `The ${label} sign-in did not finish. Use the Sign in button to try again.`,
@@ -325,15 +324,13 @@ type SignInServer = { name: string; port: number; check: string };
 const SIGN_IN_SERVERS: Record<'mongoose', SignInServer> = {
   mongoose: { name: 'Mongoose', port: 8768, check: 'check the VPN' },
 };
-/** The configured owner identity the sentence may name, and the generic wording when nothing is configured. */
-const NO_OWNER_IDENTITY = 'the configured owner account';
-export function signInAttemptText(label: string, value: unknown, server: 'mongoose' = 'mongoose', ownerIdentity?: string): string | undefined {
+export function signInAttemptText(label: string, value: unknown, server: 'mongoose' = 'mongoose'): string | undefined {
   const attempt = record(value);
   if (!attempt || typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(attempt.attemptId)) return undefined;
   const steps = ['running', 'waiting', 'finishing'];
   const key = attempt.phase === 'failed' ? attempt.reason : attempt.phase;
   if (typeof key !== 'string' || !Object.hasOwn(attemptSentences, key) || steps.includes(key) === (attempt.phase === 'failed')) return undefined;
-  return attemptSentences[key]!(label, SIGN_IN_SERVERS[server], text(ownerIdentity) ?? NO_OWNER_IDENTITY);
+  return attemptSentences[key]!(label, SIGN_IN_SERVERS[server]);
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

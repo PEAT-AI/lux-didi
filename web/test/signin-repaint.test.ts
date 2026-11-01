@@ -147,18 +147,12 @@ test('W1-R1: a finished attempt never hides the row own step; only a live one, o
   }
 });
 
-test('W1-R2: the wrong-account sentence names the configured owner identity, never a hardcoded one', async () => {
+test('W1-R2 (V-R1): the wrong-account sentence names no account at all, only what to do', async () => {
   const { connectorState, signInAttemptText } = await import('../src/settings-view.ts');
   const attempt = { attemptId: '0123456789abcdef', phase: 'failed', reason: 'account_mismatch' };
-  const synthetic = 'owner@example.invalid';
-  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose', synthetic),
-    `Signed in with the wrong Google account. Sign in again as ${synthetic}.`);
-  assert.equal(signInAttemptText('Mongoose', attempt),
-    'Signed in with the wrong Google account. Sign in again as the configured owner account.',
-    'with nothing configured the sentence stays generic');
-  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose', '  '),
-    'Signed in with the wrong Google account. Sign in again as the configured owner account.',
-    'a blank identity is nothing configured');
-  const row = connectorState({ id: 'mongoose-data', state: 'error', reasonCode: 'needs_sign_in', ownerIdentity: synthetic, signIn: attempt })!;
-  assert.equal(row.next, `Signed in with the wrong Google account. Sign in again as ${synthetic}.`, 'the row carries the configured identity');
+  const sentence = 'Signed in with the wrong Google account. Sign in again with the account Didi is configured for.';
+  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose'), sentence);
+  assert.doesNotMatch(sentence, /@/u, 'the sentence names no mailbox');
+  const row = connectorState({ id: 'mongoose-data', state: 'error', reasonCode: 'needs_sign_in', signIn: attempt })!;
+  assert.equal(row.next, sentence, 'the row says the same sentence');
 });

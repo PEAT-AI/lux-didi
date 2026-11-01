@@ -2617,6 +2617,7 @@ export class LiveSessionOwner {
         const ask = handle.session.sendText;
         if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
       } catch { /* a closed transport settles on its own */ }
+      this.#noteDebt(handle, 'rung', 'dead_air');
       this.#noteDeadAirNudge(handle, turnAgeMs);
       this.#scheduleDebt(handle, AUDIBLE_DEBT_POST_TOOL_REBUILD_MS, 'rebuild');
       return;

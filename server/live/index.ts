@@ -2609,19 +2609,27 @@ export class LiveSessionOwner {
     // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
     // inside the rung, instead of being waited out to a dead-air rebuild. C-RECONNECT #1072: a tool result's silence
     // is the same shape even when the adapter had no no-item signal to add, and the rebuild that follows the
-    // re-request comes at the post-tool delta: the 8 s rung plus that delta are the owner's whole wait. Only the
-    // OpenAI adapter has a continuation the host can re-ask for, so no other provider is ever handed the note, and a
-    // result the host still holds unspoken is handed over instead: that delivery already asks for the answer.
-    if (postToolNoOutput && this.#profile.provider === 'openai' && step === 'rung' && !this.#continuationReRequested.has(handle)
-      && (handle.unspoken === undefined || handle.unspokenDelivered === true)) {
+    // re-request comes at the post-tool delta: the 8 s rung plus those 1 s are the owner's whole wait. Only the
+    // OpenAI adapter has a continuation the host can re-ask for, so no other provider is ever handed the note.
+    if (postToolNoOutput && this.#profile.provider === 'openai' && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
       try {
         const ask = handle.session.sendText;
         if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
       } catch { /* a closed transport settles on its own */ }
+      this.#noteDebt(handle, 'rung', 'dead_air');
+      this.#noteDeadAirNudge(handle, turnAgeMs);
+      this.#scheduleDebt(handle, AUDIBLE_DEBT_POST_TOOL_REBUILD_MS, 'rebuild');
+      return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
-    if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
+    if (step === 'rebuild') {
+      // C-RECONNECT #1072: the response watchdog refuses to act while a call is still pending, and a tool result's
+      // silence is the debt ladder's to recover, so the post-tool step takes the recreate path that guard does not
+      // block. Every other silence keeps the watchdog's own decision, a second mute inside its window included.
+      if (postToolNoOutput && handle.pendingCallIds.size > 0) { await this.#recreateForDeadAir(handle, 'dead_air'); return; }
+      await this.#watchdogRecover(handle, generation, turnAgeMs); return;
+    }
     this.#noteDeadAirNudge(handle, turnAgeMs);
     // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
     // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.

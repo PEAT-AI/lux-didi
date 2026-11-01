@@ -314,24 +314,22 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
         rampTask?.cancel()
         rampTask = nil
         // Every AVFAudio call below can raise instead of returning, and the ring is not worth a
-        // process: the guard turns the exception into a Swift throw and the ring reports silence.
-        do {
-            try AVFAudioGuard.run("connect") {
-                if connectedFormat != buffer.format {
-                    if connectedFormat != nil { engine.disconnectNodeOutput(player) }
-                    engine.attach(player)
-                    engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
-                    connectedFormat = buffer.format
-                }
-                engine.prepare()
+        // process: the one Objective-C guard reports it and the ring stays silent.
+        if DIDIAVFAudioGuard({
+            if connectedFormat != buffer.format {
+                if connectedFormat != nil { engine.disconnectNodeOutput(player) }
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
+                connectedFormat = buffer.format
             }
-            try engine.start()
-            player.volume = 1
-            try AVFAudioGuard.run("schedule") {
-                player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
-            }
-            try AVFAudioGuard.run("play") { player.play() }
-        } catch { return false }
+            engine.prepare()
+        }) != nil { return false }
+        do { try engine.start() } catch { return false }
+        player.volume = 1
+        if DIDIAVFAudioGuard({
+            player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
+        }) != nil { return false }
+        if DIDIAVFAudioGuard({ player.play() }) != nil { return false }
         return true
     }
 

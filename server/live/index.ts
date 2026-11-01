@@ -258,7 +258,9 @@ export function guardSeededSummaries<T extends { readonly liveSessionId?: string
     const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
     const guarded = guardWriteClaims(candidate.summary, facts);
     return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
-  });
+    // A summary whose every claim was unsupported offers nothing, so it leaves the candidate list instead of
+    // rendering an earlier-conversations header with no body behind it.
+  }).filter(candidate => candidate.summary.trim() !== '');
 }
 
 /** Contract 1023 N8: the call that ended under two minutes ago has no summary yet, so its last owner words carry

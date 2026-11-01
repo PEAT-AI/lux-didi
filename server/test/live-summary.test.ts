@@ -722,3 +722,18 @@ test('a settled set_alarm receipt keeps a true claim after the alarm leaves the 
     assert.match(storedRow(h.store, 's-alarm-rang')!.summary!, /set the 6am alarm/, 'the receipt outranks the empty table');
   } finally { h.cleanup(); }
 });
+
+// C-MEMORYTRUTH review F5: a summary whose only sentence is unsupported leaves the seed, so the earlier
+// conversations section never renders as a header with nothing behind it.
+test('a stored summary left with no supported sentence is not offered to the seed', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-all-unsupported');
+    insertToolCall(h.store, 's-all-unsupported', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [
+      { id: 'sum-empty', liveSessionId: 's-all-unsupported', endedAt: SUMMARY_NOW, summary: 'Naya created the event on the calendar.' },
+      { id: 'sum-kept', liveSessionId: 's-seeded-created', endedAt: SUMMARY_NOW, summary: 'The owner talked about the mint window.' },
+    ]));
+    assert.deepEqual(guarded.map(candidate => candidate.id), ['sum-kept'], 'the empty candidate is gone, the real one stays');
+  } finally { h.cleanup(); }
+});

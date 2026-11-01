@@ -874,6 +874,7 @@ test('C-LABELS 1: a shell that vanished ends the live session as shell_lost, nev
   t.after(() => quitSink());
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session, attachment } = await attached(h, 'shell-lost');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
   await drain(h, session.liveSessionId, 2);
   await h.owner.shutdown('shell_lost');
   assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'shell_lost', msAfterStop: 0 }]);

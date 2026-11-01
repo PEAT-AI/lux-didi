@@ -60,6 +60,7 @@ async function openPanel(id) {
   assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
 }
 async function find(query) {
+  await page.locator('#connected-notes-search button:not(:disabled)').waitFor();
   await page.locator('#connected-notes-query').fill(query);
   await page.locator('#connected-notes-search button').click();
   await page.waitForFunction(text => {

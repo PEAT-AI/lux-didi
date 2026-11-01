@@ -35,6 +35,8 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -whole-module-optimi
   Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeKeychainPolicy.swift \
   Sources/LuxDidi/NativeServiceRecovery.swift -o "$work/libDidiOwner.dylib"
 owner_flags=(-D DIDI_OWNER_MODULE -I "$work" -L "$work" -lDidiOwner -Xlinker -rpath -Xlinker "$work")
+# The AVFAudio boundary guard: Objective-C, because only it can catch what AVFAudio raises.
+xcrun clang -fobjc-arc -target "$target" -c Sources/LuxDidi/AVFAudioGuard.m -o "$work/avfaudio-guard.o"
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
@@ -48,8 +50,6 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift "$work/avfaudio-guard.o" -o "$work/native-live"
 xcrun clang -fobjc-arc -target "$target" -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/audio-callback-bridge.o"
-# The AVFAudio boundary guard: Objective-C, because only it can catch what AVFAudio raises.
-xcrun clang -fobjc-arc -target "$target" -c Sources/LuxDidi/AVFAudioGuard.m -o "$work/avfaudio-guard.o"
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/DidiNativeBridges.h \
   -target "$target" \
   Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \

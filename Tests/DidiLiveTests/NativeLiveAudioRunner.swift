@@ -1547,12 +1547,18 @@ enum AudioGraphLifecycleTests {
 
         // A configuration change lands inside every wait and the device never settles, so the wait
         // runs to its bound and no further. No real interval passes: this seam returns at once.
+        // The observer is still installed on every wait, so the production delivery path exists for
+        // this whole window and not only the seam the test drives.
+        var observerDuringSettle: [Bool] = []
         device.settleWaitForTesting = { duration in
             trace.waits.append(milliseconds(duration))
             trace.waited += milliseconds(duration)
+            observerDuringSettle.append(device.hasConfigurationObserver)
             device.configurationChangeForTesting()
         }
         device.releaseForTesting()
+        try audioRequire(device.hasConfigurationObserver,
+                         "the release keeps the configuration observer while the settle holds the engine")
         await device.settleForTesting()
 
         let bound = NativeLiveAudioDevice.releaseSettleMs + NativeLiveAudioDevice.settleConfigWaitLimitMs
@@ -1568,6 +1574,8 @@ enum AudioGraphLifecycleTests {
                          "audio_release_settled reports the settle it waited and that a change was pending")
         try audioRequire(device.settledReleaseCount == 1 && device.engineResetCount == 1,
                          "the handles are reset and dropped once, after the wait")
+        try audioRequire(observerDuringSettle.count == trace.waits.count && observerDuringSettle.allSatisfy { $0 },
+                         "the observer was installed for every settle wait, got \(observerDuringSettle)")
         try audioRequire(!device.hasConfigurationObserver, "and the configuration observer goes with them")
     }
 }

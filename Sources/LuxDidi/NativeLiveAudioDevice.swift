@@ -1875,9 +1875,6 @@ struct NativeLiveInterruptionSample: Sendable {
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
         firstBufferWatchdog?.cancel(); firstBufferWatchdog = nil
-        // Release order: observer first, then player/tap, then stop, reset and drop the engine.
-        if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
-        configurationObserver = nil
         if let capture { captureStatistics.add(capture.stop()) }
         drain?.cancel(); drain = nil; capture = nil
         flushOutput()
@@ -1890,7 +1887,9 @@ struct NativeLiveInterruptionSample: Sendable {
         // own teardown is seen and waited for. Reset and release happen in `settleRelease`.
         settledEngine = engine; settledPlayer = player
         engine = nil; player = nil
-        if settledEngine != nil { beginSettle() }
+        // Only a settle holds the handles, and only a settle needs the observer. A release with nothing
+        // to hold removes it here so it can never outlive the engine it watched.
+        if settledEngine != nil { beginSettle() } else { removeConfigurationObserver() }
         // #476: the owner writes the one audio_released for the lease it held. A device line beside it
         // made every release two identical records in audio.log.
         owner.release(holder: ObjectIdentifier(self))
@@ -1935,8 +1934,7 @@ struct NativeLiveInterruptionSample: Sendable {
         engineResetCount += 1
         weak let retained = settledEngine
         settledEngine = nil; settledPlayer = nil
-        if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
-        configurationObserver = nil
+        removeConfigurationObserver()
         settling = false
         settleTask = nil
         settledReleaseCount += 1
@@ -1944,6 +1942,12 @@ struct NativeLiveInterruptionSample: Sendable {
                                       "configChangePending": pending ? "true" : "false",
                                       "starts": String(engineStartCount)])
         if retained != nil { log("audio_release_leak", ["reason": "engine_retained"]) }
+    }
+    /// Drops the configuration observer. A release keeps it while a settle holds the engine, because a
+    /// change that lands inside CoreAudio's teardown is exactly what the settle waits for.
+    private func removeConfigurationObserver() {
+        if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
+        configurationObserver = nil
     }
     /// Every settle wait goes through one seam, so a test records it and never sleeps.
     private func settleWait(_ duration: Duration) async {

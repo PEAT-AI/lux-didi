@@ -422,7 +422,9 @@ const CONSUMER_GONE_MS = 5_000;
 const CONSUMER_CLOSED_MS = 1_000;
 /** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
  *  invents a reason the provider did not give. */
-export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
+/** C-HOSTFACTS BUILD-03: a failed turn is an application state with its closed reason, never a line she is
+ *  told to recite. The attachment carries it as a continuity marker, so a client can show it and she is told
+ *  nothing to say. */
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
 const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
 const UNSPOKEN_REPLY_LIMIT = 1_200;
@@ -1614,7 +1616,8 @@ export class LiveSessionOwner {
     alarms.get(setup.alarmId)?.timer?.cancel();
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
-    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    // C-HOSTFACTS BUILD-03: the alarm is a fact (its time, zone and reminder). No spoken slot is imposed.
+    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup)) });
     hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
@@ -1642,7 +1645,9 @@ export class LiveSessionOwner {
         if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
           alarm.lastPromptAt = this.#now();
           if (handle.ready) {
-            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
+            // C-HOSTFACTS BUILD-03: a repeat is a fact about the alarm and its label. No wake line is dictated
+            // and no follow-up question is invented.
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats} for ${JSON.stringify(alarm.setup.label || 'the alarm')}. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
           }
         }
         this.#armAlarm(handle);
@@ -2835,9 +2840,8 @@ export class LiveSessionOwner {
     this.#resetClaimCheck(handle);
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
-    if (typeof handle.session.sendCommentary === 'function') {
-      try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
-    }
+    // C-HOSTFACTS BUILD-03: the failure is an application state, not a line for her to recite. The host log
+    // above and the session's own terminal state carry it; nothing is said aloud on her behalf.
     this.#armIdle(handle, this.#profile.limits.idleMs, 'turn_failed');
     this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;

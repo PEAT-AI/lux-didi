@@ -58,7 +58,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, journalToolStatus, stripNonLexicalTags, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -5479,7 +5479,7 @@ test('S5: the orb never reads listening while a call obligation is open, whateve
   await settlePort();
 });
 
-for (const failureCode of ['backend_unavailable', 'provider_error'] as const) test(`S5: ${failureCode} settles typed, says one honest line, and is never rebuilt`, async t => {
+for (const failureCode of ['backend_unavailable', 'provider_error'] as const) test(`S5: ${failureCode} settles typed, carries the failure as state, and is never rebuilt`, async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -5492,7 +5492,11 @@ for (const failureCode of ['backend_unavailable', 'provider_error'] as const) te
   // The typed disposition is immediate and metadata only.
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', reason: 'provider_error' }],
     'the reason comes from the closed set; the provider word stays in the adapter receipt');
-  assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
+  // C-HOSTFACTS BUILD-03: a failed turn is state, not a recital. Nothing is spoken for her, and the marker
+  // carries the host's own closed reason so a client can show it.
+  assert.deepEqual(fake.commentary, [], 'no line is dictated to her on a failed turn');
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null,
+    'and the failure is state the app holds, not speech she owes');
   assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
   // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.
   h.advance(1_000); scheduler.runDue(); await settlePort();
@@ -7519,8 +7523,8 @@ test('#660: two refused deliveries end the turn with the closed reason instead o
   assert.equal(fake.textInputs.length, 0, 'nothing reached the model');
   const failed = receipts.filter(record => record['event'] === 'turn_failed');
   assert.deepEqual(failed.map(record => record['reason']), ['send_failed'], 'the turn ends with its closed reason');
-  const composed = fake.commentary.filter(text => text === TURN_FAILED_LINE);
-  assert.equal(composed.length, 1, 'and she says the one honest line');
+  // C-HOSTFACTS BUILD-03: the refused send still ends the turn with typed state, and dictates no line.
+  assert.deepEqual(fake.commentary, [], 'and no line is dictated to her');
 });
 
 test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead of ending it', async t => {

@@ -82,7 +82,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 # Issue #529 connecting ring: presence in, ring schedule and PCM out. No engine and no audio device.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
   Tests/DidiLiveTests/ConnectingRingTests.swift "$work/avfaudio-guard.o" -o "$work/connecting-ring"
 "$work/connecting-ring"
 # #283 orb band analyzer and playback-aligned output timeline: synthetic PCM only, no engine or audio.
@@ -98,7 +98,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 # effects only. No socket, no engine, no panel and no wait.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift "$work/avfaudio-guard.o" -o "$work/native-presence"
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift "$work/avfaudio-guard.o" -o "$work/native-presence"
 "$work/native-presence"
 # #613: the owner-stop latch and the cold path of an uncertain session. Injected effects only.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/DidiNativeBridges.h \
@@ -115,7 +115,7 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
 # no engine, no panel and no wait.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/MuteRaceTests.swift "$work/avfaudio-guard.o" -o "$work/mute-race"
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/MuteRaceTests.swift "$work/avfaudio-guard.o" -o "$work/mute-race"
 "$work/mute-race"
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library \
   -target "$target" \

@@ -1391,7 +1391,10 @@ struct RootView: View {
     @objc func markDistortion() {
         let load = NativeDistortionMark.currentLoadAverage()
         let mark = model.live?.device.distortionMark(loadAverage: load) ?? Self.markWithoutCall(load: load)
-        model.surfaceReceiptLog.append(mark.record)
+        // F1: the conversation adopts the session id on the audio journal, never on the app's own
+        // native-live journal, so the call id is read here and passed in with the mark.
+        let callID = AudioOwner.shared.journal?.sessionID
+        model.surfaceReceiptLog.append(NativeDistortionMark.record(for: mark, callID: callID))
     }
     /// A mark taken with no call: no engine, no voice stage, so nothing about either is claimed.
     private static func markWithoutCall(load: (Double, Double, Double)) -> NativeDistortionMark {

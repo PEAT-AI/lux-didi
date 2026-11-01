@@ -675,6 +675,15 @@ struct NativeDistortionMark: Sendable {
         String(format: "%.2f,%.2f,%.2f", load.0, load.1, load.2)
     }
 
+    /// F1: one mark record carrying the call id when a call is running. The journal the app writes the
+    /// mark to is its own instance and never adopts a session id, so the id is passed in with the
+    /// record instead of being read from a `sessionID` that instance does not hold.
+    static func record(for mark: NativeDistortionMark, callID: String?) -> [String: Any] {
+        var fields = mark.record
+        if let callID, fields["liveSessionId"] == nil { fields["liveSessionId"] = callID }
+        return fields
+    }
+
     /// The load average of this Mac right now, so a mark says whether the machine was busy.
     static func currentLoadAverage() -> (Double, Double, Double) {
         var averages = [Double](repeating: 0, count: 3)

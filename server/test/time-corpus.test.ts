@@ -123,7 +123,7 @@ test('C-TIME corpus: the owner time wins through the real alarm handler', { time
   }
 });
 
-test('C-TIME shape 8: cancel settles the one alarm that is armed and lists several', async t => {
+test('C-TIME shape8-cancel: settles the one alarm that is armed and lists several', async t => {
   const h = await alarmHarness(t);
   h.options.timezone = 'Europe/Berlin';
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
@@ -156,7 +156,7 @@ test('C-TIME shape 8: cancel settles the one alarm that is armed and lists sever
   assert.equal(finished.reply.reason, 'alarm_not_active');
 });
 
-test('C-TIME shape 8: a set_alarm clarify names the alarm still armed', async t => {
+test('C-TIME shape8-armed: a set_alarm clarify names the alarm still armed', async t => {
   const h = await alarmHarness(t);
   h.options.timezone = 'Europe/Berlin';
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
@@ -186,7 +186,7 @@ test('C-TIME snooze: the wall time is resolved in the alarm zone', async t => {
   assert.equal(fresh.reply.status, 'refused', 'a snooze needs the alarm it moves');
 });
 
-test('C-TIME shape 6 and 7: the event time and the person a description may name', () => {
+test('C-TIME shape6-7: the event time and the person a description may name', () => {
   const now = Date.parse('2026-03-05T09:30:00Z');
   const words = "Okay, that doesn't sound so bad. At 6 PM today I need to call Sam, and could you also put a block on my calendar at 6 PM";
   const window = eventWindow(words, now, 'Europe/Berlin', undefined, { mode: 'wall', date: { kind: 'today' }, local_time: '18:00' });
@@ -201,15 +201,25 @@ test('C-TIME shape 6 and 7: the event time and the person a description may name
   assert.deepEqual(namedOthers('Sam', 'Naya'), ['Sam'], 'a real invitee argument still names him');
 });
 
-test('C-TIME: the corpus keeps the eight reproduced shapes and the new clarify vocabulary', () => {
+test('C-TIME: every reproduced shape is pinned where it lives, and only new clarify reasons are used', () => {
+  // Shapes 1 to 4 are corpus rows, so the row is the pin. Shapes 5 to 8 live in this file's own
+  // tests, and the guards below name those tests' subjects so a deletion cannot pass silently.
   const ids = new Set(corpus.map(row => row.id));
   for (const id of ['shape1-that-branch-wrong-hour', 'shape2-two-pm-tokens', 'shape3-one-time-and-zone', 'shape4-eighteen-hundred',
-    'retry-after-clarify', 'shape8-cancel-and-armed']) {
-    if (id === 'shape8-cancel-and-armed') continue;
+    'shape5-retry-after-clarify', 'shape5-retry-with-model', 'shape5-retry-relative']) {
     assert.ok(ids.has(id), `the corpus keeps ${id}`);
   }
   const reasons = new Set(corpus.filter(row => row.expects.status === 'clarify').map(row => String(row.expects.reason)));
   for (const reason of reasons) assert.ok(['missing_time', 'ambiguous_time', 'past_time'].includes(reason), `clarify reason ${reason}`);
+  // Shape 5: the retry rows above are the corpus pin, and the retry rule itself is pinned by the
+  // split-ask merge in owner-request.test.ts. Shape 8 and shapes 6 and 7 are the three tests below,
+  // so their presence in this file is the pin that can fail.
+  // The file's own source is the pin for the tests that live here: a deleted or renamed shape test
+  // fails this guard, where a skipped id list could not.
+  const source = readFileSync(new URL(import.meta.url), 'utf8');
+  for (const marker of ["C-TIME shape8-cancel:", "C-TIME shape8-armed:", "C-TIME shape6-7:"]) {
+    assert.ok(source.includes(marker), `this file keeps ${marker}`);
+  }
 });
 
 test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {

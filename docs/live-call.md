@@ -81,6 +81,14 @@ per IO node pair, and the whole `AUVoiceIO` property surface (`AudioUnitProperti
 input-side echo cancellation keeps the downlink chain, so we build that graph cleanly and stop
 rebuilding it rather than trying to take her voice out of it.
 
+The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
+`NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
+processing, constructs a real input node, pins a device or stops and resets a real engine: measured
+before this seam existed, the test binaries caused 907 speaker DSP graph rebuilds against 12 from
+real calls (see the 2026-11-01 audio investigation). Real voice processing coverage is now the
+owner-only command `scripts/owner-audio-hardware-proof.sh`, which no check calls and which starts no
+engine, so nothing is audible.
+
 ## Notes and deletion
 
 Voice can save local memories and owner-requested Lux notes. Composed Lux notes are gated off by default and require staged readback and confirmation; a tool call alone is not a save. Trello card writes have their own board-scoped authority. [Privacy and authority](privacy-and-authority.md) owns these distinctions.

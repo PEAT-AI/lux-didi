@@ -2623,7 +2623,13 @@ export class LiveSessionOwner {
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
-    if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
+    if (step === 'rebuild') {
+      // C-RECONNECT #1072: the response watchdog refuses to act while a call is still pending, and a tool result's
+      // silence is the debt ladder's to recover, so the post-tool step takes the recreate path that call guard does
+      // not block. Every other silence keeps the watchdog's own decision, a second mute inside its window included.
+      if (postToolNoOutput && handle.pendingCallIds.size > 0) { await this.#recreateForDeadAir(handle, 'dead_air'); return; }
+      await this.#watchdogRecover(handle, generation, turnAgeMs); return;
+    }
     this.#noteDeadAirNudge(handle, turnAgeMs);
     // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
     // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.

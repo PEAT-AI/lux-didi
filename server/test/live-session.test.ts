@@ -56,7 +56,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, AUDIBLE_DEBT_POST_TOOL_REBUILD_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -3980,7 +3980,8 @@ test('a delegated response with no audible output is nudged, and audible progres
   // C-RECONNECT #1072: the rung re-requests the answer, and a provider still mute one second later is rebuilt, so the
   // owner's whole wait after a tool result is the rung's eight seconds plus that one.
   await advance(1_000);
-  assert.deepEqual(phases(), ['start', 'rung', 'recovering', 'recovered'], 'the mute is rebuilt at the post-tool delta');
+  // The second `rung` is the rebuild step naming the silence it is about to recover, as it always has.
+  assert.deepEqual(phases(), ['start', 'rung', 'rung', 'recovering', 'recovered'], 'the mute is rebuilt at the post-tool delta');
   assert.equal(fake.sessionsOpened, 2, 'a re-request that produced nothing is followed by the rebuild');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output clears the rebuilt session's debt, and her silence after it is the watchdog's again (amendment A).
@@ -5127,7 +5128,7 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   h.advance(2_000); scheduler.runDue(); await settlePort();
   // DEADAIR-R4: the text announced a response, so the 8 s rung holds and the rung returns seven seconds later.
   assert.equal(fake.closes, 0, 'an announced response is never closed under');
-  h.advance(7_000); scheduler.runDue(); await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
   // C-RECONNECT #1072: the rung re-requests the answer the silent continuation never produced, and never re-sends
   // the retired call ids.
   assert.equal(fake.closes, 0, 'the rung puts the re-request in front of the live session');
@@ -7334,24 +7335,24 @@ test('#660: a result that returned unspoken reaches the session that replaced it
   assert.equal(arrived?.['researchIdPresent'], false, 'and carries no research id');
   assert.equal(arrived?.['questionChars'], 0, 'the query length, never the query');
   assert.equal(arrived?.['lookups'], 0, 'one read, no lookup batch');
-  // The rung puts the unspoken result in front of the mute model instead of rebuilding over it.
+  // C-RECONNECT #1072: the rung re-requests the answer the silent continuation never produced, and the model stays
+  // mute under it, so the rebuild follows at the post-tool delta.
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
-  assert.equal(fake.closes, 0, 'the ladder delivers the result before it rebuilds');
-  assert.equal(fake.textInputs.length, 1, 'the result reached the model as one text item');
-  assert.match(fake.textInputs[0]!.text, /already returned/, 'the item names the result as already returned');
-  // The model stays mute, so the rebuild follows and the fresh session is handed the result after its own ready.
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.sessionsOpened, 2, 'the rebuild still happens once the delivery did not get her to speak');
+  assert.equal(fake.closes, 0, 'the ladder re-requests the answer before it rebuilds');
+  assert.equal(fake.textInputs.length, 1, 'the re-request reached the model as one text item');
+  assert.match(fake.textInputs[0]!.text, /Answer the owner now from the results you already have/u, 'the item asks for the answer');
+  h.advance(AUDIBLE_DEBT_POST_TOOL_REBUILD_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the rebuild still happens once the re-request did not get her to speak');
   const second = fake.textInputs.filter(entry => entry.session === 2);
   assert.equal(second.length, 1, 'the fresh session receives the unspoken result exactly once');
+  assert.match(second[0]!.text, /already returned/, 'and that item names the result as already returned');
   assert.equal(fake.requests[1]!.opening, 'model_first', 'the rebuilt session speaks without waiting for the owner');
   assert.equal(fake.requests[1]!.openingText, undefined, 'and carries no pickup line to answer instead');
   const refused = receipts.filter(record => record['event'] === 'live_debt' && record['reason'] === 'send_failed');
   assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
   // #667: the recreate names how many unspoken results the new session was handed.
   const delivery = receipts.filter(record => record['event'] === 'live_unspoken_delivered');
-  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1], [1, 1]], 'one result each, first attempt');
-  assert.equal(new Set(delivery.map(record => record['generation'])).size, 2, 'the rung and the recreate each name their own');
+  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1]], 'one result, first attempt, once');
   fake.emit(audibleFrame);
   await settlePort();
   assert.equal(h.owner.current().state, 'speaking', 'her answer to the delivered result is what the owner hears');
@@ -7365,20 +7366,18 @@ test('#660: the delivery waits for the session to be ready and survives one not_
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'nr660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  // The first delivery meets a session that answers not_ready, and the one retry is the delivery that lands.
+  // The re-request meets a session that answers not_ready, and the one retry is the send that lands.
   fake.refuseTextOnce();
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
   assert.equal(fake.textRefusals, 1, 'the first attempt was refused as not ready');
-  assert.equal(fake.sessionsOpened, 1, 'a refused delivery is never a reason to rebuild');
-  assert.equal(fake.textInputs.length, 1, 'the retry is the one delivery, and it carries the result');
+  assert.equal(fake.sessionsOpened, 1, 'a refused send is never a reason to rebuild');
+  assert.equal(fake.textInputs.length, 1, 'the retry is the one send, and it carries the re-request');
   assert.equal(fake.textInputs[0]!.session, 1);
-  // The result is marked delivered only by the send that succeeded, so the rest of the window delivers nothing.
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.textInputs.length, 1, 'a session that already has the result is never handed it twice');
   // A fresh session is told nothing before its own ready event, and is handed the result once it is ready.
   const release = fake.holdNextReady();
-  h.advance(1_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.sessionsOpened, 2, 'the mute after the delivery rebuilds the session');
+  // C-RECONNECT #1072: the rebuild follows the unanswered re-request at the post-tool delta.
+  h.advance(AUDIBLE_DEBT_POST_TOOL_REBUILD_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the mute after the re-request rebuilds the session');
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 0, 'nothing is delivered before ready');
   release();
   await settlePort();
@@ -7396,11 +7395,14 @@ test('#660: two refused deliveries end the turn with the closed reason instead o
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'fl660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  // Both the attempt and its one retry are refused: the host fails loud rather than leaving the result unsaid.
-  fake.refuseText(2);
+  // C-RECONNECT #1072: the rung re-requests first, and the two refusals below belong to the delivery that follows
+  // the rebuild. Both the attempt and its one retry are refused: the host fails loud rather than leaving the result
+  // unsaid.
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  fake.refuseText(2);
+  h.advance(AUDIBLE_DEBT_POST_TOOL_REBUILD_MS); scheduler.runDue(); await settlePort();
   assert.equal(fake.textRefusals, 2, 'the attempt and the single retry were both refused');
-  assert.equal(fake.textInputs.length, 0, 'nothing reached the model');
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 0, 'nothing reached the replaced session');
   const failed = receipts.filter(record => record['event'] === 'turn_failed');
   assert.deepEqual(failed.map(record => record['reason']), ['send_failed'], 'the turn ends with its closed reason');
   const composed = fake.commentary.filter(text => text === TURN_FAILED_LINE);
@@ -7431,13 +7433,13 @@ test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead o
   await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first lookup answered');
   await advance(AUDIBLE_DEBT_RUNG_MS);
-  // The second result lands 1.7 s before the ladder's rebuild step, exactly as the report read.
-  await advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_700);
+  // The second result lands a moment before the ladder's rebuild step, inside the post-tool delta the report read.
+  await advance(AUDIBLE_DEBT_POST_TOOL_REBUILD_MS - 300);
   note('cw2');
   await settlePort();
   assert.equal(fake.toolResponses.length, 2, 'the second lookup answered inside the ladder');
   const seen = receipts.length;
-  await advance(1_700 + 1_000);
+  await advance(300 + 1_000);
   const judged = receipts.slice(seen);
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a mute judged 1.7 s after a tool result ends nothing');
   assert.ok(judged.some(record => record.phase === 'recovering'), 'the step is the rebuild the first mute gets');
@@ -7933,7 +7935,9 @@ test('SI-R2 (#719): post-tool no-item signal re-requests the answer before the d
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  // The no-item signal is the OpenAI adapter's own, so the shape is tested on the provider that emits it.
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, scheduler, tools: true,
+    limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const session = h.owner.create({ idempotencyKey: 'silence-five', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;

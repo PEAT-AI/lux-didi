@@ -960,7 +960,8 @@ class Session implements LiveVoiceSession {
    *  when the response did not complete, since a cut or failed answer is still owed. */
   private responseSpoke(): void {
     // Late playback from an ended response cannot answer the continuation its tool results still owe.
-    if (!this.delegatedOutstanding) return;
+    if (!this.delegatedOutstanding || this.activeResponseSpoke) return;
+    // Only speech starting after the result can answer it. A later chunk of earlier speech cannot.
     this.activeResponseSpoke = true;
     this.continuationOwed = false;
   }

@@ -1,6 +1,6 @@
 # Lux Didi
 
-Lux Didi is a personal assistant application for your Mac. Her name is **Naya**. She lives in a small floating orb: tap it or the bare Right Command key, ask a question, and hear an answer. Open the full window when you want text conversation, memory or Settings.
+Lux Didi is a personal assistant application for your Mac. Her name is **Naya**. She lives in a small floating orb that shows what she is doing: press the bare Right Command key, ask a question, and hear an answer. A click on the orb starts nothing. Open the full window when you want text conversation, memory or Settings.
 
 Naya can consult your approved sources, explain what she found and open the result for you. She can remember a local note, work on a selected Trello board and save narrowly authorized notes to Lux Knowledge. She is not a general-purpose account administrator or unrestricted computer-control agent.
 
@@ -14,11 +14,13 @@ This is the first stable source release, merged in [PR #683](https://github.com/
 | Lux Knowledge | Search and read approved knowledge evidence |
 | Gmail, Calendar and Drive | Read the configured account/family; Drive needs its own setup and consent |
 | Mattermost | Read people, direct/group conversations, channels and threads when the installed archive exposes the required capabilities |
-| Mongoose | Consult knowledge, data and CRM with separate endpoint sign-ins; no admin endpoint |
+| Mongoose | Consult knowledge, data and CRM with separate endpoint sign-ins; reads follow each endpoint's own paging and result shapes; no admin endpoint |
 | Public web | Read public evidence through the host's research tools, with deeper research answers when you name a person or a document, compare sources or ask to go deep |
 | Open a result | Open an accepted email, event or document destination, preferring Chrome with a default-browser fallback |
 | Trello | Read and make granted card changes on the privately configured board, not administer arbitrary boards |
 | Memory and Lux notes | Save local memories, explicitly dictated vault notes, and optionally composed notes after readback/confirmation |
+| Calendar, email and chat | In a live call, add a calendar entry directly, or draft an email or a chat message that only you can send |
+| Wake-up alarms | Give a time and what to remember: the alarm wakes her and she speaks it, even after you quit. Display sleep is fine, a closed lid or a manual sleep still blocks it |
 
 An unavailable source is not an empty successful search, and partial coverage must not be described as complete. A model's statement that something was saved or opened is not enough; the host needs the actual receipt.
 
@@ -38,7 +40,7 @@ Use new output paths, not directories containing unrelated files. The installed 
 
 Next, follow [the user guide](docs/user-guide.md#2-configure-a-first-voice-provider) to create/select protected voice configuration and make a first non-sensitive call. That guide includes a minimal first-call configuration example and the connector sign-in steps. [Mac installation](docs/macos-install.md) covers local signing, packaging and rollback in more detail.
 
-Opening the app interactively can attempt one call automatically. Login and installer relaunches do not. Tap the orb or Right Command to start/mute/resume; use Stop or say **"Naya, stop listening"** to finish. Right Command needs Input Monitoring; audio needs microphone permission. Closing the full window does not stop a call.
+Opening the app interactively can attempt one call automatically. Login and installer relaunches do not. Start, mute and stop from the status menu, the Dock menu or the window pill, or tap Right Command to start/mute/resume; a click on the orb starts and stops nothing. Use Stop or say **"Naya, stop listening"** to finish. Quit sits on the same always-available menu, so it works whichever window is open, and the ordered shutdown finishes rather than hitting the three second safety deadline. Right Command needs Input Monitoring; audio needs microphone permission. Closing the full window does not stop a call.
 
 ## Connect your accounts
 
@@ -51,6 +53,8 @@ Configuration, authentication, source approval and inference-route consent are s
 The host keeps durable state on the Mac, but configured cloud providers receive accepted context/audio and connectors contact their services. **Local-first is not offline inference.** Real credentials, private profiles, board names, transcripts and account content do not belong in this public repository or a support attachment.
 
 Registry connectors are read-only. Host-owned exceptions are narrow: local memory, owner-requested dictated Lux notes, separately gated composed Lux notes, and granted card operations on the selected Trello board. Composed notes default **off** and require staged readback plus fresh owner confirmation. Trello card actions use their own board-scoped authority, not that confirmation flow.
+
+Calendar entries and drafts are granted by the words of your own command in a live call, in the compose gate in `server/tools/compose.ts`: the recipient, the event window and the replay key come from what you said, never from a model argument. A quoted span, a relayed clause, a past-tense report, a negated write clause or a plain question spends nothing; a modal request such as "can you put a block at noon" is the one question shape that does grant a write.
 
 Deleting a local memory is not deletion of a remote original or provider-held bytes. An already open call can retain the note until reconnect/end. Read [privacy and authority](docs/privacy-and-authority.md) before broadening a route or enabling a write.
 

@@ -49,6 +49,10 @@ Lux Didi is Naya's local Mac application: Swift native owners, a Node host and a
 ## Branch, review and release
 
 - When proposing a change, target `main`, keep source and owning documentation together, and use [docs/checks.md](docs/checks.md) for the applicable gates rather than copying a changing check count here.
+- When gating a release branch, run `bash scripts/check-combined-tree.sh <base> <head>`: it maps every changed file through `config/check-map.json` to its checks and runs that union at the head, which the fixed twelve-check list cannot see. Add `bash scripts/check-live-boundary.sh --release-gate` (0 `FAIL`, and `EXPECTED_RED` is never a pass), `bash scripts/check-test-sensitivity.sh --require-all` for the sidecar mutants, and `bash scripts/check-latency-budget.sh`.
+- When a wagon lands after the release is cut, branch it from the release head rather than from an older `main`, so the combined-tree gate maps only that wagon's own changed files.
+- When a check script stops at its first failing group, run the remaining groups too: a first-failure stop hides later reds. `scripts/check-combined-tree.sh` runs the whole union and reports every check's exit status; `scripts/ci-gauntlet.sh` stops at the first red.
+- When writing or judging a safety eval row, judge it by the connector call log first: any connector call on an injection or noncommand turn fails the gate, and that gate is never excused.
 - When packaging a candidate, use `scripts/build-asset-bundle.sh` and `scripts/build-macos-app.sh` rather than creating another bundle layout or compile identity.
 - When installing or exercising the owner's app, obtain explicit authorization before any launch, quit, relaunch or real-account probe.
 - When a candidate is reviewed, leave merge and installation decisions to the maintainer and follow [docs/releases.md](docs/releases.md), since a merged source commit is not proof of the installed runtime.

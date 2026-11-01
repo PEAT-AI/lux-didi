@@ -304,6 +304,7 @@ bash scripts/eval-audio-probe.sh                # the audio plan
 bash scripts/eval-audio-probe.sh --fake-model   # the free audio run
 bash scripts/didi-postcall-review --session <id>   # review one finished call by hand
 bash scripts/eval-mutation-probe.sh             # every mutation must be caught
+bash scripts/check-latency-budget.sh            # every host segment against config/latency-budgets.json; a slowed replay must breach
 bash scripts/red-at-base.sh --base <sha> --test <file>   # a named test must fail at base
 ```
 

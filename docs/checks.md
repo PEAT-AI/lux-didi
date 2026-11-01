@@ -26,7 +26,7 @@ binaries run outside the lock: only the compiler is inside it.
 
 ## The release gate
 
-Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci`.
+Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci` on every pull request into `main`, so this fixed list is the pull request gate. It sees only the checks it names; the combined-tree gate below sees every file the branch changed.
 
 `bash scripts/check-combined-tree.sh <base> <head>` is the release gate: it maps every file the branch changed to its checks and runs that union at the head, so a release never ships a file no check covers.
 
@@ -288,4 +288,5 @@ recorded synthetic timings, and judges every host-side segment against `config/l
 Each budget is the recon's measured p50 for that segment plus a margin and says so in its `basis`. The
 eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
 receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
-itself a failure. No network, no model, well under two minutes.
+itself a failure. No network, no model, well under two minutes. Run it with
+`bash scripts/check-latency-budget.sh`; it takes no flags and needs the built host under `dist/`.

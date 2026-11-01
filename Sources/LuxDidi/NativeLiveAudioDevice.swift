@@ -45,6 +45,10 @@ protocol NativeLiveInputSeam: AnyObject {
     func pinDevice(_ id: UInt32) throws
     /// The one voice processing enable for a build, verified on both IO nodes.
     func enableVoiceProcessing() throws
+    /// C-AUDIO 1: the playback graph in one step. The fake records it, so a routine check never
+    /// touches a real output node, which is what opens a default device aggregate on this Mac.
+    func connectPlayback(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode,
+                         rate: Double) throws -> AVAudioUnitTimePitch?
     /// Minimum other-audio ducking, with the configuration read back from the node.
     func applyMinimumDucking() -> NativeDuckingReading
     /// The engine lifecycle a failed voice processing attempt makes before its one retry, and the
@@ -69,6 +73,11 @@ final class NativeLiveInputNodeSeam: NativeLiveInputSeam {
             throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
         }
     }
+    func connectPlayback(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode,
+                         rate: Double) throws -> AVAudioUnitTimePitch? {
+        try NativeLiveAudioDevice.connectPlayback(engine: engine, player: player,
+                                                  outputNode: engine.outputNode, rate: rate)
+    }
     func applyMinimumDucking() -> NativeDuckingReading {
         NativeLiveAudioDevice.applyMinimumDucking(to: node)
         let applied = node.voiceProcessingOtherAudioDuckingConfiguration
@@ -90,8 +99,18 @@ final class NativeFakeInputSeam: NativeLiveInputSeam {
     private(set) var pinnedDevice: UInt32?
     private(set) var stops = 0
     private(set) var resets = 0
-    init(format: AVAudioFormat) { self.format = format }
+    /// A lifecycle-only fixture needs no format: 48 kHz mono stands in and never reaches a device.
+    init(format: AVAudioFormat? = nil) {
+        self.format = format ?? AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+    }
     func pinDevice(_ id: UInt32) throws { steps.append("pin"); pinnedDevice = id }
+    func connectPlayback(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode,
+                         rate: Double) throws -> AVAudioUnitTimePitch? {
+        // The same steps the real graph takes, recorded without an engine, a node or a device.
+        steps.append("attach"); steps.append("connect")
+        if rate != 1 { steps.append("attach"); steps.append("connect"); steps.append("connect") }
+        return nil
+    }
     func enableVoiceProcessing() throws { steps.append("enable"); voiceProcessingEnabled = true }
     func applyMinimumDucking() -> NativeDuckingReading {
         steps.append("ducking")
@@ -913,6 +932,9 @@ struct NativeLiveInterruptionSample: Sendable {
     /// Test seam: adopt an engine/player without starting hardware, then release it.
     func adoptEngineForTesting(_ engine: AVAudioEngine, player: AVAudioPlayerNode) {
         self.engine = engine; self.player = player
+        // A test-adopted engine has no hardware face: its stop and reset go through the fake seam,
+        // because stopping a real engine instantiates an IO node and opens a device aggregate.
+        if inputSeamForTesting == nil && inputSeam == nil { inputSeam = NativeFakeInputSeam() }
     }
     func releaseForTesting() { releaseAudio() }
     func rebuildForTesting() throws { try build { _, _ in } }
@@ -1473,11 +1495,11 @@ struct NativeLiveInterruptionSample: Sendable {
     }
     /// C-AUDIO 1: the playback graph as one recorded step. It is built after voice processing is
     /// enabled and ducked, so the attach and the connect never reconfigure the unit.
-    private func connectPlaybackGraph(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode)
+    private func connectPlaybackGraph(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode,
+                                       seam: any NativeLiveInputSeam)
         throws -> AVAudioUnitTimePitch? {
         do {
-            let stretch = try Self.connectPlayback(engine: engine, player: player,
-                                                   outputNode: engine.outputNode, rate: sessionRate)
+            let stretch = try seam.connectPlayback(engine, player, rate: sessionRate)
             graphBuildSteps.append("player_attached")
             return stretch
         } catch let raised as NativeAudioGraphException {
@@ -1570,7 +1592,7 @@ struct NativeLiveInterruptionSample: Sendable {
                 }
                 // The fake-engine seam builds the same playback graph the hardware path does, so a
                 // test proves the order the real start uses instead of a shape only tests have.
-                stretch = try connectPlaybackGraph(engine, player)
+                stretch = try connectPlaybackGraph(engine, player, seam: seam)
             } catch {
                 // The fake seam cannot fail here, so a fake build rethrows exactly as before.
                 guard factoryOutput == nil else { throw error }
@@ -1584,10 +1606,10 @@ struct NativeLiveInterruptionSample: Sendable {
                 guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
                     throw NativeLiveAudioError.formatUnavailable
                 }
-                stretch = try connectPlaybackGraph(engine, player)
+                stretch = try connectPlaybackGraph(engine, player, seam: seam)
             }
         } else {
-            stretch = try connectPlaybackGraph(engine, player)
+            stretch = try connectPlaybackGraph(engine, player, seam: seam)
         }
         inputSeam = seam
         self.engine = engine; self.player = player; self.timePitch = stretch

@@ -365,9 +365,15 @@ private func checkFormatChangeRebuild() throws {
     let configuration = NativeLiveAudioDevice.minimumDuckingConfiguration()
     try audioRequire(!configuration.enableAdvancedDucking.boolValue && configuration.duckingLevel == .min,
                      "minimum ducking with advanced ducking off")
-    if #available(macOS 14.0, *) {
-        NativeLiveAudioDevice.applyMinimumDucking(to: AVAudioEngine().inputNode)
+    // The applied configuration read back, on the fake seam: no real engine, no input node, and an
+    // assertion that can fail, which the old discarded call could not.
+    guard let seamFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+        throw NativeLiveAudioError.formatUnavailable
     }
+    let seam = NativeFakeInputSeam(format: seamFormat)
+    let reading = seam.applyMinimumDucking()
+    try audioRequire(!reading.advanced && reading.level == String(configuration.duckingLevel.rawValue),
+                     "the applied configuration reads back as minimum with advanced ducking off, got \(reading)")
     print("PASS other-audio ducking set to the minimum while voice processing is on")
 }
 
@@ -1532,8 +1538,8 @@ enum AudioGraphLifecycleTests {
         device.inputSeamForTesting = seam
         device.startForTesting = { _ in }
         try await device.start { _ in }
-        try audioRequire(seam.steps == ["enable", "ducking"],
-                         "the enable comes first, then the ducking the enable would otherwise reset, got \(seam.steps)")
+        try audioRequire(seam.steps == ["enable", "ducking", "attach", "connect"],
+                         "the enable comes first, then the ducking the enable would otherwise reset, then the graph, got \(seam.steps)")
         let minimum = NativeDuckingReading(advanced: false,
                                            level: String(AVAudioVoiceProcessingOtherAudioDuckingConfiguration.Level.min.rawValue))
         try audioRequire(seam.ducking == minimum,

@@ -786,7 +786,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused: the
             // alarm he did ask for is still set.
             const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
-            if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
+            // The canary floor belongs to a live session, and the tools schema is also mounted alone (the eval
+            // alarm runner), where no live table exists: ask only when the live schema is present.
+            const canarySession = tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'")
+              ? tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])
+              : undefined;
+            if (canarySession) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
             }

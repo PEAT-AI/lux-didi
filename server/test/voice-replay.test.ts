@@ -146,7 +146,8 @@ test('scenario 7 strict: no later provider lifecycle rescues the owed answer', a
   const source = loadTrace('scenario-07-missing-terminal-event');
   const trace = { ...source, steps: source.steps.filter(step => step.at_ms < 8_000) };
   const played = await playTrace(t, trace, { tools: true, scripts: [{ latencyMs: 1_500 }] });
-  assert.equal(continuations(played), 1, `a provider that stops sending must not withhold the answer: ${describe(played.replay)}`);
+  assert.equal(played.replay.batches.length, 1, 'the original tool result forms exactly one batch');
+  assert.equal(played.replay.batches[0]!.creates.length, 1, `the original batch must receive its own continuation: ${describe(played.replay)}`);
   invariants(played);
   await played.replay.release();
 });

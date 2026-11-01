@@ -470,6 +470,21 @@ export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
  *  younger than this from its own creation and never shortens anything else: the rung, the recovery and the debt
  *  clock keep their values. 12 s is the healthy silent-response max (9,680 ms, n=69) with room to spare. */
 export const MAX_IN_FLIGHT_RESPONSE_AGE_MS = 12_000;
+/** C-REBUILD A: how long a rebuild still waits while a response is in flight, or null when it may fire now. */
+export function inFlightResponseHold(state: {
+  responseInProgress?: boolean | undefined; responseCreatedAt?: number | undefined; now: number;
+}): number | null {
+  if (state.responseInProgress !== true || state.responseCreatedAt === undefined) return null;
+  const age = Math.max(0, state.now - state.responseCreatedAt);
+  return age < MAX_IN_FLIGHT_RESPONSE_AGE_MS ? MAX_IN_FLIGHT_RESPONSE_AGE_MS - age : null;
+}
+/** C-REBUILD C: an owner turn that asked the provider for nothing at all, which the council's ruling removed from
+ *  the rebuild triggers. A tool call or a created response makes the turn a real ask, and the rebuild stays. */
+export function silentOwnerTurn(state: {
+  ownerWords: boolean; turnToolCalls: number; turnResponseCreated: boolean;
+}): boolean {
+  return state.ownerWords && state.turnToolCalls === 0 && !state.turnResponseCreated;
+}
 /** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
 export const DEAD_AIR_CONTINUATION_MS = 2_500;
 /** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
@@ -699,6 +714,9 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
     : state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate;
   if (askedAgain) return 'new_question';
   if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+  // C-REBUILD B: a response in flight owns the wire, so a finding waits for its terminal. The wait is an event, not
+  // a clock: the terminal is what offers the note, and nothing here may schedule a send of its own.
+  if (state.responseInProgress === true) return 'response_in_flight';
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
 }
@@ -909,6 +927,11 @@ interface ActiveSession {
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
    *  The rung never cuts off an answer the owner can hear; it grants it one short grace. */
   responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
+  /** C-REBUILD C: what this owner turn asked the provider for. A turn with no tool call and no created response is
+   *  the one the council removed from the rebuild triggers; both counters restart with every owner turn. */
+  turnToolCalls?: number | undefined; turnResponseCreated?: boolean | undefined;
+  /** C-REBUILD #830: how many times this call has held a rebuild and how many it has stood down for. */
+  rebuildHeld?: number | undefined; rebuildRemoved?: number | undefined;
   /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
@@ -2641,7 +2664,11 @@ export class LiveSessionOwner {
     // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
     // the answer the owner asked for is not made to wait for two provider recreates.
     if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      if (!(await this.#deliverUnspoken(handle))) return;
+      // C-REBUILD B: a response in flight owns the wire, and a text handed over now would be a second create under
+      // the answer being spoken. The result waits for that response's own terminal, which is the continuation path
+      // that carries it, and if the response is torn down instead it travels in the new session's opening. The
+      // ladder keeps its timing either way: the rebuild rung still fires one recovery delay from here.
+      if (handle.responseInProgress !== true && !(await this.#deliverUnspoken(handle))) return;
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
@@ -2764,7 +2791,12 @@ export class LiveSessionOwner {
     if (handle.pendingCallIds.size > 0) return;
     // #660: a stall with no call in flight is a result the model never said, which the host hands it once, or
     // nothing at all, which makes the owner's next status answer the host's to give rather than the model's belief.
-    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) { void this.#deliverUnspoken(handle); return; }
+    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
+      // C-REBUILD B: the same hold as the rung, for the same reason. A response in flight owns the wire, and its
+      // terminal is what carries the result, so the stall is diagnosed and nothing is injected under it.
+      if (handle.responseInProgress !== true) void this.#deliverUnspoken(handle);
+      return;
+    }
     handle.hostStatusNote = true;
   }
 
@@ -2920,6 +2952,8 @@ export class LiveSessionOwner {
       // owner hears: the first announced response after an owed answer stamps owner final to response to first audio.
       if (handle.responseInProgress !== true) handle.responseCreatedAt = this.#now();
       handle.responseInProgress = true;
+      // C-REBUILD C: this turn did ask the provider for an answer, so a mute from here is a real mute.
+      handle.turnResponseCreated = true;
       // C-DEADAIR: text the owner cannot hear, written while an answer is owed, is what the response-end rescue reads.
       if (handle.debtSince !== undefined && (type === 'modelText' || type === 'outputTranscription')) handle.debtTextSeen = true;
     }
@@ -2984,6 +3018,33 @@ export class LiveSessionOwner {
 
   async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
+    // C-REBUILD A: a response in flight younger than its own ceiling is not a mute the ladder may close. The
+    // longest healthy silent response ran 9,680 ms (n=69) and 7 of 19 owner rebuilds tore down one under 9.7 s old,
+    // so the rebuild waits out the remaining age and fires exactly as it did before once the ceiling has passed.
+    // The timer is the one this step already owns, so a response that ends inside the wait cancels it, and no other
+    // rung, recovery or debt value moves.
+    const hold = inFlightResponseHold({
+      responseInProgress: handle.responseInProgress, responseCreatedAt: handle.responseCreatedAt, now: this.#now(),
+    });
+    if (hold !== null) {
+      handle.rebuildHeld = (handle.rebuildHeld ?? 0) + 1;
+      hostLogEvent({ event: 'live_rebuild_held', reason: 'response_in_flight', generation, heldCount: handle.rebuildHeld,
+        ageMs: Math.max(0, this.#now() - (handle.responseCreatedAt ?? this.#now())), holdMs: hold });
+      if (handle.debtSince !== undefined) this.#scheduleDebt(handle, hold, 'rebuild');
+      else this.#scheduleWatchdog(handle, hold, generation, 'recover');
+      return;
+    }
+    // C-REBUILD C: an owner turn that made no tool call and created no response is a turn he may simply have stopped
+    // on, so the rebuild is removed for it. The accepted failure is stated: a socket that is really dead on such a
+    // turn waits until he speaks again, and a final after that silence recovers through the triggers in force. Every
+    // other trigger is untouched, and a second-mute settlement is left to turns that really asked for something.
+    if (silentOwnerTurn({ ownerWords: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
+      turnToolCalls: handle.turnToolCalls ?? 0, turnResponseCreated: handle.turnResponseCreated === true })) {
+      handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
+      hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
+        turnAgeMs, removedCount: handle.rebuildRemoved });
+      return;
+    }
     const previous = handle.watchdogRecoveredAt;
     // W3: the wait being judged started here, so a weak spell before it cannot relabel this timeout.
     const waitSince = handle.watchdogSince;
@@ -3055,6 +3116,8 @@ export class LiveSessionOwner {
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     handle.modelTextSinceOpen = false;
+    // C-REBUILD C: the turn's own record of what it asked for restarts with the owner's words.
+    handle.turnToolCalls = 0; handle.turnResponseCreated = false;
     // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
@@ -4020,6 +4083,8 @@ export class LiveSessionOwner {
           await this.#replayRecordedCalls(handle, event);
           if (!event.calls.length) continue;
           handle.toolCalls += event.calls.length;
+          // C-REBUILD C: the owner turn did ask for tool work, so its silences stay the ladder's to recover.
+          handle.turnToolCalls = (handle.turnToolCalls ?? 0) + event.calls.length;
           // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
           handle.hostStatusNote = false;
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
@@ -4772,6 +4837,7 @@ export class LiveSessionOwner {
       inputAt: handle.inputAt,
       ownerWords: handle.ownerLastWords,
       lastModelAudioAt: handle.lastModelAudioAt,
+      responseInProgress: handle.responseInProgress === true,
       newerWorkAt: Math.max(handle.researchStartedAt ?? 0, handle.lastToolCallAt ?? 0),
     });
   }

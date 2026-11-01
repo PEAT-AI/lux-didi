@@ -2109,6 +2109,17 @@ class Session implements LiveVoiceSession {
 
   close(): void { if (this.checkpoint()) this.finish('closed'); }
 
+  /** C-REBUILD: the response this session tore down, closed with the one status the trace store keeps for it. */
+  private settleSuperseded(): void {
+    if (!this.delegatedOutstanding) return;
+    this.delegatedOutstanding = false;
+    const responseKey = this.currentResponseKey;
+    if (responseKey === undefined) return;
+    this.receipt('response.terminal', { responseKey }, {
+      terminalAt: this.clock.now(), status: 'superseded', terminalReason: 'superseded',
+    });
+  }
+
   private finish(code: LiveVoiceErrorCode, upstream?: LiveVoiceUpstreamDrop) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
@@ -2116,6 +2127,10 @@ class Session implements LiveVoiceSession {
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     this.clearNoItemTimer();
     this.discardHeadStart();
+    // C-REBUILD: a teardown under a response the provider announced and never terminated is the one case the wire
+    // never settles. The response is settled here as superseded, so a rebuild, a drop or an ended call leaves no
+    // response pending in the store for the life of the call (t59 and t64 in 47bf2e88 still listed theirs).
+    this.settleSuperseded();
     // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);

@@ -151,7 +151,97 @@ def check_stimulus():
     return entries, total, problems
 
 
-def main():
+def check_run_dir(signals_dir, work_dir):
+    """End to end on files: generate a synthetic recording, then run analyze.py.
+
+    This is the path a real run takes (manifest, recording file, alignment) but
+    with a simulated speaker and no audio device.  The expected verdict is the
+    hard clip channel, and every alignment must land within 5 ms of the truth.
+    """
+    import json
+    import os
+
+    import soundfile as sf
+
+    with open(os.path.join(signals_dir, "signals.json")) as fh:
+        signals = json.load(fh)
+    rng = np.random.default_rng(11)
+    os.makedirs(work_dir, exist_ok=True)
+    pre = np.zeros(int(1.0 * FS))
+    gap = np.zeros(int(ms.GAP_S * FS))
+    parts = [pre]
+    truth = {}
+    position = len(pre)
+    for entry in signals["files"]:
+        data, fs = sf.read(entry["path"], dtype="float64", always_2d=True)
+        if fs != FS:
+            raise SystemExit("%s is %d Hz" % (entry["path"], fs))
+        sig = model_hardclip(data, FS, rng) * MIC_GAIN
+        mono = sig.sum(axis=1) + rng.standard_normal(len(sig)) * ROOM_NOISE_RMS
+        parts.append(mono)
+        parts.append(gap)
+        truth[entry["file"]] = position
+        position += len(mono) + len(gap)
+    recording = np.concatenate(parts)
+    rec_name = "mic_raw.wav"
+    sf.write(os.path.join(work_dir, rec_name), recording, FS, subtype="PCM_16")
+    manifest = {
+        "label": "selftest-run-dir",
+        "slider": 0,
+        "created": "synthetic",
+        "fs": FS,
+        "gap_s": ms.GAP_S,
+        "pre_roll_s": 1.0,
+        "run_dir": os.path.abspath(work_dir),
+        "signals_dir": os.path.abspath(signals_dir),
+        "recording": {"file": rec_name, "fs": FS, "channels": 1, "format": "s16"},
+        "devices": {"default_output": "synthetic", "microphone": "synthetic"},
+        "files": signals["files"],
+    }
+    with open(os.path.join(work_dir, "manifest.json"), "w") as fh:
+        json.dump(manifest, fh, indent=1)
+    report, path = analyze.run(work_dir)
+    problems = []
+    for ch in ("L", "R"):
+        got = report["channels"][ch]["verdict"]
+        if got != "HARD CLIPPING":
+            problems.append("run dir: channel %s expected HARD CLIPPING, got %s"
+                            % (ch, got))
+    worst = 0
+    for name, want in truth.items():
+        got = report["alignment"].get(name)
+        if got is None:
+            problems.append("run dir: %s not aligned" % name)
+            continue
+        worst = max(worst, abs(got - want))
+    if worst > int(0.005 * FS):
+        problems.append("run dir: alignment off by %d samples" % worst)
+    print("run dir: %d files, alignment within %d samples, verdicts %s"
+          % (len(truth), worst,
+             ", ".join("%s %s" % (ch, report["channels"][ch]["verdict"])
+                       for ch in sorted(report["channels"]))))
+    print("run dir: wrote %s" % path)
+    return problems
+
+
+def main(argv=None):
+    ap_args = sys.argv[1:]
+    if ap_args and ap_args[0] == "--run-dir":
+        if len(ap_args) != 2:
+            print("usage: selftest.py --run-dir SIGNALS_DIR", file=sys.stderr)
+            return 2
+        import shutil
+        import tempfile
+        work = tempfile.mkdtemp(prefix="speakerkit-rundir.")
+        try:
+            problems = check_run_dir(ap_args[1], work)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        for p in problems:
+            print("FAIL %s" % p)
+        print("SELFTEST RUN DIR %s" % ("FAIL" if problems else "PASS"))
+        return 1 if problems else 0
+
     entries, total_s, problems = check_stimulus()
     print("stimulus: %d files, %.1f s including gaps, fades %.0f ms"
           % (len(entries), total_s, ms.FADE_S * 1000))

@@ -83,13 +83,34 @@ def load_signal(path):
     return _to_mono(data), fs
 
 
+def find_onset(rec, fs, rel=0.05):
+    """First sample of the first play: the recording opens with silence."""
+    if not len(rec):
+        return 0
+    peak = float(np.max(np.abs(rec)))
+    if peak <= 0.0:
+        return 0
+    above = np.abs(rec) > rel * peak
+    idx = int(np.argmax(above))
+    if not above[idx]:
+        return 0
+    return max(0, idx - int(0.03 * fs))
+
+
 def align_offset(rec, ref, fs, search_lo=0, search_hi=None, max_lag_s=8.0):
-    """Sample offset of `ref` inside `rec`, by normalized cross-correlation."""
+    """Sample offset of `ref` inside `rec`, by cross-correlation.
+
+    The window must be narrow enough to hold one play: the three left sweeps
+    carry the same waveform at three levels, so a wide search locks onto the
+    loudest one.  The caller predicts the window from the play order.
+    """
     n = len(ref)
     lo = max(0, int(search_lo))
     hi = len(rec) if search_hi is None else min(len(rec), int(search_hi))
     if hi - lo < n:
-        hi = min(len(rec), lo + n + int(max_lag_s * fs))
+        hi = min(len(rec), lo + n)
+    if hi - lo < n:
+        lo = max(0, hi - n)
     window = rec[lo:hi]
     m = len(window) + n
     nfft = 1 << int(math.ceil(math.log2(m)))
@@ -556,25 +577,28 @@ def run(run_dir, out_path=None):
     entries = manifest["files"]
     segments = {}
     alignment = {}
-    anchor = 0
+    residuals = {}
+    gap_samples = int(round(float(manifest.get("gap_s", 1.0)) * fs))
+    position = find_onset(rec, fs)
+    search = int(0.25 * fs)
     for entry in entries:
         ref, rfs = load_signal(entry["path"])
         if rfs != fs:
             raise SystemExit("%s is %d Hz, expected %d" % (entry["file"], rfs, fs))
-        lo = max(0, anchor - int(2.0 * fs))
-        hi = min(len(rec), anchor + len(ref) + int(3.0 * fs))
-        if anchor == 0:
-            lo, hi = 0, len(rec)
+        lo = max(0, position - search)
+        hi = min(len(rec), position + len(ref) + search)
         lag = align_offset(rec, ref, fs, lo, hi)
         segments[entry["file"]] = rec[lag: lag + len(ref)]
         alignment[entry["file"]] = lag
-        anchor = lag + len(ref) + int(manifest.get("gap_s", 1.0) * fs)
+        residuals[entry["file"]] = round((lag - position) / fs, 4)
+        position = lag + len(ref) + gap_samples
     meta = {
         "run_dir": os.path.abspath(run_dir),
         "label": manifest.get("label"),
         "slider": manifest.get("slider"),
         "created": manifest.get("created"),
         "alignment": alignment,
+        "alignment_residual_s": residuals,
     }
     report = analyse_segments(entries, segments, fs, meta)
     report["recording"] = manifest["recording"]["file"]

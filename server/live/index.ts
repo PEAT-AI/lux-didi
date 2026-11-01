@@ -4999,8 +4999,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (projections[index]?.status !== 'completed' || !isReadOnlyTool(call.name)) continue;
         const source = stepSourceOf(call.name);
         if (advancesExposure(source)) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, source, ownerRequestId ?? '');
-        // A knowledge result quotes mail, chat and web text, so it exposes the turn like they do.
-        else if (source === 'knowledge') this.#tools!.owner.ownerRequests.expose(handle.liveSessionId);
+        // A knowledge result quotes mail, chat and web text, so it exposes the turn like they do. A calendar
+        // list is the same: his own events carry titles other people wrote, so a title is data, never authority.
+        else if (source === 'knowledge' || source === 'calendar') this.#tools!.owner.ownerRequests.expose(handle.liveSessionId);
       }
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];

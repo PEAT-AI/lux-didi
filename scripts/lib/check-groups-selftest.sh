@@ -4,7 +4,7 @@
 # beyond three shell functions in a temporary script.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-group-selftest.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 

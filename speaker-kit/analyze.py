@@ -108,16 +108,23 @@ def align_offset(rec, ref, fs, search_lo=0, search_hi=None, max_lag_s=8.0):
     lo = max(0, int(search_lo))
     hi = len(rec) if search_hi is None else min(len(rec), int(search_hi))
     if hi - lo < n:
-        hi = min(len(rec), lo + n)
-    if hi - lo < n:
-        lo = max(0, hi - n)
+        raise ValueError("alignment: recording truncated or missing stimulus")
     window = rec[lo:hi]
-    m = len(window) + n
-    nfft = 1 << int(math.ceil(math.log2(m)))
+    nfft = 1 << (len(window) + n - 1).bit_length()
     corr = np.fft.irfft(
         np.fft.rfft(window, nfft) * np.conj(np.fft.rfft(ref, nfft)), nfft
-    )[: len(window)]
-    return lo + int(np.argmax(corr))
+    )[:len(window) - n + 1]
+    # Only full-length overlaps are candidates. Normalization prevents a loud
+    # neighbouring transient winning simply because its energy is larger.
+    energy = np.concatenate(([0.0], np.cumsum(window * window)))
+    denom = np.sqrt(np.maximum((energy[n:] - energy[:-n]) * np.dot(ref, ref), 1e-30))
+    scores = np.abs(corr) / denom
+    best = int(np.argmax(scores))
+    if scores[best] < 0.025:
+        raise ValueError("alignment: reference not found (correlation %.4f, expected %.3fs)" % (scores[best], (lo + hi - n) / (2 * fs)))
+    if best == 0 or best == len(scores) - 1:
+        raise ValueError("alignment: peak at search boundary, cannot trust timing")
+    return lo + best
 
 
 def _frames(seg, fs, f1, f2, dur):
@@ -574,25 +581,47 @@ def run(run_dir, out_path=None):
     rec, fs = load_signal(rec_path)
     if fs != manifest.get("fs", FS):
         raise SystemExit("recording is %d Hz, manifest says %s Hz" % (fs, manifest.get("fs")))
+    capture_peak = db(float(np.max(np.abs(rec))))
+    padding = 5 * fs
+    rec = np.pad(rec, (padding, 0))
     entries = manifest["files"]
     segments = {}
     alignment = {}
     residuals = {}
     gap_samples = int(round(float(manifest.get("gap_s", 1.0)) * fs))
-    position = find_onset(rec, fs)
-    search = int(0.25 * fs)
-    for entry in entries:
+    position = padding + int(float(manifest.get("pre_roll_s", 1.0)) * fs)
+    search = int(2.0 * fs)
+    alignment_quality = {}
+    invalid = []
+    for index, entry in enumerate(entries):
         ref, rfs = load_signal(entry["path"])
         if rfs != fs:
             raise SystemExit("%s is %d Hz, expected %d" % (entry["file"], rfs, fs))
-        lo = max(0, position - search)
+        lo = 0 if index == 0 else max(0, position - search)
         hi = min(len(rec), position + len(ref) + search)
         lag = align_offset(rec, ref, fs, lo, hi)
         segments[entry["file"]] = rec[lag: lag + len(ref)]
-        alignment[entry["file"]] = lag
+        segment = segments[entry["file"]]
+        corr = abs(float(np.dot(segment, ref))) / max(
+            float(np.linalg.norm(segment) * np.linalg.norm(ref)), 1e-30)
+        if db(float(np.sqrt(np.mean(segment * segment)))) < -85:
+            raise ValueError("alignment: implausibly quiet file " + entry["file"])
+        alignment_quality[entry["file"]] = {
+            "expected_s": round((position - padding) / fs, 5), "measured_s": round((lag - padding) / fs, 5),
+            "valid": lag >= padding,
+            "correlation": round(corr, 5),
+            "rms_dbfs": round(db(float(np.sqrt(np.mean(segment * segment)))), 2),
+        }
+        if lag < padding:
+            invalid.append(entry["file"] + ": recording starts %.3fs after stimulus onset" % ((padding-lag)/fs))
+            del segments[entry["file"]]
+        alignment[entry["file"]] = lag - padding
         residuals[entry["file"]] = round((lag - position) / fs, 4)
         position = lag + len(ref) + gap_samples
     meta = {
+        "alignment_quality": alignment_quality,
+        "invalid_measurements": invalid,
+        "capture_peak_dbfs": round(capture_peak, 2),
         "run_dir": os.path.abspath(run_dir),
         "label": manifest.get("label"),
         "slider": manifest.get("slider"),
@@ -616,8 +645,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     report, path = run(args.run_dir, args.out)
     print(format_table(report))
+    for problem in report.get("invalid_measurements", []):
+        print("INVALID: " + problem)
     print("\nwrote %s" % path)
-    return 0
+    return 2 if report.get("invalid_measurements") else 0
 
 
 if __name__ == "__main__":

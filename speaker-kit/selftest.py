@@ -172,7 +172,10 @@ def check_run_dir(signals_dir, work_dir):
     parts = [pre]
     truth = {}
     position = len(pre)
-    for entry in signals["files"]:
+    for index, entry in enumerate(signals["files"]):
+        delay = np.zeros(int((index % 3) * 0.37 * FS))
+        parts.append(delay)
+        position += len(delay)
         data, fs = sf.read(entry["path"], dtype="float64", always_2d=True)
         if fs != FS:
             raise SystemExit("%s is %d Hz" % (entry["path"], fs))

@@ -11,10 +11,15 @@ const tz = 'Asia/Singapore';
  * this file's zone, so no expected instant changes. Where the owner's words settle one time, the same
  * row also runs with a model time one hour wrong and the owner's instant must still win.
  */
-function modelAt(instant: number, zone = tz): TimeSpec {
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(instant);
-  const get = (type: string): string => parts.find(part => part.type === type)?.value ?? '';
-  return { mode: 'wall', date: { kind: 'iso', value: `${get('year')}-${get('month')}-${get('day')}` }, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
+function modelAt(instant: number, zone = tz, reference = now): TimeSpec {
+  const local = (value: number) => new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(value);
+  const parts = local(instant);
+  const get = (values: Intl.DateTimeFormatPart[], type: string): string => values.find(part => part.type === type)?.value ?? '';
+  const today = [`${get(local(reference), 'year')}-${get(local(reference), 'month')}-${get(local(reference), 'day')}`];
+  const date = `${get(parts, 'year')}-${get(parts, 'month')}-${get(parts, 'day')}`;
+  // The model said "today" when it meant today, so the host takes its own past roll for it.
+  const day = date === today[0] ? { kind: 'today' as const } : { kind: 'iso' as const, value: date };
+  return { mode: 'wall', date: day, local_time: `${get(parts, 'hour')}:${get(parts, 'minute')}`, timezone: zone };
 }
 function ownerWins(words: string, at: number, expected: number, zone = tz): void {
   if (checkOwnerTime(words).status !== 'unique') return;

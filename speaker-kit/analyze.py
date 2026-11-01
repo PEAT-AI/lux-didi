@@ -144,6 +144,13 @@ def alignment_landmarks(rec, ref, fs, onset):
     timebase. Only compare landmarks with adequate correlation.
     """
     points = []
+    n = len(ref)
+    h = np.zeros(n)
+    h[0] = 1
+    h[1:(n+1)//2] = 2
+    if n % 2 == 0:
+        h[n//2] = 1
+    analytic = np.fft.ifft(np.fft.fft(ref)*h)
     for t in np.arange(1.0, len(ref) / fs - 0.3, 0.5):
         offset = int(t * fs)
         part = ref[offset:offset + int(0.08 * fs)]
@@ -156,8 +163,14 @@ def alignment_landmarks(rec, ref, fs, onset):
         seg = rec[lag:lag+len(part)]
         score = abs(float(np.dot(seg, part))) / max(float(np.linalg.norm(seg)*np.linalg.norm(part)), 1e-30)
         if score >= 0.2:
+            carrier = analytic[offset:offset+len(part)]
+            gain = 2*abs(np.vdot(carrier, seg))/max(float(np.vdot(carrier, carrier).real), 1e-30)
+            amplitude = gain*np.sqrt(np.mean(np.abs(carrier)**2))
+            frequency = float(np.median(np.angle(carrier[1:]*np.conj(carrier[:-1])))*fs/(2*np.pi))
             points.append({"reference_s": round(t, 3), "offset_s": round((lag-offset)/fs, 5),
-                           "correlation": round(score, 3)})
+                           "correlation": round(score, 3), "gain_db": round(db(gain), 2),
+                           "fund_rms_dbfs": round(db(amplitude/np.sqrt(2)), 2),
+                           "frequency_hz": round(frequency, 1)})
     return points
 
 
@@ -415,6 +428,38 @@ def relative_diagnostics(report):
         "Harmonics below 300 Hz can be intentional virtual bass; a weak fundamental makes ratios unstable.",
         "Matched harmonic windows are descriptive, not Farina impulse-response separation or proof of rattle.",
     ]
+
+
+def local_control_comparisons(entries, quality, noise):
+    """Salvage explicitly exploratory 80 ms controls, not whole-file verdicts.
+
+    High-correlation local matches can survive capture loss between windows.
+    They cannot establish sustained-load behaviour or a whole-band response.
+    """
+    matched = {}
+    for e in entries:
+        for p in quality.get(e["file"], {}).get("landmarks", []):
+            if p["correlation"] < .8:
+                continue
+            band = next((name for name, (lo, hi) in zip(BAND_NAMES, BANDS) if lo <= p["frequency_hz"] < hi), None)
+            if band is None:
+                continue
+            p = dict(p, band=band, snr_db=round(p["fund_rms_dbfs"]-noise[band], 2))
+            if p["snr_db"] >= 15:
+                matched[e["channel"], e["level_db_peak"], p["reference_s"]] = p
+    rows = []
+    for (ch, lv, t), p in sorted(matched.items()):
+        controls = []
+        if ch == "L" and ("R", lv, t) in matched:
+            controls.append(("L-R", matched["R", lv, t]))
+        if lv != -18 and (ch, -18., t) in matched:
+            controls.append((ch + " vs -18", matched[ch, -18., t]))
+        for kind, ref in controls:
+            rows.append({"control": kind, "level_dbfs": lv, "frequency_hz": p["frequency_hz"],
+                         "difference_db": round(p["gain_db"]-ref["gain_db"], 2),
+                         "snr_db": [p["snr_db"], ref["snr_db"]],
+                         "correlation": [p["correlation"], ref["correlation"]]})
+    return rows
 
 
 def spectral_amplitudes(x, fs, frequencies):
@@ -738,6 +783,11 @@ def format_table(report):
                 lines.append("%-24s %9.5f %11.5f %11.5f %.4f %-5s %s" %
                              (name, q["expected_s"], q["predicted_s"], q["measured_s"], q["correlation"],
                               q["valid"], q.get("landmark_spread_ms", "n/a")))
+        if report.get("local_controls"):
+            lines.append("EXPLORATORY 80 ms local matches only: not full-file, sustained-load or fault evidence.")
+            lines.append("control    input  freq_Hz delta_gain_dB SNR_dB_vs_quiet_bound correlation")
+            for v in report["local_controls"]:
+                lines.append("%(control)-10s %(level_dbfs)5g %(frequency_hz)8.1f %(difference_db)+10.2f %(snr_db)s %(correlation)s" % v)
         bass = report.get("bass", {})
         if bass.get("tones"):
             lines.append("bass Hz input ref fundamental SNR gain_change pumping harmonics H2..H8 (dB)")
@@ -892,10 +942,12 @@ def run(run_dir, out_path=None):
         "alignment_residual_s": residuals,
     }
     report = analyse_segments(entries, segments, fs, meta, calibrated=manifest.get("calibrated_fixture", False))
+    report["local_controls"] = local_control_comparisons(entries, alignment_quality, noise)
     report["mic"]["clipped"] = capture_peak >= db(MIC_CLIP_LEVEL)
     if report["mic"]["clipped"]:
         report["invalid_measurements"].append("capture clips at the microphone")
         report["comparison"] = []
+        report["local_controls"] = []
         report["bass"]["verdict"] = "INCONCLUSIVE: capture clipped"
         for data in report["channels"].values():
             data["verdict"] = "INCONCLUSIVE"

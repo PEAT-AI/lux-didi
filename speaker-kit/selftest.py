@@ -176,7 +176,10 @@ def check_physical_chain(entries):
     spread = np.ptp([p["offset_s"] for p in points]) if len(points) >= 3 else 0
     if spread < .1:
         failures.append("within-file sample loss not exposed by landmarks")
-    print("capture-loss control: landmark spread %.1f ms" % (1000*spread))
+    retained = [p for p in points if p["correlation"] >= .8]
+    if not retained or any(abs(p["gain_db"]) > 1 for p in retained):
+        failures.append("local matched gain is not preserved across capture loss")
+    print("capture-loss control: landmark spread %.1f ms, %d local unit-gain windows retained" % (1000*spread, len(retained)))
     return failures
 
 

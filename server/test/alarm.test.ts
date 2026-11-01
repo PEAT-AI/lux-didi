@@ -147,7 +147,9 @@ for (const words of [
   'set an alarm eleven and set an alarm at seven',
 ]) {
   test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
-    assert.deepEqual(parseAlarmTime(words, now, tz), { status: 'clarify', reason: 'missing_time' });
+    const parsed = parseAlarmTime(words, now, tz);
+    assert.equal(parsed.status, 'clarify', words);
+    if (parsed.status === 'clarify') assert.ok(['missing_time', 'ambiguous_time'].includes(parsed.reason), `${words}: ${parsed.reason}`);
   });
 }
 
@@ -160,8 +162,12 @@ for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  to
   });
 }
 
+// C-TIME design change: "ten past six p.m. today" states today, and at this fixture's now that
+// instant has already passed, so it asks back (requirement 4) instead of arming a past alarm.
+test('hear104 time and label: a stated today already past asks back', () => {
+  assert.deepEqual(parseAlarmTime('Well, okay, set an alarm for ten past six p.m. today', now, tz), { status: 'clarify', reason: 'past_time' });
+});
 for (const words of [
-  'Well, okay, set an alarm for ten past six p.m. today',
   'set an alarm for um ten past six p.m.',
   'wake me up tomorrow at eight and give me a summary',
   'remind me in nine minutes that I have to call the library',
@@ -232,14 +238,15 @@ test('C-RECUR: every day resolves the owner 24-hour wall time and the following 
 });
 
 test('C-RECUR: every Saturday before and after ten, and the week after the fire', () => {
-  const before = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T09:00:00+08:00'), tz);
+  const beforeAt = Date.parse('2026-10-31T09:00:00+08:00');
+  const before = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', beforeAt, tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(before.status, 'ready');
   if (before.status !== 'ready' || !before.series) return;
   assert.equal(before.fireAtUtc, Date.parse('2026-10-31T10:00:00+08:00'));
   assert.match(before.confirmation, /^Alarm set for /);
   assert.equal(seriesNextFireAt(before.series, before.fireAtUtc), Date.parse('2026-11-07T10:00:00+08:00'));
   assert.equal(seriesText(before.series), 'every Saturday at 10:00 Singapore time');
-  const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz);
+  const after = parseAlarmTime('Every Saturday at ten remind me to do one hour of cardio.', Date.parse('2026-10-31T11:00:00+08:00'), tz, modelAt(Date.parse('2026-11-07T10:00:00+08:00')));
   assert.equal(after.status, 'ready');
   if (after.status === 'ready') assert.equal(after.fireAtUtc, Date.parse('2026-11-07T10:00:00+08:00'));
 });

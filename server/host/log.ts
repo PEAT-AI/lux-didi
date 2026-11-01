@@ -213,6 +213,11 @@ const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installe
 /** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
 const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError', 'Unknown'];
 
+/** C-ALARMSPEECH: the closed reasons an alarm call can fail to open. The shell and the host log name the
+ * same small set, so a silent release is impossible and no free text reaches the log. */
+export const ALARM_SPEECH_FAILED_REASONS = ['snapshot_mismatch', 'create_refused', 'create_unknown', 'audio_failed', 'socket_lost', 'already_live', 'start_refused'] as const;
+export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number];
+
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
@@ -250,6 +255,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
     if (value.mode !== 'new_session' && value.mode !== 'in_call') return;
     return { event: 'alarm_announced', alarmId: value.alarmId, mode: value.mode };
+  }
+  if (value.event === 'alarm_speech_failed') {
+    // C-ALARMSPEECH: she could not open, so the line names the alarm and one closed reason, never the label.
+    if (!closedKeys(value, ['alarmId', 'event', 'reason'])) return;
+    if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
+    if (!ALARM_SPEECH_FAILED_REASONS.some(reason => reason === value.reason)) return;
+    return { event: 'alarm_speech_failed', alarmId: value.alarmId, reason: value.reason };
   }
   if (value.event === 'alarm_relaunch_scheduled') {
     // #107: the one relaunch agent is armed for the next due time, in seconds from now.

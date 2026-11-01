@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { fixture, CANARY } from '../dist/test/live-voice-fixture.js';
 
 const serviceRoot = process.env.DIDI_ALARM_SERVICE_ROOT ?? resolve(import.meta.dirname, '..');
@@ -125,7 +126,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   const attempts = f.attempts;
   const announcementStart = f.frames.length;
-  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 200);
+  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
   await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
@@ -138,8 +139,31 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   peer.terminate();
   now += 300000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
-  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' });
+  // C-ALARMSPEECH: the native validator requires its own key back (LiveSessionCoordinator.swift
+  // `snapshot.idempotencyKey == key`), so this route honours the key the client sends. A missing key is
+  // refused before any session exists, which is also proof the check runs ahead of the attempt table.
+  const noKey = await fetch(origin + '/api/v1/alarms/session', { method: 'POST', headers,
+    body: JSON.stringify({ id: 'synthetic-alarm-no-key', ownerDisplayName: 'Synthetic Owner' }) });
+  assert.equal(noKey.status, 400, JSON.stringify(await noKey.json()));
+  const alarmKey = randomUUID();
+  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
   assert.equal(alarmCreated.status, 201, JSON.stringify(alarmCreated.body));
+  assert.equal(alarmCreated.body.data.idempotencyKey, alarmKey);
+  // The installed check compares the two keys itself, so the fact survives outside this runner.
+  t.diagnostic(`alarm route key echo: sent=${alarmKey} returned=${alarmCreated.body.data.idempotencyKey} `
+    + `equal=${alarmKey === alarmCreated.body.data.idempotencyKey}`);
+  // One alarm occurrence, one session: the same key replays the same session, a different key opens none.
+  const alarmRetry = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
+  assert.equal(alarmRetry.status, 200, JSON.stringify(alarmRetry.body));
+  assert.equal(alarmRetry.body.data.liveSessionId, alarmCreated.body.data.liveSessionId);
+  const alarmSecondKey = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID());
+  assert.equal(alarmSecondKey.status, 409, JSON.stringify(alarmSecondKey.body));
+  // C-ALARMSPEECH: the shell reports the failure with one closed reason, so she is never silent again.
+  const reported = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'snapshot_mismatch' });
+  assert.equal(reported.status, 200, JSON.stringify(reported.body));
+  const openReason = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'refused' });
+  assert.equal(openReason.status, 400, JSON.stringify(openReason.body));
+  assert.deepEqual(Object.keys(reported.body.data), ['status'], 'the failure report returns no alarm content');
   sessionId = alarmCreated.body.data.liveSessionId;
   const setupStart = f.frames.length;
   peer = await attach(sessionId);
@@ -147,7 +171,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
-  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID())).status, 409);
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
   }
@@ -179,7 +203,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   await post('/api/v1/alarms/shell', { assertion: true, notifications: false, notificationState: 'not_asked' });
-  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' });
+  const labelled = await post('/api/v1/alarms/session', { id: labelAlarm, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${labelAlarm}`);
   assert.equal(labelled.status, 201, JSON.stringify(labelled.body));
   const labelStart = f.frames.length;
   sessionId = labelled.body.data.liveSessionId;
@@ -195,7 +219,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'wake' });
   f.refuseUpgrades(503);
-  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' });
+  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${outageAlarm.id}`);
   assert.equal(outageCreated.status, 201);
   const beforeOutage = f.attempts;
   const failedPeer = new WebSocket(`${origin.replace('http', 'ws')}/api/v1/live-sessions/${outageCreated.body.data.liveSessionId}/audio`, { headers });

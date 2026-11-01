@@ -824,3 +824,17 @@ test('LAT-1022: a research_source receipt carries its start instant', () => {
   assert.equal(safeEvent({ ...source, startedAt: 12.5 }), undefined, 'a fractional instant is refused');
   assert.equal(safeEvent({ ...source, startedAt: -1 }), undefined, 'a negative instant is refused');
 });
+
+// C-ALARMSPEECH: a spoken alarm that could not open is never silent, and never leaks the label.
+test('host log: alarm_speech_failed admits one closed reason and the alarm id only', () => {
+  assert.deepEqual(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch' }),
+    { event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch' });
+  for (const reason of ['create_refused', 'create_unknown', 'audio_failed', 'socket_lost', 'already_live', 'start_refused']) {
+    assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason })?.reason, reason);
+  }
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'refused' }), undefined,
+    'an open reason is not a closed one');
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch', label: 'go to sport' }),
+    undefined, 'the private label never enters this line');
+  assert.equal(safeEvent({ event: 'alarm_speech_failed', reason: 'socket_lost' }), undefined, 'the line names the alarm');
+});

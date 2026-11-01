@@ -276,12 +276,15 @@ public actor LiveSessionCoordinator {
                                                             authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
     }
 
-    public func begin(_ frozen: LiveBeginIntent) async {
+    /// C-ALARMSPEECH F-B: an alarm passes its occurrence key, so a retry of the same alarm presents the same
+    /// key and the host replays the session it already opened instead of refusing a second one. Every other
+    /// start keeps a fresh key, the only entry that generates one.
+    public func begin(_ frozen: LiveBeginIntent, key alarmKey: String? = nil) async {
         generation &+= 1; operation &+= 1
         let token = generation, op = operation
         operationTask?.cancel(); receiveTask?.cancel()
         let oldSocket = socket; socket = nil
-        intent = frozen; createKey = UUID().uuidString; sessionID = nil; grant = nil; teardownIssued = false
+        intent = frozen; createKey = alarmKey ?? UUID().uuidString; sessionID = nil; grant = nil; teardownIssued = false
         pendingBytes = 0; pendingFrames = 0; inputEnded = false; reading = false; state = .checking
         await oldSocket?.cancel()
         guard current(token, op) else { return }

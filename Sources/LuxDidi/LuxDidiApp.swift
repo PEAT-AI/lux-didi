@@ -96,7 +96,7 @@ import WebKit
         // call arrives as the alarm-mode host note instead of a chime and a second conversation.
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
             sessionState: { [weak self] in self?.live?.state ?? .idle },
-            onDue: { [weak self] id in _ = self?.startLive(alarmID: id) },
+            onDue: { [weak self] id in self?.onAlarmDue?(id) },
             onCaption: { [weak self] caption in self?.alarmCaption = caption })
         shell.onAlarms = { [weak self] rows in
             guard let self else { return }
@@ -579,9 +579,17 @@ import WebKit
     var onPresenceMute: ((Bool) -> Void)?
     var onPresenceStart: ((String?) -> Void)?
     var onPresenceStop: (() -> Void)?
+    /// C-ALARMSPEECH: whether a reopen right now is the relaunch agent's own fire, not a Dock click.
+    func takeAlarmRelaunch(nowMs: Int) -> Bool { alarmRelaunch.takeOwnStart(nowMs: nowMs) }
+    /// C-ALARMSPEECH: the shell owns the loud failure path, and it is reachable from the delegate.
+    func alarmSpeechFailed(_ alarmID: String, reason: String) { alarmShell?.speechFailed(alarmID, reason: reason) }
+    /// C-ALARMSPEECH: a due alarm starts through presence, which the delegate owns.
+    var onAlarmDue: ((String) -> Void)?
 
-    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void) {
+    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void,
+                      alarm: @escaping (String) -> Void = { _ in }) {
         onPresenceStart = start
+        onAlarmDue = alarm
         onPresenceStop = { [weak presence] in presence?.stop(.app) }
         onPresenceMute = { [weak presence] muted in
             if muted { presence?.mute(.app) } else { presence?.unmute(.app) }
@@ -875,7 +883,8 @@ struct RootView: View {
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
         model.onMiniMode = { [weak self] in self?.showMiniOrb() }
-        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
+        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) },
+                           alarm: { [weak self] id in self?.alarmDue(id) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: StatusItemPresentation.length)
         let symbol = StatusItemPresentation.resolve(
@@ -1476,16 +1485,20 @@ struct RootView: View {
         miniOrb.showSurface(trigger: .hotkey)
     }
 
+    /// C-ALARMSPEECH: the alarm opens through presence, so the machine reaches LIVE, the chime stops
+    /// when she is audible, and the owner's key acts on that call instead of finding a cold orb.
+    private func alarmDue(_ alarmID: String) { startPresence(alarmID: alarmID) }
+
     private func stopPresence() { presence.stop(.app) }
 
-    private func startPresence(pickupJobID: String? = nil) {
+    private func startPresence(pickupJobID: String? = nil, alarmID: String? = nil) {
         coordinator.allowPresenceReveal()
         if model.live == nil { presence.sessionEnded(presence.generation) }
         presencePickupJobID = pickupJobID
         // F6: written synchronously before the presence start, on the automatic and the key press
         // path alike, so a launch after a start that never proved itself knows not to repeat it.
         writeCallStartMarker()
-        presence.start(.app)
+        presence.start(alarmID == nil ? .app : .alarm, alarmID: alarmID)
     }
 
     private func writeCallStartMarker() {
@@ -1506,10 +1519,17 @@ struct RootView: View {
     private func openPresenceSession(_ generation: UInt64) {
         let job = presencePickupJobID
         presencePickupJobID = nil
+        let alarmID = presence.takeAlarmID()
         liveGeneration = generation
-        if !model.startLive(pickupJobID: job) { presence.fail(generation) } else {
-            // F6: both directions proved means this start is not one to refuse on the next launch.
-            model.live?.device.onCallProvedBothWays = { [weak self] in self?.clearCallStartMarker() }
+        guard model.startLive(pickupJobID: job, alarmID: alarmID) else {
+            presence.fail(generation)
+            if let alarmID { model.alarmSpeechFailed(alarmID, reason: "start_refused") }
+            return
+        }
+        // F6: both directions proved means this start is not one to refuse on the next launch.
+        model.live?.device.onCallProvedBothWays = { [weak self] in self?.clearCallStartMarker() }
+        if let alarmID {
+            model.live?.onSpeechFailed = { [weak self] reason in self?.model.alarmSpeechFailed(alarmID, reason: reason) }
         }
     }
 
@@ -1713,6 +1733,13 @@ struct RootView: View {
     /// created, nothing becomes key and the app never activates; the menu item, the hotkey and an
     /// install relaunch still open the full window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // C-ALARMSPEECH: the relaunch agent's own reopen is not a Dock click. It logs its own kind and
+        // shows nothing extra; the alarm speaks when it is due.
+        if model.takeAlarmRelaunch(nowMs: Int(Date().timeIntervalSince1970 * 1000)) {
+            model.appendPresenceReceipt(LaunchKind.alarmRelaunch.launchRecord)
+            model.forwardLaunchReceipt(LaunchKind.alarmRelaunch)
+            return false
+        }
         model.appendPresenceReceipt(LaunchKind.reopen.launchRecord)
         model.forwardLaunchReceipt(LaunchKind.reopen)
         _ = coordinator.presentOrbFromDock()

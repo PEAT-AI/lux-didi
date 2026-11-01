@@ -17,6 +17,9 @@ enum PresenceState: String, Equatable, Sendable {
 /// The receipt's `trigger` field: what asked the machine to move.
 enum PresenceTrigger: String, Equatable, Sendable {
     case hotkey, click, app, timer, sleep, error
+    /// C-ALARMSPEECH: a due alarm opened this session, so the ring stops when she is audible and the
+    /// owner's key acts on that call instead of failing on a cold machine.
+    case alarm
     /// #589: the owner's own words ended the call, so the goodbye sounds as the session closes.
     case voice
 }
@@ -124,8 +127,14 @@ final class NativePresence {
         PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed, muted: mutedHeld)
     }
 
-    func start(_ trigger: PresenceTrigger) {
-        guard state == .cold else { return }
+    /// C-ALARMSPEECH: the alarm occurrence this start opens, consumed by the one session it starts.
+    private(set) var pendingAlarmID: String?
+    func takeAlarmID() -> String? { defer { pendingAlarmID = nil }; return pendingAlarmID }
+    func start(_ trigger: PresenceTrigger, alarmID: String? = nil) {
+        // C-ALARMSPEECH F-C: the id belongs to the session this start opens. A start that does not connect
+        // must not leave it behind for the next one, or an owner connect could open as the alarm session.
+        guard state == .cold else { pendingAlarmID = nil; return }
+        pendingAlarmID = alarmID
         connect(trigger)
     }
 

@@ -232,10 +232,10 @@ export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataCl
 /** C-MEMORYTRUTH: a stored open loop reaches the greeting only with the claims its own call's receipts and this
  *  start's alarms table support, so a refused write is never offered as something still to do the wrong way. */
 export function guardSeededLoops<T extends { readonly text: string; readonly sessionId: string }>(
-  tx: Transaction, loops: readonly T[], alarms: readonly ActiveAlarm[] | null,
+  tx: Transaction, loops: readonly T[],
 ): readonly T[] {
   return loops.map(loop => {
-    const guarded = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId), alarms));
+    const guarded = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
     return guarded.dropped === 0 ? loop : { ...loop, text: guarded.text };
   }).filter(loop => loop.text !== '');
 }
@@ -251,11 +251,11 @@ export function armedAlarmsNote(alarms: readonly ActiveAlarm[] | null): string |
 /** C-MEMORYTRUTH: an earlier call's summary reaches the seed only with the claims that call's own receipts and
  *  this start's alarms table support. The stored row is left as it is. */
 export function guardSeededSummaries<T extends { readonly liveSessionId?: string; readonly summary: string }>(
-  tx: Transaction, candidates: readonly T[], alarms: readonly ActiveAlarm[] | null,
+  tx: Transaction, candidates: readonly T[],
 ): readonly T[] {
   return candidates.map(candidate => {
     if (candidate.liveSessionId === undefined) return candidate;
-    const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId), alarms);
+    const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
     const guarded = guardWriteClaims(candidate.summary, facts);
     return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
   });
@@ -1786,7 +1786,7 @@ export class LiveSessionOwner {
       // refused write as done. The stored rows are untouched.
       const armedAlarms = this.#tools ? activeAlarms(tx) : null;
       const alarmNote = armedAlarmsNote(armedAlarms);
-      const seededSummaries = guardSeededSummaries(tx, storedSummaries, armedAlarms);
+      const seededSummaries = guardSeededSummaries(tx, storedSummaries);
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
@@ -1796,7 +1796,7 @@ export class LiveSessionOwner {
       const openerPlan = buildOpeningOptions({ candidates: seededSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: openLoopCooling ? [] : guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now,
-          staleRefusedNoteSessions(tx, assistantId)), armedAlarms),
+          staleRefusedNoteSessions(tx, assistantId))),
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),

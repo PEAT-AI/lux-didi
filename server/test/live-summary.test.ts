@@ -603,11 +603,12 @@ test('a summary with no write claim is stored byte for byte', async () => {
   } finally { h.cleanup(); }
 });
 
-test('a summary cannot deny an alarm the alarms table holds as armed', async () => {
+test('a summary cannot deny an alarm a settled receipt armed', async () => {
   const h = summarizerFixture();
   try {
     seedConversation(h.store, 's-alarm-denied');
     insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    insertToolCall(h.store, 's-alarm-denied', 'set_alarm', 'completed', { code: 'alarm_set', id: '4f2c9a1b77aa' }, 0);
     const denial = 'The owner asked for a wake up call. Naya could not set the alarm.';
     const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: denial }))]);
     await worker(h.store, model, []).distill('s-alarm-denied');
@@ -627,7 +628,7 @@ test('an armed alarm reaches the next seed from the alarms table though the summ
       const note = armedAlarmsNote(alarms);
       assert.ok(note, 'the table holds one armed alarm');
       const guarded = guardSeededSummaries(tx, [{ id: 'sum-1', liveSessionId: 's-alarm-seed', endedAt: SUMMARY_NOW,
-        summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }], alarms);
+        summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }]);
       // The real start composes over a frozen accepted prompt, which carries the public base and a separator.
       const frozen = `${NAYA_LIVE_BASE}\n\n`;
       const native = composeLiveSessionInstruction({ text: frozen, tools: [], records: [], trustedChars: 60_000,
@@ -655,7 +656,7 @@ test('a stored summary keeps a write claim its own receipts settle and loses one
     const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [
       { id: 'sum-refused', liveSessionId: 's-seeded-refused', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },
       { id: 'sum-created', liveSessionId: 's-seeded-created', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },
-    ], activeAlarms(tx)));
+    ]));
     assert.doesNotMatch(guarded[0]!.summary, /created/i, 'the seed drops the unsupported claim');
     assert.match(guarded[1]!.summary, /created the event/, 'the paired settled case keeps it');
     assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-seeded-refused')), null,
@@ -671,8 +672,53 @@ test('a stored open loop that denies an armed alarm never reaches the greeting',
     const guarded = h.store.transaction(tx => guardSeededLoops(tx, [
       { text: 'Naya could not set the alarm.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
       { text: 'The owner still has to pick the venue.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
-    ], activeAlarms(tx)));
+    ]));
     assert.deepEqual(guarded.map(loop => loop.text), ['The owner still has to pick the venue.'],
       'the denial is gone and the supported loop stays');
+  } finally { h.cleanup(); }
+});
+
+// C-MEMORYTRUTH review F1: a cancelled event is not a created one, so a successful delete never settles a
+// creation claim.
+test('a successful delete_event never settles a created claim', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-delete-only');
+    insertToolCall(h.store, 's-delete-only', 'delete_event', 'completed', { code: 'event_deleted' }, 0);
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: CLAIMED_MEETING }))]);
+    await worker(h.store, model, []).distill('s-delete-only');
+    const row = storedRow(h.store, 's-delete-only')!;
+    assert.doesNotMatch(row.summary!, /created/i, 'a delete settles nothing about a creation');
+    assert.match(row.summary!, /asked for a lunch meeting/);
+  } finally { h.cleanup(); }
+});
+
+// C-MEMORYTRUTH review F2: the presence of some other armed alarm is not evidence that a refused set worked.
+test('an unrelated armed alarm never settles a refused set', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-alarm-unrelated');
+    insertAlarm(h.store, 'aa11bb22cc33', SUMMARY_NOW + 1_800_000, 'yesterday evening reminder');
+    insertToolCall(h.store, 's-alarm-unrelated', 'set_alarm', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
+    const claimed = 'The owner asked for a 6am alarm. Naya set the 6am alarm.';
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: claimed }))]);
+    await worker(h.store, model, []).distill('s-alarm-unrelated');
+    const row = storedRow(h.store, 's-alarm-unrelated')!;
+    assert.doesNotMatch(row.summary!, /set the 6am alarm/, 'a refused set stays not done beside an armed row');
+    assert.match(row.summary!, /asked for a 6am alarm/);
+  } finally { h.cleanup(); }
+});
+
+// C-MEMORYTRUTH review F6, the paired valid case: the set_alarm receipt keeps a true claim even when the alarm
+// has already left the live table.
+test('a settled set_alarm receipt keeps a true claim after the alarm leaves the table', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-alarm-rang');
+    insertToolCall(h.store, 's-alarm-rang', 'set_alarm', 'completed', { code: 'alarm_set', id: 'dd44ee55ff66' }, 0);
+    const claimed = 'The owner asked for a 6am alarm. Naya set the 6am alarm.';
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: claimed }))]);
+    await worker(h.store, model, []).distill('s-alarm-rang');
+    assert.match(storedRow(h.store, 's-alarm-rang')!.summary!, /set the 6am alarm/, 'the receipt outranks the empty table');
   } finally { h.cleanup(); }
 });

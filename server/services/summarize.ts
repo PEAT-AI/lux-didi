@@ -4,7 +4,7 @@ import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
-import { guardWriteClaims, writeFacts, activeAlarms, type ActiveAlarm } from '../domain/write-claims.js';
+import { guardWriteClaims, writeFacts } from '../domain/write-claims.js';
 import * as summaries from '../domain/summaries.js';
 
 /**
@@ -290,9 +290,8 @@ export interface GuardedDistillation {
 export function guardDistilledClaims(
   parsed: { readonly summary: string; readonly openLoop: string | null },
   outcomes: readonly ToolOutcome[],
-  alarms: readonly ActiveAlarm[] | null,
 ): GuardedDistillation {
-  const facts = writeFacts(outcomes, alarms);
+  const facts = writeFacts(outcomes);
   const summary = guardWriteClaims(parsed.summary, facts);
   const loop = parsed.openLoop === null ? null : guardWriteClaims(parsed.openLoop, facts);
   return {
@@ -422,8 +421,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         // C-MEMORYTRUTH: the receipts decide what the stored text may claim, not the model and not the
-        // assistant's spoken account. The alarms table is read here, so an alarm line cannot contradict it.
-        const guarded = guardDistilledClaims(parsed, toolOutcomes, options.store.transaction(tx => activeAlarms(tx)));
+        // assistant's spoken account.
+        const guarded = guardDistilledClaims(parsed, toolOutcomes);
         if (guarded.dropped !== 0) {
           emit({ event: 'conversation_summary_claims_dropped', liveSessionId, dropped: guarded.dropped, kept: guarded.kept, settled: guarded.settled });
         }

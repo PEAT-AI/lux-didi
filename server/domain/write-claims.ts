@@ -11,7 +11,9 @@ import type { Transaction } from '../contracts/storage.js';
 export type WriteKind = 'event' | 'alarm' | 'note' | 'message';
 
 const TOOL_KINDS: Readonly<Record<string, WriteKind>> = {
-  create_event: 'event', delete_event: 'event',
+  // Only the creating tool settles a creation claim: a successful delete must never make "Naya created the
+  // event" true, and no DONE verb speaks of deletion, so a delete needs no kind of its own here.
+  create_event: 'event',
   set_alarm: 'alarm', snooze_alarm: 'alarm',
   remember_note: 'note', stage_lux_note: 'note', save_to_vault: 'note', trello_write: 'note',
   draft_email: 'message', draft_chat: 'message',
@@ -46,18 +48,16 @@ export interface ActiveAlarm { readonly id: string; readonly fireAtUtc: number; 
 export interface WriteFacts {
   /** The surfaces a completed tool call settled in this session. */
   readonly settled: ReadonlySet<WriteKind>;
-  /** The alarms table at the moment of the guard, or null when the store has no alarms table. */
-  readonly alarms: readonly ActiveAlarm[] | null;
 }
 
-export function writeFacts(receipts: readonly WriteReceipt[], alarms: readonly ActiveAlarm[] | null): WriteFacts {
+export function writeFacts(receipts: readonly WriteReceipt[]): WriteFacts {
   const settled = new Set<WriteKind>();
   for (const receipt of receipts) {
     if (receipt.outcome !== 'succeeded') continue;
     const kind = TOOL_KINDS[receipt.name];
     if (kind !== undefined) settled.add(kind);
   }
-  return { settled, alarms };
+  return { settled };
 }
 
 export interface GuardedClaims {
@@ -80,14 +80,10 @@ function contradicts(sentence: string, facts: WriteFacts): boolean {
     if (!NOUNS[kind].test(sentence)) continue;
     const saysDone = DONE[kind].test(sentence);
     if (!saysDone && !denied) continue;
-    // The alarms table outranks every receipt and every summary: an alarm line is checked against what is
-    // actually armed right now, never against what a call said about it.
-    if (kind === 'alarm' && facts.alarms !== null) {
-      const armed = facts.alarms.length > 0;
-      if (denied && armed) return true;
-      if (saysDone && !armed) return true;
-      continue;
-    }
+    // An alarm claim is settled by this call's own set or snooze receipt, never by the presence of some other
+    // armed alarm: an unrelated armed row cannot make a refused 6 am alarm true, and a receipt keeps a true
+    // claim even when the alarm has already rung out of the live table. The alarms table still owns the seed
+    // line the next call reads.
     if (denied && facts.settled.has(kind)) return true;
     if (saysDone && !facts.settled.has(kind)) return true;
   }

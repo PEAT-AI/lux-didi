@@ -21,27 +21,17 @@ import CryptoKit
     private static func visible(_ record: SyntheticProofRecord, web: WKWebView) async throws -> Bool {
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
-        if try await js(web, check) as? Bool == true { return try await collapseSavedHistory(web) }
-        let selector = String(data: try JSONSerialization.data(withJSONObject: "[data-session=\"" + record.sessionId + "\"]", options: [.fragmentsAllowed]), encoding: .utf8)!
-        _ = try await js(web, "document.querySelector('[data-tab=\"Conversation\"]')?.click(); true")
-        let until = Date().addingTimeInterval(0.5)
-        var historyOpened = false, opened = false
+        // U3-R1 moved saved conversations out of the chat lane, so the panel this fallback used to walk is
+        // gone: #conversation-history, [data-tab="Conversation"] and the [data-session] rows no longer exist
+        // in the canonical shell. The owner's own way into the lane is the right panel toggle, and the
+        // record is visible when the canonical page text carries it. collapseSavedHistory stays a
+        // best-effort tidy-up and never decides the result.
+        _ = try await js(web, "document.querySelector('#panel-toggle-right[aria-expanded=\"false\"]')?.click(); true")
+        let until = Date().addingTimeInterval(8)
         while Date() < until {
-            let snapshot = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), historyReady:!!history&&history.getBoundingClientRect().width>0, historyOpen:!!history&&history.open, rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
-            if snapshot["connectionReady"] as? Bool == true, snapshot["listLoading"] as? Bool == false {
-                if !historyOpened {
-                    if snapshot["historyOpen"] as? Bool == true { historyOpened = true }
-                    else if snapshot["historyReady"] as? Bool == true {
-                        historyOpened = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const summary=history?.querySelector(':scope > summary'); if(!history||!summary||summary.getBoundingClientRect().width<=0)return false; summary.click(); return history.open; })()") as? Bool == true
-                        continue
-                    }
-                }
-                if !opened, snapshot["rowReady"] as? Bool == true {
-                    opened = try await js(web, "(() => { const row=document.querySelector(\(selector)); if(!row||row.getBoundingClientRect().width<=0)return false; row.click(); return true; })()") as? Bool == true
-                } else if opened, snapshot["selected"] as? Bool == true,
-                          try await js(web, check) as? Bool == true {
-                    return try await collapseSavedHistory(web)
-                }
+            if try await js(web, check) as? Bool == true {
+                _ = try await collapseSavedHistory(web)
+                return true
             }
             try await Task.sleep(nanoseconds: 50_000_000)
         }

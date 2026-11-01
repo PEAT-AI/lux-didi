@@ -471,6 +471,8 @@ test('C-REBUILD C: a real question with no tool work and no response is no longe
   // C-REBUILD A holds a rebuild while the announced response is younger than its ceiling, so the decision is
   // reached once the ceiling has passed rather than one recovery delay after the nudge.
   await until(live, () => removed(live).length > 0, RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 4_000);
+  assert.equal(removed(live).length > 0, true,
+    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))}`);
   assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
   assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],

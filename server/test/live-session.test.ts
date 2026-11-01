@@ -5131,8 +5131,11 @@ test('#538: model text never slides the audible debt, so the OpenAI rung holds t
   assert.equal(fake.closes, 0, 'the held rung never writes the result into a response in flight');
   assert.equal(fake.textInputs.length, 0, 'the result waits for that response to end');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
-  // C-REBUILD A: the announced response is younger than its ceiling here, so the rebuild waits that out first.
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS); scheduler.runDue(); await settlePort();
+  // C-REBUILD A: the announced response holds the rebuild until its ceiling, so the waits below run until the
+  // ladder really reaches its decision instead of assuming one recovery delay is enough.
+  for (let spent = 0; spent < RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 30_000 && fake.closes === 0; spent += 500) {
+    h.advance(500); scheduler.runDue(); await settlePort();
+  }
   assert.equal(fake.closes, 1, 'a model still mute seven seconds later is the one replaced');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the new session is handed the result once');

@@ -236,7 +236,7 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
             print("NATIVE LIFETIME PASS failedRetry=true stopRestart=true ownedBusyStates=true oldCaptureReleased=true lateOldIsolated=true")
         } catch {
             let code = (error as? LiveClientError)?.rawValue ?? "fixture-assertion"
-            print("NATIVE LIFETIME FAIL stage=\(stage) class=\(type(of: error)) code=\(code)"); exit(2)
+            print("NATIVE LIFETIME FAIL stage=\(stage) class=\(type(of: error)) code=\(code) detail=\(error)"); exit(2)
         }
     }
 }

@@ -539,12 +539,17 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         pending = Task { [weak self] in
             await Task.yield()
             guard let self, self.authorized, self.generation == token, !Task.isCancelled else { return }
-            self.pending = nil
             let current = self.input()
             guard !current.isEmpty else { self.stop(); self.failed(); return }
             if current != self.previousInput || self.awaitingResume {
-                self.previousInput = current; self.awaitingResume = true; self.paused(current)
-            } else { await self.recover() }
+                self.previousInput = current; self.awaitingResume = true; self.pending = nil
+                self.paused(current)
+            } else {
+                // #1101: the rebuild is async, so `pending` stays set until it lands. A caller that
+                // awaits it must not read a recovery as finished before its engine is built.
+                await self.recover()
+                self.pending = nil
+            }
         }
     }
     func resume() {
@@ -564,7 +569,6 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
     }
     private func recover() async {
-        FileHandle.standardError.write(Data("DBG recovery.recover\n".utf8))
         do { try await rebuild() }
         catch { stop(); failed() }
     }
@@ -835,7 +839,6 @@ struct NativeLiveInterruptionSample: Sendable {
         "Using " + name + " microphone, built-in not available"
     }
     func routeChanged() {
-        FileHandle.standardError.write(Data("DBG routeChanged muted=\(muted) muteHolds=\(muteHoldsMicrophone) engine=\(engine != nil) settling=\(settling)\n".utf8))
         let input = captureDevice
         let output = outputDevice()
         route = "Microphone: " + input.name + " · Output: " + output.name
@@ -922,7 +925,16 @@ struct NativeLiveInterruptionSample: Sendable {
     func configurationChangeForTesting() {
         noteConfigurationChange(engineID: settledEngine.map(ObjectIdentifier.init), token: captureGeneration)
     }
-    func finishRouteRecovery() async { await recovery.pending?.value; await resumeTask?.value }
+    /// Waits for a route recovery in flight, and for the rebuild a resume schedules behind it (#1101:
+    /// that rebuild is async now, because it waits the release settle out first).
+    func finishRouteRecovery() async {
+        for _ in 0..<4 {
+            await recovery.pending?.value
+            await resumeTask?.value
+            await awaitSettle()
+            if recovery.pending == nil { return }
+        }
+    }
     private var sendFrame: (@Sendable (Data, UInt64) async throws -> Void)?
     private(set) var captureEpoch: UInt64 = 0
     private lazy var recovery = NativeAudioRouteRecovery(
@@ -1070,7 +1082,22 @@ struct NativeLiveInterruptionSample: Sendable {
               let value = uid?.takeRetainedValue() else { return "unknown" }
         return value as String
     }
-    func resumeInput() { guard !muteHoldsMicrophone else { return }; recovery.resume(); if isCapturing { onResume?() } }
+    func resumeInput() {
+        guard !muteHoldsMicrophone else { return }
+        recovery.resume()
+        // #1101: the rebuild a resume starts waits the release settle out, so the owner hears about
+        // the resume once the engine is really back, never before it exists.
+        if let pending = recovery.pending {
+            Task { @MainActor [weak self] in
+                await pending.value
+                await self?.awaitSettle()
+                guard let self, !self.muteHoldsMicrophone, self.isCapturing else { return }
+                self.onResume?()
+            }
+            return
+        }
+        if isCapturing { onResume?() }
+    }
 
     /// L12a: the default output's volume scalar and mute flag as this release found them, read through
     /// CoreAudio getters on the output scope and never written. `unknown` when the device or a getter
@@ -1343,7 +1370,6 @@ struct NativeLiveInterruptionSample: Sendable {
         // C-AUDIO 1 and 4: the steps of this build, in order, and the configuration changes seen
         // while it starts. Reset here so `audio_graph_built` reports one build, not a call history.
         graphBuildSteps = []; configChangesDuringStart = 0; starting = true
-        FileHandle.standardError.write(Data("DBG build entry\n".utf8))
         var engine = AVAudioEngine(), player = AVAudioPlayerNode()
         var stretch: AVAudioUnitTimePitch?
         // C-HEADPHONES 1 and 6: capture is pinned to the chosen device by id before any format is
@@ -1470,7 +1496,6 @@ struct NativeLiveInterruptionSample: Sendable {
         route = "Microphone: " + input.name + " · Output: " + outputDevice().name
         activateCapture(capture, send: send)
         ready = true
-        FileHandle.standardError.write(Data("DBG build ready\n".utf8))
         armFirstBufferWatchdog(capture, voiceProcessing: useVoiceProcessing, format: hardware)
     }
     /// C-MICWATCH 1: no tap buffer within the window after start means the graph is not running. The
@@ -1507,7 +1532,11 @@ struct NativeLiveInterruptionSample: Sendable {
             voiceProcessingFailed = true
             releaseAudio(keepingSlot: true)
             // C-AUDIO 2: the restart waits out the release settle before it builds again.
+            let token = captureGeneration
             await awaitSettle()
+            // The settle can outlive the engine it covered: a mute, a stop or a route change inside
+            // that window owns the microphone now, and a late restart must not resurrect it.
+            guard captureGeneration == token, !muted, engine == nil else { return }
             do { try build(send: send); return } catch { sessionFailed = true }
         }
         sessionFailed = true
@@ -1842,7 +1871,6 @@ struct NativeLiveInterruptionSample: Sendable {
         }
     }
     private func releaseAudio(keepingSlot: Bool = false) {
-        FileHandle.standardError.write(Data("DBG release keepingSlot=\(keepingSlot) engine=\(engine != nil) muted=\(muted) muteHolds=\(muteHoldsMicrophone) capturing=\(isCapturing)\n".utf8))
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
@@ -1912,7 +1940,6 @@ struct NativeLiveInterruptionSample: Sendable {
         settling = false
         settleTask = nil
         settledReleaseCount += 1
-        FileHandle.standardError.write(Data("DBG settled starts=\(engineStartCount)\n".utf8))
         log("audio_release_settled", ["settleMs": String(waitedMs),
                                       "configChangePending": pending ? "true" : "false",
                                       "starts": String(engineStartCount)])

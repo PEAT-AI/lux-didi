@@ -61,7 +61,7 @@ async function openPanel(id) {
 }
 async function find(query) {
   await page.locator('#connected-notes-query').fill(query);
-  await page.locator('#connected-notes-search').evaluate(form => form.requestSubmit());
+  await page.locator('#connected-notes-search button').click();
   await page.waitForFunction(text => {
     const list = document.querySelector('#connected-notes-results');
     return !!list && list.textContent.includes(text);

@@ -59,6 +59,8 @@ The menu bar shows `Alarm 08:00` for the next active alarm. `!` marks failed pow
 
 If the shell is unreachable, notification permission is denied or the power assertion fails when setting, the tool receipt says the alarm is committed but may not ring and gives the reason. Even a healthy receipt never promises that a sleeping Mac or closed lid will ring.
 
+The notification permission is asked once, at one moment: an alarm is armed, the permission is still undetermined, and no call is live. A call never shows a system prompt: an ask that arrives inside one waits for the call to end, in ten second steps for up to thirty minutes. A refused idle-sleep assertion is retried once, five seconds on, so a transient refusal does not leave an armed alarm unguarded, and the IOKit status behind the refusal rides the shell report as `assertionCode`.
+
 ## Waking a quit app (10.7)
 
 While any alarm is pending the app keeps exactly one user LaunchAgent,

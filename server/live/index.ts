@@ -30,7 +30,7 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -1835,7 +1835,7 @@ export class LiveSessionOwner {
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
-      const composeSession = (earlierSection: string | undefined, calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
@@ -1844,6 +1844,7 @@ export class LiveSessionOwner {
         now, timeZone,
         ...(calendar ? { calendar } : {}),
         ...(alarmNote === undefined ? {} : { alarms: alarmNote }),
+        ...(earlierReserve === undefined ? {} : { earlierReserve }),
         ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
@@ -1852,14 +1853,18 @@ export class LiveSessionOwner {
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
-        const basis = composeSession(undefined, this.#calendar);
+        // #108: the basis already holds the summary reserve back, so the budget below is the room that
+        // exists after the notes yielded, not the leftovers of a stale target. With nothing stored to
+        // put in the reserve the notes keep their room (review F4).
+        const reserve = seededSummaries.length === 0 ? undefined : EARLIER_CONVERSATIONS_RESERVE_CHARS;
+        const basis = composeSession(undefined, this.#calendar, reserve);
         earlier = buildEarlierConversationsSection(seededSummaries,
           { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
           summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
         this.#warm.adopt(this.#sections);
-        return earlier.section ? composeSession(earlier.section, this.#calendar) : basis;
+        return earlier.section ? composeSession(earlier.section, this.#calendar, reserve) : basis;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }

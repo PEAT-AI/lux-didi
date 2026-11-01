@@ -50,6 +50,34 @@ struct ChangeOnlyGate {
     }
 }
 
+/// #108: a notification the OS can repeat once per animation frame becomes one trailing call per
+/// window, so two seconds of a screen animation costs one re-assert and one receipt, not about 121.
+@MainActor
+final class TrailingSignal {
+    static let defaultWindowMs = 250
+    private let windowMs: Int
+    private let fire: @MainActor () -> Void
+    private var pending: Task<Void, Never>?
+    init(windowMs: Int = TrailingSignal.defaultWindowMs, fire: @escaping @MainActor () -> Void) {
+        self.windowMs = windowMs
+        self.fire = fire
+    }
+    /// The first signal opens the window; every signal inside it joins the one trailing call.
+    func signal() {
+        guard pending == nil else { return }
+        pending = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(self?.windowMs ?? 0) * 1_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.pending = nil
+            self.fire()
+        }
+    }
+    func cancel() {
+        pending?.cancel()
+        pending = nil
+    }
+}
+
 /// Toggle semantics for the floating mini orb, shared by the global hotkey,
 /// the Escape key and the menu bar. Pure closures, so the behaviour is proven
 /// in Tests/DidiMacTests/main.swift without launching AppKit or the app.

@@ -784,6 +784,29 @@ struct RootView: View {
     private var keyboardMonitor: Any?
     private var statusClickMonitor: Any?
     private var statusScreenMonitor: NSObjectProtocol?
+    /// #108: the last surface_visible state a re-assert wrote, so a repeat writes nothing.
+    private var reassertReceipt = ChangeOnlyGate()
+    private var screensReassert: MiniOrbSurfaceSignals.Reason?
+    private lazy var screensReassertSignal = TrailingSignal { [weak self] in
+        MainActor.assumeIsolated {
+            guard let self, let reason = self.screensReassert else { return }
+            self.screensReassert = nil
+            self.performReassertSurface(reason)
+        }
+    }
+    /// #108: the screen notification can arrive once per animation frame; the status receipt is one
+    /// trailing call per 250 ms and is written only when what it says changed, the way the orb's own
+    /// orb_screen_parameters receipt is (review F2).
+    private var statusReceipt: StatusSurfaceReceipt?
+    private lazy var statusScreenSignal = TrailingSignal { [weak self] in
+        MainActor.assumeIsolated {
+            guard let self else { return }
+            let receipt = StatusItemPresentation.state(button: self.statusItem.button)
+            guard receipt != self.statusReceipt else { return }
+            self.statusReceipt = receipt
+            self.appendSurface(receipt)
+        }
+    }
     private var menuTracking = StatusMenuTracking()
     private let menuLogger = Logger(subsystem: "LuxDidi", category: "menu")
     private var terminationMonitor: NSObjectProtocol?
@@ -891,10 +914,11 @@ struct RootView: View {
             symbol: NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya"))
         statusItem.button?.image = symbol.image
         statusItem.button?.title = symbol.title
+        statusReceipt = StatusItemPresentation.state(button: statusItem.button)
         appendSurface(StatusItemPresentation.state(button: statusItem.button))
         statusScreenMonitor = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.appendSurface(StatusItemPresentation.state(button: self?.statusItem.button)) }
+                MainActor.assumeIsolated { self?.statusScreenSignal.signal() }
             }
         let menu = NSMenu()
         menu.delegate = self
@@ -1151,14 +1175,12 @@ struct RootView: View {
         }
     }
 
-    /// #613: the calendar connector is published when the host's tools status names it ready.
+    /// #613: the calendar connector is published when the host's tools status names the calendar
+    /// endpoint connected. #108: the row is read by OrbFirstAutoConnect, so the shape is proven.
     private func calendarPublished() async -> Bool {
         guard let client = model.client,
-              let value = try? await client.connectedRead("api/v1/tools/status"),
-              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
-        return endpoints.contains {
-            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
-        }
+              let value = try? await client.connectedRead("api/v1/tools/status") else { return false }
+        return OrbFirstAutoConnect.calendarPublished(in: value)
     }
 
     /// ORBFIRST: the app window is created on demand, so presenting it may be the first time it
@@ -1577,12 +1599,23 @@ struct RootView: View {
     /// bypasses the visibility dedupe and writes the same `surface_visible` receipt the sync does,
     /// so the log shows which reason asked.
     private func reassertSurface(_ reason: MiniOrbSurfaceSignals.Reason) {
+        // #108: the OS repeats the screen notification once per animation frame for up to two seconds.
+        // A screen change is one trailing re-assert per 250 ms, and every other reason stays immediate.
+        // The orb's own frame re-place is untouched: this only coalesces the page evaluation and receipt.
+        guard reason == .screens else { performReassertSurface(reason); return }
+        screensReassert = reason
+        screensReassertSignal.signal()
+    }
+    private func performReassertSurface(_ reason: MiniOrbSurfaceSignals.Reason) {
         let generation = coordinator.generation
         let fullVisible = coordinator.fullShown && window?.isVisible == true && window?.isMiniaturized == false
         let miniVisible = coordinator.miniShown && miniPanel?.isVisible == true
         model.shell?.reassertSurfaceVisible(fullVisible, generation: generation)
         miniShell?.reassertSurfaceVisible(miniVisible, generation: generation)
         let recipient = fullVisible ? model.shell : miniVisible ? miniShell : nil
+        // #108: the page is re-asserted every time, and the receipt is written only when what it says
+        // changed, the way orb_screen_parameters gates its own.
+        guard reassertReceipt.changed("\(reason.rawValue);\(fullVisible);\(miniVisible);\(generation)") else { return }
         model.recordSurfaceReceipt(surfaceVisibleReceipt(recipient: recipient, fullVisible: fullVisible,
                                                          miniVisible: miniVisible, reason: reason.rawValue))
     }

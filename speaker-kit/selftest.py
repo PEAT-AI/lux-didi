@@ -140,6 +140,8 @@ def check_physical_chain(entries):
         report = analyze.analyse_segments(entries, record(entries, model), FS)
         verdicts = {c: v["verdict"] for c, v in report["channels"].items()}
         print(name + ": " + str(verdicts))
+        if name.startswith("one-sided"):
+            print("chain controls: " + str(report["comparison"]))
         if name.startswith("healthy") and any("RATTLE" in v or "CLIPPING" in v for v in verdicts.values()):
             failures.append("healthy chain false fault verdict")
         if name.startswith("one-sided") and "RATTLE" not in verdicts.get("L", ""):

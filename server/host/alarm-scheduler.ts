@@ -191,16 +191,18 @@ export class AlarmSessionCoordinator {
   }) {}
   attempt(id: string, ownerDisplayName: string, idempotencyKey: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
     // One occurrence, one session: the attempt row binds this alarm to the first caller key it saw, so a
-    // retried start replays that session instead of ringing up a second one.
+    // retried start with that key replays that session instead of ringing up a second one.
     const reserved = this.options.store.transaction(tx => {
       const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
       if (!row) return undefined;
       const prior = tx.get('SELECT live_session_id FROM alarm_session_attempts WHERE alarm_id=?', [id]);
       if (prior) {
         const opened = prior['live_session_id'] === null ? undefined : String(prior['live_session_id']);
-        // One retry is allowed while the occurrence is still ringing inside its own deadline, and only
-        // when the first attempt opened no session at all. A retry that opens one can never be durably
-        // repeated, so an occurrence can never hold two live sessions.
+        // While the occurrence is still ringing inside its own deadline, and only while the row holds no
+        // session, a create attempt is allowed again: that is the one retry the shell makes. The host does
+        // not count attempts, so a caller that kept asking would keep trying; what the host does guarantee
+        // is that an occurrence never holds two live sessions, because a successful attempt writes the id
+        // and every later key is refused.
         const deadline = row['ring_deadline_utc'] === null ? 0 : Number(row['ring_deadline_utc']);
         if (opened !== undefined || !(deadline > this.options.now())) return { prior: opened };
       }

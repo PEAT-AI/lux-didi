@@ -10,7 +10,7 @@ import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler
 import { alarmSessionInstructions } from '../live/index.js';
 
 for (const alreadyLive of [false, true]) {
-  test(`alarm mode: ${alreadyLive ? 'live session receives one alarm announcement' : 'unavailable provider gets one retry and no more'}`, t => {
+  test(`alarm mode: ${alreadyLive ? 'live session receives one alarm announcement' : 'a second start never opens a second session'}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'synthetic-alarm-mode-'));
     const store = new Store(directory, toolsMigrations);
     const scheduler = new AlarmScheduler({ store, clock: { now: () => 1000, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
@@ -90,7 +90,8 @@ test('alarm mode: one retry is allowed while the ring deadline is open', t => {
     open: () => { opens++; throw Error('synthetic unavailable'); }, degraded: () => {} });
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-1').status, 'unavailable');
   assert.equal(opens, 1);
-  // The first attempt opened no session, so a retry may try once more while the deadline is still open.
+  // The first attempt opened no session, so the retry is allowed once more while the deadline is open.
+  // The host does not count attempts; the shell makes exactly one.
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-key-2').status, 'unavailable');
   assert.equal(opens, 2, 'the retry really tries');
   // Past the deadline nothing is retried, so a relaxed provider cannot resurrect a missed alarm.

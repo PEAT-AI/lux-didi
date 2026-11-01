@@ -18,6 +18,7 @@ import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/r
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, composedGrantedNames, connectorDescriptor, CONNECTOR_COMPOSED_TOOLS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
+import { closestChannelNames } from '../connectors/mattermost.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
 import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
@@ -1194,7 +1195,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                     // #637: a channel the chat connector does not know is its own closed code, so the reply can
                     // say the channel is unknown; every other refusal keeps the code it had.
                     const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                    return { status: 'failed', code: failureCode, reason: 'reason' in evidence ? evidence.reason : evidence.state };
+                    // #669: the refusal's closest names travel beside the closed code, so the reply can voice them.
+                    const closestNames = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? closestChannelNames(evidence.reason) : [];
+                    return { status: 'failed', code: failureCode, ...(closestNames.length > 0 ? { closestNames } : {}), reason: 'reason' in evidence ? evidence.reason : evidence.state };
                   }
                   // A classified failure is visible: the endpoint flips to configured and the call
                   // returns the plain reason as its projection, never an empty success. A status that

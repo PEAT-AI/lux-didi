@@ -348,7 +348,11 @@ test('C-REBUILD invariant: owner speech during a deferral leaves one answer', as
   const live = await openCall(t);
   await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
   await live.emit(toolCall('c5'));
-  await drive(live, () => heldRebuilds(live).length > 0 || live.fake.sessionsOpened > 1, 40_000);
+  // The deferral is the hold A keeps for a response in flight, so the response is announced first: nothing else
+  // makes the ladder wait, and a replay about speech inside a deferral must have one.
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await drive(live, () => heldRebuilds(live).length > 0, 40_000);
+  assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder reached its rebuild step and held for the response');
   await live.emit(ownerFinal('and the other bridge too'));
   await live.emit(audible());
   await live.emit(portEvent({ type: 'turnComplete' }));

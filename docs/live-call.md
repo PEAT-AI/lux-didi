@@ -4,7 +4,7 @@ A Live call is a host-owned conversation with native microphone capture and play
 
 ## User controls
 
-Tap the orb or bare Right Command to start, mute and resume. Use Stop or say "Naya, stop listening" to end the call. Muting keeps the call open but closes capture; stopping ends the call. The native presence machine, not a web component's local guess, determines which state the controls show. [User guide](user-guide.md) and [Mac experience](mac-experience.md) own the interaction details.
+Tap bare Right Command, or use the status menu, the Dock menu or the window pill, to start, mute and resume; a click on the orb starts and stops nothing. Use Stop or say "Naya, stop listening" to end the call. Muting keeps the call open but closes capture; stopping ends the call. The native presence machine, not a web component's local guess, determines which state the controls show. [User guide](user-guide.md) and [Mac experience](mac-experience.md) own the interaction details.
 
 An interactive launch can start one call automatically; login and installer relaunches do not. Microphone permission and a usable voice configuration are independent prerequisites. A provider error is not permission to switch the system's audio device or silently disable voice processing.
 

@@ -179,13 +179,14 @@ enum MicWatchdogTests {
         try await Task.sleep(for: window * 3)
         try audioRequire(stalled(journal).isEmpty, "a start with buffers never logs audio_input_stalled")
         // The fake engine is a real voice-processing AVAudioEngine, and after earlier engines in this
-        // process were torn down CoreAudio posts it one configuration change, off the main thread and
-        // a few hundred ms after start (later than the old post-start observer too). The route logic
-        // must ignore it as unchanged, never rebuild or stall.
+        // process were torn down CoreAudio posts it configuration changes, off the main thread and a
+        // few hundred ms after start (later than the old post-start observer too). A loaded host posts
+        // more than one, so their count is not asserted; the route logic must ignore every one as
+        // unchanged, never rebuild or stall.
         let after = journal.events.dropFirst(atStart.count)
-        try audioRequire(after.count <= 1 && after.allSatisfy {
+        try audioRequire(after.allSatisfy {
                              $0.name == "audio_route_change_ignored" && $0.fields == ["reason": "unchanged"] },
-                         "after start only an ignored unchanged route change may appear, got \(journal.events.map(\.name))")
+                         "after start only ignored unchanged route changes may appear, got \(journal.events.map(\.name))")
         try audioRequire(atStart == ["audio_input_policy", "audio_owned", "audio_started", "playback_rate"]
                             || atStart == ["audio_input_policy", "audio_started", "playback_rate"],
                          "the start writes the same lines it always wrote, got \(atStart)")

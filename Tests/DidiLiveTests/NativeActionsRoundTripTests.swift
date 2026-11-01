@@ -9,7 +9,9 @@ import Foundation
     }
     static func main() async throws {
         let recorder = Recorder()
-        let actions = NativeActions(opener: { url, _ in await recorder.open(url) }, clock: { Date(timeIntervalSince1970: 1000) })
+        let actions = NativeActions(opener: { url, _ in await recorder.open(url) },
+                                    browserState: { BrowserState(installed: true, running: true) },
+                                    clock: { Date(timeIntervalSince1970: 1000) })
         let targets = [
             "https://www.google.com/maps/search/?api=1&query=Odemira",
             "https://www.google.com/maps/dir/?api=1&destination=Odemira",

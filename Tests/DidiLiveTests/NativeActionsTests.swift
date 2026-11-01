@@ -44,7 +44,8 @@ import Foundation
             var count: Int { urls.count }
         }
         let counter = Counter()
-        let opened = NativeActions(home: home, opener: { url, isApplication in await counter.open(url, isApplication) })
+        let opened = NativeActions(home: home, opener: { url, isApplication in await counter.open(url, isApplication) },
+                                   browserState: { BrowserState(installed: true, running: true) })
         defer { try? FileManager.default.removeItem(at: home); try? FileManager.default.removeItem(at: outside) }
 
         // 1. The control frame is exact; anything else is not an action.
@@ -68,7 +69,8 @@ import Foundation
         check(await opened.perform(.openURL, target: "https://docs.google.com/url?q=https://evil.example").code == .notAllowed, "a redirect route is refused")
         check(await opened.perform(.openURL, target: "https://chat.example.invalid/t/harbour/pl/p2").code == .notAllowed, "an unconfigured mattermost host is refused")
         check(await opened.perform(.openURL, target: "https://docs.google.com/presentation/d/ABC/edit").code == .opened, "a slides deck opens")
-        let scoped = NativeActions(home: home, opener: { _, _ in true }, mattermostHost: "chat.example.invalid")
+        let scoped = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: true, running: true) },
+                                   mattermostHost: "chat.example.invalid")
         check(await scoped.perform(.openURL, target: "https://chat.example.invalid/t/harbour/pl/p2").code == .opened, "the configured mattermost host opens a post permalink")
         check(await scoped.perform(.openURL, target: "https://chat.example.invalid/harbour/channels/town-square").code == .opened, "the configured mattermost host opens a channel")
         check(await scoped.perform(.openURL, target: "https://mail.google.com/mail/u/0/").code == .opened, "the gmail home page opens")
@@ -76,7 +78,7 @@ import Foundation
         check(await scoped.perform(.openURL, target: "https://calendar.google.com/calendar/export?eid=e1").code == .notAllowed, "a calendar export route is refused")
 
         // OPEN2-R1: the host names one Mattermost origin per frame; the first one is pinned for good.
-        let pinned = NativeActions(home: home, opener: { _, _ in true })
+        let pinned = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: true, running: true) })
         check(NativeActionFrame.control("{\"type\":\"native_action\",\"id\":\"a1\",\"action\":\"open_url\",\"target\":\"https://chat.example.invalid/t/harbour/pl/p1\",\"origin\":\"https://chat.example.invalid\"}")?.origin == "https://chat.example.invalid", "an open_url frame carries the origin the host named")
         check(NativeActionFrame.control("{\"type\":\"native_action\",\"id\":\"a2\",\"action\":\"open_file\",\"target\":\"/tmp/x\",\"origin\":\"https://chat.example.invalid\"}") == nil, "only an open_url frame may carry an origin")
         check(NativeActionFrame.control("{\"type\":\"native_action\",\"id\":\"a3\",\"action\":\"open_url\",\"target\":\"https://chat.example.invalid/t/harbour/pl/p1\",\"origin\":\"https://chat.example.invalid\",\"extra\":1}") == nil, "a sixth key is refused")
@@ -119,7 +121,7 @@ import Foundation
         check(OpenDestination.of("https://user:pw@plantix.net/", mattermostHost: nil) == nil, "a site with user info is refused")
         check(OpenDestination.of("https://plantix.net", mattermostHost: nil) == nil, "a site address without its slash is not the root the host builds")
         // Its own instance: the five-a-minute window above is already spent on the scoped actions.
-        let web = NativeActions(home: home, opener: { _, _ in true })
+        let web = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: true, running: true) })
         check(await web.perform(.openURL, target: "https://www.google.com/search?q=odemira").code == .opened, "a search reaches the opener as a web destination")
         check(await web.perform(.openURL, target: "https://plantix.net/private").code == .notAllowed, "a site path never reaches the opener")
 
@@ -159,11 +161,13 @@ import Foundation
         check(await withoutChrome.perform(.openURL, target: "https://docs.google.com/presentation/d/SyntheticDeck03/edit").code == .opened, "no Chrome installed is the default browser, unchanged")
         check(withChrome.calls == ["lookup com.google.Chrome", "app Google Chrome.app https://docs.google.com/presentation/d/SyntheticDeck01/edit"], "Chrome opens the deck when it is installed: \(withChrome.calls)")
         let noChrome = FakeWorkspace(chrome: nil)
-        let defaultActions = NativeActions(home: home, opener: NativeActions.browserOpener(noChrome))
+        let defaultActions = NativeActions(home: home, opener: NativeActions.browserOpener(noChrome),
+                                           browserState: { BrowserState(installed: false, running: false) })
         check(await defaultActions.perform(.openURL, target: "https://www.google.com/calendar/event?eid=c3ludGhldGljLWV2ZW50").code == .opened, "a real-shaped event link opens")
         check(noChrome.calls == ["lookup com.google.Chrome", "default https://www.google.com/calendar/event?eid=c3ludGhldGljLWV2ZW50"], "the default browser opens it when Chrome is absent: \(noChrome.calls)")
         let fileChrome = FakeWorkspace(chrome: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
-        let fileActions = NativeActions(home: home, opener: NativeActions.browserOpener(fileChrome))
+        let fileActions = NativeActions(home: home, opener: NativeActions.browserOpener(fileChrome),
+                                        browserState: { BrowserState(installed: true, running: true) })
         check(await fileActions.perform(.openFile, target: "~/Documents/plan.md").code == .opened, "a home file still opens")
         check(fileChrome.calls.count == 1 && fileChrome.calls[0].hasPrefix("default file://"), "a file opens in its own app, never in Chrome: \(fileChrome.calls)")
         check(await withChrome.openApplicationProbe(), "the application path stays the workspace launch")
@@ -183,7 +187,8 @@ import Foundation
 
         // 5. At most five opens a minute.
         let clock = MutableClock()
-        let limited = NativeActions(home: home, opener: { _, _ in true }, clock: { clock.now })
+        let limited = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: true, running: true) },
+                                    clock: { clock.now })
         var codes: [NativeActionCode] = []
         for _ in 0..<6 { codes.append(await limited.perform(.openURL, target: "https://mail.google.com/mail/u/0/#inbox/limit").code) }
         check(codes.prefix(5).allSatisfy { $0 == .opened }, "the first five opens pass")

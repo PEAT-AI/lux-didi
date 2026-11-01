@@ -130,8 +130,10 @@ final class NativePresence {
     private(set) var pendingAlarmID: String?
     func takeAlarmID() -> String? { defer { pendingAlarmID = nil }; return pendingAlarmID }
     func start(_ trigger: PresenceTrigger, alarmID: String? = nil) {
+        // C-ALARMSPEECH F-C: the id belongs to the session this start opens. A start that does not connect
+        // must not leave it behind for the next one, or an owner connect could open as the alarm session.
+        guard state == .cold else { pendingAlarmID = nil; return }
         pendingAlarmID = alarmID
-        guard state == .cold else { return }
         connect(trigger)
     }
 

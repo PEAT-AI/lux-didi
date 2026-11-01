@@ -105,6 +105,12 @@ enum AlarmShellProbe {
         try check(machine.state == .connecting, "a cold alarm start opens presence")
         try check(machine.takeAlarmID() == "synthetic-alarm", "the alarm id reaches the session it opens")
         try check(machine.takeAlarmID() == nil, "the alarm id is consumed once")
+        // F-C: an alarm start that does not connect leaves no id behind for the next session to inherit.
+        let busy = NativePresence(effects: PresenceEffects(openSession: { _ in }), now: { 1000 })
+        busy.start(.app)
+        try check(busy.state == .connecting, "a cold start connects")
+        busy.start(.alarm, alarmID: "synthetic-late-alarm")
+        try check(busy.takeAlarmID() == nil, "a start that does not connect leaves no pending alarm id")
         machine.ready(opened.last ?? 0)
         try check(machine.state == .live, "the alarm call reaches LIVE, which is what stops the chime")
         machine.tap(.hotkey)

@@ -858,7 +858,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // grant still names its journal, and the authorize below decides whether this is its replay.
             const peek = ownerRequests.authorize(runId, name, '');
             hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
-            if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
+            // C-PERMTIER (REQUIRED 6, P-R1): the authority refusal names its cause before any time parse, so a
+            // fenced or unanswered ask never turns into a missing_time question.
+            if (peek.code !== 'allowed' && peek.code !== 'idempotent') return finish(requestRefusal(peek.code));
             // C-PERMTIER (REQUIRED 6): his authority is judged before the result gate, so a refusal names its
             // real cause (no_owner_request, external_text_only) instead of a bare failed.
             const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);

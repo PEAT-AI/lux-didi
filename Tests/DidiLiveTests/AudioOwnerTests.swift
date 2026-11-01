@@ -234,9 +234,9 @@ import Foundation
 
         // C-AUDIOMARK 4: the played window now reports the volume, the voice flag, the samples at or
         // over -3 dBFS and the flat-top runs, on the decoded provider PCM.
-        let loud: [Int16] = [23200, 23200, 23200, 0, 0, 0, 0, 0]
+        let hotSamples: [Int16] = [23200, 23200, 23200, 0, 0, 0, 0, 0]
         var loudPCM = Data()
-        for sample in loud { withUnsafeBytes(of: sample.littleEndian) { loudPCM.append(contentsOf: $0) } }
+        for sample in hotSamples { withUnsafeBytes(of: sample.littleEndian) { loudPCM.append(contentsOf: $0) } }
         do { try await volumeDevice.write(loudPCM) } catch { check(false, "the fake write threw \(error)"); exit(1) }
         volumeDevice.flushPlaybackLevelForTesting()
         let widened = markJournal.events.filter { $0.name == "playback_level" }.last?.fields

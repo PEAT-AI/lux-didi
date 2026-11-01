@@ -480,6 +480,8 @@ export interface CallStory {
 /** The event families a call is debugged by. Everything else is noise in this view, so it is counted. */
 const LOG_EVENT_KIND: Record<string, CallEntryKind> = {
   live_state: 'state', audio_owned: 'state', audio_released: 'state', audio_started: 'state', live_interrupted: 'state',
+  // C-AUDIOMARK: the owner's own presses and the volume journal, so one call reads with its marks in place.
+  audio_distortion_mark: 'state', output_volume: 'state', output_volume_changed: 'state', processor_overload: 'state',
   live_first_audio: 'model', live_answer_audio: 'model', gptlive_turn_complete: 'model', live_turn_script: 'model',
   live_voice_profile: 'model', live_voice_shift: 'model',
   live_handshake: 'model', live_provider_open: 'model', live_provider_ready: 'model',
@@ -495,6 +497,10 @@ const LOG_DETAIL_KEYS = [
   'state', 'from', 'cause', 'connector', 'reason', 'phase', 'outcome', 'code', 'endpointId', 'proven', 'match',
   'researchId', 'sources', 'tools', 'calls', 'ms', 'msSinceReady', 'msSinceOpen', 'msSinceArrived', 'deadAirMs',
   'queuedMs', 'toolPending', 'failureClass', 'closeReason', 'terminalReason',
+  // C-AUDIOMARK: a mark and a volume line are read for these, so their values print with the entry.
+  'outputUid', 'outputTransport', 'outputVolume', 'outputVolumeControls', 'voiceProcessing',
+  'voiceProcessingBypass', 'engineGeneration', 'lastChange', 'duckingRequested', 'duckingReadBack',
+  'overSamples', 'flatTopRuns', 'processorOverloads', 'loadAverage', 'count',
   // C-PITCH: the voice column, so one call's responses read as a pitch line and a shift stands out.
   'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'responseId', 'ratio', 'medianHz', 'sessionMedianHz',
 ] as const;
@@ -1035,4 +1041,51 @@ export function renderAuditSummary(summary: AuditSummary): string {
   if (summary.failuresByToolAndCode.length === 0) out.push(summary.refusalsMeasured ? 'none' : MISSING);
   out.push(`final to audio n=${summary.finalToAudio.count} p50=${auditMs(summary.finalToAudio.p50)} p90=${auditMs(summary.finalToAudio.p90)}`);
   return `${out.join('\n')}\n`;
+}
+
+/**
+ * C-AUDIOMARK: one owner mark as the log recorded it. Marks are printed by their own command because
+ * the owner hears the distortion with no call running, and a line no call can be attributed to never
+ * reaches the call story. Metadata only: a device id, volumes, counters and a load average.
+ */
+export interface DistortionMark {
+  at: number | null; monoMs: number | null; liveSessionId: string | null;
+  outputUid: string | null; transport: string | null; volumes: string | null;
+  voiceProcessing: boolean | null; bypass: string | null; engineGeneration: number | null;
+  lastChange: string | null; overSamples: number | null; flatTopRuns: number | null;
+  processorOverloads: number | null; loadAverage: string | null;
+}
+
+export function buildDistortionMarks(scan: LogScan): DistortionMark[] {
+  return scan.lines
+    .filter(line => line.event === 'audio_distortion_mark')
+    .sort((left, right) => (left.at ?? 0) - (right.at ?? 0) || (left.monoMs ?? 0) - (right.monoMs ?? 0))
+    .map(line => ({
+      at: line.at, monoMs: line.monoMs, liveSessionId: line.liveSessionId,
+      outputUid: name(line.record.outputUid), transport: name(line.record.outputTransport),
+      volumes: name(line.record.outputVolume), voiceProcessing: bool(line.record.voiceProcessing),
+      bypass: name(line.record.voiceProcessingBypass), engineGeneration: count(line.record.engineGeneration),
+      lastChange: name(line.record.lastChange), overSamples: count(line.record.overSamples),
+      flatTopRuns: count(line.record.flatTopRuns), processorOverloads: count(line.record.processorOverloads),
+      loadAverage: name(line.record.loadAverage),
+    }));
+}
+
+function bool(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+export function renderDistortionMarks(marks: readonly DistortionMark[]): string {
+  if (marks.length === 0) return 'no distortion marks in the logs\n';
+  const lines = marks.map(mark => {
+    const voice = mark.voiceProcessing === null ? 'unknown' : mark.voiceProcessing ? 'on' : `off/${mark.bypass ?? 'unknown'}`;
+    return `${wall(mark.at)} mono=${mark.monoMs ?? '-'} call=${mark.liveSessionId ?? 'none'} ` +
+      `output=${mark.outputUid ?? 'unknown'} transport=${mark.transport ?? 'unknown'} volume=${mark.volumes ?? 'unknown'} ` +
+      `voiceProcessing=${voice} engine=${mark.engineGeneration ?? '-'} lastChange=${mark.lastChange ?? '-'} ` +
+      `overSamples=${mark.overSamples ?? '-'} flatTopRuns=${mark.flatTopRuns ?? '-'} ` +
+      `overloads=${mark.processorOverloads ?? '-'} load=${mark.loadAverage ?? '-'}`;
+  });
+  const withCall = marks.filter(mark => mark.liveSessionId !== null).length;
+  lines.push(`${marks.length} marks, ${withCall} inside a call`);
+  return `${lines.join('\n')}\n`;
 }

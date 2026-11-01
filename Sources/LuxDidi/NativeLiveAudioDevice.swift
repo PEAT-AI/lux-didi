@@ -595,6 +595,94 @@ struct NativeLiveInterruptionSample: Sendable {
     func stop()
 }
 
+/// One volume control on an output device. A device may publish a master (element 0) or one control
+/// per channel (1 and 2), so a reader reports the set and never assumes one master exists.
+struct NativeVolumeControl: Equatable, Sendable {
+    let element: Int
+    /// The scalar this control returned, or nil when the device refused that control.
+    let scalar: Float?
+}
+
+/// What an output device says about itself and its level: the stable device id, how it is attached,
+/// and every readable volume control. Read through CoreAudio getters only, never written.
+struct NativeOutputVolumeSnapshot: Equatable, Sendable {
+    let uid: String
+    let transport: String
+    let controls: [NativeVolumeControl]
+
+    init(uid: String, transport: String, controls: [NativeVolumeControl]) {
+        self.uid = uid
+        self.transport = transport
+        self.controls = controls
+    }
+
+    /// The journal fields every volume record carries: which device, how it is attached, what its
+    /// controls read. An unreadable control is left out of the text and the count says how many are
+    /// known, so a missing reading is never a zero.
+    var fields: [String: String] {
+        let readable = controls.filter { $0.scalar != nil }
+        return ["outputUid": uid, "outputTransport": transport,
+                "outputVolume": Self.volumeText(controls), "outputVolumeControls": String(readable.count)]
+    }
+
+    static func volumeText(_ controls: [NativeVolumeControl]) -> String {
+        let readable = controls.compactMap { control in control.scalar.map { (control.element, $0) } }
+            .sorted { $0.0 < $1.0 }
+        guard !readable.isEmpty else { return "unknown" }
+        return readable.map { "\($0.0)=\(String(format: "%.3f", min(1, max(0, $0.1))))" }.joined(separator: ",")
+    }
+}
+
+/// One owner "mark this moment" record. Metadata only: the device and its volumes, the voice stage
+/// and why it was bypassed, the engine generation and the last graph change, the ducking that was
+/// asked for and read back, the recent playback counters and the load average. Never audio, never a
+/// device name, never a person.
+struct NativeDistortionMark: Sendable {
+    var output: NativeOutputVolumeSnapshot
+    var voiceProcessing: Bool
+    var bypassReason: String
+    var engineGeneration: Int
+    var lastChange: String
+    var duckingRequested: String
+    var duckingReadBack: String
+    var peakDb: String
+    var rmsDb: String
+    var overSamples: Int
+    var flatTopRuns: Int
+    var processorOverloads: Int
+    var loadAverage: (Double, Double, Double)
+
+    var record: [String: Any] {
+        var fields: [String: Any] = [:]
+        for (key, value) in output.fields { fields[key] = value }
+        fields["event"] = "audio_distortion_mark"
+        fields["voiceProcessing"] = voiceProcessing
+        fields["voiceProcessingBypass"] = bypassReason
+        fields["engineGeneration"] = engineGeneration
+        fields["lastChange"] = lastChange
+        fields["duckingRequested"] = duckingRequested
+        fields["duckingReadBack"] = duckingReadBack
+        fields["peakDb"] = peakDb
+        fields["rmsDb"] = rmsDb
+        fields["overSamples"] = overSamples
+        fields["flatTopRuns"] = flatTopRuns
+        fields["processorOverloads"] = processorOverloads
+        fields["loadAverage"] = Self.loadText(loadAverage)
+        return fields
+    }
+
+    static func loadText(_ load: (Double, Double, Double)) -> String {
+        String(format: "%.2f,%.2f,%.2f", load.0, load.1, load.2)
+    }
+
+    /// The load average of this Mac right now, so a mark says whether the machine was busy.
+    static func currentLoadAverage() -> (Double, Double, Double) {
+        var averages = [Double](repeating: 0, count: 3)
+        guard getloadavg(&averages, 3) == 3 else { return (0, 0, 0) }
+        return (averages[0], averages[1], averages[2])
+    }
+}
+
 @MainActor final class NativeLiveAudioDevice: ObservableObject, LiveAudioSink {
     @Published private(set) var inputLevel: Float = 0
     @Published private(set) var outputLevel: Float = 0
@@ -648,6 +736,23 @@ struct NativeLiveInterruptionSample: Sendable {
     private var playedPeak: Double = 0
     private var playedSumSquares: Double = 0
     private var playedFrames = 0
+    /// C-AUDIOMARK 4: the diagnostic counters of the same window, taken in the same decode walk. A
+    /// sample at or over -3 dBFS and a run of identical loud samples are counts only, never audio.
+    private var playedOverSamples = 0
+    private var playedFlatTopRuns = 0
+    private var lastDecodedSample: Int16 = 0
+    private var inFlatTop = false
+    static let overSampleThreshold = 0.7079457843841379
+    /// C-AUDIOMARK 3: processor overload notifications since this call's build, and the listener that
+    /// counts them, replaced whenever the output device is re-chosen.
+    private var processorOverloads = 0
+    private var overloadListener: (device: AudioObjectID, block: AudioObjectPropertyListenerBlock)?
+    /// C-AUDIOMARK 0b and 1: which build this is, and what last moved the graph, so a mark says which
+    /// engine the owner was hearing. Never a device name, only a closed reason word.
+    private(set) var engineGeneration = 0
+    private(set) var lastChange = "none"
+    private var duckingRequestedText = "none"
+    private var duckingReadBackText = "none"
     private var playbackLevelTask: Task<Void, Never>?
     static let playbackLevelWindowMs = 5_000
     private static let silenceFloorDb = -120.0
@@ -669,6 +774,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private let now: () -> Date
     private let isBuiltInOutput: () -> Bool
     private let outputLevelReading: () -> (volume: String, mute: String)
+    /// C-AUDIOMARK 0b: the output device, transport and volume controls, read before preparation,
+    /// after route selection and after teardown. Injectable so a test never opens a device.
+    private let volumeReading: () -> NativeOutputVolumeSnapshot
     /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
     var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
     var startForTesting: ((AVAudioEngine) throws -> Void)?
@@ -695,6 +803,8 @@ struct NativeLiveInterruptionSample: Sendable {
     /// and the clock it started, so `audio_output_switched` reports a measured switch.
     private var pendingOutputSwitch: (from: String, at: Date)?
     private var voiceProcessingFailed = false
+    /// C-AUDIOMARK 1: why the voice stage is not on, as a closed word; `none` when it is on.
+    private var voiceProcessingBypass = "none"
     /// C-MICWATCH 1: how long a started engine may run before its tap delivers the first buffer.
     static let firstBufferWindowMs = 1_000
     private var firstBufferWatchdog: Task<Void, Never>?
@@ -758,6 +868,7 @@ struct NativeLiveInterruptionSample: Sendable {
          deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil,
          isBuiltInOutput: (() -> Bool)? = nil,
          outputLevelReading: (() -> (volume: String, mute: String))? = nil,
+         outputVolumeSnapshot: (() -> NativeOutputVolumeSnapshot)? = nil,
          builtInInput: (() -> (id: String, name: String)?)? = nil,
          defaultOutput: (() -> (id: String, name: String))? = nil,
          transport: ((String) -> String)? = nil) {
@@ -775,6 +886,7 @@ struct NativeLiveInterruptionSample: Sendable {
         self.isBuiltInOutput = isBuiltInOutput
             ?? { Self.isBuiltInSpeakers(outputID: (defaultOutput ?? { Self.defaultDevice(input: false) })().id) }
         self.outputLevelReading = outputLevelReading ?? { Self.defaultOutputLevel() }
+        self.volumeReading = outputVolumeSnapshot ?? { Self.outputVolumeSnapshot() }
     }
     var hasJournal: Bool { journal != nil }
     /// Test seam: adopt the stretcher the running graph would own, then flush it, without opening hardware.
@@ -790,6 +902,71 @@ struct NativeLiveInterruptionSample: Sendable {
         journal?.record(NativeAudioEvent(name: name, fields: fields))
     }
 
+    /// C-AUDIOMARK 0b: one volume record at a lifecycle boundary, the device UID, its transport and
+    /// every volume control together. Read only, never a device write, never a device name.
+    func logOutputVolume(_ reason: String) {
+        var fields = volumeReading().fields
+        fields["reason"] = reason
+        fields["voiceProcessing"] = voiceProcessingText
+        fields["voiceProcessingBypass"] = voiceProcessingBypass
+        fields["engineGeneration"] = String(engineGeneration)
+        fields["processorOverloads"] = String(processorOverloads)
+        fields["lastChange"] = lastChange
+        log("output_volume", fields)
+    }
+    var voiceProcessingText: String { isVoiceProcessingEnabled ? "true" : "false" }
+
+    /// C-AUDIOMARK 3: one processor overload notification on the current output, counted per call.
+    func noteProcessorOverload() {
+        processorOverloads += 1
+        log("processor_overload", ["count": String(processorOverloads)])
+    }
+    /// Test seam: the listener body without CoreAudio.
+    func noteProcessorOverloadForTesting() { noteProcessorOverload() }
+
+    /// C-AUDIOMARK 3: a read-only overload listener on the device this call plays through. It is
+    /// replaced whenever a build re-chooses the output, and removed with the engine.
+    private func installOverloadListener() {
+        removeOverloadListener()
+        guard let id = AudioDeviceID(outputDevice().id), id != kAudioObjectUnknown else { return }
+        var property = AudioObjectPropertyAddress(mSelector: kAudioDeviceProcessorOverload,
+                                                 mScope: kAudioObjectPropertyScopeOutput,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(id, &property) else { return }
+        let block: AudioObjectPropertyListenerBlock = { @Sendable [weak self] _, _ in
+            MainActor.assumeIsolated { self?.noteProcessorOverload() }
+        }
+        guard AudioObjectAddPropertyListenerBlock(id, &property, DispatchQueue.main, block) == noErr else { return }
+        overloadListener = (id, block)
+    }
+    private func removeOverloadListener() {
+        guard let listener = overloadListener else { return }
+        var property = AudioObjectPropertyAddress(mSelector: kAudioDeviceProcessorOverload,
+                                                 mScope: kAudioObjectPropertyScopeOutput,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        AudioObjectRemovePropertyListenerBlock(listener.device, &property, DispatchQueue.main, listener.block)
+        overloadListener = nil
+    }
+
+    /// C-AUDIOMARK 1: what a mark records from inside a call: the voice stage as it really is, the
+    /// engine generation this mark belongs to, the last graph change, the ducking asked for and read
+    /// back, the recent played window and the call's overload count.
+    func distortionMark(loadAverage: (Double, Double, Double)) -> NativeDistortionMark {
+        let window = playedFrames > 0
+            ? (peak: playedPeak, rms: playedFrames > 0 ? (playedSumSquares / Double(playedFrames)).squareRoot() : 0,
+               over: playedOverSamples, flatTops: playedFlatTopRuns)
+            : nil
+        return NativeDistortionMark(
+            output: volumeReading(), voiceProcessing: isVoiceProcessingEnabled,
+            bypassReason: isVoiceProcessingEnabled ? "none" : voiceProcessingBypass,
+            engineGeneration: engineGeneration, lastChange: lastChange,
+            duckingRequested: duckingRequestedText, duckingReadBack: duckingReadBackText,
+            peakDb: window.map { Self.dB($0.peak) } ?? "unknown",
+            rmsDb: window.map { Self.dB($0.rms) } ?? "unknown",
+            overSamples: window?.over ?? 0, flatTopRuns: window?.flatTops ?? 0,
+            processorOverloads: processorOverloads, loadAverage: loadAverage)
+    }
+
     /// Test seam: close the open played window now, so the window arithmetic is provable without a
     /// five second wait. Production closes it from its own timer only.
     func flushPlaybackLevelForTesting() { flushPlaybackLevel() }
@@ -797,10 +974,17 @@ struct NativeLiveInterruptionSample: Sendable {
     /// A window with no frames has no level, so it leaves no line rather than a floor of silence.
     private func flushPlaybackLevel() {
         let frames = playedFrames, peak = playedPeak, sumSquares = playedSumSquares
+        let over = playedOverSamples, flatTops = playedFlatTopRuns
         playedFrames = 0; playedPeak = 0; playedSumSquares = 0
+        playedOverSamples = 0; playedFlatTopRuns = 0; resetFlatTopTracking()
         guard frames > 0 else { return }
+        let volume = volumeReading().fields
+        // C-AUDIOMARK 4: the same receipt now says what the slider read, whether the voice stage was
+        // on, how many samples reached -3 dBFS and how many flat tops the decode walk saw.
         log("playback_level", ["peakDb": Self.dB(peak), "rmsDb": Self.dB((sumSquares / Double(frames)).squareRoot()),
-                               "frames": String(frames)])
+                               "frames": String(frames), "outputVolume": volume["outputVolume"] ?? "unknown",
+                               "voiceProcessing": voiceProcessingText,
+                               "overSamples": String(over), "flatTopRuns": String(flatTops)])
     }
     /// A level as decibels, floored at the silence floor, so a digital zero reads as the floor and not as -inf.
     private static func dB(_ level: Double) -> String {
@@ -821,6 +1005,18 @@ struct NativeLiveInterruptionSample: Sendable {
     private func stopPlaybackLevelWindow() {
         playbackLevelTask?.cancel(); playbackLevelTask = nil
         playedFrames = 0; playedPeak = 0; playedSumSquares = 0
+        playedOverSamples = 0; playedFlatTopRuns = 0; resetFlatTopTracking()
+    }
+    /// C-AUDIOMARK 4: a flat top is a run of the same loud sample. The tracking is two scalars, so the
+    /// decode walk that already runs allocates nothing and the audio thread stays free of locks.
+    private func resetFlatTopTracking() { lastDecodedSample = 0; inFlatTop = false }
+    private func trackFlatTop(_ sample: Int16, magnitude: Double) {
+        let loud = magnitude >= Self.overSampleThreshold
+        if loud { playedOverSamples += 1 }
+        let continues = loud && sample == lastDecodedSample
+        if continues && !inFlatTop { playedFlatTopRuns += 1; inFlatTop = true }
+        if !continues { inFlatTop = false }
+        lastDecodedSample = sample
     }
     /// C-HEADPHONES 1: the device this call captures from, chosen by id: the built-in microphone
     /// whenever the machine has one, else the system default input as an announced fallback.
@@ -842,6 +1038,8 @@ struct NativeLiveInterruptionSample: Sendable {
         let input = captureDevice
         let output = outputDevice()
         route = "Microphone: " + input.name + " · Output: " + output.name
+        // C-AUDIOMARK 1: the last graph change a mark will report, as a closed reason word.
+        lastChange = "route_change"
         guard !rebuilding else {
             log("audio_route_change_ignored", ["reason": "busy"]); return
         }
@@ -906,6 +1104,7 @@ struct NativeLiveInterruptionSample: Sendable {
     /// C-AUDIO 2 and 4: one notification. Inside a release settle it marks the change the settle must
     /// wait for; otherwise it counts the changes a start saw and routes them.
     private func noteConfigurationChange(engineID: ObjectIdentifier?, token: UInt64) {
+        lastChange = "configuration_change"
         // A configuration change that lands inside a release settle is exactly what the settle waits
         // for, so nothing resets or builds on top of it.
         if settling {
@@ -985,7 +1184,7 @@ struct NativeLiveInterruptionSample: Sendable {
         return transportLabel(transport)
     }
     /// The one transport vocabulary both the route line and the switch record use.
-    private static func transportLabel(_ transport: UInt32) -> String {
+    nonisolated private static func transportLabel(_ transport: UInt32) -> String {
         switch transport {
         case kAudioDeviceTransportTypeBuiltIn: return "built-in"
         case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "Bluetooth"
@@ -1024,7 +1223,7 @@ struct NativeLiveInterruptionSample: Sendable {
         else { return [] }
         return devices
     }
-    private static func deviceTransport(_ device: AudioDeviceID) -> UInt32 {
+    nonisolated private static func deviceTransport(_ device: AudioDeviceID) -> UInt32 {
         var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var transport = UInt32(0)
@@ -1073,6 +1272,10 @@ struct NativeLiveInterruptionSample: Sendable {
     static func defaultOutputUID() -> String {
         let device = defaultDeviceID(input: false)
         guard device != kAudioObjectUnknown else { return "unknown" }
+        return deviceUID(device)
+    }
+    /// One device's UID, or `unknown` when it refuses the getter.
+    nonisolated static func deviceUID(_ device: AudioDeviceID) -> String {
         var property = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -1081,6 +1284,24 @@ struct NativeLiveInterruptionSample: Sendable {
         guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &uid) == noErr,
               let value = uid?.takeRetainedValue() else { return "unknown" }
         return value as String
+    }
+    /// C-AUDIOMARK 0b: the output device, its transport and every volume control it publishes, read
+    /// through CoreAudio getters in one pass. Nothing here writes a device property, and a device with
+    /// no master control still reports the controls it does have.
+    nonisolated static func outputVolumeSnapshot(device: AudioDeviceID? = nil) -> NativeOutputVolumeSnapshot {
+        let id = device ?? defaultDeviceID(input: false)
+        guard id != kAudioObjectUnknown else {
+            return NativeOutputVolumeSnapshot(uid: "unknown", transport: "unknown", controls: [])
+        }
+        let controls = [kAudioObjectPropertyElementMain, 1, 2].compactMap { element -> NativeVolumeControl? in
+            var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                                     mScope: kAudioObjectPropertyScopeOutput, mElement: element)
+            guard AudioObjectHasProperty(id, &property) else { return nil }
+            return NativeVolumeControl(element: Int(element),
+                                       scalar: outputScalar(id, kAudioDevicePropertyVolumeScalar, element: element))
+        }
+        return NativeOutputVolumeSnapshot(uid: deviceUID(id), transport: transportLabel(deviceTransport(id)),
+                                          controls: controls)
     }
     func resumeInput() {
         guard !muteHoldsMicrophone else { return }
@@ -1120,7 +1341,7 @@ struct NativeLiveInterruptionSample: Sendable {
         (volume.map { String(format: "%.2f", min(1, max(0, $0))) } ?? "unknown",
          mute.map { $0 == 0 ? "false" : "true" } ?? "unknown")
     }
-    private static func outputScalar(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector,
+    nonisolated private static func outputScalar(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector,
                                      element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> Float? {
         var property = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeOutput,
                                                   mElement: element)
@@ -1151,7 +1372,7 @@ struct NativeLiveInterruptionSample: Sendable {
         guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &running) == noErr else { return false }
         return running != 0
     }
-    static func defaultDeviceID(input: Bool) -> AudioDeviceID {
+    nonisolated static func defaultDeviceID(input: Bool) -> AudioDeviceID {
         var property = AudioObjectPropertyAddress(
             mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -1213,6 +1434,18 @@ struct NativeLiveInterruptionSample: Sendable {
         configuration.enableAdvancedDucking = false
         configuration.duckingLevel = .min
         return configuration
+    }
+    /// C-AUDIOMARK 1: a ducking configuration in one closed word pair, so the requested and the
+    /// read-back value sit side by side in a mark.
+    static func duckingText(_ configuration: AVAudioVoiceProcessingOtherAudioDuckingConfiguration) -> String {
+        let level: String
+        switch configuration.duckingLevel {
+        case .min: level = "min"
+        case .mid: level = "mid"
+        case .max: level = "max"
+        default: level = "default"
+        }
+        return "advanced=\(configuration.enableAdvancedDucking.boolValue ? 1 : 0),level=\(level)"
     }
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
@@ -1279,6 +1512,10 @@ struct NativeLiveInterruptionSample: Sendable {
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
         voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil; stallRestarted = false; inputStallFailed = false
+        // C-AUDIOMARK 0b and 3: the volume this call inherits, before any preparation, and the
+        // overload count of the call that starts here.
+        processorOverloads = 0; lastChange = "none"
+        logOutputVolume("before_prepare")
         // C-AUDIO 4: engine starts are counted per call, so a rebuilt graph inside one call shows up.
         engineStartCount = 0; configChangesDuringStart = 0
         do { try build(send: send); recovery.begin() }
@@ -1368,10 +1605,16 @@ struct NativeLiveInterruptionSample: Sendable {
             outputIsBuiltInSpeakers: builtInOutput, deviceBusy: deviceBusy,
             voiceProcessingFailed: voiceProcessingFailed)
         if !useVoiceProcessing {
-            log("audio_vpio_skipped", ["reason": Self.vpioSkipReason(builtIn: builtInOutput,
-                                                                     deviceBusy: deviceBusy,
-                                                                     voiceProcessingFailed: voiceProcessingFailed)])
+            voiceProcessingBypass = Self.vpioSkipReason(builtIn: builtInOutput, deviceBusy: deviceBusy,
+                                                       voiceProcessingFailed: voiceProcessingFailed)
+            log("audio_vpio_skipped", ["reason": voiceProcessingBypass])
+        } else {
+            voiceProcessingBypass = "none"
         }
+        // C-AUDIOMARK 1: the ducking this build asks for, next to what CoreAudio reads back after the
+        // enable, so a mark can say which of the two the owner was hearing.
+        duckingRequestedText = useVoiceProcessing ? Self.duckingText(Self.minimumDuckingConfiguration()) : "none"
+        duckingReadBackText = "none"
         // C-AUDIO 1 and 4: the steps of this build, in order, and the configuration changes seen
         // while it starts. Reset here so `audio_graph_built` reports one build, not a call history.
         graphBuildSteps = []; configChangesDuringStart = 0; starting = true
@@ -1495,6 +1738,12 @@ struct NativeLiveInterruptionSample: Sendable {
                                   "configChanges": String(configChangesDuringStart),
                                   "starts": String(engineStartCount)])
         starting = false
+        // C-AUDIOMARK 0b and 1: the route is chosen, the voice stage is enabled and the engine runs,
+        // so the device, its transport and its volumes are recorded here, and the ducking read back.
+        engineGeneration += 1
+        if useVoiceProcessing { duckingReadBackText = Self.duckingText(engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration) }
+        installOverloadListener()
+        logOutputVolume("after_route_selection")
         // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
@@ -1789,6 +2038,8 @@ struct NativeLiveInterruptionSample: Sendable {
             for sample in bytes.bindMemory(to: Int16.self) {
                 let value = Double(Int16(littleEndian: sample)) / 32768; sum += value * value
                 let magnitude = abs(value); if magnitude > peak { peak = magnitude }
+                // C-AUDIOMARK 4: two counters on the same walk, no allocation, nothing stored.
+                trackFlatTop(Int16(littleEndian: sample), magnitude: magnitude)
             }
         }
         // L12b: the same decode the level already walks feeds the played window, so the render thread
@@ -1859,6 +2110,10 @@ struct NativeLiveInterruptionSample: Sendable {
         // L12b: the window that was open at the end is reported before the call is gone.
         flushPlaybackLevel()
         stopPlaybackLevelWindow()
+        // C-AUDIOMARK 0b and 3: the volume the call ended on and the call's overload count, written
+        // before the graph is released, then the listener leaves with the device.
+        logOutputVolume("after_teardown")
+        removeOverloadListener()
         // The call is over: the last played segment gets one terminal receipt, whichever stop it was.
         if playbackSegment > terminatedSegment {
             emitReceipt(.terminated, segment: playbackSegment, reason: "session_end")
@@ -1975,5 +2230,111 @@ struct NativeLiveInterruptionSample: Sendable {
         let current = (input: inputDevice().id, output: outputDevice().id)
         defer { settleDeviceIDs = current }
         return current != settleDeviceIDs
+    }
+}
+
+/// C-AUDIOMARK 2: a read-only watcher of the current output device that runs whether or not a call
+/// is. On every default-device change it records the new device, its transport and its volumes, and
+/// it rebinds its volume listener to that device; on every volume property notification it records
+/// the volumes it reads. A notification does not say who changed the value, so no record claims a
+/// writer, and nothing here writes a device property.
+///
+/// Every listener block runs on the main queue, so this monitor's own state is only touched there.
+/// It journals native-live.log: the owner hears distortion with no call running, so the mark and the
+/// volume lines must not depend on a call's journal existing.
+final class NativeOutputVolumeMonitor: @unchecked Sendable {
+    private let journal: NativeLiveJournal?
+    private let read: () -> NativeOutputVolumeSnapshot
+    private var defaultListener: AudioObjectPropertyListenerBlock?
+    private var volumeDevice: AudioObjectID?
+    private var volumeListeners: [(element: AudioObjectPropertyElement, block: AudioObjectPropertyListenerBlock)] = []
+
+    init(journal: NativeLiveJournal?, read: @escaping () -> NativeOutputVolumeSnapshot = { NativeLiveAudioDevice.outputVolumeSnapshot() }) {
+        self.journal = journal
+        self.read = read
+    }
+
+    deinit {
+        if let listener = defaultListener {
+            var property = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &property,
+                                                   DispatchQueue.main, listener)
+        }
+        removeVolumeListeners()
+    }
+
+    /// Install the default-device listener and bind the volume listener to the current output.
+    func start() {
+        guard defaultListener == nil else { return }
+        var property = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.noteDefaultOutputChanged() }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &property,
+                                               DispatchQueue.main, listener) == noErr {
+            defaultListener = listener
+        }
+        bindVolumeListener(to: NativeLiveAudioDevice.defaultDeviceID(input: false))
+    }
+
+    /// C-AUDIOMARK 0b: the default output moved. The notification names no writer, so the record only
+    /// says the default changed and what the new device reads.
+    func noteDefaultOutputChanged() {
+        let device = NativeLiveAudioDevice.defaultDeviceID(input: false)
+        // Only a started monitor has listeners to rebind; an unstarted one only records the reading.
+        if defaultListener != nil { bindVolumeListener(to: device) }
+        var fields = read().fields
+        fields["reason"] = "default_device_changed"
+        fields["deviceId"] = String(device)
+        journal?.append(Self.record(event: "output_volume", fields: fields))
+    }
+
+    /// C-AUDIOMARK 2: a volume property on the current output changed. Read only, and it never says
+    /// who wrote it.
+    func noteVolumeChanged() {
+        journal?.append(Self.record(event: "output_volume_changed", fields: read().fields))
+    }
+
+    /// Test seams: the two notification bodies, reachable without CoreAudio.
+    func noteVolumeChangedForTesting() { noteVolumeChanged() }
+    func noteDefaultOutputChangedForTesting() { noteDefaultOutputChanged() }
+
+    private static func record(event: String, fields: [String: String]) -> [String: Any] {
+        var record: [String: Any] = ["event": event]
+        for (key, value) in fields { record[key] = value }
+        return record
+    }
+
+    /// A device may publish a master control, one per channel, or both, so the listener is added for
+    /// every volume control the device actually has. A device with none is still watched for a default
+    /// change, which is the only way its level could move under this app.
+    private func bindVolumeListener(to device: AudioObjectID) {
+        guard device != volumeDevice else { return }
+        removeVolumeListeners()
+        guard device != kAudioObjectUnknown else { return }
+        volumeDevice = device
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                                     mScope: kAudioObjectPropertyScopeOutput, mElement: element)
+            guard AudioObjectHasProperty(device, &property) else { continue }
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.noteVolumeChanged() }
+            if AudioObjectAddPropertyListenerBlock(device, &property, DispatchQueue.main, block) == noErr {
+                volumeListeners.append((element, block))
+            }
+        }
+    }
+
+    private func removeVolumeListeners() {
+        guard let device = volumeDevice else { return }
+        for listener in volumeListeners {
+            var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                                     mScope: kAudioObjectPropertyScopeOutput,
+                                                     mElement: listener.element)
+            AudioObjectRemovePropertyListenerBlock(device, &property, DispatchQueue.main, listener.block)
+        }
+        volumeListeners = []
+        volumeDevice = nil
     }
 }

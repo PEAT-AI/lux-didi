@@ -145,6 +145,8 @@ async function harness(t: TestContext, overrides: {
   mattermostData?: Record<string, unknown>;
   /** #669: the channels the fixture lists, so a miss can carry three closest names. */
   mattermostChannels?: readonly Record<string, unknown>[];
+  /** #669 F1: the child declares the query and types properties, as the real people-mode child does. */
+  mattermostListProperties?: boolean;
   releaseEvidenceError?: boolean;
   history?: boolean;
   mattermost?: boolean;
@@ -246,7 +248,9 @@ async function harness(t: TestContext, overrides: {
     let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let mattermostSdk: Server | undefined;
     let mattermostTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
+    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: overrides.mattermostListProperties && name === 'mattermost_list_channels'
+      ? { type: 'object', properties: { query: { type: 'string' }, types: { type: 'array', items: { type: 'string' } } } }
+      : { type: 'object' } }));
     if (overrides.mattermost) {
       mattermostEndpoint = { id: 'mattermost', url: 'https://fixture.invalid/mattermost', account: 'account', resource: 'resource' };
       registry.register(mattermostEndpoint); registry.enable(mattermostEndpoint.id); registry.allowEgress(mattermostEndpoint.id);
@@ -257,7 +261,9 @@ async function harness(t: TestContext, overrides: {
         calls.push({ name: req.params.name, args: req.params.arguments });
         await overrides.mattermostWork?.();
         const text = req.params.name === 'mattermost_list_channels'
-          ? JSON.stringify({ channels: overrides.mattermostChannels ?? [{ name: 'town-square', display_name: 'Town Square' }] })
+          // #669 F1: a child that ranks its own list answers a query it cannot place with no rows at all.
+          ? JSON.stringify({ channels: overrides.mattermostListProperties && typeof (req.params.arguments as Record<string, unknown> | undefined)?.['query'] === 'string'
+            ? [] : overrides.mattermostChannels ?? [{ name: 'town-square', display_name: 'Town Square' }] })
           : req.params.name === 'mattermost_whoami'
             ? JSON.stringify({ username: 'owner-chat', display_name: 'Owner Example' })
             : JSON.stringify(overrides.mattermostData ?? { posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
@@ -3690,6 +3696,23 @@ test('#669: a channel the connector does not know voices three closest names', a
   assert.match(reply, /I do not know a channel called /, 'the reply names the unknown channel');
   assert.match(reply, /The closest names I have are Singapore Summit, Singapore Office and Singapore Standup\./,
     `the reply voices the three closest names the connector refused with: ${reply}`);
+});
+
+// #669 F1: the real child declares query and types, so its own ranked list answers a miss with no rows; the
+// refusal still has to voice the three closest names from the channel index.
+test('#669: a child that ranks its own list still voices the closest names on a miss', async t => {
+  const h = await harness(t, { tools: true, mattermost: true, mattermostListProperties: true, mattermostChannels: [
+    { name: 'singapore-summit', display_name: 'Singapore Summit' },
+    { name: 'singapore-office', display_name: 'Singapore Office' },
+    { name: 'singapore-standup', display_name: 'Singapore Standup' },
+    { name: 'town-square', display_name: 'Town Square' },
+  ] });
+  await attached(h, 'closest-names-child');
+  const question = 'what did they say in the singapore waterworks channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the singapore waterworks channel' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /The closest names I have are Singapore Summit, Singapore Office and Singapore Standup\./,
+    `the child-ranked miss voices the three closest names from the index: ${reply}`);
 });
 
 // #651 FAILREASON-R1: a read the connector cut at its own budget is said as a timeout, never as a source

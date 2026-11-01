@@ -93,8 +93,18 @@ export class OwnerRequests implements OwnerRequestPort {
     delete request.alarmWords;
     if (request.pending?.kind === 'set_alarm') delete request.pending;
   }
-  /** C-PERMTIER: assistant speech is not owner speech, so it never withdraws an ask. */
-  answered(_session: string, _spoken?: string): void {}
+  /**
+   * C-PERMTIER: assistant speech is not owner speech, so it never grants and never withdraws an ask the
+   * model asked back about. A turn that ends with no question does close an ask whose writes all
+   * completed, so the next tool call needs his next final instead of riding the previous one.
+   */
+  answered(session: string, spoken?: string): void {
+    const request = this.requests.get(session);
+    if (!request || request.pending !== undefined) return;
+    if (spoken !== undefined && /\?\s*$/.test(spoken.trim())) return;
+    const spent = [...request.grants.values()].some(grant => grant.target !== undefined || (grant.targets?.size ?? 0) > 0);
+    if (spent) this.requests.delete(session);
+  }
   /** The guarded gate: a write that reaches another person or deletes something keeps its own selector. */
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     // C-PERMTIER: a free kind is admitted by the open owner call itself, never by his exact words.

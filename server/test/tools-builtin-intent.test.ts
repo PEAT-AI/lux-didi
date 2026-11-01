@@ -276,10 +276,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       assert.equal(gate.state, 'allowed');
       if (gate.state !== 'allowed') return;
       const result = gate.results[0]!.response;
-      // The alarm cue is judged on the finalized ask: a split ask carries it across its finals.
-      const noAlarmIntent = tool === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(row.finals.join(' '));
-      if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
-      const expected = noAlarmIntent ? 'no_owner_request' : row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
+      // C-PERMTIER (P-R1): the corpus expectation is the row's own outcome. A free write no longer needs an
+      // alarm cue in his words, so the retired no_owner_request rows now execute.
+      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
+      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
       assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
       if (expected === 'set') {
         const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));

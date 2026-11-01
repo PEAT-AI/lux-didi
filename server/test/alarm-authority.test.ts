@@ -45,10 +45,12 @@ test('hear104 alarm authority: finals join until the completed answer', () => {
   gate.observe('s', 'j2', 'a.m. Singapore time');
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').words, 'set an alarm at eleven ten a.m. Singapore time');
   gate.answered('s');
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
+  // C-PERMTIER (P-R1): the model's answer never withdraws his ask; it stands until his own next final.
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
   gate.observe('s', 'j3', 'what is the weather?');
   gate.observe('s', 'j4', 'a.m. Singapore time');
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
+  // A finalized owner turn is authority for every free tool, whatever the words say.
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
 });
 
 test('alarm authority: a recurring ask authorizes one set_alarm and a replay creates nothing', () => {

@@ -439,7 +439,7 @@ def local_control_comparisons(entries, quality, noise):
     matched = {}
     for e in entries:
         for p in quality.get(e["file"], {}).get("landmarks", []):
-            if p["correlation"] < .8:
+            if p["correlation"] < .95:
                 continue
             band = next((name for name, (lo, hi) in zip(BAND_NAMES, BANDS) if lo <= p["frequency_hz"] < hi), None)
             if band is None:

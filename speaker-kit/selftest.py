@@ -170,13 +170,14 @@ def check_physical_chain(entries):
     # Delete 40 ms every 500 ms, preserving local pitch but corrupting sweep
     # timing, like a lossy capture. A whole-file offset cannot repair this.
     ref = entries[1]["mono"] * 10**(entries[1]["level_db_peak"]/20)
-    keep = np.arange(len(ref)) % (FS//2) >= int(.04*FS)
+    phase = np.arange(len(ref)) % (FS//2)
+    keep = (phase < int(.25*FS)) | (phase >= int(.29*FS))
     broken = np.concatenate([np.zeros(FS), ref[keep], np.zeros(FS)])
     points = analyze.alignment_landmarks(broken, ref, FS, FS)
     spread = np.ptp([p["offset_s"] for p in points]) if len(points) >= 3 else 0
     if spread < .1:
         failures.append("within-file sample loss not exposed by landmarks")
-    retained = [p for p in points if p["correlation"] >= .8]
+    retained = [p for p in points if p["correlation"] >= .95]
     if not retained or any(abs(p["gain_db"]) > 1 for p in retained):
         failures.append("local matched gain is not preserved across capture loss")
     print("capture-loss control: landmark spread %.1f ms, %d local unit-gain windows retained" % (1000*spread, len(retained)))

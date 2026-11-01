@@ -4811,8 +4811,14 @@ test('#472: a late source result reaches the model while the session is live', a
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  // C-REBUILD B (council 2026-11-01): a note landing while a response is in flight is held, not written into it,
+  // and that response's own terminal is the one event that speaks it. This guard pinned the pre-ruling behaviour.
+  assert.equal(late[0]!['destination'], 'held', `a response in flight holds the note: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.texts.length, 0, 'nothing is written into the response in flight');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')).length, 1,
+    'the response terminal speaks the held note exactly once');
   assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
   assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
   assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');

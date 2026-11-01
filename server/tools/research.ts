@@ -542,8 +542,9 @@ export type EntityVerdict = { ok: true; question: string } | ({ ok: false; reaso
 
 /**
  * C-RESEARCH-CONTRACT Q-08: a rewrite may narrow to the names the owner said, and may not answer about a
- * different one. A rewrite that swaps Korbi for Rob is refused with the closed code `entity_rewrite` and the
- * original question is what stands, so a search can never quietly be about another person.
+ * different one. A rewrite that swaps a colleague's name for the owner's is refused with the closed code
+ * `entity_rewrite` and the original question is what stands, so a search can never quietly be about another
+ * person.
  */
 export function entityPreservedQuestion(original: string, rewritten: string): EntityVerdict {
   const before = namedWords(original, true);

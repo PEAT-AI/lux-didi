@@ -1213,6 +1213,18 @@ class Session implements LiveVoiceSession {
         this.touch();
         return;
       }
+      // #718: the delegated backend's own text, streamed the same way the spoken transcript is, so the host
+      // receives the delegated answer itself instead of rescuing it at response end.
+      case 'response.output_text.delta': {
+        const delta = event.delta;
+        if (typeof delta !== 'string') fail('protocol_error');
+        if (delta.length) {
+          this.outputTranscriptOpen = true;
+          this.emit({ type: 'outputTranscription', text: delta, finished: false, ...transcriptMetadata(event) });
+        }
+        this.touch();
+        return;
+      }
       case 'response.output_item.done': return this.outputItem(event, message);
       case 'response.done':
       case 'response.completed':

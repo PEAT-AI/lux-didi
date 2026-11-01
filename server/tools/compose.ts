@@ -174,7 +174,9 @@ function durationMinutes(words: string): number {
 function hourMinute(text: string): { hour: number; minute: number } | undefined {
   const digits = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
   const words = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b(?:\s+(thirty|fifteen))?\s*(am|pm)?\b/i.exec(text);
-  const hour = digits ? Number(digits[1]) : words ? NUMBERS[words[1]!.toLowerCase()] ?? 0 : 0;
+  // No clock at all stays no clock: a question about the calendar never reads as midnight.
+  const hour = digits ? Number(digits[1]) : words ? NUMBERS[words[1]!.toLowerCase()] ?? 0 : undefined;
+  if (hour === undefined) return undefined;
   const minute = digits ? Number(digits[2] ?? 0) : words && words[2] ? (words[2].toLowerCase() === 'thirty' ? 30 : 15) : 0;
   if (!Number.isInteger(hour) || hour > 23 || minute > 59) return undefined;
   const meridiem = (digits?.[3] ?? words?.[3])?.toLowerCase();

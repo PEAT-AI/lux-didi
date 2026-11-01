@@ -308,7 +308,7 @@ test('C-RECUR: cancel words choose one occurrence or the whole series', () => {
 });
 
 test('C-RECUR: a non-recurring ask keeps its one-shot instant', () => {
-  const oneShot = parseAlarmTime('set an alarm at 8', now, tz);
+  const oneShot = parseAlarmTime('set an alarm at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(oneShot.status, 'ready');
   if (oneShot.status === 'ready') assert.equal(oneShot.series, undefined);
   assert.equal(parseSeriesRule('set an alarm on Monday at ten'), undefined);

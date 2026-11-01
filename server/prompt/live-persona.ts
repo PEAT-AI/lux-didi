@@ -489,11 +489,14 @@ export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  *  ceiling free for them. */
 export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_600;
 /** The space the earlier-conversations section may use: its own reserve under the hard ceiling, so the
- *  leftovers of a target the other sections already blew past cannot starve it (#108). Bounded by the
- *  room that actually exists, so a full instruction shrinks the section instead of breaking the ceiling. */
+ *  leftovers of a target the other sections already blew past cannot starve it (#108). A roomy
+ *  instruction still gives the section what the target leaves; a full one gives it the reserve, bounded
+ *  by the room that actually exists, so a section can shrink but never break the ceiling. */
 export function earlierConversationsBudget(otherSectionsChars: number): number {
   const room = LIVE_INSTRUCTION_HARD_LIMIT - otherSectionsChars - separator.length;
-  return room <= 0 ? 0 : Math.min(room, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+  if (room <= 0) return 0;
+  const underTarget = LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length;
+  return Math.min(room, Math.max(EARLIER_CONVERSATIONS_RESERVE_CHARS, underTarget));
 }
 
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';

@@ -792,7 +792,7 @@ interface ActiveSession {
    *  every model turn start, so a tool turn that spoke no preamble cannot inherit an earlier turn's frame. */
   turnAudioAt?: number | undefined;
   /** Spoken output script codes of the current turn, counted and then reported as counts only. */
-  turnLatin: number; turnDevanagari: number; turnChars: number;
+  turnLatin: number; turnDevanagari: number; turnTelugu: number; turnKannada: number; turnChars: number;
   /** C-REBUILD8: the words this turn's response spoke, kept so a filler-only answer is recognisable. Bounded. */
   turnSpoken?: string | undefined;
   /** Whether this turn followed tool work and whether the owner cut it off. */
@@ -1064,29 +1064,53 @@ function journalKind(type: string): JournalKind | null { return (persistedKinds 
  * The script of what the model actually spoke this turn, counted from the output transcript.
  * Counters only: live_turn_script reports buckets and code-point counts, never any spoken text.
  */
+/**
+ * #540: the scripts the output monitor counts, each with its own code point range. Telugu and Kannada
+ * were missing, so a leak in either script went unnoticed.
+ */
+export function turnScriptCounts(text: string): { latinChars: number; devanagariChars: number; teluguChars: number; kannadaChars: number } {
+  const counts = { latinChars: 0, devanagariChars: 0, teluguChars: 0, kannadaChars: 0 };
+  for (const character of text) {
+    if (/[\u0900-\u097F]/u.test(character)) counts.devanagariChars += 1;
+    else if (/[\u0C00-\u0C7F]/u.test(character)) counts.teluguChars += 1;
+    else if (/[\u0C80-\u0CFF]/u.test(character)) counts.kannadaChars += 1;
+    else if (/[A-Za-z]/u.test(character)) counts.latinChars += 1;
+  }
+  return counts;
+}
+
+/** The one bucket a turn's counted scripts name: one script, `mixed` for more than one, `latin` for none. */
+export function turnScriptBucket(counts: { latinChars: number; devanagariChars: number; teluguChars: number; kannadaChars: number }): 'latin' | 'devanagari' | 'telugu' | 'kannada' | 'mixed' {
+  const scripts = ([['latin', counts.latinChars], ['devanagari', counts.devanagariChars], ['telugu', counts.teluguChars], ['kannada', counts.kannadaChars]] as const)
+    .filter(([, count]) => count > 0).map(([script]) => script);
+  const only = scripts[0];
+  return scripts.length === 0 ? 'latin' : scripts.length > 1 || only === undefined ? 'mixed' : only;
+}
+
 function countTurnScript(handle: ActiveSession, text: string): void {
   noteSpoken(handle.liveSessionId, text);
   // C-REBUILD8: the response's own words, bounded at four hundred characters; a longer answer keeps its head,
   // which is never a filler, so the bound can only ever make the check say "not a filler".
   handle.turnSpoken = `${handle.turnSpoken ?? ''} ${text}`.slice(0, 400);
+  const counts = turnScriptCounts(text);
+  handle.turnLatin += counts.latinChars; handle.turnDevanagari += counts.devanagariChars;
+  handle.turnTelugu += counts.teluguChars; handle.turnKannada += counts.kannadaChars;
   for (const character of text) {
     if (/\s/u.test(character)) continue;
     handle.turnChars += 1;
-    if (/[\u0900-\u097F]/u.test(character)) handle.turnDevanagari += 1;
-    else if (/[A-Za-z]/u.test(character)) handle.turnLatin += 1;
   }
 }
 
 function resetTurnScript(handle: ActiveSession): void {
-  handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
+  handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnTelugu = 0; handle.turnKannada = 0; handle.turnChars = 0;
   handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0; handle.turnSpoken = '';
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
 function logTurnScript(handle: ActiveSession): void {
   if (handle.turnChars === 0) { resetTurnScript(handle); return; }
-  const script = handle.turnLatin > 0 && handle.turnDevanagari > 0 ? 'mixed' : handle.turnDevanagari > 0 ? 'devanagari' : 'latin';
-  hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
+  const script = turnScriptBucket({ latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, teluguChars: handle.turnTelugu, kannadaChars: handle.turnKannada });
+  hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, teluguChars: handle.turnTelugu, kannadaChars: handle.turnKannada, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
   resetTurnScript(handle);
 }
 
@@ -2162,7 +2186,7 @@ export class LiveSessionOwner {
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
       claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false, claimLookupFailed: false,
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,

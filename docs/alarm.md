@@ -65,9 +65,10 @@ comes back.
 A launch with `--alarm-relaunch` logs `launch_kind alarm_relaunch`, shows no window and takes no
 focus, starts the host, and opens a live session only for the due alarm. `open` cannot pass an
 argument to an app that is already running, so the agent's own reopen of a running app is recognised
-by the arming instant: a reopen inside the agent's own minute logs the same `launch_kind
-alarm_relaunch`, once, and shows nothing extra. Any other reopen stays the owner's Dock click and
-keeps its orb. Display sleep is fine:
+by the arming instant: a reopen within 90 seconds of the instant the agent was armed logs the same
+`launch_kind alarm_relaunch`, once, and shows nothing extra. Any other reopen stays the owner's Dock
+click and keeps its orb, and a Dock click that happens to land inside those 90 seconds is read as the
+agent's: the arming instant is inference, not a launchd receipt. Display sleep is fine:
 the wake timer fires while the display is off. A closed lid or a manual sleep still blocks it, as
 does a shutdown, and the agent cannot bring back a Mac that is not awake at the due time.
 

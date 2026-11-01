@@ -23,7 +23,7 @@ group() {
   fi
 }
 group_report() {
-  if [ "${#groups_failed[@]}" -ne 0 ]; then
+  if [ -n "${groups_failed[*]-}" ]; then
     printf 'GROUPS FAIL ran=%d failed=%d\n' "$groups_ran" "${#groups_failed[@]}" >&2
     local name
     for name in "${groups_failed[@]}"; do printf 'GROUPS FAILED %s\n' "$name" >&2; done

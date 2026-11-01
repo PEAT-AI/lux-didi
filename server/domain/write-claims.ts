@@ -19,7 +19,7 @@ const TOOL_KINDS: Readonly<Record<string, WriteKind>> = {
 
 /** Past-tense completion verbs, per surface. A spoken "I will set it" is not a claim of this shape. */
 const DONE: Readonly<Record<WriteKind, RegExp>> = {
-  event: /\b(?:created|added|scheduled|booked|put|placed|set up|moved|rescheduled)\b/i,
+  event: /\b(?:created|added|scheduled|booked|rescheduled|set up|put (?:it )?on (?:the|your) calendar)\b/i,
   alarm: /\b(?:set|armed|scheduled|created)\b/i,
   note: /\b(?:saved|stored|wrote|written|remembered|kept|logged|added)\b/i,
   message: /\b(?:sent|drafted|wrote|written|posted|delivered)\b/i,

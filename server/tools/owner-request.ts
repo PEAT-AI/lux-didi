@@ -3,6 +3,9 @@ import { composeGrantKinds } from './compose.js';
 import { advancesExposure, tierOf } from './tiers.js';
 const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
 /** Every free write whose authority is the open owner call itself, never a phrase of his. */
+/** A clause he negated commands nothing: "do not open the deck" is not an ask to open it. */
+const NEGATED_CLAUSE = /\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)\s+([^.!?]*)/gi;
+const NEGATED_ACTION = /\b(?:open|show|launch|set|put|make|create|add|save|remember|note|write|draft|send|e-?mail|mail|message|reply|schedule|block|book|cancel|stop|delete|remove|snooze|wake|remind|list)\b/i;
 const isFreeKind = (kind: ActionKind): boolean =>
   kind === 'open' || kind === 'lux_note' || tierOf(kind) === 'free';
 const FREE_ACTION_KINDS: readonly ActionKind[] = ['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm',
@@ -84,11 +87,7 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
-    const negations = /\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)\s+([^.!?]*)/gi;
-    const guardedWrite = /\b(?:draft|write|send|e-?mail|mail|message|reply|schedule|block|add|put|book|cancel|delete|remove)\b/i;
-    for (const match of request.words.matchAll(negations)) {
-      if (guardedWrite.test(match[1]!)) return { ...common, code: 'no_owner_request' };
-    }
+    if (this.negated(request.words)) return { ...common, code: 'no_owner_request' };
     return this.settle(request, kind, target, common);
   }
   /**
@@ -101,8 +100,13 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
+    if (this.negated(request.words)) return { ...common, code: 'no_owner_request' };
     if (this.fenced(session)) return { ...common, code: 'external_text_only' };
     return this.settle(request, kind, target, common);
+  }
+  private negated(words: string): boolean {
+    for (const match of words.matchAll(NEGATED_CLAUSE)) if (NEGATED_ACTION.test(match[1]!)) return true;
+    return false;
   }
   private settle(request: Request, kind: ActionKind, target: string,
     common: { id: string; words: string; journalId: string; observedAt: number }): RequestAuthorization {

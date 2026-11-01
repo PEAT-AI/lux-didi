@@ -281,17 +281,19 @@ import Foundation
               "the mark carries the load average, got \(String(describing: markRecord["loadAverage"]))")
 
         // The same record on native-live.log: one line, the launch identity, both clocks, and the
-        // call id exactly when a call is running.
+        // call id exactly when a call is running. F1: the app's own journal is a different instance from
+        // the conversation's and never adopts a session id, so the id is passed in with the record.
         let liveJournal = NativeLiveJournal(fileURL: nil)
-        liveJournal.append(markRecord)
+        liveJournal.append(NativeDistortionMark.record(for: mark, callID: nil))
         let noCall = liveJournal.events.last
         check(noCall?["liveSessionId"] == nil, "a mark with no call carries no call id, got \(String(describing: noCall?["liveSessionId"]))")
         check(noCall?["mono_ms"] != nil && noCall?["timestamp"] != nil,
               "a mark always carries the wall clock and the monotonic clock")
-        liveJournal.sessionID = "synthetic-call"
-        liveJournal.append(markRecord)
+        liveJournal.append(NativeDistortionMark.record(for: mark, callID: "synthetic-call"))
         check(liveJournal.events.last?["liveSessionId"] as? String == "synthetic-call",
-              "a mark inside a call carries the call id, got \(String(describing: liveJournal.events.last?["liveSessionId"]))")
+              "a mark inside a call carries the call id it was given, got \(String(describing: liveJournal.events.last?["liveSessionId"]))")
+        check(liveJournal.sessionID == nil,
+              "the proving journal never held a session id, so the field came from the mark itself")
 
         // C-AUDIOMARK 2: the read-only listener records a volume change and a default-device change,
         // and a notification never claims who wrote the value.

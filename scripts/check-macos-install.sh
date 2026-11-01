@@ -623,6 +623,10 @@ stable_app="$signing_work/stable/Lux Didi.app"
 mkdir -p "$stable_app/Contents/MacOS"
 cp "$app/Contents/Info.plist" "$stable_app/Contents/Info.plist"
 cp /bin/echo "$stable_app/Contents/MacOS/LuxDidi"
+# The installer runs every scripts/check-installed-*.sh against the app it just
+# installed (C-CONNECT9), so this fixture must carry the real accepted resources:
+# a signature-only fixture would fail those checks for a missing service runtime.
+cp -R "$app/Contents/Resources" "$stable_app/Contents/Resources"
 codesign --force --sign 'Lux Didi Local Signing' --keychain "$local_keychain" "$stable_app"
 stable_requirement="$(codesign -d -r- "$stable_app" 2>&1 | sed -n 's/^#* *designated => //p' | head -1)"
 printf 'IDENTITY-DESIGNATED-REQUIREMENT %s\n' "$stable_requirement"

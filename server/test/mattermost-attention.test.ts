@@ -71,7 +71,7 @@ test('the attention view lists mentions, direct messages and open threads newest
     'thread dana I can take it tomorrow morning',
     'thread dana done, they line up',
     'dm dana sent you the deck for review',
-    'mention dana @robert can you confirm the 3k release?',
+    'mention dana @owner-chat can you confirm the 3k release?',
   ]);
   const mention = view.items.find(item => item.reason === 'mention');
   assert.ok(mention);

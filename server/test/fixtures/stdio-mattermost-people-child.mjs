@@ -26,7 +26,7 @@ const now = Number(process.env.DIDI_FAKE_MATTERMOST_NOW ?? '') || Date.now();
 const iso = (ms) => new Date(ms).toISOString();
 const day = (ms) => iso(ms).slice(0, 10);
 
-const OWNER = { id: 'owner00000000000000000000a', username: 'robert', email: 'robert@example.invalid' };
+const OWNER = { id: 'owner00000000000000000000a', username: 'owner-chat', email: 'owner-chat@example.invalid' };
 const USERS = [
   { id: 'user0ada00000000000000000a', username: 'ada.moss', first_name: 'Ada', last_name: 'Moss', nickname: '' },
   { id: 'user0kim00000000000000000a', username: 'kim.oak', first_name: 'Kim', last_name: 'Oak', nickname: '' },
@@ -86,7 +86,7 @@ const add = (channelId, author, at, message, extra = {}) => {
 };
 // The DM with Ada: eleven posts by Ada and six by the owner in the last six days, two old ones by Ada.
 for (let n = 0; n < 11; n += 1) add(adaDm.id, 'ada.moss', now - (n + 1) * 12 * HOUR, `ada note ${n + 1} about the pilot plan`);
-for (let n = 0; n < 6; n += 1) add(adaDm.id, 'robert', now - (n + 1) * 13 * HOUR, `owner reply ${n + 1}`);
+for (let n = 0; n < 6; n += 1) add(adaDm.id, 'owner-chat', now - (n + 1) * 13 * HOUR, `owner reply ${n + 1}`);
 add(adaDm.id, 'ada.moss', now - 40 * DAY, 'ada old note from last season');
 add(adaDm.id, 'ada.moss', now - 41 * DAY, 'ada older note');
 // Other channels mention Ada by name: a keyword search for her name finds these, never her DM.
@@ -94,18 +94,18 @@ add('chanBuilders0000000000000a', 'kim.oak', now - 2 * HOUR, 'Ada said the pilot
 add('chanBuilders0000000000000a', 'noah.reed', now - 3 * HOUR, 'ask Ada about the release checklist');
 add('chanEngGeneral00000000000a', 'pat.vale', now - 4 * HOUR, 'release checklist is ready for review');
 // A webhook post: its whole text lives in the attachment.
-add('chanBuilders0000000000000a', 'robert', now - 90 * 60 * 1000, '', people ? { attachmentText: 'Build 42 passed on main' } : {});
+add('chanBuilders0000000000000a', 'owner-chat', now - 90 * 60 * 1000, '', people ? { attachmentText: 'Build 42 passed on main' } : {});
 // Ada and Kim's group, and the owner's posts in a shared channel.
 add('chanG02000000000000000000a', 'ada.moss', now - 1 * DAY, 'group plan for the field visit');
 add('chanG02000000000000000000a', 'kim.oak', now - 26 * HOUR, 'field visit moves a day');
-add('chanG02000000000000000000a', 'robert', now - 27 * HOUR, 'fine by me');
+add('chanG02000000000000000000a', 'owner-chat', now - 27 * HOUR, 'fine by me');
 add('chanG02000000000000000000a', 'ada.moss', now - 28 * HOUR, 'who books the car');
 add('chanG03000000000000000000a', 'noah.reed', now - 9 * DAY, 'four of us on this one');
 add('chanBuilderFriends0000000a', 'tess.wren', now - 3 * HOUR, 'friends meetup is on');
-add('chanBuilderFriends0000000a', 'robert', now - 5 * HOUR, 'count me in');
+add('chanBuilderFriends0000000a', 'owner-chat', now - 5 * HOUR, 'count me in');
 add('chanAiAiAi000000000000000a', 'sam.lark', now - 5 * HOUR, 'new model notes are up');
 add('chanAiAiAi000000000000000a', 'ada.moss', now - 6 * HOUR, 'eval numbers look better');
-add('chanAiAiAi000000000000000a', 'robert', now - 7 * HOUR, 'nice, ship the notes');
+add('chanAiAiAi000000000000000a', 'owner-chat', now - 7 * HOUR, 'nice, ship the notes');
 add('chanEngSecurity0000000000a', 'ravi.dune', now - 6 * HOUR, 'rotate the keys this week');
 add('chanD02000000000000000000a', 'lena.berg', now - 45 * DAY, 'old hello from lena');
 
@@ -124,7 +124,7 @@ if (process.env.DIDI_FAKE_MATTERMOST_NIGHT === 'yes') {
   const direct = dm('chanDnight000000000000000a', 'person.a', now - HOUR);
   CHANNELS.push(direct);
   channelById.set(direct.id, direct);
-  for (let n = 1; n <= 20; n += 1) add(direct.id, n % 2 ? 'person.a' : 'robert', now - n * HOUR, `entry ${n}`);
+  for (let n = 1; n <= 20; n += 1) add(direct.id, n % 2 ? 'person.a' : 'owner-chat', now - n * HOUR, `entry ${n}`);
 }
 const alexDm = 'chanDAlex0000000000000000a';
 if (process.env.DIDI_FAKE_MATTERMOST_ALEX === 'yes') {

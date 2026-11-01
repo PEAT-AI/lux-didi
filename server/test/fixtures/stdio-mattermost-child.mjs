@@ -63,7 +63,7 @@ server.setRequestHandler('tools/call', request => {
     return { isError: true, content: [{ type: 'text', text: 'not authenticated: no session found; run mattermost_login' }] };
   }
   let value = {};
-  if (name === 'mattermost_whoami') value = { id: 'owner0000000000000000000a', username: 'robert', email: mode === 'catalog-owner' ? 'owner@example.invalid' : 'robert@example.invalid' };
+  if (name === 'mattermost_whoami') value = { id: 'owner0000000000000000000a', username: 'owner-chat', email: mode === 'catalog-owner' ? 'owner@example.invalid' : 'owner-chat@example.invalid' };
   else if (name === 'mattermost_list_channels') value = { count: CHANNELS.length, channels: CHANNELS };
   else if (name === 'mattermost_get_thread') value = { root: posts[0], replies: posts.slice(1) };
   else if (mode === 'empty') value = envelope([]);

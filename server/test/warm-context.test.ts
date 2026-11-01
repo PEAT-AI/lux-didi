@@ -405,7 +405,7 @@ test('a parked sign-in is one short line at call start and nothing when Mongoose
 // --- C-SIGNIN-LIVE: one sentence the call after a Mongoose endpoint came up, then silence. ---
 
 test('a newly connected Mongoose endpoint is announced once, in one sentence, and then never again', () => {
-  const owner = 'rob@plantix.net';
+  const owner = 'owner@example.invalid';
   const row = (endpoint: string, connected: boolean): Record<string, unknown> => ({
     id: `mongoose-${endpoint}`, connector: 'mongoose', state: connected ? 'connected' : 'error',
     ...(connected ? { identity: { proven: true, match: true, value: owner } } : {}),

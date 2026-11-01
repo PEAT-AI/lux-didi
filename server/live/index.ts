@@ -687,6 +687,8 @@ export interface LateCommentaryState {
   now: number; answeredAt: number; alreadySpoken: boolean;
   /** C-REBUILD B: a response in flight owns the channel, so a finding waits for its terminal, never a timer. */
   responseInProgress?: boolean | undefined;
+  /** C-REBUILD B: this offer is a held note coming back on its terminal, so the window cannot drop it on the way. */
+  held?: boolean | undefined;
   inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
   /**
    * #1028 behaviour 4: when a newer research operation started, or a newer tool call was made, after the
@@ -704,7 +706,9 @@ export interface LateCommentaryState {
  */
 export function lateCommentarySilence(state: LateCommentaryState): string | null {
   if (state.alreadySpoken) return 'already_spoken';
-  if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+  // C-REBUILD B: a note held by a response in flight was deferred by the host, not by the owner's patience, so the
+  // window that guards an unprompted line does not expire it while it waits. Nothing else about the window moves.
+  if (state.held !== true && state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
   const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
   const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
   // #1028 behaviour 4: a new question is one the host acted on, a research operation it started or a tool call
@@ -4807,11 +4811,11 @@ export class LiveSessionOwner {
         hostLogEvent({ event: 'live_late_note_ledger', reason: 'generation_torn_down', generation: entry.generation });
         continue;
       }
-      this.#lateFindings(handle, handle.generation, entry.event);
+      this.#lateFindings(handle, handle.generation, entry.event, true);
     }
   }
 
-  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
+  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings, held = false): void {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, destination: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
@@ -4830,7 +4834,7 @@ export class LiveSessionOwner {
     // as an unknown frame and a commentary append is refused on delegation_id), so a late finding is either
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
-    const reason = this.#lateCommentaryReason(handle, event);
+    const reason = this.#lateCommentaryReason(handle, event, held);
     // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
     // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
     // G5: her own answer audio is a hold too. A result that lands while she is still speaking is rescheduled for
@@ -4886,7 +4890,7 @@ export class LiveSessionOwner {
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
-  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
+  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings, held = false): string | null {
     return lateCommentarySilence({
       now: this.#now(),
       answeredAt: handle.researchAnsweredAt ?? this.#now(),
@@ -4894,7 +4898,7 @@ export class LiveSessionOwner {
       inputAt: handle.inputAt,
       ownerWords: handle.ownerLastWords,
       lastModelAudioAt: handle.lastModelAudioAt,
-      responseInProgress: handle.responseInProgress === true,
+      responseInProgress: handle.responseInProgress === true, held,
       newerWorkAt: Math.max(handle.researchStartedAt ?? 0, handle.lastToolCallAt ?? 0),
     });
   }

@@ -376,3 +376,12 @@ test('C-REBUILD invariant: a session replacement during a deferral carries one l
   await drive(live, () => false, 10_000);
   assert.equal(answeredOnce(live), true, 'the replacement carries the result once and never replays it');
 });
+
+test('C-REBUILD B: a held note is not dropped by the late window on its way back', () => {
+  const past = { now: 60_000, answeredAt: 0, alreadySpoken: false, ownerWords: 0 };
+  assert.equal(lateCommentarySilence(past), 'window_elapsed', 'an unprompted late line still expires');
+  assert.equal(lateCommentarySilence({ ...past, responseInProgress: true }), 'response_in_flight',
+    'and a note held by a response in flight is held, not expired, on the way in');
+  assert.equal(lateCommentarySilence({ ...past, held: true, responseInProgress: false }), null,
+    'on its terminal the same note is spoken, however long the response held it');
+});

@@ -189,11 +189,11 @@ enum MicWatchdogTests {
                          "after start only ignored unchanged route changes may appear, got \(journal.events.map(\.name))")
         // #1101 adds one receipt between the start and the rate: the graph the start built. The
         // ducking configuration read back joins them, because the enable resets it.
-        try audioRequire(atStart == ["audio_input_policy", "audio_owned", "audio_ducking_applied", "audio_started",
-                                     "audio_graph_built", "playback_rate"]
-                            || atStart == ["audio_input_policy", "audio_ducking_applied", "audio_started",
-                                           "audio_graph_built", "playback_rate"],
-                         "the start writes the same lines it always wrote plus the ducking read-back, got \(atStart)")
+        try audioRequire(atStart == ["output_volume", "audio_input_policy", "audio_owned", "audio_ducking_applied", "audio_started",
+                                     "audio_graph_built", "output_volume", "playback_rate"]
+                            || atStart == ["output_volume", "audio_input_policy", "audio_ducking_applied", "audio_started",
+                                           "audio_graph_built", "output_volume", "playback_rate"],
+                         "the start writes the call receipts, ducking read-back and both volume snapshots, got \(atStart)")
         try audioRequire(counter.starts == 1 && counter.captures.count == 1 && device.isVoiceProcessingEnabledForTesting
                             && counter.interruptions.isEmpty,
                          "one start, one capture, voice processing on, no interruption")

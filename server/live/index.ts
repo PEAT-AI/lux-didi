@@ -1786,7 +1786,9 @@ export class LiveSessionOwner {
       // C-MEMORYTRUTH: what is armed is read from the alarms table at this start, and a stored summary keeps
       // only the write claims its own call's receipts and this table support, so the greeting cannot repeat a
       // refused write as done. The stored rows are untouched.
-      const armedAlarms = this.#tools ? activeAlarms(tx) : null;
+      // The reader itself answers null when the store has no alarms table, so a start without a tools port
+      // still names what the table holds.
+      const armedAlarms = activeAlarms(tx);
       const alarmNote = armedAlarmsNote(armedAlarms);
       const seededSummaries = guardSeededSummaries(tx, storedSummaries);
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);

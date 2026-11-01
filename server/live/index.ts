@@ -2927,8 +2927,7 @@ export class LiveSessionOwner {
         // other trigger reaches that door untouched.
         const repeatedMute = handle.watchdogRecoveredAt !== undefined
           && this.#now() - handle.watchdogRecoveredAt < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle);
-        if (!repeatedMute && silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
-          turnResponseCreated: handle.turnResponseCreated === true })) {
+        if (!repeatedMute && this.#noAskOwnerTurn(handle)) {
           handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
           hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
             turnAgeMs, removedCount: handle.rebuildRemoved });
@@ -3032,6 +3031,15 @@ export class LiveSessionOwner {
    * C-WATCH: the model has not had the rung's silence after a tool result yet, so a mute now is not a mute. A result
    * handed back and judged inside the eight seconds any other tool output gets is a wait it never had.
    */
+  /** C-REBUILD C: the turn the council removed, read off the host's own facts: a finalized owner turn whose words
+   *  are in the journal since the model last spoke, with no tool call and no created response. A tool wait or an
+   *  announced response is a real ask, so both keep the ladder untouched. */
+  #noAskOwnerTurn(handle: ActiveSession): boolean {
+    if (handle.inputFinal !== true) return false;
+    return silentOwnerTurn({ ownerWords: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
+      turnToolCalls: handle.turnToolCalls ?? 0, turnResponseCreated: handle.turnResponseCreated === true });
+  }
+
   #toolWaitUnjudged(handle: ActiveSession): boolean {
     return handle.lastToolResultAt !== undefined && this.#now() - handle.lastToolResultAt < AUDIBLE_DEBT_RUNG_MS;
   }
@@ -3077,8 +3085,7 @@ export class LiveSessionOwner {
     // on, so the rebuild is removed for it, after the honest settlement a repeated mute still earns. The accepted
     // failure is stated: a socket that is really dead on such a turn waits until he speaks again, and a final after
     // that silence recovers through the triggers in force. Every other trigger is untouched.
-    if (silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
-      turnResponseCreated: handle.turnResponseCreated === true })) {
+    if (this.#noAskOwnerTurn(handle)) {
       handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
       hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
         turnAgeMs, removedCount: handle.rebuildRemoved });

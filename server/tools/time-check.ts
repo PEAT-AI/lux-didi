@@ -138,7 +138,7 @@ function collect(text: string): Candidate[] {
   for (const match of text.matchAll(new RegExp(`\\b(?:at|by|around|for)\\s+(${NUMBER})(?![:.\\d])(?!\\s*(?:past|to|hundred|[ap]m)\\b)(?!\\s*(?:o'?\\s?clock\\b)?[\\s-]*(?:time|times|hour|hours|minute|minutes|day|days|week|weeks|months?|years?|percent|people|of)\\b)`, 'g')) as Iterable<RegExpExecArray>) {
     const hour = valueOf(match[1]!);
     if (hour === undefined || hour > 24) continue;
-    push(match, hour, 0, hour > 12);
+    push(match, hour, 0, hour > 12, false);
   }
   // The longest, most settled reading of one span wins: "ten past five pm" is one clock, never a
   // clock inside a clock, and "eighteen hundred" is not "eight" plus a suffix.

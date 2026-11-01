@@ -62,7 +62,11 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const kind of FREE_ACTION_KINDS) grants.set(kind, {});
     // Only the guarded compose writes read his words at all, and they keep their own selector.
     for (const kind of composeGrantKinds(words)) grants.set(kind, {});
-    if (previous && this.clock() - previous.start <= 120000) {
+    // C-PERMTIER: a request whose write already completed is not joined again, so the next ask earns a
+    // fresh grant instead of replaying a spent one. Only an unsettled ask merges (the split-ask case).
+    const settled = previous !== undefined && [...previous.grants.values()].some(grant =>
+      grant.target !== undefined || grant.inFlight === true || (grant.targets?.size ?? 0) > 0);
+    if (previous && !settled && this.clock() - previous.start <= 120000) {
       // A split ask grants on the combined turn: the intent and the target may arrive apart.
       const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;

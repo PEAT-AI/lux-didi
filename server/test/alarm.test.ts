@@ -1,31 +1,55 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
+import { checkOwnerTime, type TimeSpec } from '../tools/time-check.js';
 
 // Synthetic words and a fixed instant only. These tests never use the system clock.
 const now = Date.parse('2026-10-28T13:00:00Z');
 const tz = 'Asia/Singapore';
+/**
+ * T-R1: the model's structured time for a golden row is built from that row's own expected instant in
+ * this file's zone, so no expected instant changes. Where the owner's words settle one time, the same
+ * row also runs with a model time one hour wrong and the owner's instant must still win.
+ */
+function modelAt(instant: number, zone = tz): TimeSpec {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(instant);
+  const get = (type: string): string => parts.find(part => part.type === type)?.value ?? '';
+  return { mode: 'wall', date: { kind: 'iso', value: `${get('year')}-${get('month')}-${get('day')}` }, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
+}
+function ownerWins(words: string, at: number, expected: number, zone = tz): void {
+  if (checkOwnerTime(words).status !== 'unique') return;
+  const wrong = parseAlarmTime(words, at, zone, modelAt(expected + 3600000, zone));
+  assert.equal(wrong.status, 'ready', `${words}: the owner time executes despite a wrong model time`);
+  if (wrong.status === 'ready') assert.equal(wrong.fireAtUtc, expected, `${words}: the owner time wins`);
+}
+/** T-R1 counts for the checker over this file's rows. */
+export const goldenReading = { unique: 0, partial: 0, inconclusive: 0 };
+function readGolden(words: string): void { goldenReading[checkOwnerTime(words).status] += 1; }
+
 
 test('alarm: an unqualified eight chooses the next future occurrence', () => {
-  const result = parseAlarmTime('set an alarm at 8', now, tz);
+  const result = parseAlarmTime('set an alarm at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
 });
 
 test('alarm: an unqualified wake request chooses the next occurrence in the system zone', () => {
-  const result = parseAlarmTime('wake me at 8', now, tz);
+  const result = parseAlarmTime('wake me at 8', now, tz, modelAt(Date.parse('2026-10-29T00:00:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, tz);
-  assert.equal(result.confirmation, 'Alarm set for 29/10/2026, 08:00 (Asia/Singapore).');
+  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore).');
 });
 
 test('alarm: explicit morning and evening resolve without a model-supplied time', () => {
   for (const words of ['set an alarm for tomorrow morning at 8', 'set an alarm at 8 tomorrow morning']) {
-    const result = parseAlarmTime(words, now, tz);
+    const expected = Date.parse('2026-10-29T00:00:00Z');
+    const result = parseAlarmTime(words, now, tz, modelAt(expected));
+    ownerWins(words, now, expected);
+    readGolden(words);
     assert.equal(result.status, 'ready');
-    if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+    if (result.status === 'ready') assert.equal(result.fireAtUtc, expected);
   }
   const evening = parseAlarmTime('set an alarm tomorrow at 8 pm', now, tz);
   assert.equal(evening.status, 'ready');
@@ -92,10 +116,13 @@ for (const [words, instant] of [
   ['set an alarm at eight', '2026-10-29T00:00:00Z'],
 ] as const) {
   test(`direct102 alarm golden: ${words}`, () => {
-    const result = parseAlarmTime(words, now, tz);
+    const expected = Date.parse(instant);
+    const result = parseAlarmTime(words, now, tz, modelAt(expected));
+    ownerWins(words, now, expected);
+    readGolden(words);
     assert.equal(result.status, 'ready');
     if (result.status !== 'ready') return;
-    assert.equal(result.fireAtUtc, Date.parse(instant));
+    assert.equal(result.fireAtUtc, expected);
     assert.equal(result.tz, tz);
   });
 }
@@ -136,15 +163,16 @@ for (const words of [
   'set an alarm eleven and set an alarm at seven',
 ]) {
   test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
-    assert.deepEqual(parseAlarmTime(words, now, tz), { status: 'clarify', reason: 'unsupported_time_expression' });
+    assert.deepEqual(parseAlarmTime(words, now, tz), { status: 'clarify', reason: 'missing_time' });
   });
 }
 
 for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  tomorrow at seven', 'set an alarm for tomorrow seven am']) {
   test(`R5 F2: one date-qualified time remains valid: ${words}`, () => {
-    const parsed = parseAlarmTime(words, now, tz);
+    const expected = Date.parse('2026-10-28T23:00:00Z');
+    const parsed = parseAlarmTime(words, now, tz, modelAt(expected));
     assert.equal(parsed.status, 'ready');
-    if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
+    if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, expected);
   });
 }
 
@@ -181,7 +209,7 @@ test('hear104 quarter-to is a time, not a trailing label', () => {
 });
 
 test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
-  const result = parseAlarmTime('set an alarm Ten five, today', now, tz);
+  const result = parseAlarmTime('set an alarm Ten five, today', now, tz, modelAt(Date.parse('2026-10-28T14:05:00Z')));
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-28T14:05:00Z'));
 });
@@ -191,18 +219,20 @@ for (const [words, minute] of [
   ['set an alarm for um five past five p.m.', 5],
   ['set an alarm for fi ten past five p.m.', 10],
 ] as const) test(`hear104 R5 one filler before spoken time: ${words}`, () => {
-  const result = parseAlarmTime(words, now, tz);
+  const expected = Date.UTC(2026, 9, 29, 9, minute);
+  const result = parseAlarmTime(words, now, tz, modelAt(expected));
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.UTC(2026, 9, 29, 9, minute));
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, expected);
 });
 for (const time of [
   '5', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
   'five past five', 'twenty past five', 'twenty-five to five', 'thirty past five', 'forty past five', 'fifty to five',
   'quarter past five', 'half past five', 'noon', 'midnight',
 ]) test(`hear104 R5 filler does not change the instant: ${time}`, () => {
-  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz);
+  const model = modelAt(Date.parse('2026-10-29T09:00:00Z'));
+  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz, model);
   assert.equal(clean.status, 'ready');
-  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz), clean);
+  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz, model), clean);
 });
 
 test('C-RECUR: every day resolves the owner 24-hour wall time and the following day', () => {

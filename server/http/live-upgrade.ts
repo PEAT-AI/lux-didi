@@ -55,7 +55,8 @@ export interface LiveService {
   revoke(liveSessionId: string): void;
   attach(liveSessionId: string, context: LiveContext): LiveAttachment;
   text(text: string): void;
-  shutdown(): Promise<void>;
+  /** C-LABELS 1: why the host is closing, so the live session names the end it was told. */
+  shutdown(reason?: string): Promise<void>;
 }
 
 const audioPath = /^\/api\/v1\/live-sessions\/([^/]+)\/audio$/;

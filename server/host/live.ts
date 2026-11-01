@@ -113,7 +113,7 @@ class HostLiveService implements LiveService {
   revoke(liveSessionId: string): void { this.owner.revoke(liveSessionId); }
   attach(liveSessionId: string, context: LiveContext): LiveAttachment { this.requireKey(); return this.owner.attach({ liveSessionId }, context); }
   text(text: string): void { this.owner.text(text); }
-  shutdown(): Promise<void> { return this.owner.shutdown(); }
+  shutdown(reason?: string): Promise<void> { return this.owner.shutdown(reason); }
 }
 
 class UnconfiguredLive implements LiveService {
@@ -137,7 +137,7 @@ class UnconfiguredLive implements LiveService {
   revoke(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   attach(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   text(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
-  async shutdown(): Promise<void> {}
+  async shutdown(_reason?: string): Promise<void> {}
 }
 
 /**

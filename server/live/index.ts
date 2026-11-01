@@ -3438,7 +3438,9 @@ export class LiveSessionOwner {
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
     handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
-    if (!handle.quietRebuild) this.#continuity(handle, 'rebuilding', reason ?? undefined);
+    // C-RECONNECT #1072: a mute is not a lost line. The owner's presence never left the call, so the native shell is
+    // not told the call is rebuilding, and nothing rings or chimes; a socket that really dropped still is.
+    if (!handle.quietRebuild && trigger !== 'no_output_after_owner') this.#continuity(handle, 'rebuilding', reason ?? undefined);
     if (this.#settled(handle)) return false;
     // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.

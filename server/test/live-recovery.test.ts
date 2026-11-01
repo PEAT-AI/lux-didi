@@ -516,6 +516,12 @@ test('C-CONTINUITY R-02: a rebuild after a transport drop logs cause=network wit
   assert.ok(recovery !== undefined, 'and the recovery line is written');
   assert.equal(recovery['cause'], 'network');
   assert.equal(recovery['closeReason'], 'upstream reset', 'the recovery line carries the same reason');
+  // C-RECONNECT #1072: a line that really dropped is still announced, so the ring and its chime survive for the
+  // network cause that a provider mute no longer rings for.
+  const continuity = h.store.transaction(tx => tx.all(
+    "SELECT text FROM live_journal WHERE live_session_id=? AND kind='continuity'", [created.liveSessionId]));
+  assert.ok(continuity.some(row => String(row['text']).includes('rebuilding')),
+    'a dropped line still reaches the native ring and its chime');
 });
 
 // C-RECOVERY (a): the seed is bounded before it ever reaches an adapter. A 300-fragment call, its ledger and the

@@ -11,9 +11,6 @@ import { join } from 'node:path';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: import.meta.dirname, encoding: 'utf8' }).trim();
 
-/** The trees this guard owns: everything the product and its documentation ship. */
-const SCOPES = ['server/', 'web/', 'docs/', 'scripts/', 'README.md', 'CLAUDE.md'];
-
 /** RFC 2606 and RFC 6761 names: documentation, test and local domains are synthetic by construction. */
 const RESERVED_DOMAIN = /(?:^|\.)(?:example|invalid|test|localhost|local|example\.(?:com|net|org))$/u;
 /** Public vendor domains a fixture may legitimately quote, for example an OpenAPI spec's author address. */
@@ -25,10 +22,9 @@ const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu;
 const HOME_PATH = /\/Users\/([A-Za-z0-9._-]+)/gu;
 const PLACEHOLDER_ACCOUNT = 'example';
 
-/** Every tracked text file in scope, by path relative to the repository root. */
+/** Every tracked text file, by path relative to the repository root: the guard owns the whole tree. */
 function scopeFiles() {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean)
-    .filter(file => SCOPES.some(scope => (scope.endsWith('/') ? file.startsWith(scope) : file === scope)));
+  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean);
 }
 
 function textOf(file) {
@@ -55,6 +51,9 @@ function scan(match) {
 const mailboxHits = scan(body => [...body.matchAll(ADDRESS)].flatMap(match => {
   const address = match[0];
   const domain = address.slice(address.indexOf('@') + 1).toLowerCase();
+  // `https://user:pw@host` is a URL's userinfo, not a mailbox, and the fixtures that exercise it use
+  // generic words, so an address the character before it makes a userinfo is never a mailbox here.
+  if (body[match.index - 1] === ':') return [];
   if (RESERVED_DOMAIN.test(domain) || VENDOR_DOMAIN.test(domain) || SYNTHETIC_ADDRESSES.has(address)) return [];
   return [{ index: match.index, text: address }];
 }));
@@ -65,9 +64,10 @@ const pathHits = scan(body => [...body.matchAll(HOME_PATH)].flatMap(match => (
 )));
 
 const files = scopeFiles();
-assert.ok(files.length > 500, `the guard scanned ${files.length} tracked files`);
+assert.ok(files.length > 600, `the guard scanned ${files.length} tracked files`);
 assert.ok(files.some(file => file.startsWith('server/test/')), 'the tests are in scope');
-assert.ok(files.some(file => file.startsWith('scripts/')), 'scripts are in scope');
+assert.ok(files.some(file => file.startsWith('Tests/')), 'the published Swift sources are in scope');
+assert.ok(files.some(file => file.startsWith('.github/')), 'the workflows are in scope');
 assert.deepEqual(mailboxHits, [], `a real mailbox in a tracked file:\n${listed(mailboxHits)}`);
 assert.deepEqual(pathHits, [], `an owner home path in a tracked file:\n${listed(pathHits)}`);
 console.log(JSON.stringify({ guard: 'vanilla_tree', files: files.length, mailboxes: 0, owner_paths: 0 }));

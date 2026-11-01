@@ -16,6 +16,7 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_READ_CEILING, RESEARCH_READ_CEILING_NOTE, ResearchAdmission, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { REFUSAL_CAUSES } from '../tools/refusal-cause.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -41,6 +42,8 @@ const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 // directive that belong to them rather than one generic sentence.
 const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given', delivered?: Record<string, unknown>) =>
   ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false,
+    // C-TOOLTRUTH: every block carries its true cause, what happens next, and the host's running record.
+    cause: REFUSAL_CAUSES[reason].cause, next: REFUSAL_CAUSES[reason].next, state: 'Nothing is running now.',
     ...(delivered === undefined ? {} : { code: reason, deliveredCount: 12, deliveredResults: delivered }) });
 
 const NOW = 1_700_000_000_000;

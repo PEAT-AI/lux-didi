@@ -2783,6 +2783,9 @@ test('C-POSTTOOL: audio that arrives before the tool output does not suppress th
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-later', name: 'research', arguments: '{}' } }));
   await quiet();
   assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-later', name: 'research', response: { ok: true } }] }), 'deferred');
+  // The same speech continues across the result; a later chunk is not a new answer for this batch.
+  speakFrame(opened.socket);
+  await quiet();
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, before + 1, 'the tool result is still answered once');

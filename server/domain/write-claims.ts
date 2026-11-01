@@ -72,7 +72,9 @@ export interface GuardedClaims {
  * inside a number ("9.30") or an abbreviation is not a sentence end, so the run continues past it.
  */
 function sentences(text: string): readonly string[] {
-  return text.match(/[^.!?]+(?:[.!?]+(?!\d)[\s]*|$)/g) ?? (text ? [text] : []);
+  // Only a sentence end followed by whitespace separates sentences, which is why a dot inside a number or an
+  // abbreviation stays inside its sentence.
+  return text.split(/(?<=[.!?])\s+/).filter(sentence => sentence !== '');
 }
 
 /** True when the sentence claims a change that the records do not support, or denies one they record. */
@@ -102,7 +104,7 @@ export function guardWriteClaims(text: string, facts: WriteFacts): GuardedClaims
   const kept = all.filter(sentence => !contradicts(sentence, facts));
   const dropped = all.length - kept.length;
   if (dropped === 0) return { text, dropped, kept: kept.length };
-  return { text: kept.join('').replace(/\s+/g, ' ').trim(), dropped, kept: kept.length };
+  return { text: kept.join(' ').replace(/\s+/g, ' ').trim(), dropped, kept: kept.length };
 }
 
 /** The alarms the table holds as armed, oldest first, or null when this store has no alarms table. */

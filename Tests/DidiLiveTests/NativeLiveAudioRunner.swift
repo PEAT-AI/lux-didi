@@ -1150,6 +1150,11 @@ private func checkPrimaryChannelConversion() throws {
                 try audioRequire(presentation.text != state.rawValue, "raw case never reaches Live presentation")
             }
         } catch { fatalError("Live presentation: \(error)") }
+        // The two negotiation blocks below build a real AVAudioEngine graph, and this Mac backs that
+        // graph with its default device: CoreAudio logs "Creating DefaultDeviceAggregate" for it. The
+        // routine check therefore states the gap instead of opening a device, and the owner proves it
+        // with DIDI_OWNER_HARDWARE_PROOF=1, the same guard the owner-only hardware command uses.
+        if ProcessInfo.processInfo.environment["DIDI_OWNER_HARDWARE_PROOF"] == "1" {
         do {
             // An attached mixer stands in for the output node: no hardware, tap or engine start.
             let graph = AVAudioEngine(), player = AVAudioPlayerNode(), output = AVAudioMixerNode()
@@ -1170,6 +1175,10 @@ private func checkPrimaryChannelConversion() throws {
                 throw NSError(domain: "invalid output format accepted", code: 1)
             } catch NativeLiveAudioError.formatUnavailable { }
         } catch { fatalError("Playback negotiation: \(error)") }
+        } else {
+            print("UNVERIFIED hardware: playback format negotiation against the real output node (owner-only, DIDI_OWNER_HARDWARE_PROOF=1)")
+        }
+        if ProcessInfo.processInfo.environment["DIDI_OWNER_HARDWARE_PROOF"] == "1" {
         do {
             // P3: the same graph at 1.08x. The stretcher sits between the player and the mixer, her pitch
             // never moves, and the format the player emits is untouched.
@@ -1189,7 +1198,12 @@ private func checkPrimaryChannelConversion() throws {
             let plainGraph = AVAudioEngine(), plainPlayer = AVAudioPlayerNode(), plainOutput = AVAudioMixerNode()
             plainGraph.attach(plainOutput)
             let inserted = try NativeLiveAudioDevice.connectPlayback(engine: plainGraph, player: plainPlayer, outputNode: plainOutput)
-            try audioRequire(inserted == nil, "rate 1.0 inserts no unit")
+                try audioRequire(inserted == nil, "rate 1.0 inserts no unit")
+        } catch { fatalError("Rate graph: \(error)") }
+        } else {
+            print("UNVERIFIED hardware: the 1.08x stretcher and the 1.0 graph shape (owner-only, DIDI_OWNER_HARDWARE_PROOF=1)")
+        }
+        do {
             // P3: a drain at 1.08x is shorter than its source audio, so turn end follows audible time.
             try audioRequire(NativePlaybackQueue.ms(24000) == 1000, "rate 1.0 keeps today's integer milliseconds")
             let scaled = NativePlaybackQueue.ms(24000, rate: 1.08)

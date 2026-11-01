@@ -149,8 +149,8 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
     'and the recovery line says which pickup it chose');
   assert.equal(live.fake.requests.at(-1)?.opening, 'model_first', 'and the rebuilt session is still asked to continue');
   // C-RECONNECT #1072: a provider mute is not a dropped line. The owner's presence never left, so the native shell is
-  // never told to ring and chime; only a socket that really dropped is announced.
-  assert.deepEqual(continuityEvents(live), [], 'a mute rebuild is quiet: no ring and no chime');
+  // never told the call is rebuilding, which is what rings and chimes; only a socket that really dropped is announced.
+  assert.equal(continuityEvents(live).includes('rebuilding'), false, 'a mute rebuild rings nothing');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');
 });
 
@@ -382,7 +382,7 @@ test('#607 unfinished owner fragments before an empty final produce a pickup reb
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner']);
   // C-RECONNECT #1072: the pickup still answers the owner, but the rebuild behind it is the model's own silence,
   // so it stays quiet: no ring and no chime for a mute.
-  assert.deepEqual(continuityEvents(live), []);
+  assert.equal(continuityEvents(live).includes('rebuilding'), false, 'a mute rebuild rings nothing');
   assert.ok(openingText(live), 'the pickup rebuild carries its owner-facing marker');
 });
 

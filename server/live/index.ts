@@ -2609,20 +2609,21 @@ export class LiveSessionOwner {
     // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
     // inside the rung, instead of being waited out to a dead-air rebuild. C-RECONNECT #1072: a tool result's silence
     // is the same shape even when the adapter had no no-item signal to add, and the rebuild that follows the
-    // re-request comes at the post-tool delta: the 8 s rung plus those 1 s are the owner's whole wait.
-    if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
+    // re-request comes at the post-tool delta: the 8 s rung plus those 1 s are the owner's whole wait. Only the
+    // OpenAI adapter has a continuation the host can re-ask for, so no other provider is ever handed the note.
+    if (postToolNoOutput && this.#profile.provider === 'openai' && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
       try {
         const ask = handle.session.sendText;
         if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
       } catch { /* a closed transport settles on its own */ }
-      this.#noteDeadAirNudge(handle, turnAgeMs, postToolNoOutput);
+      this.#noteDeadAirNudge(handle, turnAgeMs);
       this.#scheduleDebt(handle, AUDIBLE_DEBT_POST_TOOL_REBUILD_MS, 'rebuild');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
-    this.#noteDeadAirNudge(handle, turnAgeMs, postToolNoOutput);
+    this.#noteDeadAirNudge(handle, turnAgeMs);
     // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
     // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
     // C-RECONNECT #1072: a post-tool silence rebuilds at its own delta, which is what bounds the owner's wait.
@@ -2645,10 +2646,10 @@ export class LiveSessionOwner {
 
   /** The receipts one rung's intervention has always written, whichever provider answers it and whether the
    *  intervention was the unspoken result, the continuation re-request or the rebuild that follows. */
-  #noteDeadAirNudge(handle: ActiveSession, turnAgeMs: number, postToolNoOutput: boolean): void {
+  #noteDeadAirNudge(handle: ActiveSession, turnAgeMs: number): void {
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
-    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: Math.round(turnAgeMs) });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
@@ -3457,9 +3458,9 @@ export class LiveSessionOwner {
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
     handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
-    // C-RECONNECT #1072: a rebuild the provider caused is a mute, not a lost line. The owner's presence never left the
-    // call, so the native shell is not told to ring and chime; only a socket that really dropped is announced.
-    if (!handle.quietRebuild && cause !== 'provider') this.#continuity(handle, 'rebuilding', reason ?? undefined);
+    // C-RECONNECT #1072: a mute is not a lost line. The owner's presence never left the call, so the native shell is
+    // not told the call is rebuilding, and nothing rings or chimes; a socket that really dropped still is.
+    if (!handle.quietRebuild && trigger !== 'no_output_after_owner') this.#continuity(handle, 'rebuilding', reason ?? undefined);
     if (this.#settled(handle)) return false;
     // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.

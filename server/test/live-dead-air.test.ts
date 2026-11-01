@@ -113,9 +113,9 @@ test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buy
   for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
   const rungs = rungReceipts(live);
   assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
-  // C-RECONNECT #1072: a post-tool rung answers the silence with the host's continuation re-request, which is the
-  // five second post-tool nudge the receipt has always named for this shape.
-  assert.equal(rungs[0]?.['elapsedMs'], 5_000, 'the post-tool rung names the post-tool wait');
+  // C-RECONNECT #1072: a post-tool rung answers the silence with the host's continuation re-request instead of the
+  // held result, and the rung still names the eight second silence it judged.
+  assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it re-requests the answer the batch never produced');
 });
 

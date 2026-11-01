@@ -57,8 +57,26 @@ fi
 
 if ! command -v lux-browser-slot >/dev/null; then echo 'CHECK BLOCKED: lux-browser-slot missing' >&2; exit 75; fi
 
+# A proof bundle must never carry the release identifier: LaunchServices resolves a launch by identifier,
+# so the proof would open (or reactivate) the owner's installed Lux Didi instead of the app under test.
+owner_bundle_id='ai.peat.lux-didi'
+proof_bundle_id="${LUX_DIDI_PROOF_BUNDLE_ID:-ai.peat.lux-didi.proof}"
+proof_fixture_bundle_id="${LUX_DIDI_PROOF_FIXTURE_BUNDLE_ID:-ai.peat.lux-didi.proof.fixture}"
+require_proof_identifier() {
+  local identifier
+  identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw "$1/Contents/Info.plist" 2>/dev/null || true)"
+  [ -n "$identifier" ] || { echo "MACOS-INSTALL FAIL: $1 carries no bundle identifier" >&2; exit 1; }
+  if [ "$identifier" = "$owner_bundle_id" ]; then
+    echo "MACOS-INSTALL FAIL: the proof bundle identifier is the owner's $owner_bundle_id, so LaunchServices could open the owner's app instead of the proof; refusing to launch" >&2
+    exit 1
+  fi
+  printf 'MACOS-INSTALL: proof bundle identifier %s is distinct from the owner identifier %s\n' "$identifier" "$owner_bundle_id"
+}
+
 if [ "${1:-}" = "--leased-run" ]; then
   work="$2"; proof="$3"; node="$4"; app="$5"; fixture="$6"; payload_sha="$7"
+  require_proof_identifier "$app"
+  [ ! -d "$fixture" ] || require_proof_identifier "$fixture"
   export LUX_VERIFICATION_DRIVER="$work/observer"
   export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
   real_home="$HOME"
@@ -551,7 +569,8 @@ bash scripts/build-asset-bundle.sh "$assets"
 bash scripts/build-macos-app.sh --check-web-shell "$assets/Resources/web/dist" || { echo 'MACOS-INSTALL FAIL: the rebuilt bundle shell does not match the assets beside it' >&2; exit 1; }
 printf 'MACOS-INSTALL: second bundle build into one output path replaced the shell without nesting\n'
 app="$work/Lux Didi.app"
-bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)" 2>&1 | tee "$work/build-macos-app.log"
+bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)" --bundle-id "$proof_bundle_id" 2>&1 | tee "$work/build-macos-app.log"
+require_proof_identifier "$app"
 
 # Stable signing (#382): the designated requirement is what macOS keys the
 # Accessibility grant to, so the build either carries a certificate-backed one or
@@ -659,7 +678,8 @@ cp -R -l "$assets/Resources/node/bin/node" "$assets2/Resources/node/bin/node" 2>
 cp -R -l "$assets/server/node_modules/@lux-didi/service" "$assets2/server/node_modules/@lux-didi/service" 2>/dev/null || cp -R "$assets/server/node_modules/@lux-didi/service" "$assets2/server/node_modules/@lux-didi/service"
 cp -R "$assets/Resources/web/dist" "$assets2/Resources/web/dist"
 { cat "$assets/Resources/web/dist/index.html"; printf '%s\n' "$marker"; } > "$assets2/Resources/web/dist/index.html"
-bash scripts/build-macos-app.sh "$app" --assets "$assets2" --release-commit "$(git rev-parse HEAD)"
+bash scripts/build-macos-app.sh "$app" --assets "$assets2" --release-commit "$(git rev-parse HEAD)" --bundle-id "$proof_bundle_id"
+require_proof_identifier "$app"
 second_sha="$(shasum -a 256 "$app/Contents/Resources/web/dist/index.html" | cut -d' ' -f1)"
 [ "$second_sha" != "$first_sha" ] || { echo 'MACOS-INSTALL FAIL: the second build did not replace the served index.html' >&2; exit 1; }
 [ ! -e "$app/Contents/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second build nested the web shell under web/dist/dist' >&2; exit 1; }
@@ -683,6 +703,9 @@ printf 'MACOS-INSTALL: double build replaces the served web shell (index %s -> %
 # Record the pre-sign native payload identity; re-signing may alter signature bytes.
 fixture="$work/Fixture Didi.app"
 ditto "$app" "$fixture"
+# The fixture is launched by its own cases, so it gets its own identifier rather than the app's: two
+# proof bundles sharing one identifier would be ambiguous to LaunchServices.
+/usr/bin/plutil -replace CFBundleIdentifier -string "$proof_fixture_bundle_id" "$fixture/Contents/Info.plist"
 payload_sha="$(shasum -a 256 "$fixture/Contents/MacOS/LuxDidi" | awk '{print $1}')"
 host_dir="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist/host"
 cp "$host_dir/index.js" "$host_dir/canonical.js"

@@ -388,7 +388,7 @@ def relative_diagnostics(report):
                     for ch, sign, v, r in (("L", 1, a, ar), ("R", -1, b, br)):
                         if (sign*delta > 10 and v["hi_ratio_db"]-r["hi_ratio_db"] > 10
                                 and v.get("coherent_db") is not None and v["coherent_db"] < 5
-                                and v["hi_ratio_db"] > -35 and v.get("hi_crest", 0) > 1.8):
+                                and v["hi_ratio_db"] > -35):
                             data = report["channels"][ch]
                             data["verdict"] = "ASYMMETRIC RATTLE CANDIDATE"
                             data["reasons"].append("%s at %s dBFS: noise-like excess grows %.1f dB relative to other channel and quiet reference" %

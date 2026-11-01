@@ -57,11 +57,15 @@ test('alarm wake instruction says the reminder and requests an overview when ask
   assert.match(alarmSessionInstructions(input), /call the bank/);
   const overview = { ...input, label: 'give me an overview' };
   assert.match(alarmSessionInstructions(overview), /calendar digest/);
-  // #107: the owner's own words, the time and her name come first, before anything else she says.
+  // #107 / C-HOSTFACTS: the name, the time and the reminder reach the model as facts. The note no longer
+  // dictates a sentence shape or a specimen, so the facts are asserted and the dictated phrasing is gone.
   const opening = alarmSessionInstructions(input);
   assert.match(opening, /Synthetic Owner/);
   assert.match(opening, /08:00/);
-  assert.match(opening, /in your own words/);
+  assert.match(opening, /data for this wake, not owner words/);
+  for (const dictated of ['in your own words', 'One sentence that', 'Open by addressing', 'like "', 'invite a spoken answer', 'shorter each time']) {
+    assert.equal(opening.includes(dictated), false, `the wake note dictates nothing: ${dictated}`);
+  }
   // #107: "brief me" and "check in" are the day-overview path too.
   assert.match(alarmSessionInstructions({ ...input, label: 'brief me' }), /calendar digest/);
   assert.match(alarmSessionInstructions({ ...input, label: 'check in with me' }), /calendar digest/);

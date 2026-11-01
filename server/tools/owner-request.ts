@@ -143,7 +143,8 @@ export class OwnerRequests implements OwnerRequestPort {
     common: { id: string; words: string; journalId: string; observedAt: number }): RequestAuthorization {
     const authority = request.grants.get(kind);
     if (!authority) return { ...common, code: 'no_owner_request' };
-    const grant = kind === 'open' ? authority.targets?.get(target) ?? {} : authority;
+    // P-R10: every free write carries its own target, so one completed write never spends another.
+    const grant = authority.targets?.get(target) ?? {};
     if (grant.target !== undefined) return !grant.inFlight && grant.target === target
       ? { ...common, code: 'idempotent', receipt: grant.receipt }
       : { ...common, code: 'grant_spent' };
@@ -154,7 +155,7 @@ export class OwnerRequests implements OwnerRequestPort {
     const authorization = this.authorize(session, kind, target);
     if (authorization.code === 'allowed') {
       const authority = this.requests.get(session)!.grants.get(kind)!;
-      const grant = kind === 'open' ? this.openGrant(authority, target) : authority;
+      const grant = this.grantFor(authority, target);
       grant.target = target; grant.inFlight = true;
     }
     return authorization;
@@ -162,7 +163,7 @@ export class OwnerRequests implements OwnerRequestPort {
   failed(session: string, kind: ActionKind, target: string, requestId: string): void {
     const request = this.requests.get(session);
     const authority = request?.grants.get(kind);
-    const grant = kind === 'open' ? authority?.targets?.get(target) : authority;
+    const grant = authority?.targets?.get(target);
     if (request?.id === requestId && grant?.inFlight && grant.target === target) {
       delete grant.target; delete grant.inFlight;
     }
@@ -171,11 +172,11 @@ export class OwnerRequests implements OwnerRequestPort {
     const request = this.requests.get(session);
     if (!request || requestId !== undefined && request.id !== requestId) return;
     const authority = request.grants.get(kind);
-    const grant = kind === 'open' && authority ? this.openGrant(authority, target) : authority;
+    const grant = authority ? this.grantFor(authority, target) : undefined;
     if (!grant || !(grant.inFlight && grant.target === target) && this.authorize(session, kind, target).code !== 'allowed') return;
     grant.target = target; grant.receipt = receipt; delete grant.inFlight;
   }
-  private openGrant(authority: Grant, target: string): Grant {
+  private grantFor(authority: Grant, target: string): Grant {
     authority.targets ??= new Map();
     let grant = authority.targets.get(target);
     if (!grant) { grant = {}; authority.targets.set(target, grant); }

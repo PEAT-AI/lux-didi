@@ -440,6 +440,37 @@ test('C-PERMTIER (g): a provider retry of the same set_alarm creates one alarm',
   assert.deepEqual(retry.receipt, { status: 'set', id: 'alarm-1' });
 });
 
+test('P-R10: one ask authorizes two writes of different kinds', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set an alarm at seven and put cardio in my calendar at eight', 1_000);
+  const requestId = requests.currentId('s')!;
+  assert.equal(requests.claim('s', 'set_alarm', 'alarm-7', requestId).code, 'allowed');
+  requests.commit('s', 'set_alarm', 'alarm-7', { status: 'set' }, requestId);
+  // The calendar write is a different FREE kind and comes after the alarm already completed.
+  assert.equal(requests.claim('s', 'create_event', 'cardio-8', requestId).code, 'allowed');
+});
+
+test('P-R10: one ask authorizes two alarms with different arguments', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set two alarms at seven and seven thirty', 1_000);
+  const requestId = requests.currentId('s')!;
+  assert.equal(requests.claim('s', 'set_alarm', 'alarm-seven', requestId).code, 'allowed');
+  requests.commit('s', 'set_alarm', 'alarm-seven', { status: 'set' }, requestId);
+  // A second alarm is a different target, so the completed one spends nothing.
+  assert.equal(requests.claim('s', 'set_alarm', 'alarm-seven-thirty', requestId).code, 'allowed');
+});
+
+test('P-R10: an exact replay of the same alarm is the one write that does not execute again', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set an alarm at seven', 1_000);
+  const requestId = requests.currentId('s')!;
+  assert.equal(requests.claim('s', 'set_alarm', 'alarm-seven', requestId).code, 'allowed');
+  requests.commit('s', 'set_alarm', 'alarm-seven', { status: 'set', id: 'alarm-seven' }, requestId);
+  const replay = requests.claim('s', 'set_alarm', 'alarm-seven', requestId);
+  assert.equal(replay.code, 'idempotent');
+  assert.deepEqual(replay.receipt, { status: 'set', id: 'alarm-seven' });
+});
+
 test('C-PERMTIER: a guarded delete keeps its own selector and its refusal carries its cause', () => {
   const requests = new OwnerRequests(() => 1_000);
   requests.observe('s', 'j2', 'cancel my standup meeting', 1_000);

@@ -708,7 +708,10 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
   if (state.alreadySpoken) return 'already_spoken';
   // C-REBUILD B: a note held by a response in flight was deferred by the host, not by the owner's patience, so the
   // window that guards an unprompted line does not expire it while it waits. Nothing else about the window moves.
-  if (state.held !== true && state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+  // C-REBUILD B: the window never expires a note that a response in flight is about to hold, and never expires one
+  // the host deferred behind that response. Everything else about the window is unchanged.
+  if (state.held !== true && state.responseInProgress !== true
+    && state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
   const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
   const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
   // #1028 behaviour 4: a new question is one the host acted on, a research operation it started or a tool call

@@ -205,7 +205,6 @@ export class OwnerRequests implements OwnerRequestPort {
     this.external.add(session);
     // C-PERMTIER: third-party text advances the exposure position before the model ever sees it.
     if (advancesExposure(kind)) this.mark(session, 'exposure');
-    if (process.env.DIDI_PROBE) console.error('PROBE source', kind, session, advancesExposure(kind), this.debugExposure(session));
     const request = this.requests.get(session);
     if (request && (requestId === undefined || request.id === requestId) && this.clock() - request.start <= 120000) request.sources[kind] = (request.sources[kind] ?? 0) + 1;
   }
@@ -222,7 +221,6 @@ export class OwnerRequests implements OwnerRequestPort {
   }
   /** Called immediately before third-party text (mail, chat, web, research) is handed to the model. */
   expose(session: string): void { this.mark(session, 'exposure'); }
-  debugExposure(session: string): string { const at = this.positions.get(session); return JSON.stringify(at); }
   private fenced(session: string): boolean {
     const at = this.positions.get(session);
     return at !== undefined && at.exposure > at.owner;

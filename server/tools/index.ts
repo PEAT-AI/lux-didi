@@ -916,8 +916,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
         parameters: openParameters(openTool), validate: args => validateOpen(args, openTool),
         async execute(args, context) {
-          const probe = (why: string, extra: unknown = '') => { if (process.env.DIDI_PROBE) console.error('PROBE open', openTool.name, why, JSON.stringify(extra)); };
-          probe('entry', { runId, ctx: context.runId, ok: validateOpen(args, openTool), aborted: context.signal.aborted, req: ownerRequests.audit(runId, 'open') });
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           await ownerRequests.waitForFinal(runId, context.signal);
           const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
@@ -930,7 +928,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // P-R8/REQUIRED 6: his authority is judged before the result gate, so a refusal names its real cause
           // (no_owner_request, external_text_only) instead of a bare failed the model cannot explain.
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          probe('decision', { authorization: authorization.code, eligible, gate: gate.state });
           if (eligible && (gate.state !== 'allowed' || context.signal.aborted)) return { status: 'failed' as const };
           if (context.signal.aborted) return { status: 'failed' as const };
           const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };

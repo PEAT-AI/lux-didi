@@ -356,3 +356,12 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
   assert.equal(standaloneBrief.status, 'ready');
   if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.confirmation, /^Alarm set for /);
 });
+
+// T-R1: the counts are the ruling's evidence, so they are printed once and pinned, never only
+// accumulated. A plain clock that reads inconclusive shows up here as a movement in the numbers.
+test('T-R1 counts: how the checker reads this file\'s golden rows', () => {
+  const total = goldenReading.unique + goldenReading.partial + goldenReading.inconclusive;
+  console.log(`C-TIME golden checker reading: ${JSON.stringify(goldenReading)} over ${total} read rows`);
+  assert.ok(total >= 12, `every migrated golden row is counted (${total})`);
+  assert.ok(goldenReading.unique >= 8, `most golden rows state one settled time (${JSON.stringify(goldenReading)})`);
+});

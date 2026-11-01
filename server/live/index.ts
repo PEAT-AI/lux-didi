@@ -65,6 +65,19 @@ import {
  *  from the host's own record. */
 const PENDING_RESULT_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'pending_result_ready', id: 'live-pending-result' });
 const pickupInstruction = hostEventPayload(PENDING_RESULT_EVENT);
+/**
+ * C-HOSTFACTS F1: a provider that echoes a host event payload back as transcription is quoting host data, not
+ * the owner. This is an exact match against the closed set of payloads this host can send, at the intake that
+ * would otherwise open an owner turn, never a pattern over speech.
+ */
+let hostEventPayloads: ReadonlySet<string> | undefined;
+const isHostEventEcho = (text: string): boolean => {
+  hostEventPayloads ??= new Set([
+    pickupInstruction, hostEventPayload(MUTED_RESULT_EVENT), hostEventPayload(LIVE_RECOVERY_EVENT),
+    hostEventPayload(LIVE_MUTE_EVENT), hostEventPayload(LIVE_DROPPED_LINE_EVENT),
+  ]);
+  return hostEventPayloads.has(text.trim());
+};
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
 export const OPENER_CONTEXT_CHARS = 450;
 
@@ -4400,6 +4413,12 @@ export class LiveSessionOwner {
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
           if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
+        }
+        if (event.type === 'inputTranscription' && isHostEventEcho(event.text)) {
+          // F1: the provider read the host tag back. It becomes no owner turn, no journal turn and no memory
+          // input, and it is receipted as what it is.
+          hostLogEvent({ event: 'host_event_echo_dropped', liveSessionId: handle.liveSessionId });
+          continue;
         }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {

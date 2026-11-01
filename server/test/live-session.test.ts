@@ -48,6 +48,7 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { LIVE_DROPPED_LINE_EVENT, LIVE_MUTE_EVENT, LIVE_RECOVERY_EVENT } from '../live/index.js';
+import { hostEventPayload } from '../adapters/live-voice/types.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -2783,6 +2784,27 @@ test('L19: after a dead call the silent owner hears the drop line, and one who a
   // R7: the owner is silent here, so the opener is the one-line drop acknowledgement, not a repeat.
   assert.equal(JSON.stringify(silentRequest.hostEvent).includes('line_dropped'), true, 'the host event names the dropped line');
   h.owner.revoke(silent.liveSessionId);
+});
+
+// C-HOSTFACTS F1: a provider can read a host tag back. Through the real intake it must not become an owner
+// turn, a journal turn, a replayed owner statement or a memory input, and it must not be voiced.
+test('C-HOSTFACTS a provider echo of a host event payload is never owner words', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'host-event-echo');
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(detach);
+  const before = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.length;
+  const payload = hostEventPayload(LIVE_RECOVERY_EVENT);
+  // The provider echoes the exact host tag it was handed in the seed, as transcription of the owner.
+  h.f.send({ serverContent: { inputTranscription: { text: payload, finished: true } } });
+  await settlePort();
+  const page = h.owner.listFragments({ liveSessionId: session.liveSessionId });
+  const ownerRows = page.fragments.slice(before).filter(row => row.kind === 'inputTranscription');
+  assert.deepEqual(ownerRows, [], 'no owner turn is journalled for the echo');
+  assert.equal(receipts.some(record => record['event'] === 'host_event_echo_dropped'), true,
+    'the echo is receipted as host data, not silently dropped');
 });
 
 test('L19: the first spoken reply of a call is never unjournalled without a receipt', async t => {

@@ -1126,6 +1126,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!token(value.tool) || value.cached !== true) return;
     return { event: 'live_read_cache', tool: value.tool, cached: true };
   }
+  if (value.event === 'host_event_echo_dropped') {
+    // F1: one metadata-only record when a provider reads a host tag back as owner speech. Never the payload.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.liveSessionId)) return;
+    return { event: 'host_event_echo_dropped', liveSessionId: value.liveSessionId };
+  }
   if (value.event === 'live_interrupted') {
     // E1: one metadata-only record per provider barge-in, never audio, text or a provider payload.
     if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'turnCompleteSeen', 'msSinceLastModelAudio'].sort().join(',')) return;

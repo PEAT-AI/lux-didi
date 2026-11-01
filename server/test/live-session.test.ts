@@ -8465,5 +8465,3 @@ test('#107 P-R9: a mail result fences the turn and the owner final opens it agai
   assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
   attachment.close();
 });
-
-

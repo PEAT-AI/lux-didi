@@ -289,4 +289,4 @@ Each budget is the recon's measured p50 for that segment plus a margin and says 
 eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
 receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
 itself a failure. No network, no model, well under two minutes. Run it with
-`bash scripts/check-latency-budget.sh`; it takes no flags and needs the built host under `dist/`.
+`bash scripts/check-latency-budget.sh`; it takes no flags and builds the server host itself before the replay.

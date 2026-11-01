@@ -293,6 +293,13 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
 }
 
+/** #669: the names that refusal carries, at most three, so the composed read can voice them. */
+function closestChannelNames(refusal: string): string[] {
+  const detail = /closest names:\s*([^;]*)/iu.exec(refusal)?.[1];
+  if (detail === undefined) return [];
+  return detail.split(',').map(name => name.trim()).filter(name => name !== '' && !/^none$/iu.test(name)).slice(0, 3);
+}
+
 /** The text a completed child read carries inside its MCP content envelope. */
 function contentText(decoded: unknown): string | undefined {
   const result = isRecord(decoded) && isRecord(decoded['result']) ? decoded['result'] : decoded;
@@ -1061,7 +1068,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         if (spokenChannel === undefined) return { ok: false, result: { state: 'refused', reason: 'invalid-channel' } };
         const resolved = await resolveChannel(spokenChannel, signal);
         if (typeof resolved !== 'string') {
-          return { ok: false, result: finish({ ...base, read: `a channel called ${spokenChannel}`, notFound: `I do not know a channel called ${spokenChannel}. Which channel did you mean?` }) };
+          // #669: the resolver's own refusal names the closest channels, so the owner hears the one she meant.
+          const closest = closestChannelNames(resolved.error);
+          const hint = closest.length === 0 ? '' : ` The closest names I have are ${closest.length === 1 ? closest[0]! : `${closest.slice(0, -1).join(', ')} and ${closest[closest.length - 1]!}`}.`;
+          return { ok: false, result: finish({ ...base, read: `a channel called ${spokenChannel}`, notFound: `I do not know a channel called ${spokenChannel}.${hint} Which channel did you mean?` }) };
         }
         return { ok: true, args: { channel_id: resolved }, label: `the channel ${spokenChannel}` };
       }

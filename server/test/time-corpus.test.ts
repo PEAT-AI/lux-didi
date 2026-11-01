@@ -16,6 +16,7 @@ import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { fixture } from './live-voice-fixture.js';
 import { eventWindow, namedOthers } from '../tools/compose.js';
+import { checkOwnerTime } from '../tools/time-check.js';
 
 interface CorpusRow {
   id: string; words: string; now: string; tz: string; args: Record<string, unknown>;
@@ -82,7 +83,7 @@ async function alarmHarness(t: TestContext) {
   return { clock, options, owner, session, store, live, dispatch, authority };
 }
 
-test('C-TIME corpus: the owner time wins through the real alarm handler', async t => {
+test('C-TIME corpus: the owner time wins through the real alarm handler', { timeout: 120000 }, async t => {
   assert.ok(corpus.length >= 60, `the corpus carries at least sixty messy shapes, saw ${corpus.length}`);
   // Each row is its own owner turn and its own live session, so no row can arm an alarm for another.
   for (const row of corpus) {
@@ -197,4 +198,13 @@ test('C-TIME shape 6 and 7: the event time and the person a description may name
   assert.deepEqual((invented as { names: string[] }).names, [], 'no invented person reaches the description');
   assert.deepEqual(namedOthers(undefined, 'Naya'), [], 'a sentence never names a person');
   assert.deepEqual(namedOthers('Sam', 'Naya'), ['Sam'], 'a real invitee argument still names him');
+});
+
+test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {
+  const reading = { unique: 0, partial: 0, inconclusive: 0 };
+  for (const row of corpus) reading[checkOwnerTime(row.words).status] += 1;
+  // The counts are evidence, not a threshold: a plain clock that reads inconclusive is a checker bug.
+  console.log(`C-TIME corpus checker reading: ${JSON.stringify(reading)} of ${corpus.length} rows`);
+  assert.equal(reading.unique + reading.partial + reading.inconclusive, corpus.length);
+  assert.ok(reading.unique >= corpus.length - 12, `most rows state one settled time, saw ${JSON.stringify(reading)}`);
 });

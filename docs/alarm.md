@@ -8,14 +8,24 @@ These are **awake-Mac alarms**, not a replacement for a hardware alarm clock. A 
 
 | Tool | Behavior |
 | --- | --- |
-| `set_alarm` | Parses the time from the owner's finalized microphone transcription and commits a pending alarm. |
+| `set_alarm` | Takes the model's structured `time` and the owner's words of the current ask, resolves one instant in a real IANA zone, and commits a pending alarm. |
 | `list_alarms` | Lists pending and ringing alarms. |
-| `cancel_alarm` | Cancels an active alarm only with a fresh finalized spoken cancellation request. |
-| `snooze_alarm` | Completes the old occurrence and creates a new pending alarm atomically, from a fresh spoken duration or time. |
+| `cancel_alarm` | Cancels one armed alarm, or lists them when several are armed, only with a fresh finalized spoken cancellation request. |
+| `snooze_alarm` | Completes the old occurrence and creates a new pending alarm atomically, from the same `time` shape. |
 
 Set, cancel and snooze never derive authority from model output, typed text, host notes or alarm setup instructions. The ask may span the last two finalized owner turns, provided the latest turn continues the alarm request. An unrelated newer turn, a consumed request or a request older than two minutes cannot authorize a mutation.
 
-The model's optional `fire_at_utc` argument is only a consistency check, with a 60-second tolerance for relative-time skew. The host uses its current IANA time zone to interpret the spoken request. Each committed alarm stores that zone and a fixed UTC instant; travel and later time-zone changes do not move it. A nonexistent daylight-saving wall time is refused rather than silently shifted.
+## The time contract
+
+The model states the time as a closed object and never converts to UTC: `{mode:"wall", date:{kind:"today"|"tomorrow"|"next_weekday",weekday?}|{kind:"iso",value}, local_time:"HH:MM", timezone?}` or `{mode:"relative", amount, unit:"minutes"|"hours"}`. `create_event` takes the same object plus an optional duration. The host converts the wall clock with `Intl` in its own IANA zone, or in the zone the model named when the owner named one. Each committed alarm stores that zone and a fixed UTC instant; travel and later time-zone changes do not move it.
+
+A narrow checker, `server/tools/time-check.ts`, reads the owner's words of the current ask only. It recognizes anchored clocks ("at 6 pm", "18:00", "eighteen hundred", "half past six", "quarter to seven", "ten to seven", "noon"), day words and simple spans ("in ten minutes"). It never takes the first number of a sentence, so "one-time", "one hour call" and a clock inside the reminder subject yield no clock.
+
+The conflict rules are exact. One owner time executes, and the result names the correction when the model's field differed or was omitted. A partial owner reading combines with compatible model fields, and only the constrained fields are overridden. An inconclusive ask executes a valid model time and reads it back. When neither settles a time, or a bare hour has no model meridian, she asks once, for the time only.
+
+A wall time with no stated date that already passed today is the next occurrence and is read back with its day. A stated "today" that already passed asks back and is never silently moved to tomorrow. A nonexistent daylight-saving wall time is refused rather than silently shifted.
+
+Every commit result carries the weekday, date, local time, zone and alarm id, and she says that read-back as returned. The label is the model's `label` argument, capped at eighty characters; a missing label leaves the reminder empty and the owner's sentence is never stored as a label.
 
 ## Ringing and recovery
 

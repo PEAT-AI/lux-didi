@@ -52,7 +52,10 @@ const UNITS: Record<string, number> = {
 const WORD_UNITS = ['nineteen', 'eighteen', 'seventeen', 'sixteen', 'fifteen', 'fourteen', 'thirteen', 'twelve',
   'eleven', 'ten', 'nine', 'eight', 'seven', 'six', 'five', 'four', 'three', 'two', 'one', 'zero'];
 const WORD_TENS = ['fifty', 'forty', 'thirty', 'twenty'];
-const WORD_NUMBER = `(?:${[...WORD_TENS, ...WORD_UNITS].join('|')})(?:[ -](?:${WORD_UNITS.join('|')}))?`;
+// A tens word may take a unit (twenty five), and a tens-free word never takes a second number,
+// so "eleven ten" stays two numbers of words and not the number twenty one.
+const WORD_ONES = ['nine', 'eight', 'seven', 'six', 'five', 'four', 'three', 'two', 'one'];
+const WORD_NUMBER = `(?:${WORD_TENS.join('|')}(?:[ -](?:${WORD_ONES.join('|')}))?|${WORD_UNITS.join('|')})`;
 const NUMBER = `(?:\\d{1,2}|${WORD_NUMBER})`;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -111,11 +114,10 @@ function collect(text: string): Candidate[] {
     push(match, settle(hour, match[3]!), minute, true);
   }
   // "eleven ten in the morning", "seven oh five in the morning": the hour, its minutes and the period.
-  for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s+(?:oh\\s+)?(${NUMBER})\\s+(?:in\\s+the\\s+)?(morning|afternoon|evening|night|tonight)\\b`, 'g')) as Iterable<RegExpExecArray>) {
+  for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s+(?:oh\\s+)?(${NUMBER})\\s+(?:in\\s+the\\s+)?(?:(?:tomorrow|today)\\s+)?(morning|afternoon|evening|night|tonight)\\b`, 'g')) as Iterable<RegExpExecArray>) {
     const hour = valueOf(match[1]!); const minute = valueOf(match[2]!);
     if (hour === undefined || hour > 12 || minute === undefined || minute > 59) continue;
-    const period = match[3] === 'morning' ? 'am' : 'pm';
-    push(match, settle(hour, period), minute, true);
+    push(match, settle(hour, match[3] === 'morning' ? 'a' : 'p'), minute, true);
   }
   // "11 pm 40": the minutes follow the meridian, as spoken.
   for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s*([ap])m\\s+(\\d{1,2})\\b`, 'g')) as Iterable<RegExpExecArray>) {

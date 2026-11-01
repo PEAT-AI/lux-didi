@@ -843,8 +843,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           async execute(args, context) {
             if (context.runId !== runId || !tool.validate(args) || context.signal.aborted) return { status: 'failed' as const };
             await ownerRequests.waitForFinal(runId, context.signal);
-            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
             const call = store.transaction(tx => {
               const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
               if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
@@ -861,6 +859,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const peek = ownerRequests.authorize(runId, name, '');
             hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
             if (peek.code === 'no_owner_request' || peek.code === 'request_expired') return finish(requestRefusal(peek.code));
+            // C-PERMTIER (REQUIRED 6): his authority is judged before the result gate, so a refusal names its
+            // real cause (no_owner_request, external_text_only) instead of a bare failed.
+            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+            const ownerRefused = peek.code !== 'allowed' && peek.code !== 'idempotent';
+            if ((gate.state !== 'allowed' && !ownerRefused) || context.signal.aborted) return { status: 'failed' as const };
             const target = composeTarget(name, args, clientRequestId(peek.journalId));
             const ask = ownerRequests.authorize(runId, name, target);
             if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);

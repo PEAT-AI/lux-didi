@@ -959,6 +959,8 @@ class Session implements LiveVoiceSession {
    *  audible for the owner, the delta and the released assignment, passes here; `endResponse` re-arms the flag
    *  when the response did not complete, since a cut or failed answer is still owed. */
   private responseSpoke(): void {
+    // Late playback from an ended response cannot answer the continuation its tool results still owe.
+    if (!this.delegatedOutstanding) return;
     this.activeResponseSpoke = true;
     this.continuationOwed = false;
   }

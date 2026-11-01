@@ -338,7 +338,44 @@ def check_run_dir(signals_dir, work_dir, model=model_hardclip, calibrated=True):
     return problems
 
 
+def check_virtual_bass_spectrum():
+    """Missing fundamental is healthy; only non-harmonic buzz is ranked."""
+    import analyze_bass as spectral
+    fs = 16000
+    rng = np.random.default_rng(407)
+    t = np.arange(2*fs)/fs
+    gap = rng.normal(0, 1e-4, fs)
+    healthy, faulty = [], []
+    for hz in (60, 80, 100, 150, 200, 300):
+        for level in (-12, -6, -3):
+            # Virtual bass replaces H1 entirely with H2 and H3.
+            x = 10**(level/20)*(.1*np.sin(2*np.pi*2*hz*t) +
+                                    .06*np.sin(2*np.pi*3*hz*t))
+            x += rng.normal(0, 1e-4, len(t))
+            clean = spectral.measure(x, gap, fs, hz)
+            clean.update(hz=hz, level=level)
+            healthy.append(clean)
+            if hz == 100 and level > -6:
+                x += .025*np.sin(2*np.pi*1373*t)
+            bad = spectral.measure(x, gap, fs, hz)
+            bad.update(hz=hz, level=level)
+            faulty.append(bad)
+    assert max(r['score_db'] for r in healthy) < spectral.MARGIN
+    worst = max(faulty, key=lambda r:r['score_db'])
+    assert (worst['hz'], worst['level']) == (100, -3)
+    assert worst['score_db'] > spectral.MARGIN
+    # A missing fundamental must not prevent ordered spectral location.
+    entries = [dict(file='virtual.wav', kind='bass-tone', tone_hz=100, duration_s=2)]
+    x = .1*np.sin(2*np.pi*200*t)+.06*np.sin(2*np.pi*300*t)
+    y = np.r_[rng.normal(0, 1e-4, fs), x, rng.normal(0, 1e-4, fs)]
+    starts, rows = spectral.locate(y, fs, entries, 1, 1)
+    assert abs(starts[0]-1) < .15
+    assert rows[0]['contrast_db'] > 20
+    print('SPECTRAL SELFTEST: PASS, virtual bass healthy; 100 Hz at -3 dBFS ranked first')
+
+
 def main(argv=None):
+    check_virtual_bass_spectrum()
     ap_args = sys.argv[1:]
     if ap_args and ap_args[0] in ("--run-dir", "--bass-run-dir"):
         if len(ap_args) != 2:

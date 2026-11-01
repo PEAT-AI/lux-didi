@@ -215,6 +215,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 log "recording $recording from $mic_name at 48 kHz mono s16, no filters"
+recording_start_utc=$("$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())')
 ffmpeg -hide_banner -loglevel error -nostdin \
     -f avfoundation -i ":$mic_index" \
     -ac 1 -ar 48000 -sample_fmt s16 -c:a pcm_s16le \
@@ -227,12 +228,19 @@ while IFS= read -r f; do files+=("$f"); done \
     < <(sed -n 's/.*"file": "\([^"]*\)".*/\1/p' "$SIGNALS_DIR/signals.json")
 [ "${#files[@]}" -eq "$N_FILES" ] || die "expected $N_FILES signals, signals.json lists ${#files[@]}"
 
+# Wall-clock brackets include afplay launch/return overhead, not DAC timestamps.
+# Kept beside the private recording, never in the source tree.
+timing_file="$run_dir/playback-times.tsv"
+: > "$timing_file"
 first=1
 for f in "${files[@]}"; do
     if [ "$first" -eq 0 ]; then sleep "$GAP_S"; fi
     first=0
     log "playing $f"
+    start_utc=$("$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())')
     afplay "$SIGNALS_DIR/$f"
+    end_utc=$("$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())')
+    printf '%s\t%s\t%s\n' "$f" "$start_utc" "$end_utc" >> "$timing_file"
 done
 sleep "$PRE_ROLL_S"
 cleanup
@@ -240,15 +248,19 @@ rec_pid=""
 trap - EXIT INT TERM
 
 "$PY" - "$SIGNALS_DIR/signals.json" "$run_dir" "$recording" "$label" "$slider" \
-    "$default_out" "$mic_name" "$mic_index" "$GAP_S" "$PRE_ROLL_S" <<'PY'
+    "$default_out" "$mic_name" "$mic_index" "$GAP_S" "$PRE_ROLL_S" "$recording_start_utc" <<'PY'
 import json, os, socket, subprocess, sys, time
 
 (signals_path, run_dir, recording, label, slider, default_out, mic_name,
- mic_index, gap_s, pre_roll_s) = sys.argv[1:]
+ mic_index, gap_s, pre_roll_s, recording_start_utc) = sys.argv[1:]
 manifest = json.load(open(signals_path))
+with open(os.path.join(run_dir, "playback-times.tsv")) as timing:
+    stamps = {name: (start, end) for name, start, end in
+              (line.rstrip().split("\t") for line in timing)}
 files = []
 for entry in manifest["files"]:
     item = dict(entry)
+    item["playback_start_utc"], item["playback_end_utc"] = stamps[entry["file"]]
     item["path"] = os.path.join(os.path.dirname(signals_path), entry["file"])
     files.append(item)
 try:
@@ -258,6 +270,7 @@ except Exception:
     product = None
 out = {
     "label": label,
+    "recording_start_utc": recording_start_utc,
     "slider": int(slider),
     "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "fs": manifest["fs"],

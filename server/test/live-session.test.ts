@@ -5140,7 +5140,9 @@ test('#538: model text never slides the audible debt, so the OpenAI rung holds t
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the new session is handed the result once');
   h.advance(4_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.textInputs.length, 2, 'the delivery is never replayed twice');
+  // C-REBUILD B: the rung no longer writes the result into the response in flight, so the one handover is the
+  // rebuild's own, and it is never replayed.
+  assert.equal(fake.textInputs.length, 1, 'the delivery is never replayed twice');
   // The recreated session answers audibly, which is what the owner hears.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await settlePort();

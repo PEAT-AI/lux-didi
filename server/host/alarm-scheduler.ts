@@ -185,7 +185,7 @@ export class AlarmShellBridge {
 /** Reserve an occurrence before creating a session, so failures and reconnects cannot retry it. */
 export class AlarmSessionCoordinator {
   constructor(private readonly options: {
-    store: StorePort; hasLiveSession(): boolean;
+    store: StorePort; hasLiveSession(): boolean; now(): number;
     open(setup: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string): string;
     degraded(id: string, reason: 'live_session_no_channel' | 'provider_unavailable'): void;
   }) {}
@@ -196,8 +196,15 @@ export class AlarmSessionCoordinator {
       const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
       if (!row) return undefined;
       const prior = tx.get('SELECT live_session_id FROM alarm_session_attempts WHERE alarm_id=?', [id]);
-      if (prior) return { prior: prior['live_session_id'] === null ? undefined : String(prior['live_session_id']) };
-      tx.run('INSERT INTO alarm_session_attempts(alarm_id) VALUES(?)', [id]);
+      if (prior) {
+        const opened = prior['live_session_id'] === null ? undefined : String(prior['live_session_id']);
+        // One retry is allowed while the occurrence is still ringing inside its own deadline, and only
+        // when the first attempt opened no session at all. A retry that opens one can never be durably
+        // repeated, so an occurrence can never hold two live sessions.
+        const deadline = row['ring_deadline_utc'] === null ? 0 : Number(row['ring_deadline_utc']);
+        if (opened !== undefined || !(deadline > this.options.now())) return { prior: opened };
+      }
+      tx.run('INSERT OR IGNORE INTO alarm_session_attempts(alarm_id) VALUES(?)', [id]);
       return { alarm: read(row) };
     });
     if (!reserved) return { status: 'attempted' };

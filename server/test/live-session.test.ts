@@ -7779,7 +7779,7 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
   await settlePort();
   assert.equal(scheduler.list()[0]!.state, 'ringing', 'speech in an unrelated call cannot acknowledge a due alarm');
-  const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true,
+  const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true, now: () => clock.now,
     open: setup => h.owner.announceAlarm(setup)!.liveSessionId, degraded: () => assert.fail('unexpected degradation') });
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key').liveSessionId, session.liveSessionId);
   // The retry replays the session this key already opened, and a different key opens none.

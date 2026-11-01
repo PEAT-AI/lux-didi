@@ -96,7 +96,7 @@ import WebKit
         // call arrives as the alarm-mode host note instead of a chime and a second conversation.
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
             sessionState: { [weak self] in self?.live?.state ?? .idle },
-            onDue: { [weak self] id in self?.alarmDue(id) },
+            onDue: { [weak self] id in self?.onAlarmDue?(id) },
             onCaption: { [weak self] caption in self?.alarmCaption = caption })
         shell.onAlarms = { [weak self] rows in
             guard let self else { return }
@@ -432,17 +432,6 @@ import WebKit
         orbLevels?.start()
         return true
     }
-    /// C-ALARMSPEECH: an alarm start that cannot open is reported, never discarded. A call that is already
-    /// live takes the alarm as a host note, so only a genuinely refused start is a failure.
-    private func alarmDue(_ alarmID: String) {
-        guard startLive(alarmID: alarmID) else {
-            if live == nil || !NativeAlarmShell.sessionIsLive(live?.state ?? .idle) {
-                alarmShell?.speechFailed(alarmID, reason: "start_refused")
-            }
-            return
-        }
-        live?.onSpeechFailed = { [weak self] reason in self?.alarmShell?.speechFailed(alarmID, reason: reason) }
-    }
     /// D12-5: the Stop receipt names what pressed it. A stop the app makes itself stays `other`.
     /// The status menu's item travels through the web state machine and comes back as a bridge
     /// command, so its trigger is armed here and consumed by exactly that one Stop.
@@ -585,9 +574,15 @@ import WebKit
     var onPresenceMute: ((Bool) -> Void)?
     var onPresenceStart: ((String?) -> Void)?
     var onPresenceStop: (() -> Void)?
+    /// C-ALARMSPEECH: the shell owns the loud failure path, and it is reachable from the delegate.
+    func alarmSpeechFailed(_ alarmID: String, reason: String) { alarmShell?.speechFailed(alarmID, reason: reason) }
+    /// C-ALARMSPEECH: a due alarm starts through presence, which the delegate owns.
+    var onAlarmDue: ((String) -> Void)?
 
-    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void) {
+    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void,
+                      alarm: @escaping (String) -> Void = { _ in }) {
         onPresenceStart = start
+        onAlarmDue = alarm
         onPresenceStop = { [weak presence] in presence?.stop(.app) }
         onPresenceMute = { [weak presence] muted in
             if muted { presence?.mute(.app) } else { presence?.unmute(.app) }
@@ -875,7 +870,8 @@ struct RootView: View {
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
         model.onMiniMode = { [weak self] in self?.showMiniOrb() }
-        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
+        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) },
+                           alarm: { [weak self] id in self?.alarmDue(id) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: StatusItemPresentation.length)
         let symbol = StatusItemPresentation.resolve(
@@ -1444,20 +1440,32 @@ struct RootView: View {
         miniOrb.showSurface(trigger: .hotkey)
     }
 
+    /// C-ALARMSPEECH: the alarm opens through presence, so the machine reaches LIVE, the chime stops
+    /// when she is audible, and the owner's key acts on that call instead of finding a cold orb.
+    private func alarmDue(_ alarmID: String) { startPresence(alarmID: alarmID) }
+
     private func stopPresence() { presence.stop(.app) }
 
-    private func startPresence(pickupJobID: String? = nil) {
+    private func startPresence(pickupJobID: String? = nil, alarmID: String? = nil) {
         coordinator.allowPresenceReveal()
         if model.live == nil { presence.sessionEnded(presence.generation) }
         presencePickupJobID = pickupJobID
-        presence.start(.app)
+        presence.start(alarmID == nil ? .app : .alarm, alarmID: alarmID)
     }
 
     private func openPresenceSession(_ generation: UInt64) {
         let job = presencePickupJobID
         presencePickupJobID = nil
+        let alarmID = presence.takeAlarmID()
         liveGeneration = generation
-        if !model.startLive(pickupJobID: job) { presence.fail(generation) }
+        guard model.startLive(pickupJobID: job, alarmID: alarmID) else {
+            presence.fail(generation)
+            if let alarmID { model.alarmSpeechFailed(alarmID, reason: "start_refused") }
+            return
+        }
+        if let alarmID {
+            model.live?.onSpeechFailed = { [weak self] reason in self?.model.alarmSpeechFailed(alarmID, reason: reason) }
+        }
     }
 
     private func presenceTransitioned(_ state: NativeLiveConversation.State, generation: UInt64) {

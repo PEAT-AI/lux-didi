@@ -24,6 +24,10 @@ import UserNotifications
     private var notificationState: NotificationPermission = .notAsked
     private var permissionRequested = false
     private var attempted = Set<String>()
+    /// The occurrences that already used their one speech retry, so a retry can never become a loop.
+    private var retried = Set<String>()
+    /// The ring deadline each due occurrence arrived with, so a retry can tell the window is still open.
+    private var ringDeadlines: [String: Int] = [:]
     /// #107: every alarm mutation reaches the relaunch agent through this one callback.
     var onAlarms: (([ShellAlarm]) -> Void)?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -117,13 +121,15 @@ import UserNotifications
            deadline > Int(Date().timeIntervalSince1970 * 1000) {
             // #107: a live session gets the existing alarm-mode host note; nothing chimes into it.
             let live = Self.sessionIsLive(sessionState())
-            let started = !live && ring.startAlarm(deadlineMs: deadline)
             if live { ring.stopAlarm() }
+            ringDeadlines[alarm.id] = deadline
             if attempted.insert(alarm.id).inserted {
                 if live { noteLiveSession(alarm.id) }
                 else {
-                    if started { post("ring-started", body: ["id": alarm.id]) }
+                    // C-ALARMSPEECH: the call opens before the first chime, so the device reading the
+                    // microphone path takes is not our own ring, and echo cancellation stays on built-in.
                     onDue(alarm.id)
+                    if ring.startAlarm(deadlineMs: deadline) { post("ring-started", body: ["id": alarm.id]) }
                 }
             }
         }
@@ -145,23 +151,35 @@ import UserNotifications
         }
     }
     func noteLiveSession(_ id: String) {
-        // Route the occurrence into the live call without a competing chime.
-        post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()])
+        // Route the occurrence into the live call without a competing chime. The key is the occurrence's
+        // own, so a repeated note replays the session instead of opening a second one.
+        post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()], key: "alarm:" + id)
     }
-    private func post(_ route: String, body: [String: Any]) {
+    private func post(_ route: String, body: [String: Any], key: String? = nil) {
         guard var request = try? authority.request(authority.origin.appendingPathComponent("api/v1/alarms/" + route), epoch),
               let data = try? JSONSerialization.data(withJSONObject: body) else { return }
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         Task { _ = try? await session.data(for: request) }
     }
     /// C-ALARMSPEECH: the one path a failed alarm takes. The chime keeps ringing, the host log names the
     /// closed reason, and one immediate notification says so.
     func speechFailed(_ alarmID: String, reason: String) {
         post("speech-failed", body: ["id": alarmID, "reason": reason])
-        guard notificationsAllowed else { return }
-        let request = UNNotificationRequest(identifier: Self.speechFailedIdentifier(alarmID),
-                                            content: Self.speechFailedContent(), trigger: nil)
-        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        if notificationsAllowed {
+            let request = UNNotificationRequest(identifier: Self.speechFailedIdentifier(alarmID),
+                                                content: Self.speechFailedContent(), trigger: nil)
+            UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        }
+        retryOnce(alarmID)
+    }
+    /// C-ALARMSPEECH: one real retry, and only while the ring deadline is open. It never extends the
+    /// deadline and it never changes a normal call's watchdogs; the second failure is final.
+    private func retryOnce(_ alarmID: String) {
+        guard !retried.contains(alarmID), let deadline = ringDeadlines[alarmID],
+              deadline > Int(Date().timeIntervalSince1970 * 1000) else { return }
+        retried.insert(alarmID)
+        onDue(alarmID)
     }
     /// #107: the conversation is live in every state but idle, ended and failed, so an alarm that
     /// arrives while she is thinking or speaking stays inside that call.

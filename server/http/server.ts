@@ -97,6 +97,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const diagnosticLog = new HostLog(store.directory);
   const alarmSessions = options.alarms && live ? new AlarmSessionCoordinator({ store,
     hasLiveSession: () => !['idle', 'ended', 'error'].includes(live.current().state),
+    now,
     open: (setup, key) => {
       if (!live.createAlarm) throw Error('alarm_speech_unavailable');
       return live.createAlarm(setup, key, { clientId: 'local-admin', auditId: randomUUID(), authorityEpoch: store.authorityEpoch }).liveSessionId;

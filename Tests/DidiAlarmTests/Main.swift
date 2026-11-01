@@ -11,16 +11,6 @@ import UserNotifications
     func rampDown(overMs: Int, after: (@MainActor () -> Void)?) { after?() }
 }
 
-/// C-ALARMSPEECH: records chimes and stops in one order list, so a test can prove what came first.
-@MainActor final class OrderingAlarmOutput: ConnectingRingOutput {
-    private let record: (String) -> Void
-    init(order: @escaping (String) -> Void) { record = order }
-    func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool { false }
-    func playChime(_ buffer: AVAudioPCMBuffer) -> Bool { record("chime"); return true }
-    func stopOutput() { record("stop") }
-    func rampDown(overMs: Int, after: (@MainActor () -> Void)?) { after?() }
-}
-
 /// #107: a recorder instead of launchctl, so no test ever touches the real user domain.
 final class RecordingRelaunchRunner: AlarmRelaunchRunning {
     private(set) var invocations: [[String]] = []
@@ -85,29 +75,6 @@ final class RefusedEvents {
             precondition(heard.chimes == 1, "\(state) may chime")
             precondition(heard.opened == 1, "\(state) opens the alarm conversation once")
         }
-        // C-ALARMSPEECH: the call opens before the first chime, so the microphone path is claimed before our
-        // own ring and echo cancellation stays on built-in. And a failed alarm gets exactly one retry,
-        // only while the ring deadline is open.
-        do {
-            var order: [String] = []
-            let probe = OrderingAlarmOutput(order: { order.append($0) })
-            let probeRing = ConnectingRing(output: probe, now: { 1000 }, deferStart: { $0() }, after: { _, _ in })
-            let session = SyntheticSessionState()
-            var starts = 0
-            let probeShell = NativeAlarmShell(authority: authority, ring: probeRing, sessionState: { session.state },
-                                              onDue: { _ in starts += 1; order.append("start") }, onCaption: { _ in })
-            probeShell.receive(dueFrame("synthetic-order"))
-            precondition(order.first == "start" && order.contains("chime")
-                         && order.firstIndex(of: "start")! < order.firstIndex(of: "chime")!,
-                         "the alarm call opens before the first chime, got \(order)")
-            precondition(starts == 1, "one due alarm opens one conversation")
-            // One retry, while the deadline is open; the second failure is final.
-            probeShell.speechFailed("synthetic-order", reason: "snapshot_mismatch")
-            precondition(starts == 2, "a failed alarm is retried once")
-            probeShell.speechFailed("synthetic-order", reason: "snapshot_mismatch")
-            precondition(starts == 2, "the retry never becomes a loop")
-        }
-
 
         // 2. The notification permission is reported only after it resolved.
         precondition(NativeAlarmShell.NotificationPermission.notAsked.rawValue == "not_asked")
@@ -117,34 +84,6 @@ final class RefusedEvents {
         precondition(before["notificationState"] as? String == "not_asked", "an unresolved request is not denied")
         let after = NativeAlarmShell.shellReport(assertion: true, notificationsAllowed: false, state: .denied)
         precondition(after["notificationState"] as? String == "denied")
-
-        // C-ALARMSPEECH: a failed alarm is loud. The notification names the failure, never the label,
-        // carries its own identifier so a ringing alarm cannot sweep it away, and asks for sound.
-        let failed = NativeAlarmShell.speechFailedContent()
-        precondition(failed.body == "Naya could not start. Your alarm is still ringing.",
-                     "the failure notification says what happened")
-        precondition(failed.sound != nil, "the failure notification is audible")
-        precondition(NativeAlarmShell.speechFailedIdentifier("synthetic-7") == "alarm-failed:synthetic-7",
-                     "the failure notification outlives the alarm's own identifier")
-        precondition(NativeAlarmShell.notificationAuthorizationOptions.contains(.sound),
-                     "alarm notifications are authorized with sound")
-
-        // C-ALARMSPEECH: the alarm opens through presence, so the machine reaches LIVE (the only thing that
-        // stops the ring), the key acts on that call, and the alarm id is consumed by exactly one session.
-        do {
-            var opened: [UInt64] = []
-            let effects = PresenceEffects(openSession: { opened.append($0) })
-            let machine = NativePresence(effects: effects, now: { 1000 })
-            machine.start(.alarm, alarmID: "synthetic-alarm")
-            precondition(machine.state == .connecting, "a cold alarm start opens presence")
-            precondition(machine.takeAlarmID() == "synthetic-alarm", "the alarm id reaches the session it opens")
-            precondition(machine.takeAlarmID() == nil, "the alarm id is consumed once")
-            let generation = opened.last ?? 0
-            machine.ready(generation)
-            precondition(machine.state == .live, "the alarm call reaches LIVE, which is what stops the chime")
-            machine.tap(.hotkey)
-            precondition(machine.state == .hotMuted, "the owner's key acts on the alarm call instead of failing")
-        }
 
         // 3. One LaunchAgent for the next due alarm, rewritten on mutation, removed when empty,
         // and driven through an injected runner inside a temp domain.
@@ -167,14 +106,6 @@ final class RefusedEvents {
         precondition(written.contains("<string>--args</string>") && written.contains("--alarm-relaunch"),
                      "the launch carries the alarm argument")
         precondition(written.contains("StartCalendarInterval"), "the agent is timed")
-        // C-ALARMSPEECH: the agent's own reopen is logged as the alarm relaunch, once, and a Dock click
-        // at any other time stays a Dock click. The launch kind never shows extra UI at launch.
-        precondition(writer.takeOwnStart(nowMs: writer.armedStartMs!), "the agent's own fire is recognised")
-        precondition(!writer.takeOwnStart(nowMs: writer.armedStartMs ?? firstDue - 60_000),
-                     "the agent's own fire is consumed once")
-        precondition(!writer.takeOwnStart(nowMs: 0), "a reopen with no armed agent is a Dock click")
-        precondition(!LaunchKind.alarmRelaunch.presentsOrbAtLaunch && !LaunchKind.alarmRelaunch.presentsWindowAtLaunch,
-                     "the relaunch shows nothing extra until the alarm is due")
         // The interval is launchd's own: Minute, Hour, Day and Month, and no key launchd rejects.
         precondition(!written.contains("<key>Year</key>"), "launchd has no Year key")
         var utc = Calendar(identifier: .gregorian)

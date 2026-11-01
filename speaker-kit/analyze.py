@@ -130,6 +130,32 @@ def align_offset(rec, ref, fs, search_lo=0, search_hi=None, max_lag_s=8.0):
     return lo + best
 
 
+def reference_templates(ref, entry, fs):
+    """Use a file's own reference, including physically expected DSP products.
+
+    A virtual-bass path may radiate a harmonic more strongly than its carrier.
+    This bank is for timing only, never for declaring a harmonic a defect.
+    """
+    templates = [("fundamental", ref)]
+    if entry["kind"] == "bass-voice":
+        spec = np.fft.rfft(ref)
+        spec[np.fft.rfftfreq(len(ref), 1/fs) < 300] = 0
+        templates.append(("voice band", np.fft.irfft(spec, n=len(ref))))
+    if entry["kind"] in ("bass-tone", "bass-kick"):
+        n = len(ref)
+        h = np.zeros(n)
+        h[0] = 1
+        h[1:(n+1)//2] = 2
+        if n % 2 == 0:
+            h[n//2] = 1
+        analytic = np.fft.ifft(np.fft.fft(ref)*h)
+        env = np.abs(analytic)
+        c = ref / np.maximum(env, 1e-20)
+        templates.extend([("synthesized H2", env*(2*c*c-1)),
+                          ("synthesized H3", env*(4*c**3-3*c))])
+    return templates
+
+
 def alignment_landmarks(rec, ref, fs, onset):
     """Short-reference correlations expose capture dropouts inside a sweep.
 
@@ -343,7 +369,6 @@ def relative_diagnostics(report):
     """
     report["comparison"] = []
     for ch, data in report["channels"].items():
-        data["calibration_verdict"] = data["verdict"]
         data["verdict"] = "INCONCLUSIVE"
         data["reasons"] = ["No flat-speaker fault thresholds applied; DSP and room path are unknown."]
         levels = sorted(data["sweep"], key=float)
@@ -361,7 +386,8 @@ def relative_diagnostics(report):
                 gain = top["fund_dbfs"] - ref["fund_dbfs"] - (float(lv)-float(low))
                 item = {"kind": "level", "channel": ch, "band": band,
                         "reference_dbfs": float(low), "level_dbfs": float(lv),
-                        "gain_change_db": round(gain, 2)}
+                        "gain_change_db": round(gain, 2),
+                        "snr_reference_db": ref.get("snr_db"), "snr_level_db": top.get("snr_db")}
                 report["comparison"].append(item)
                 if abs(gain) > 3:
                     data["reasons"].append("%s: gain changes %+.1f dB at %s vs %s dBFS (DSP or measurement, not a fault verdict)" %
@@ -550,9 +576,22 @@ def analyse_segments(entries, segments, fs, meta=None, calibrated=False):
 
     report["multitone"] = {str(k): v for k, v in multitone.items()}
     report["twintone"] = twintone
-    _assign_verdicts(report)
-    if not calibrated:
+    if calibrated:
+        _assign_verdicts(report)
+    else:
+        for data in report["channels"].values():
+            for bands in data["sweep"].values():
+                for name, v in bands.items():
+                    noise = report.get("noise_bands_dbfs", {}).get(name)
+                    if noise is not None and v.get("fund_dbfs") is not None:
+                        v["snr_db"] = round(v["fund_dbfs"] - 3.01 - noise, 2)
+                        v["valid"] = v["valid"] and v["snr_db"] >= 15
         relative_diagnostics(report)
+        if report["mic"]["clipped"]:
+            report["comparison"] = []
+            for data in report["channels"].values():
+                data["verdict"] = "INCONCLUSIVE"
+                data["reasons"] = ["Capture clipped; no speaker inference."]
     report["bass"] = bass_metrics(entries, segments, fs)
     return report
 
@@ -809,17 +848,26 @@ def run(run_dir, out_path=None):
             raise SystemExit("%s is %d Hz, expected %d" % (entry["file"], rfs, fs))
         lo = 0 if index == 0 else max(0, position - search)
         hi = min(len(rec), position + len(ref) + search)
-        lag = align_offset(rec, ref, fs, lo, hi)
+        matches = []
+        for component, template in reference_templates(ref, entry, fs):
+            try:
+                candidate = align_offset(rec, template, fs, lo, hi)
+            except ValueError:
+                continue
+            piece = rec[candidate:candidate+len(template)]
+            score = abs(float(np.dot(piece, template))) / max(float(np.linalg.norm(piece)*np.linalg.norm(template)), 1e-30)
+            matches.append((score, candidate, component))
+        if not matches:
+            raise ValueError(entry["file"] + ": reference not found or ambiguous search boundary")
+        corr, lag, component = max(matches)
         segments[entry["file"]] = rec[lag: lag + len(ref)]
         segment = segments[entry["file"]]
-        corr = abs(float(np.dot(segment, ref))) / max(
-            float(np.linalg.norm(segment) * np.linalg.norm(ref)), 1e-30)
         if db(float(np.sqrt(np.mean(segment * segment)))) < -85:
             raise ValueError("alignment: implausibly quiet file " + entry["file"])
         alignment_quality[entry["file"]] = {
             "expected_s": round((position - padding) / fs, 5), "measured_s": round((lag - padding) / fs, 5),
             "valid": lag >= padding,
-            "correlation": round(corr, 5),
+            "correlation": round(corr, 5), "reference_component": component,
             "rms_dbfs": round(db(float(np.sqrt(np.mean(segment * segment)))), 2),
         }
         if entry["kind"] != "sweep" and corr < 0.2:

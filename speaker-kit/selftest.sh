@@ -67,5 +67,6 @@ assert m["audio_s"] == 48 and len(m["files"]) == 21
 assert all(e["level_db_peak"] <= -3 for e in m["files"] if e["kind"] == "bass-tone")
 print("BASS SPEC: 21 stereo files, 48 seconds audio, sustained peak <= -3 dBFS")
 PYBASS
+"$PY" "$KIT_DIR/selftest.py" --bass-run-dir "$tmp/bass-signals"
 cat "$tmp/bass-plan.txt"
 echo "SELFTEST SH: PASS"

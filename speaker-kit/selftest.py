@@ -141,7 +141,7 @@ def check_physical_chain(entries):
         verdicts = {c: v["verdict"] for c, v in report["channels"].items()}
         print(name + ": " + str(verdicts))
         if name.startswith("one-sided"):
-            print("chain controls: " + str(report["comparison"]))
+            print("chain controls: " + str([v for v in report["comparison"] if v.get("asymmetry_growth_db", 0) > 10]))
         if name.startswith("healthy") and any("RATTLE" in v or "CLIPPING" in v for v in verdicts.values()):
             failures.append("healthy chain false fault verdict")
         if name.startswith("one-sided") and "RATTLE" not in verdicts.get("L", ""):
@@ -167,6 +167,16 @@ def check_physical_chain(entries):
         pass
     else:
         failures.append("silence accepted as a reference")
+    # Delete 40 ms every 500 ms, preserving local pitch but corrupting sweep
+    # timing, like a lossy capture. A whole-file offset cannot repair this.
+    ref = entries[1]["mono"] * 10**(entries[1]["level_db_peak"]/20)
+    keep = np.arange(len(ref)) % (FS//2) >= int(.04*FS)
+    broken = np.concatenate([np.zeros(FS), ref[keep], np.zeros(FS)])
+    points = analyze.alignment_landmarks(broken, ref, FS, FS)
+    spread = np.ptp([p["offset_s"] for p in points]) if len(points) >= 3 else 0
+    if spread < .1:
+        failures.append("within-file sample loss not exposed by landmarks")
+    print("capture-loss control: landmark spread %.1f ms" % (1000*spread))
     return failures
 
 
@@ -217,7 +227,7 @@ def check_stimulus():
     return entries, total, problems
 
 
-def check_run_dir(signals_dir, work_dir):
+def check_run_dir(signals_dir, work_dir, model=model_hardclip, calibrated=True):
     """End to end on files: generate a synthetic recording, then run analyze.py.
 
     This is the path a real run takes (manifest, recording file, alignment) but
@@ -245,7 +255,7 @@ def check_run_dir(signals_dir, work_dir):
         data, fs = sf.read(entry["path"], dtype="float64", always_2d=True)
         if fs != FS:
             raise SystemExit("%s is %d Hz" % (entry["path"], fs))
-        sig = model_hardclip(data, FS, rng) * MIC_GAIN
+        sig = model(data, FS, rng) * MIC_GAIN
         mono = sig.sum(axis=1) + rng.standard_normal(len(sig)) * ROOM_NOISE_RMS
         parts.append(mono)
         parts.append(gap)
@@ -256,7 +266,7 @@ def check_run_dir(signals_dir, work_dir):
     sf.write(os.path.join(work_dir, rec_name), recording, FS, subtype="PCM_16")
     manifest = {
         "label": "selftest-run-dir",
-        "calibrated_fixture": True,
+        "calibrated_fixture": calibrated,
         "slider": 0,
         "created": "synthetic",
         "fs": FS,
@@ -272,11 +282,13 @@ def check_run_dir(signals_dir, work_dir):
         json.dump(manifest, fh, indent=1)
     report, path = analyze.run(work_dir)
     problems = []
-    for ch in ("L", "R"):
+    for ch in sorted({e["channel"] for e in signals["files"] if e["kind"] != "multitone"}):
         got = report["channels"][ch]["verdict"]
-        if got != "HARD CLIPPING":
-            problems.append("run dir: channel %s expected HARD CLIPPING, got %s"
-                            % (ch, got))
+        want = "HARD CLIPPING" if calibrated else "INCONCLUSIVE"
+        if got != want:
+            problems.append("run dir: channel %s expected %s, got %s" % (ch, want, got))
+    if report.get("invalid_measurements"):
+        problems.append("run dir false refusal: " + str(report["invalid_measurements"]))
     worst = 0
     for name, want in truth.items():
         got = report["alignment"].get(name)
@@ -291,12 +303,14 @@ def check_run_dir(signals_dir, work_dir):
              ", ".join("%s %s" % (ch, report["channels"][ch]["verdict"])
                        for ch in sorted(report["channels"]))))
     print("run dir: wrote %s" % path)
+    if calibrated:
+        problems.extend(check_run_dir(signals_dir, os.path.join(work_dir, "chain"), model_chain, calibrated=False))
     return problems
 
 
 def main(argv=None):
     ap_args = sys.argv[1:]
-    if ap_args and ap_args[0] == "--run-dir":
+    if ap_args and ap_args[0] in ("--run-dir", "--bass-run-dir"):
         if len(ap_args) != 2:
             print("usage: selftest.py --run-dir SIGNALS_DIR", file=sys.stderr)
             return 2
@@ -304,7 +318,10 @@ def main(argv=None):
         import tempfile
         work = tempfile.mkdtemp(prefix="speakerkit-rundir.")
         try:
-            problems = check_run_dir(ap_args[1], work)
+            if ap_args[0] == "--bass-run-dir":
+                problems = check_run_dir(ap_args[1], work, model_chain, calibrated=False)
+            else:
+                problems = check_run_dir(ap_args[1], work)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         for p in problems:

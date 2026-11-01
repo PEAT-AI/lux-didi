@@ -462,12 +462,6 @@ export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
  *  C-DEADAIR: the rung stays at 8 s because the fastest rescue is the response's own end (see #deliverAfterSilentText),
  *  and shortening the rung on top of that broke the replay invariants that guard against double speaking. */
 export const AUDIBLE_DEBT_RUNG_MS = 8_000;
-/** C-RECONNECT #1072: the two numbers the ladder spends on a silence that began at a tool result, and only on that
- *  shape. The rung lands 5 s after the model began owing the answer and the rebuild follows 4 s later, so a provider
- *  still mute after a lookup is replaced inside about nine seconds instead of the 8 s + 7 s the owner-turn ladder
- *  spends. AUDIBLE_DEBT_RUNG_MS and RESPONSE_WATCHDOG_RECOVERY_MS are untouched. */
-export const AUDIBLE_DEBT_POST_TOOL_RUNG_MS = 5_000;
-export const AUDIBLE_DEBT_POST_TOOL_REBUILD_MS = 4_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
@@ -890,8 +884,6 @@ interface ActiveSession {
   lastToolResultAt?: number | undefined;
   /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
   debtHeldForTool?: boolean | undefined;
-  /** C-RECONNECT #1072: this clock began at a tool result, so it spends the post-tool rung and rebuild delta. */
-  debtPostTool?: boolean | undefined;
   /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
   rebuildAudio: Uint8Array[]; rebuildAudioBytes: number;
   /** #538: the audible debt clock, the debt the owner can hear is unanswered. It is non-sliding: it starts when the
@@ -2482,7 +2474,6 @@ export class LiveSessionOwner {
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
-    handle.debtPostTool = reason === 'tool_output';
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
     handle.deadAirNudgedAt = undefined;
@@ -2490,8 +2481,7 @@ export class LiveSessionOwner {
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
-    const rungMs = handle.debtPostTool === true ? AUDIBLE_DEBT_POST_TOOL_RUNG_MS : AUDIBLE_DEBT_RUNG_MS;
-    this.#scheduleDebt(handle, Math.max(1, rungMs - (this.#now() - lastAudible)), 'rung');
+    this.#scheduleDebt(handle, Math.max(1, AUDIBLE_DEBT_RUNG_MS - (this.#now() - lastAudible)), 'rung');
   }
 
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
@@ -2508,7 +2498,7 @@ export class LiveSessionOwner {
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
-    handle.debtDeferred = false; handle.debtHeldForTool = false; handle.debtPostTool = false;
+    handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
   }
 
@@ -2634,11 +2624,8 @@ export class LiveSessionOwner {
     }
     // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
     // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
-    // C-RECONNECT #1072: a silence that began at a tool result rebuilds at its own delta, which is what bounds the
-    // owner's wait after a lookup. Every other silence keeps the owner-turn seven seconds.
-    const rebuildMs = handle.debtPostTool === true ? AUDIBLE_DEBT_POST_TOOL_REBUILD_MS : RESPONSE_WATCHDOG_RECOVERY_MS;
     if (this.#profile.provider !== 'openai') {
-      this.#scheduleDebt(handle, rebuildMs, 'rebuild');
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
     // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
@@ -2646,7 +2633,7 @@ export class LiveSessionOwner {
     // the answer the owner asked for is not made to wait for two provider recreates.
     if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
       if (!(await this.#deliverUnspoken(handle))) return;
-      this.#scheduleDebt(handle, rebuildMs, 'rebuild');
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
     const recreated = await this.#recreateForDeadAir(handle, 'dead_air');

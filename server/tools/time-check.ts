@@ -29,6 +29,8 @@ export interface OwnerClock {
   /** The hour and minute the words fix, when the meridian is still open. */
   hour?: number;
   minute?: number;
+  /** Whether the words fixed the minutes, so a model minute never overrides a spoken one. */
+  minutesStated?: boolean;
   day?: OwnerDay;
   relative?: { amount: number; unit: 'minutes' | 'hours' };
 }
@@ -67,14 +69,14 @@ function valueOf(token: string): number | undefined {
   return values.reduce((sum, value) => sum! + value!, 0);
 }
 
-interface Candidate { index: number; hour: number; minute: number; exact: boolean; length: number }
+interface Candidate { index: number; hour: number; minute: number; exact: boolean; stated: boolean; length: number }
 
 function collect(text: string): Candidate[] {
   const found: Candidate[] = [];
-  const push = (match: RegExpExecArray, hour: number | undefined, minute: number, exact: boolean): void => {
+  const push = (match: RegExpExecArray, hour: number | undefined, minute: number, exact: boolean, stated = true): void => {
     if (hour === undefined || !Number.isInteger(hour) || hour > 24 || minute > 59) return;
     if (found.some(item => item.index === match.index)) return;
-    found.push({ index: match.index, hour, minute, exact, length: match[0].length });
+    found.push({ index: match.index, hour, minute, exact, stated, length: match[0].length });
   };
   // "half past six", "quarter to seven", "ten to seven", "twenty five past six".
   for (const match of text.matchAll(new RegExp(`\\b(half|quarter|(?:${NUMBER})(?:\\s+minutes?)?)\\s+(past|to)\\s+(${NUMBER})(?:\\s*([ap])m\\b)?`, 'g')) as Iterable<RegExpExecArray>) {
@@ -201,8 +203,8 @@ export function checkOwnerTime(words: string): OwnerTimeCheck {
 
   // A period word settles an hour that had no meridian of its own.
   const settled = clocks.map(candidate => candidate.exact || period === undefined
-    ? { hour: candidate.hour, minute: candidate.minute, exact: candidate.exact }
-    : { hour: period === 'pm' ? (candidate.hour === 12 ? 12 : candidate.hour + 12) : (candidate.hour === 12 ? 0 : candidate.hour), minute: candidate.minute, exact: true });
+    ? { hour: candidate.hour, minute: candidate.minute, exact: candidate.exact, stated: candidate.stated }
+    : { hour: period === 'pm' ? (candidate.hour === 12 ? 12 : candidate.hour + 12) : (candidate.hour === 12 ? 0 : candidate.hour), minute: candidate.minute, exact: true, stated: candidate.stated });
 
   const distinct = new Set(settled.map(clock => `${clock.hour}:${clock.minute}`));
   if (distinct.size > 1) return { status: 'inconclusive', reason: 'several_times' };
@@ -212,5 +214,5 @@ export function checkOwnerTime(words: string): OwnerTimeCheck {
   const localTime = `${String(clock.hour).padStart(2, '0')}:${String(clock.minute).padStart(2, '0')}`;
   if (clock.exact) return { status: 'unique', localTime, ...(day ? { day } : {}) };
   // "at six" names an hour but not half of the day: the model may settle the meridian.
-  return { status: 'partial', hour: clock.hour, ...(day ? { day } : {}) };
+  return { status: 'partial', hour: clock.hour, minute: clock.minute, minutesStated: clock.stated, ...(day ? { day } : {}) };
 }

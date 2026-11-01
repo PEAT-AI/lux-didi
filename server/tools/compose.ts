@@ -233,7 +233,9 @@ export function eventWindow(words: string, now: number, timeZone: string, ownerN
   }
   const parsed = parseAlarmTime(englishDayWords(cleaned), now, timeZone, modelTime);
   if (parsed.status === 'ready') return { status: 'ready', startUtc: parsed.fireAtUtc, endUtc: parsed.fireAtUtc + duration, timeZone: parsed.tz, names };
-  if (parsed.status === 'clarify') return { status: 'clarify', reason: parsed.reason === 'ambiguous_time' || parsed.reason === 'past_time' ? 'unsupported_time_expression' : 'missing_time' };
+  // An open hour ("at 11") or a stated today already past reads on the event's own clock below; only
+  // words with no time at all ask the owner back.
+  if (parsed.status === 'clarify' && parsed.reason === 'missing_time') return { status: 'clarify', reason: 'missing_time' };
   const time = hourMinute(cleaned);
   if (!time) return { status: 'clarify', reason: 'missing_time' };
   const [year, month, day] = localParts(now, timeZone) as [number, number, number, number, number, number];

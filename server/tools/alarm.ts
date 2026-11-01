@@ -137,7 +137,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
       if (!clock) return { status: 'clarify', reason: 'ambiguous_time' };
       let hour = checked.hour;
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
-      const minute = checked.minute ?? clock?.minute ?? 0;
+      const minute = checked.minutesStated === true ? checked.minute ?? 0 : clock.minute ?? 0;
       const day = checked.day ?? (time?.mode === 'wall' ? time.date : { kind: 'today' as const });
       const statedToday = checked.day?.kind === 'today';
       const instant = commitWall(day, hour, minute, now, zone, statedToday);

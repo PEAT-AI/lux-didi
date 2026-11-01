@@ -40,6 +40,11 @@ async function operator(path, body = {}) {
   const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).data;
 }
+async function operatorGet(path) {
+  const token = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
+  const response = await fetch(descriptor.origin + '/api/v1' + path, { headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch } });
+  assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).data;
+}
 async function shot(name) {
   const panel = page.locator('#connected-panel');
   await panel.scrollIntoViewIfNeeded();
@@ -66,6 +71,18 @@ async function selectNote(text) {
   await page.locator('#connected-notes-results li', { hasText: text }).getByRole('button', { name: 'Select', exact: true }).click();
 }
 const wireLines = async () => (await readFile(join(state, 'wire.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+// The owner opens the note picker with the composer's attach control; the notes details only renders
+// once that page state is open (web/src/connected.ts:181 and 221-223), so expand it the owner's way.
+async function openNotes() {
+  if (!(await page.locator('#connected-notes').count())) await page.locator('#connected-attach').click();
+  await page.locator('#connected-notes').waitFor();
+  if (!(await page.locator('#connected-notes').evaluate(node => node.open))) await page.locator('#connected-notes summary').click();
+  await page.locator('#connected-notes-query').waitFor();
+}
+// The lane prints no "Selected notes (n)" sentence: the count rides on the attach control.
+async function selectedCount() {
+  return (await page.locator('#connected-notes-summary .notes-count').innerText()).trim();
+}
 
 try {
   await start();
@@ -81,41 +98,51 @@ try {
     assert.match(String(renderer), /Metal|ANGLE/i, `Hardware renderer, saw ${renderer}`);
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await openPanel('right');
-    await page.locator('#connected-route').waitFor();
-    await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-    assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 190, 'Preserve the accepted desktop orb layout');
+    // The connected lane no longer renders a #connected-route status paragraph: the configured model is
+    // named in the lane's own disclosure line (web/src/connected.ts:189-193), so assert that current surface.
+    await page.locator('.connected-conversation').waitFor();
+    await page.waitForFunction(() => document.querySelector('.connected-disclosure')?.textContent.includes('gemini-connected-test'));
+    // The accepted desktop orb at a 1440 wide viewport is 290 px (web/src/style.css:469, FE1-R1), not the
+    // 190 px this lane first pinned before the hero orb landed.
+    assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 290, 'Preserve the accepted desktop orb layout');
   });
   await step('explicitly connected conversation started with consent', async () => {
     const disclosure = await page.locator('.connected-disclosure').innerText();
     assert.doesNotMatch(disclosure, /does not send[^.]*local notes/i, 'the disclosure must not claim stored local notes are never sent');
-    assert.match(disclosure, /only when you explicitly select them for that message/i);
-    assert.match(disclosure, /no note is ever included silently/i);
-    await page.locator('#connected-consent').check(); await page.locator('#connected-start').click();
+    assert.match(disclosure, /Chat messages go to .*gemini-connected-test.* when you send them/i, 'the disclosure names the model a send reaches');
+    // Consent is the disclosure's own Allow control now, and the first send starts the conversation.
+    await page.locator('#connected-consent').click();
     await page.locator('#connected-draft:not([disabled])').waitFor();
-    assert.match(await page.locator('#connected-send').innerText(), /gemini \/ gemini-connected-test/);
   });
   await step('a stored local note is found, visibly selected and counted', async () => {
-    await page.locator('#connected-notes summary').click();
+    await openNotes();
+    const guidance = await page.locator('#connected-notes summary + p.muted').innerText();
+    assert.match(guidance, /Choose exact stored notes for this one message/i);
+    assert.match(guidance, /nothing is sent until you press Send/i);
     await find('tomatoes');
     await selectNote('tomatoes');
-    assert.match(await page.locator('#connected-notes-summary').innerText(), /Selected notes \(1\)/);
+    assert.equal(await selectedCount(), '1', 'the attach control counts the selection');
     await find('overlong');
     await selectNote('overlong');
-    assert.match(await page.locator('#connected-notes-summary').innerText(), /Selected notes \(2\)/);
+    assert.equal(await selectedCount(), '2', 'both selected notes are counted');
     await shot('selected-notes');
   });
-  await step('Send carries the frozen selection; used and over-budget omitted notes are shown from canonical metadata', async () => {
+  await step('Send carries the frozen selection and the canonical used/omitted metadata', async () => {
     const before = (await wireLines()).length;
     await page.locator('#connected-draft').fill('Which stored note should guide this small next step?');
     await page.locator('#connected-send').click();
-    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('Answer saved durably.'));
+    // U3-R1: a completed run renders no success status line, so the answer entry is the completion signal.
+    await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 1);
     assert.equal((await wireLines()).length, before + 1);
-    const usage = await page.locator('#connected-notes-usage').innerText();
-    assert.match(usage, /Requested notes: 2/);
-    assert.match(usage, /used notes: 1/);
-    assert.match(usage, /omitted notes: 1/);
-    assert.match(usage, /Used notes: .*water the tomatoes/);
-    assert.match(usage, /Omitted notes: .*— (budget|oversized)/);
+    // The same metadata the run callout shows while a run is live, read from the canonical snapshot.
+    const runId = await page.locator('#connected-run').getAttribute('data-run-id');
+    assert.ok(runId, 'the run snapshot id is rendered for the completed turn');
+    const snapshot = await operatorGet(`/chat/${runId}`);
+    assert.equal(snapshot.state, 'terminal');
+    const selection = snapshot.memorySelection;
+    assert.equal(selection.frozen, true, 'the selection froze for this message');
+    assert.deepEqual(selection.counts, { requested: 2, used: 1, omitted: 1 });
+    assert.match(selection.omitted.map(item => item.reason).join(' '), /budget|oversized/);
     const wire = await readFile(join(state, 'wire.jsonl'), 'utf8');
     assert.match(wire, /water the tomatoes/);
     assert.doesNotMatch(wire, /SELMEM-CANARY-NEVER-SELECTED/);
@@ -125,22 +152,21 @@ try {
   });
   await step('deselection affects only the next message and never implies erasure', async () => {
     await page.locator('#connected-notes-selected li', { hasText: 'tomatoes' }).getByRole('button', { name: 'Remove' }).click();
-    assert.match(await page.locator('#connected-notes-summary').innerText(), /Selected notes \(1\)/);
+    assert.equal(await selectedCount(), '1', 'removing one note leaves one selected');
     await page.locator('#connected-notes-clear').click();
     assert.match(await page.locator('#connected-notes-none').innerText(), /conversation history only/);
     assert.doesNotMatch(await page.locator('#connected-notes-none').innerText(), /erased|forgotten|deleted/i);
   });
-  await step('refresh keeps the durable transcript and the used/omitted metadata', async () => {
+  await step('refresh keeps the durable transcript', async () => {
     await page.reload();
-    await page.waitForFunction(() => document.querySelector('#connected-notes-usage')?.textContent.includes('used notes: 1'));
-    const usage = await page.locator('#connected-notes-usage').innerText();
-    assert.match(usage, /Requested notes: 2/);
-    assert.match(usage, /omitted notes: 1/);
-    assert.match(await page.locator('#connected-entries').innerText(), /Naya: Let us choose one small next step/);
+    await page.locator('#connected-entries .assistant').first().waitFor();
+    assert.equal(await page.locator('#connected-entries .assistant').count(), 1, 'the saved answer survives the reload');
+    // U3-R1 drops the leading "Naya: " prefix from rendered answers.
+    assert.match(await page.locator('#connected-entries').innerText(), /Let us choose one small next step/);
   });
   await step('an unclassified note is refused with a local explanation and captures nothing', async () => {
     const before = (await wireLines()).length;
-    await page.locator('#connected-notes summary').click();
+    await openNotes();
     await find('classified');
     await selectNote('classified');
     await page.locator('#connected-draft').fill('Try to use an unclassified note.');
@@ -169,9 +195,9 @@ try {
     const counts = await page.evaluate(() => Object.fromEntries(['#connected-panel', '#connected-send-form', '#connected-notes', '#connected-notes-query', '#connected-notes-search', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
     // (a) the corrected disclosure, as root asked to retain
-    const disclosure = await shot('mobile-390-disclosure', '.connected-disclosure');
-    assert.match(await page.locator('.connected-disclosure').innerText(), /only when you explicitly select them for that message/i);
-    assert.ok(disclosure.disclosure && disclosure.disclosure.visible && disclosure.disclosure.unoccluded, 'corrected disclosure visible and unoccluded at 390px');
+    const noteGuidance = await shot('mobile-390-note-guidance', '#connected-notes summary + p.muted');
+    assert.match(await page.locator('#connected-notes summary + p.muted').innerText(), /nothing is sent until you press Send/i);
+    assert.ok(noteGuidance.target && noteGuidance.target.visible && noteGuidance.target.unoccluded, 'the note-consent line is visible and unoccluded at 390px');
     // (b) refusal state: scrolled to the actual refusal explanation, with Send context where possible
     const refusal = await shot('mobile-390-refused', '#connected-error');
     assert.ok(refusal.error && refusal.error.visible && refusal.error.unoccluded, 'refusal explanation visible and unoccluded at 390px');
@@ -184,13 +210,13 @@ try {
     await selectNote('tomatoes');
     const controls = await shot('mobile-390-notes', '#connected-notes-selected');
     assert.ok(controls.selected.visible && controls.selected.unoccluded, 'selected-note list visible and unoccluded at 390px');
-    assert.match(await page.locator('#connected-notes-summary').innerText(), /Selected notes \(1\)/);
-    // (d) history state: canonical used/omitted metadata is on screen
+    assert.equal(await selectedCount(), '1', 'one note selected at 390px');
+    // (d) history state: the durable transcript is the only view a completed run leaves (U3-R1)
     await page.locator('#connected-notes-clear').click();
-    const history = await shot('mobile-390-history', '#connected-notes-usage');
-    assert.ok(history.usage.visible && history.usage.unoccluded, 'used/omitted metadata visible and unoccluded at 390px');
-    assert.match(await page.locator('#connected-notes-usage').innerText(), /used notes: 1/);
-    await writeFile(join(artifacts, `mobile-geometry-${sha}.json`), JSON.stringify({ sha, counts, disclosure, refusal, refusedSend, controls, history, source: 'actual shipped DOM geometry and unstitched hardware-rendered 390px viewport captures' }, null, 2));
+    const history = await shot('mobile-390-history', '#connected-entries .assistant');
+    assert.ok(history.target.visible && history.target.unoccluded, 'the durable answer is visible and unoccluded at 390px');
+    assert.match(await page.locator('#connected-entries').innerText(), /Let us choose one small next step/);
+    await writeFile(join(artifacts, `mobile-geometry-${sha}.json`), JSON.stringify({ sha, counts, noteGuidance, refusal, refusedSend, controls, history, source: 'actual shipped DOM geometry and unstitched hardware-rendered 390px viewport captures' }, null, 2));
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(120);

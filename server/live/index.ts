@@ -4454,7 +4454,13 @@ export class LiveSessionOwner {
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
-    const budgetedExecute = budgetedReads(handle.researchAdmission, execute);
+    const budgetedExecute = budgetedReads(handle.researchAdmission, async (subs, signal) => {
+      const results = await execute(subs, signal);
+      // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence
+      // even when the connector that carried it is the owner's own knowledge store.
+      if (results.some(result => result.ok)) this.#tools?.owner.ownerRequests.expose(handle.liveSessionId);
+      return results;
+    });
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       inputSchema: name => this.#tools!.owner.definitions(host.runId).find(tool => tool.name === name)?.parameters,

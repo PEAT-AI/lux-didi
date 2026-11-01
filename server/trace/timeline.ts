@@ -132,11 +132,12 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
 const FAILED_RESPONSE_REASONS = new Set(['failed', 'provider_error', 'timeout']);
 const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
 /** C-LABELS 4: every way a model announces the look-up it is about to run. A turn that says one of these and
- *  runs no call after it promised the owner something it never did, whatever words it chose to promise it. */
+ *  runs no call after it promised the owner something it never did, whatever words it chose to promise it.
+ *  A fragment may carry a `%` of its own: the scheduled filler puts other words between the two halves. */
 const ANNOUNCED_LOOKUPS = ['looking this up', 'looking that up', 'looking it up', 'looking into it', "i'll check",
   'i will check', 'let me check', 'let me look', 'let me see', 'let me find', 'let me pull', 'let me take a look',
   'let me have a look', "let's check", "let's see", "let's look", "let's take a look", "let's have a look",
-  'take a look', 'have a look', 'pull that up', 'one second, checking', 'checking now'] as const;
+  'take a look', 'have a look', 'pull that up', 'one second%checking', 'checking now'] as const;
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };

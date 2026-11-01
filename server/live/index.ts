@@ -1450,6 +1450,11 @@ export function subResultOf(key: string, name: string, response: Record<string, 
     ...(ok && typeof response['classified'] === 'string' ? { classified: response['classified'] } : {}) } as IntentSubResult;
 }
 
+/** C-LABELS 2: the Stop reasons whose terminal code is the reason itself, because the owner provably pressed
+ *  nothing. Every other reason the app sends still settles `user_stop`: C-HEADPHONES 5 deliberately keeps a
+ *  route change as the owner's own stop on the terminal line, pinned by its live test. */
+const TERMINAL_CODE_OF_STOP: Readonly<Record<string, string>> = { session_lost: 'session_lost' };
+
 export class LiveSessionOwner {
   /** C-LOGS11: when each turn's owner final landed, so a later native receipt can close that turn's
    *  final-to-audible latency. Session-scoped and pruned with the turn it belongs to. */
@@ -3896,7 +3901,7 @@ export class LiveSessionOwner {
     // user_stop: the log never invents a reason it was not told.
     const reason = nativeReason && (NATIVE_END_REASONS as readonly string[]).includes(nativeReason)
       ? nativeReason : 'user_stop';
-    this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
+    this.#settle(handle, { state: 'closed', code: TERMINAL_CODE_OF_STOP[reason] ?? 'user_stop' }, true, 'ended', null);
     hostLogEvent({ event: 'session_end', reason, msAfterStop: 0 });
   }
 

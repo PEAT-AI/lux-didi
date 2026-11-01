@@ -583,3 +583,15 @@ test('P-R3 an alarm with no time in his words executes from the model time argum
   assert.equal(parsed.status, 'ready');
   assert.equal(parsed.status === 'ready' ? parsed.fireAtUtc : 0, now + 3_600_000);
 });
+
+// P-R6: with no owner final in the session nothing writes and nothing opens, whatever the model asks.
+test('P-R6 with no owner final no free write and no open executes', () => {
+  const requests = new OwnerRequests(() => 0);
+  for (const kind of ['set_alarm', 'create_event', 'draft_email', 'draft_chat', 'open', 'lux_note'] as const) {
+    assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+    assert.equal(requests.freeGate('s', kind, 'target').code, 'no_owner_request', kind);
+  }
+  // A final with no words is not owner words either.
+  requests.observe('s', 'j1', '   ', 0);
+  assert.equal(requests.authorize('s', 'set_alarm', 't').code, 'no_owner_request');
+});

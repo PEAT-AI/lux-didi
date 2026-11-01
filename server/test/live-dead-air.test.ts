@@ -273,3 +273,94 @@ test('C-REBUILD C: a mute after tool work still rebuilds, exactly as before', as
   await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
   assert.equal(live.fake.sessionsOpened, 2, 'a tool turn that is owed an answer still recovers it');
 });
+
+// C-REBUILD (B-R7): the contract's invariant replays. One owed turn has one continuation owner: note delivery,
+// silent rescue, watchdog re-evaluation and the provider terminal are mediated by that one owner, and no path may
+// send a second create while one is active or after audio for that turn. Each replay asserts one answer and no
+// replay of spoken content, on the same fakes the rest of this file uses.
+const answeredOnce = (live: DeadAir): boolean => live.fake.texts.length <= live.sentTexts + 1;
+
+test('C-REBUILD invariant: chained responses are two answers, never a third create', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('c1'));
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  for (const answer of ['first', 'second']) {
+    await live.emit(portEvent({ type: 'modelTurnStarted' }));
+    await live.emit(audible());
+    await live.emit(portEvent({ type: 'modelText', text: `answer ${answer}`, thought: false }));
+    await live.emit(portEvent({ type: 'turnComplete' }));
+  }
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'two chained answers never rebuild the session');
+  assert.equal(heldRebuilds(live).length, 0, 'and no rebuild is held or taken for either of them');
+  assert.equal(answeredOnce(live), true, 'the turn keeps one continuation owner and one injected line at most');
+});
+
+test('C-REBUILD invariant: a held note, the terminal and the rescue arriving together send one line', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c2'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(portEvent({ type: 'modelText', text: 'reading', thought: false }));
+  // The terminal lands on the same tick the rung would speak, which is the shape that double spoke before.
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'a terminal and a rescue in one tick do not rebuild');
+  assert.equal(answeredOnce(live), true, 'and they never send more than one continuation line');
+});
+
+test('C-REBUILD invariant: a reordered or repeated terminal changes nothing', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c3'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'a repeated terminal is not a second reason to rebuild');
+  assert.equal(answeredOnce(live), true, 'and it never re-sends what was already said');
+});
+
+test('C-REBUILD invariant: a stale timer after the answer was heard does nothing', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c4'));
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(audible());
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 60_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'no timer left over from the hold rebuilds a heard answer');
+  assert.equal(live.fake.texts.length, live.sentTexts, 'and nothing is injected after it');
+});
+
+test('C-REBUILD invariant: owner speech during a deferral leaves one answer', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('c5'));
+  await drive(live, () => heldRebuilds(live).length > 0 || live.fake.sessionsOpened > 1, 40_000);
+  await live.emit(ownerFinal('and the other bridge too'));
+  await live.emit(audible());
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'his words inside the deferral do not rebuild anything');
+  assert.equal(answeredOnce(live), true, 'and the deferred turn still keeps one continuation owner');
+});
+
+test('C-REBUILD invariant: a session replacement during a deferral carries one line, never two', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c6'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  // The response is past its ceiling at the rebuild step, so the replacement really happens.
+  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'the wedged response is replaced');
+  await drive(live, () => false, 10_000);
+  assert.equal(answeredOnce(live), true, 'the replacement carries the result once and never replays it');
+});

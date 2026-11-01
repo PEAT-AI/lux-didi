@@ -474,7 +474,7 @@ test('C-REBUILD C: a real question with no tool work and no response is no longe
     await live.advance(250);
   }
   assert.equal(removed(live).length > 0, true,
-    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))}`);
+    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))} trace=${JSON.stringify(live.receipts.filter(record => record.event === 'live_watchdog_hold'))}; inputFinal=${(live.owner.get(live.liveSessionId) as unknown as { inputFinal?: unknown }).inputFinal === undefined ? 'nofield' : 'field'} lastWords=${JSON.stringify(live.receipts.filter(record => record.event === 'live_debt').length)}`);
   assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
   assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],

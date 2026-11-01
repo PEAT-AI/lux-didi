@@ -2869,6 +2869,9 @@ export class LiveSessionOwner {
       // rebuilds inside that sentence; the clock restarts at his final fragment (the final transcription arms
       // this watchdog again). No timer value moves: only the moment the silence begins is judged.
       if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+        // C-REBUILD: every hold names itself. A reschedule with no receipt made a held deadline look like a phase
+        // that simply never advanced.
+        hostLogEvent({ event: 'live_watchdog_hold', reason: 'owner_speaking', generation, delayMs });
         this.#scheduleWatchdog(handle, delayMs, generation, step);
         return;
       }

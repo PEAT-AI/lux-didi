@@ -1225,6 +1225,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
     return { event: 'turn_failed', reason: value.reason };
   }
+  if (value.event === 'live_watchdog_hold') {
+    // C-REBUILD: a watchdog deadline held back, with the reason it was held. Counts and enums only.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'delayMs'])) return;
+    if (!isSafeMember(value.reason, ['owner_speaking'])) return;
+    for (const field of ['generation', 'delayMs']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_watchdog_hold', reason: value.reason, generation: value.generation, delayMs: value.delayMs };
+  }
   if (value.event === 'live_rebuild_held') {
     // C-REBUILD A: a rebuild that stood down because a response was in flight, with its named reason, that
     // response's age, the wait it took instead and how many times this call has held. A count, never an absence.

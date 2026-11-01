@@ -16,7 +16,7 @@ Playback order is the order of `signals.json["files"]`, interleaving nothing:
 all sweeps, then all multitone, then both twin tones.
 
 Usage:
-  .venv/bin/python make_signals.py [--out DIR] [--quiet]
+  .venv/bin/python make_signals.py [--out DIR] [--bass] [--quiet]
 """
 
 import argparse

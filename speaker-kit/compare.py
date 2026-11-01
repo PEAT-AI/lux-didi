@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""Compare two speaker-kit runs: what changed beyond measurement noise.
+"""Describe differences between two slider runs with unchanged mic and room.
 
     .venv/bin/python compare.py RUN_A RUN_B [-o changes.json]
 
-Typical use is before and after a reboot, or two slider positions.  Each run's
-analysis.json is reused when present, otherwise it is computed from the run
-directory first.
-
-Measurement noise used here is deliberately conservative, because one run per
-condition cannot measure its own repeatability: 1.0 dB on a band level, 0.05 dB
-per dB on a level slope, 2.0 dB (or twice the frame standard error, whichever is
-larger) on high-order distortion, 2.0 dB on a multitone residual and 6 dB on a
-twin tone sideband.  A change below these numbers is reported as noise.
+Only current measurement-version reports are reused. Invalid capture or
+alignment makes the comparison INCONCLUSIVE. Reporting tolerances below are
+not measured repeatability, statistical confidence or proof of speaker damage.
 """
 
 import argparse
@@ -115,15 +109,35 @@ def compare(a, b):
             rec = {"what": "%s twin tone sideband %d" % (ch, i + 1), "delta": d,
                    "unit": "dB"}
             (changes if abs(d) > SIDEBAND_NOISE_DB else noise).append(rec)
+    ta = {(v["frequency_hz"], v["level_dbfs"]): v for v in a.get("bass", {}).get("tones", [])}
+    tb = {(v["frequency_hz"], v["level_dbfs"]): v for v in b.get("bass", {}).get("tones", [])}
+    for key in sorted(set(ta) & set(tb)):
+        x, y = ta[key], tb[key]
+        if not (x["valid"] and y["valid"]):
+            continue
+        for metric in ("fund_dbfs", "gain_change_db", "pumping_db"):
+            d = _delta(x[metric], y[metric])
+            item = {"what": "bass %g Hz at %g dBFS %s" % (*key, metric), "delta": d, "unit": "dB"}
+            (changes if abs(d) > LEVEL_NOISE_DB else noise).append(item)
+        for order, (hx, hy) in enumerate(zip(x["harmonics_db"], y["harmonics_db"]), 2):
+            d = _delta(hx, hy)
+            item = {"what": "bass %g Hz at %g dBFS H%d" % (*key, order), "delta": d, "unit": "dB"}
+            (changes if abs(d) > HI_NOISE_DB else noise).append(item)
+    va, vb = a.get("bass", {}).get("voice", {}), b.get("bass", {}).get("voice", {})
+    for key in ("gain_change_db", "sideband_change_db", "sidebands_above_noise_db"):
+        d = _delta(va.get(key), vb.get(key))
+        if d is not None:
+            item = {"what": "bass plus voice " + key, "delta": d, "unit": "dB"}
+            (changes if abs(d) > RESIDUAL_NOISE_DB else noise).append(item)
     return changes, noise
 
 
 def format_changes(changes, noise):
     lines = []
     if not changes:
-        lines.append("no change beyond measurement noise")
+        lines.append("no change beyond descriptive reporting tolerances (not a noise estimate)")
     else:
-        lines.append("changed beyond measurement noise:")
+        lines.append("differences beyond descriptive reporting tolerances:")
         for c in changes:
             if "from" in c:
                 lines.append("  %-44s %s -> %s" % (c["what"], c["from"], c["to"]))
@@ -132,7 +146,7 @@ def format_changes(changes, noise):
             else:
                 lines.append("  %-44s %s" % (c["what"], c.get("change", "")))
     lines.append("")
-    lines.append("%d measurement(s) inside the noise floor" % len(noise))
+    lines.append("%d measurement(s) inside reporting tolerances" % len(noise))
     return "\n".join(lines)
 
 

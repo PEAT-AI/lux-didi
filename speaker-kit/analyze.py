@@ -1,35 +1,16 @@
 #!/usr/bin/env python3
-"""Analyse one speaker-kit run directory.
+"""Analyse a speaker-kit capture using validated per-file references.
 
-Reads `<run>/manifest.json` and the recording it names, aligns every played
-stimulus against the recording, and writes `analysis.json` plus a plain table
-to stdout.
+Invalid timing, missing stimuli and implausible levels refuse inference.
+Production output describes within-run level dependence, left/right routing
+and bass/voice controls, not flat-speaker absolute fault thresholds. Virtual
+bass, crossfeed and compression can be intentional. INCONCLUSIVE is not a
+clean-speaker certificate. Six explicitly calibrated synthetic fixtures keep
+the original diagnostic classifier as a regression test, not a real-Mac rule.
 
-Measurements, all as ratios to the fundamental measured in the same band, so
-an unknown mic distance and mic gain cancel out:
-
-  (a) high order distortion.  `hi` is the RMS of harmonic orders 10 to 20
-      relative to the fundamental, per band.  `crest` is max/rms of that
-      high-order content across frames: an impulsive fault (rattle, buzz) has
-      a crest well above a steady nonlinearity.  `floor` is the same
-      measurement taken between harmonics; `hi - floor` separates a coherent
-      harmonic series from broadband noise that a rub or buzz radiates.
-  (b) level linearity.  Fundamental level per band at -18, -9 and -3 dBFS,
-      regressed: a slope below 1.0 dB per dB is a compressor or limiter.
-  (c) left versus right, from the separate left-only and right-only plays.
-  (d) distortion growth per dB, from `hi` at the three levels.
-  (e) multitone residual floor between tones, per level.
-  (f) twin tone sidebands around 7 kHz, spaced by the 60 Hz drive.
-  (g) mic validity: a clipped recording or a band whose fundamental is not
-      clear of the inter-harmonic floor is refused, and the channel verdict
-      falls back to INCONCLUSIVE instead of guessing.
-
-Harmonic analysis of a sweep uses matched demodulation at the known
-instantaneous phase of each order: a plain STFT smears the sweep within a
-frame, which would under-read exactly the high orders that matter.
-
-Usage:
-  .venv/bin/python analyze.py RUN_DIR [-o analysis.json]
+Harmonic projections are short-window descriptive measurements. They do not
+implement Farina separated impulse responses, and capture discontinuities or
+frequency-dependent delay invalidate their fault interpretation.
 """
 
 import argparse
@@ -491,7 +472,9 @@ def bass_metrics(entries, segments, fs):
         result["voice"] = {"alone": a, "with_bass": b,
             "gain_change_db": round(b["tone_rms_dbfs"]-a["tone_rms_dbfs"], 2),
             "sideband_change_db": round(b["sideband_rms_dbfs"]-a["sideband_rms_dbfs"], 2),
-            "sidebands_above_noise_db": round(b["sideband_rms_dbfs"]-b["noise_rms_dbfs"], 2)}
+            "sidebands_above_noise_db": round(b["sideband_rms_dbfs"]-b["noise_rms_dbfs"], 2),
+            "voice_snr_db": round(min(a["tone_rms_dbfs"]-a["noise_rms_dbfs"], b["tone_rms_dbfs"]-b["noise_rms_dbfs"]), 2),
+            "sideband_evidence": "above control noise" if b["sideband_rms_dbfs"]-max(a["sideband_rms_dbfs"], b["noise_rms_dbfs"]) >= 6 else "INCONCLUSIVE: no sideband excess above controls"}
     return result
 
 
@@ -906,6 +889,9 @@ def run(run_dir, out_path=None):
     report = analyse_segments(entries, segments, fs, meta, calibrated=manifest.get("calibrated_fixture", False))
     report["mic"]["clipped"] = capture_peak >= db(MIC_CLIP_LEVEL)
     if report["mic"]["clipped"]:
+        report["invalid_measurements"].append("capture clips at the microphone")
+        report["comparison"] = []
+        report["bass"]["verdict"] = "INCONCLUSIVE: capture clipped"
         for data in report["channels"].values():
             data["verdict"] = "INCONCLUSIVE"
             data["reasons"] = ["Capture clipping invalidates speaker inference."]

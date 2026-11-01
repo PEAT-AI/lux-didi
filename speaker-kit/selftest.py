@@ -303,6 +303,32 @@ def check_run_dir(signals_dir, work_dir, model=model_hardclip, calibrated=True):
              ", ".join("%s %s" % (ch, report["channels"][ch]["verdict"])
                        for ch in sorted(report["channels"]))))
     print("run dir: wrote %s" % path)
+    if not calibrated:
+        import copy
+        import compare
+        second = copy.deepcopy(report)
+        second["slider"] = 79
+        second["label"] = "synthetic-other-slider"
+        for data in second["channels"].values():
+            for bands in data["sweep"].values():
+                for band in bands.values():
+                    if band.get("fund_dbfs") is not None:
+                        band["fund_dbfs"] -= 3
+        for tone in second["bass"]["tones"]:
+            tone["fund_dbfs"] -= 3
+        second_dir = os.path.join(work_dir, "other-slider")
+        os.makedirs(second_dir, exist_ok=True)
+        with open(os.path.join(second_dir, "analysis.json"), "w") as fh:
+            json.dump(second, fh)
+        differences, _ = compare.compare(report, second)
+        if not any(v.get("delta") == -3 for v in differences):
+            problems.append("slider comparison misses controlled 3 dB difference")
+        if compare.main([work_dir, second_dir]) != 0:
+            problems.append("comparison CLI failed")
+        second["invalid_measurements"] = ["synthetic missing stimulus"]
+        refused, _ = compare.compare(report, second)
+        if not any("INCONCLUSIVE" in v["what"] for v in refused) or any("delta" in v for v in refused):
+            problems.append("invalid capture permitted numeric slider inference")
     if calibrated:
         problems.extend(check_run_dir(signals_dir, os.path.join(work_dir, "chain"), model_chain, calibrated=False))
     return problems

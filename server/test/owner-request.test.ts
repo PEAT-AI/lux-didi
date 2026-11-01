@@ -147,6 +147,40 @@ for (const words of [
   });
 }
 
+// C-NEGATION: a negator in front of "forget" asks him to remember, never to skip the action.
+for (const [words, kind] of [
+  ["don't forget to set an alarm at seven", 'set_alarm'],
+  ['do not forget to put cardio in my calendar', 'create_event'],
+  ['never forget to remind me at nine', 'set_alarm'],
+] as const) {
+  test(`C-NEGATION forget-to is an ask, not a negation: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    assert.equal(requests.authorize('s', kind, 'target').code, 'allowed', kind);
+  });
+}
+
+for (const [words, kind] of [
+  ["don't set an alarm", 'set_alarm'],
+  ['never mind the alarm', 'set_alarm'],
+  ['no need to add it to the calendar', 'create_event'],
+] as const) {
+  test(`C-NEGATION a real negation still voids its action: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+  });
+}
+
+test('C-NEGATION a split ask keeps the first alarm when the second says not to forget', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'set an alarm at seven');
+  requests.observe('s', 'j2', "don't forget it's tomorrow");
+  const ask = requests.authorize('s', 'set_alarm', 'time');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /seven/);
+});
+
 for (const [words, kind] of [
   ['Great, okay, like set an alarm in nine minutes', 'set_alarm'],
   ['Well, okay, could you open the', 'open'],

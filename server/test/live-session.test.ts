@@ -8471,3 +8471,41 @@ test('#107 P-R9: a mail result fences the turn and the owner final opens it agai
   assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
   attachment.close();
 });
+
+test('C-REBUILD B: a held note with no terminal before teardown stays ledger only', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const lateHeld = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(lateHeld.length, 1, 'one receipt for the source that landed later');
+  assert.equal(lateHeld[0]!['destination'], 'held', `a response in flight holds it: ${JSON.stringify(lateHeld[0])}`);
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'nothing is written into the response in flight');
+  // No terminal ever arrives: the teardown names the ledger-only disposition and speaks nothing.
+  h.owner.revoke(session.liveSessionId);
+  await settlePort();
+  const ledger = receipts.filter(entry => entry['event'] === 'live_late_note_ledger');
+  assert.equal(ledger.length, 1, 'a held note lost with its generation is named');
+  assert.equal(ledger[0]!['reason'], 'generation_torn_down');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'and nothing is spoken into a session that is gone');
+});

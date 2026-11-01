@@ -5343,6 +5343,12 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
+    // C-REBUILD B: a note still held when the session ends never gets the terminal that would have spoken it, so
+    // its ledger-only disposition is named here instead of vanishing with the handle.
+    for (const entry of handle.lateHeld ?? []) {
+      hostLogEvent({ event: 'live_late_note_ledger', reason: 'generation_torn_down', generation: entry.generation });
+    }
+    handle.lateHeld = [];
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();

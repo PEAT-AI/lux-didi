@@ -106,7 +106,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('wake me');
   assert.match(await call('set_alarm'), /missing_time/);
   await owner('in one minute');
-  assert.match(await call('set_alarm', { fire_at_utc: now + 65000 }), /Alarm set/);
+  assert.match(await call('set_alarm', { time: { mode: 'relative', amount: 1, unit: 'minutes' } }), /Alarm set/);
   const first = String(rows()[0].id);
   await owner('show my alarms');
   assert.match(await call('list_alarms'), new RegExp(first));

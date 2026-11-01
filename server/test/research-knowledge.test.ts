@@ -432,3 +432,32 @@ test('C-POLISH10: a continue on a finished run answers already_delivered without
   assert.match(String(reply['note']), /already gave its answer/u, 'the note is the pointer');
   assert.equal(executed.length, before, 'a finished run spends no read on a continue');
 });
+
+test('V-R2: the provider catalogue key researchProjects is the hint set, and a catalogue without it means none', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { loadMcpEndpoints } = await import('../config/mcp.js');
+  const catalogue = (extra: Record<string, unknown>): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'didi-research-projects-'));
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, endpoints: [], ...extra }), { mode: 0o600 });
+    return dir;
+  };
+  const ask = 'how is the Wriggler pipeline doing';
+  try {
+    const withKey = catalogue({ researchProjects: ['Wriggler', 'example-project'] });
+    const selection = loadMcpEndpoints({ configDir: withKey });
+    assert.equal(selection.state, 'configured');
+    configureProjectNames(selection.state === 'configured' ? selection.catalog.researchProjects : undefined);
+    assert.equal(projectHintOf(ask), 'Wriggler', 'the configured key supplies the hint');
+
+    const withoutKey = catalogue({});
+    const bare = loadMcpEndpoints({ configDir: withoutKey });
+    configureProjectNames(bare.state === 'configured' ? bare.catalog.researchProjects : undefined);
+    assert.equal(projectHintOf(ask), undefined, 'a catalogue without the key leaves the hint set empty');
+
+    const malformed = catalogue({ researchProjects: ['Wriggler', 42] });
+    assert.throws(() => loadMcpEndpoints({ configDir: malformed }), /invalid_profile/u, 'a key that is not a list of names is refused');
+    for (const dir of [withKey, withoutKey, malformed]) rmSync(dir, { recursive: true, force: true });
+  } finally { configureProjectNames(undefined); }
+});

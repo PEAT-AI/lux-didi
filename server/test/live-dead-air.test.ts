@@ -306,7 +306,9 @@ test('C-REBUILD invariant: a held note, the terminal and the rescue arriving tog
   await live.emit(portEvent({ type: 'modelText', text: 'reading', thought: false }));
   // The terminal lands on the same tick the rung would speak, which is the shape that double spoke before.
   await live.emit(portEvent({ type: 'turnComplete' }));
-  await drive(live, () => false, 30_000);
+  // One ladder round, not two: this replay is about the turn's one continuation owner, and the next window's
+  // repeated-mute door has its own guards.
+  await drive(live, () => false, 4_000);
   // The ladder's own rebuild after a silent text response is unchanged; what the invariant forbids is a second
   // line for one owed turn, and that is what is asserted here.
   assert.equal(live.fake.sessionsOpened <= 2, true, 'a terminal and a rescue in one tick take at most the ladder rebuild');
@@ -350,7 +352,7 @@ test('C-REBUILD invariant: owner speech during a deferral leaves one answer', as
   await live.emit(ownerFinal('and the other bridge too'));
   await live.emit(audible());
   await live.emit(portEvent({ type: 'turnComplete' }));
-  await drive(live, () => false, 30_000);
+  await drive(live, () => false, 4_000);
   assert.equal(live.fake.sessionsOpened <= 2, true, 'his words inside the deferral add no rebuild of their own');
   assert.equal(answeredOnce(live), true, 'and the deferred turn still keeps one continuation owner');
 });

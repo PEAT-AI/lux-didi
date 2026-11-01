@@ -47,6 +47,8 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
     toolName: tool.name, executionId: randomUUID(), callId: randomUUID(),
     argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: tool.accountId, resourceId: tool.resourceId };
   assert.equal(owner.journal.intent(intent), 'fresh');
+  const firstOutcome = await tool.execute(args, { ...intent, signal }).then(value => ({ value }), error => ({ error }));
+  assert.match(String(('error' in firstOutcome ? firstOutcome.error : JSON.stringify(firstOutcome.value))), /synthetic_crash_after_commit/);
   await assert.rejects(tool.execute(args, { ...intent, signal }), /synthetic_crash_after_commit/);
   assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
   assert.equal(store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [intent.executionId])?.state), 'completed');

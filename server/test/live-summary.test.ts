@@ -737,3 +737,23 @@ test('a stored summary left with no supported sentence is not offered to the see
     assert.deepEqual(guarded.map(candidate => candidate.id), ['sum-kept'], 'the empty candidate is gone, the real one stays');
   } finally { h.cleanup(); }
 });
+
+// C-MEMORYTRUTH review F3 and REQUIRED 3: the real start carries the alarms table into the accepted
+// instruction, so removing the alarms argument at the start call site fails here.
+test('the real start puts the armed alarm into the accepted instruction', async () => {
+  const h = summarizerFixture();
+  const fake = fakeLiveVoicePort();
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/memorytruth-start', voice: 'ExplicitVoice',
+    keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/memorytruth-start', dataClasses: ['ordinary', 'private'] },
+    prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
+  const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW, timeZone: 'UTC' });
+  try {
+    insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    const ctx = { clientId: 'synthetic', auditId: 'memorytruth-start', authorityEpoch: h.store.authorityEpoch };
+    const session = owner.create({ idempotencyKey: 'memorytruth-start', inputClass: 'ordinary' }, ctx);
+    const frozen = h.store.transaction(tx => JSON.parse(String(tx.get(
+      'SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])?.['accepted_prompt_snapshot'])));
+    assert.match(String(frozen.system), /Armed alarms: \d\d:\d\d wake up for the standup \(alarm 4f2c9a1b\)/,
+      'the start names the armed alarm from the table');
+  } finally { await owner.shutdown(); h.cleanup(); }
+});

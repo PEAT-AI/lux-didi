@@ -77,12 +77,12 @@ export class OwnerRequests implements OwnerRequestPort {
       previous.finals++;
       delete previous.pending;
       for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
-      this.mark(session, 'owner');
+      if (/[\p{L}\p{N}]/u.test(words)) this.mark(session, 'owner');
       return;
     }
+    if (/[\p{L}\p{N}]/u.test(words)) this.mark(session, 'owner');
     this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt, finals: 1, journalId,
       grants, alarmWords: words, sources: {}, shown: [] });
-    this.mark(session, 'owner');
   }
 
   invalidateAlarm(session: string): void {
@@ -116,6 +116,9 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
+    // P-R6: a free write needs at least one owner final in this session as well as the fence, so with
+    // no owner words nothing writes and nothing opens.
+    if ((this.positions.get(session)?.owner ?? 0) === 0) return { ...common, code: 'no_owner_request' };
     if (this.negated(request.words, kind)) return { ...common, code: 'no_owner_request' };
     if (this.fenced(session)) return { ...common, code: 'external_text_only' };
     return this.settle(request, kind, target, common);

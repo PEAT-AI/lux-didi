@@ -88,6 +88,12 @@ frame and leaves the concurrency runtime's current executor pointing at a dead s
 throws `NativeAudioGraphException`, the call ends, and `audio_graph_exception` in `logs/audio.log`
 names the call and the exception. It is a boundary check, never a fallback.
 
+The tap installs with `format: nil`, so AVFAudio uses the node's own current output format and can
+never compare a stale client format against the hardware: on the headset route that comparison
+raised `Format mismatch: input hw 1 ch 48000 Hz, client format 1 ch 16000 Hz` and failed the tap.
+The capture buffer takes its converter from the first buffer it actually receives, so nothing
+downstream depends on the format read before the tap.
+
 The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
 `NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
 processing, constructs a real input node, pins a device or stops and resets a real engine: measured

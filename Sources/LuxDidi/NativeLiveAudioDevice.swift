@@ -1573,8 +1573,11 @@ struct NativeLiveInterruptionSample: Sendable {
         // Tap format is the input node's current output format at install time, never one
         // captured before voice processing was enabled.
         if engineFactoryForTesting == nil {
+            // Format nil: AVFAudio taps the node's own current output format, so it can never compare
+            // a stale client format against the hardware, which is what made the headset route raise
+            // "Format mismatch: input hw 1 ch 48000 Hz, client format 1 ch 16000 Hz".
             try guardedNativeCall("install_tap") {
-                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil, block: capture.makeTap())
             }
             tapInstalled = true
         } else if let installTapForTesting {
@@ -1604,7 +1607,7 @@ struct NativeLiveInterruptionSample: Sendable {
                 capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
                 capture.setMuted(muted); self.capture = capture
                 try guardedNativeCall("install_tap") {
-                    engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+                    engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil, block: capture.makeTap())
                 }
             }
         }

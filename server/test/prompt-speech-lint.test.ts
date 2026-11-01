@@ -120,7 +120,7 @@ test('C-HOSTFACTS BUILD-07 a baseline covers only its own fingerprint and count,
   assert.equal(findings.length, 2);
   const entry: BaselineEntry = {
     id: 'synthetic-debt', source: 'synthetic', rule: findings[0]!.rule, fingerprint: findings[0]!.fingerprint,
-    count: 1, destination: 'HELD', obligation: 'BUILD-03 replacement',
+    line: findings[0]!.line, count: 1, destination: 'HELD', obligation: 'BUILD-03 replacement',
   };
   const known = lintSources([{ source: 'synthetic', text }], { baseline: [entry] });
   assert.equal(known.debt.length, 1, 'the baselined finding is debt, not a pass it hides');
@@ -136,7 +136,7 @@ test('C-HOSTFACTS BUILD-07 an exactness entry is narrow: it approves one span an
   const text = '"I am here".';
   const approved = lintSpeech(text)[0]!;
   const entry: ExactnessEntry = {
-    id: 'synthetic-control', source: 'synthetic', fingerprint: approved.fingerprint,
+    id: 'synthetic-control', source: 'synthetic', fingerprint: approved.fingerprint, line: approved.line,
     reason: 'supported control token', reviewer: 'synthetic-review',
   };
   const passed = lintSources([{ source: 'synthetic', text }], { exactness: [entry] });
@@ -144,4 +144,29 @@ test('C-HOSTFACTS BUILD-07 an exactness entry is narrow: it approves one span an
   assert.equal(passed.untriaged.length, 0);
   const changed = lintSources([{ source: 'synthetic', text: '"I am still here".' }], { exactness: [entry] });
   assert.equal(changed.untriaged.length, 1, 'the approval does not widen to new text');
+});
+
+// F2: an approval names the whole authored sentence at its line. A different verb with the same prescribed
+// content, the same verb with different prescribed content, and the same sentence moved elsewhere all fail.
+test('C-HOSTFACTS BUILD-07 an approval is bound to the full span and its location', () => {
+  const authored = 'Say the reminder first, in your own words, as the first thing you say.';
+  const finding = lintSpeech(authored)[0]!;
+  const entry: BaselineEntry = {
+    id: 'f2-span', source: 'synthetic', rule: finding.rule, fingerprint: finding.fingerprint, line: finding.line,
+    count: 1, destination: 'FILED', obligation: 'the tool surfaces migrate',
+  };
+  const same = lintSources([{ source: 'synthetic', text: authored }], { baseline: [entry] });
+  assert.equal(same.debt.length, 1, 'the exact span at its own line is the recorded debt');
+  assert.equal(same.untriaged.length, 0);
+
+  // Same verb, different prescribed content: the sentence changed, so the fingerprint no longer matches.
+  const replaced = 'Say the reminder last, in someone else words, as the only thing you say.';
+  const changed = lintSources([{ source: 'synthetic', text: replaced }], { baseline: [entry] });
+  assert.equal(changed.untriaged.length, 1, 'same verb with changed content is untriaged');
+
+  // Same sentence, one line lower: the location changed, so the same fingerprint does not carry over.
+  const moved = 'A plain fact line.\n' + authored;
+  const relocated = lintSources([{ source: 'synthetic', text: moved }], { baseline: [entry] });
+  assert.equal(relocated.untriaged.length, 1, 'the same sentence at another line is untriaged');
+  assert.equal(relocated.debt.length, 0);
 });

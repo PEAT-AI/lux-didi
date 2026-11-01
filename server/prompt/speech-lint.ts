@@ -24,11 +24,14 @@ export type SpeechRule = 'quoted_speech' | 'delivery_slot' | 'punchline_bullet' 
 export interface SpeechFinding {
   /** Which shape was found. */
   readonly rule: SpeechRule;
-  /** Where in the text it starts. */
+  /** Where in the text the shape starts. */
   readonly at: number;
+  /** The 1-based line the authored span starts on, so an approval is bound to its location as well as its text. */
+  readonly line: number;
   /** At most twelve words, never the whole line. */
   readonly shape: string;
-  /** The fingerprint of the exact span, so an allowlist or baseline entry can name it without the text. */
+  /** The fingerprint of the whole authored span (the sentence or bullet the shape sits in), so a changed
+   *  wording anywhere in that span, or the same wording moved elsewhere, is a different finding. */
   readonly fingerprint: string;
 }
 
@@ -55,8 +58,20 @@ export function fingerprintOf(span: string): string {
 /** Every recitable shape in one authored text, in order. Line numbers are the caller's to derive. */
 export function lintSpeech(text: string): SpeechFinding[] {
   const findings: SpeechFinding[] = [];
-  const add = (rule: SpeechRule, at: number, span: string): void => {
-    findings.push({ rule, at, shape: shapeOf(span), fingerprint: fingerprintOf(span) });
+  // The authored span is the whole sentence or bullet the shape sits in: an approval names its content, not just
+  // the verb that tripped the rule, so replacing the prescribed words invalidates it.
+  const spanAround = (at: number): { span: string; line: number } => {
+    const start = Math.max(text.lastIndexOf('\n', at - 1) + 1, text.lastIndexOf('. ', at - 1) + 2, text.lastIndexOf('; ', at - 1) + 2);
+    const lineEnd = text.indexOf('\n', at);
+    const sentenceEnd = text.indexOf('. ', at);
+    const stops = [lineEnd === -1 ? text.length : lineEnd, sentenceEnd === -1 ? text.length : sentenceEnd + 1];
+    const end = Math.min(...stops);
+    const span = text.slice(start, end).trim();
+    return { span: span.length ? span : text.slice(at).trim(), line: text.slice(0, start).split('\n').length };
+  };
+  const add = (rule: SpeechRule, at: number, shapeSpan: string): void => {
+    const { span, line } = spanAround(at);
+    findings.push({ rule, at, line, shape: shapeOf(shapeSpan), fingerprint: fingerprintOf(span) });
   };
   for (const match of text.matchAll(QUOTED)) {
     const inner = match[1] ?? match[2] ?? match[3] ?? '';
@@ -76,7 +91,9 @@ export function lintSpeech(text: string): SpeechFinding[] {
 export interface ExactnessEntry {
   readonly id: string;
   readonly source: string;
+  /** The span's fingerprint and the line it sits on: both must match, so moved text is not approved. */
   readonly fingerprint: string;
+  readonly line: number;
   readonly reason: string;
   readonly reviewer: string;
 }
@@ -87,6 +104,7 @@ export interface BaselineEntry {
   readonly source: string;
   readonly rule: SpeechRule;
   readonly fingerprint: string;
+  readonly line: number;
   readonly count: number;
   readonly destination: 'HELD' | 'FILED';
   readonly obligation: string;
@@ -124,13 +142,15 @@ export function lintSources(
     const remaining = new Map<string, number>();
     for (const entry of baseline) {
       if (entry.source !== source.source) continue;
-      remaining.set(`${entry.rule}:${entry.fingerprint}`, (remaining.get(`${entry.rule}:${entry.fingerprint}`) ?? 0) + entry.count);
+      const key = `${entry.rule}:${entry.fingerprint}:${entry.line}`;
+      remaining.set(key, (remaining.get(key) ?? 0) + entry.count);
     }
     for (const finding of lintSpeech(source.text)) {
-      const approved = exactness.some(entry => entry.source === source.source && entry.fingerprint === finding.fingerprint);
+      const approved = exactness.some(entry => entry.source === source.source && entry.fingerprint === finding.fingerprint
+        && entry.line === finding.line);
       const row = { ...finding, source: source.source };
       if (approved) { exact.push(row); continue; }
-      const key = `${finding.rule}:${finding.fingerprint}`;
+      const key = `${finding.rule}:${finding.fingerprint}:${finding.line}`;
       const left = remaining.get(key) ?? 0;
       if (left > 0) { remaining.set(key, left - 1); debt.push(row); continue; }
       untriaged.push(row);

@@ -1,12 +1,13 @@
 {
   "$comment": "C-HOSTFACTS BUILD-07 migration baseline. Each entry names one known finding by rule and span fingerprint on one source, with the obligation that ends it. This is temporary migration debt, not an exactness exemption: changed content invalidates the fingerprint and fails as untriaged.",
-  "revision": 2,
+  "revision": 3,
   "entries": [
     {
       "id": "baseline-01-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "10471ab9bff2feac",
+      "fingerprint": "1494b3ababa80485",
+      "line": 11,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -15,7 +16,8 @@
       "id": "baseline-02-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "3d456596555f432e",
+      "line": 13,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -24,7 +26,8 @@
       "id": "baseline-03-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "b361eb1ff73d9ed2",
+      "fingerprint": "ca533b7b83b16d03",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -33,7 +36,8 @@
       "id": "baseline-04-naya-tools-quoted_speech",
       "source": "naya-tools",
       "rule": "quoted_speech",
-      "fingerprint": "cc43194cc34b33dd",
+      "fingerprint": "c5ee35e7fb9d5260",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -42,7 +46,8 @@
       "id": "baseline-05-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "11f8e15b22be008a",
+      "fingerprint": "b640b5fdc913d365",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -51,7 +56,8 @@
       "id": "baseline-06-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "c0369d6a502ffef6",
+      "fingerprint": "02717e096d4ab057",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -60,7 +66,8 @@
       "id": "baseline-07-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "90e7275798b557fd",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -69,7 +76,8 @@
       "id": "baseline-08-naya-tools-delivery_slot",
       "source": "naya-tools",
       "rule": "delivery_slot",
-      "fingerprint": "bc974a6fee71cc9b",
+      "fingerprint": "5f66d1264404f1ee",
+      "line": 25,
       "count": 1,
       "destination": "FILED",
       "obligation": "the 114 deferred tool A-class lines, when the tool surfaces migrate"
@@ -78,7 +86,8 @@
       "id": "baseline-09-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "33ff61405631d6a4",
+      "fingerprint": "0898a7f85a9b0a60",
+      "line": 3,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -87,7 +96,8 @@
       "id": "baseline-10-composed-live-demonstration",
       "source": "composed-live",
       "rule": "demonstration",
-      "fingerprint": "22ba1bc9d3452375",
+      "fingerprint": "caeac83219cae644",
+      "line": 3,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -96,7 +106,8 @@
       "id": "baseline-11-composed-live-quoted_speech",
       "source": "composed-live",
       "rule": "quoted_speech",
-      "fingerprint": "35d52c6d2a1feba7",
+      "fingerprint": "cee3bbfd24cefaa5",
+      "line": 5,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -105,7 +116,8 @@
       "id": "baseline-12-composed-live-quoted_speech",
       "source": "composed-live",
       "rule": "quoted_speech",
-      "fingerprint": "107d2394ab181e62",
+      "fingerprint": "38b1379990130d4e",
+      "line": 23,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -114,7 +126,8 @@
       "id": "baseline-13-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "08576e7ff58f354f",
+      "line": 23,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -123,7 +136,8 @@
       "id": "baseline-14-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "0aa42f3ef29da2e0",
+      "fingerprint": "8d5dba0f1365c44b",
+      "line": 25,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -132,7 +146,8 @@
       "id": "baseline-15-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "52c8d7c3ecc35fff",
+      "fingerprint": "8d5dba0f1365c44b",
+      "line": 25,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -141,7 +156,8 @@
       "id": "baseline-16-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "c0369d6a502ffef6",
+      "fingerprint": "ab7c708ecf8d216f",
+      "line": 29,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -150,7 +166,8 @@
       "id": "baseline-17-composed-live-quoted_speech",
       "source": "composed-live",
       "rule": "quoted_speech",
-      "fingerprint": "7f20cd78df84c1c2",
+      "fingerprint": "6f2fcd960081a0e7",
+      "line": 31,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -159,7 +176,8 @@
       "id": "baseline-18-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "9195a88cae697611",
+      "line": 46,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -168,7 +186,8 @@
       "id": "baseline-19-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "7dda872787899745",
+      "line": 46,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -177,7 +196,8 @@
       "id": "baseline-20-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "10471ab9bff2feac",
+      "fingerprint": "1494b3ababa80485",
+      "line": 58,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -186,7 +206,8 @@
       "id": "baseline-21-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "3d456596555f432e",
+      "line": 60,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -195,7 +216,8 @@
       "id": "baseline-22-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b361eb1ff73d9ed2",
+      "fingerprint": "ca533b7b83b16d03",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -204,7 +226,8 @@
       "id": "baseline-23-composed-live-quoted_speech",
       "source": "composed-live",
       "rule": "quoted_speech",
-      "fingerprint": "cc43194cc34b33dd",
+      "fingerprint": "c5ee35e7fb9d5260",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -213,7 +236,8 @@
       "id": "baseline-24-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "11f8e15b22be008a",
+      "fingerprint": "b640b5fdc913d365",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -222,7 +246,8 @@
       "id": "baseline-25-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "c0369d6a502ffef6",
+      "fingerprint": "02717e096d4ab057",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -231,7 +256,8 @@
       "id": "baseline-26-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "b882dfd4171deee7",
+      "fingerprint": "90e7275798b557fd",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -240,7 +266,8 @@
       "id": "baseline-27-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "bc974a6fee71cc9b",
+      "fingerprint": "5f66d1264404f1ee",
+      "line": 72,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -249,7 +276,8 @@
       "id": "baseline-28-composed-live-delivery_slot",
       "source": "composed-live",
       "rule": "delivery_slot",
-      "fingerprint": "37d026c209f71f73",
+      "fingerprint": "81ebaea715462fce",
+      "line": 100,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
@@ -258,7 +286,8 @@
       "id": "baseline-29-composed-live-quoted_speech",
       "source": "composed-live",
       "rule": "quoted_speech",
-      "fingerprint": "35d52c6d2a1feba7",
+      "fingerprint": "cee3bbfd24cefaa5",
+      "line": 104,
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"

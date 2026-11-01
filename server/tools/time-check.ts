@@ -46,7 +46,11 @@ const UNITS: Record<string, number> = {
   ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
   seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
 };
-const WORD_NUMBER = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?';
+// Longest word first, so "eighteen" is never read as "eight" plus a suffix.
+const WORD_UNITS = ['nineteen', 'eighteen', 'seventeen', 'sixteen', 'fifteen', 'fourteen', 'thirteen', 'twelve',
+  'eleven', 'ten', 'nine', 'eight', 'seven', 'six', 'five', 'four', 'three', 'two', 'one', 'zero'];
+const WORD_TENS = ['fifty', 'forty', 'thirty', 'twenty'];
+const WORD_NUMBER = `(?:${[...WORD_TENS, ...WORD_UNITS].join('|')})(?:[ -](?:${WORD_UNITS.join('|')}))?`;
 const NUMBER = `(?:\\d{1,2}|${WORD_NUMBER})`;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -73,7 +77,7 @@ function collect(text: string): Candidate[] {
     found.push({ index: match.index, hour, minute, exact, length: match[0].length });
   };
   // "half past six", "quarter to seven", "ten to seven", "twenty five past six".
-  for (const match of text.matchAll(new RegExp(`\\b(half|quarter|(?:${NUMBER})\\s+minutes?)\\s+(past|to)\\s+(${NUMBER})(?:\\s*([ap])m\\b)?`, 'g')) as Iterable<RegExpExecArray>) {
+  for (const match of text.matchAll(new RegExp(`\\b(half|quarter|(?:${NUMBER})(?:\\s+minutes?)?)\\s+(past|to)\\s+(${NUMBER})(?:\\s*([ap])m\\b)?`, 'g')) as Iterable<RegExpExecArray>) {
     let base = valueOf(match[3]!); if (base === undefined) continue;
     if (base === 12) base = 12;
     const amount = match[1] === 'half' ? 30 : match[1] === 'quarter' ? 15 : valueOf(match[1]!.replace(/\s+minutes?$/, ''));
@@ -82,7 +86,8 @@ function collect(text: string): Candidate[] {
     const total = base * 60 + offset;
     if (total < 0) continue;
     const hour = Math.floor(total / 60), minute = total % 60;
-    push(match, match[4] === undefined ? hour : settle(hour, match[4]!), minute, match[4] !== undefined || hour > 12);
+    // "ten to seven" and "half past six" are settled readings, never an open meridian.
+    push(match, match[4] === undefined ? hour : settle(hour, match[4]!), minute, true);
   }
   // "eighteen hundred".
   for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s+hundred\\b`, 'g')) as Iterable<RegExpExecArray>) {
@@ -97,6 +102,19 @@ function collect(text: string): Candidate[] {
     const settled = match[3] === undefined ? hour : settle(hour, match[3]);
     push(match, settled, minute, match[3] !== undefined || hour > 12);
   }
+  // "six thirty pm": the hour and its minutes are both spoken.
+  for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s+(${NUMBER})\\s*([ap])m\\b`, 'g')) as Iterable<RegExpExecArray>) {
+    const hour = valueOf(match[1]!); const minute = valueOf(match[2]!);
+    if (hour === undefined || hour > 12 || minute === undefined || minute > 59) continue;
+    push(match, settle(hour, match[3]!), minute, true);
+  }
+  // "11 pm 40": the minutes follow the meridian, as spoken.
+  for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s*([ap])m\\s+(\\d{1,2})\\b`, 'g')) as Iterable<RegExpExecArray>) {
+    const hour = valueOf(match[1]!);
+    const minute = Number(match[3]);
+    if (hour === undefined || minute > 59) continue;
+    push(match, settle(hour, match[2]!), minute, true);
+  }
   // "6 pm", "6pm", "six p.m.".
   for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s*([ap])m\\b`, 'g')) as Iterable<RegExpExecArray>) {
     const hour = valueOf(match[1]!);
@@ -108,12 +126,20 @@ function collect(text: string): Candidate[] {
     push(match, match[1] === 'midnight' ? 0 : 12, 0, true);
   }
   // A bare number only counts behind an anchor, and never when it counts something else.
-  for (const match of text.matchAll(new RegExp(`\\b(?:at|by|around|for)\\s+(${NUMBER})(?!\\s*(?:o'?\\s?clock\\b)?[\\s-]*(?:time|times|hour|hours|minute|minutes|day|days|week|weeks|months?|years?|percent|people|of)\\b)`, 'g')) as Iterable<RegExpExecArray>) {
+  for (const match of text.matchAll(new RegExp(`\\b(?:at|by|around|for)\\s+(${NUMBER})(?![:.\\d])(?!\\s*(?:past|to|hundred|[ap]m)\\b)(?!\\s*(?:o'?\\s?clock\\b)?[\\s-]*(?:time|times|hour|hours|minute|minutes|day|days|week|weeks|months?|years?|percent|people|of)\\b)`, 'g')) as Iterable<RegExpExecArray>) {
     const hour = valueOf(match[1]!);
     if (hour === undefined || hour > 24) continue;
     push(match, hour, 0, hour > 12);
   }
-  return found.sort((a, b) => a.index - b.index);
+  // The longest, most settled reading of one span wins: "ten past five pm" is one clock, never a
+  // clock inside a clock, and "eighteen hundred" is not "eight" plus a suffix.
+  const ordered = [...found].sort((a, b) => b.length - a.length || Number(b.exact) - Number(a.exact) || a.index - b.index);
+  const kept: Candidate[] = [];
+  for (const item of ordered) {
+    if (kept.some(other => item.index < other.index + other.length && other.index < item.index + item.length)) continue;
+    kept.push(item);
+  }
+  return kept.sort((a, b) => a.index - b.index);
 }
 
 function settle(hour: number, meridiem: string): number {
@@ -164,7 +190,9 @@ export function checkOwnerTime(words: string): OwnerTimeCheck {
   const period = periodOf(text);
   const clocks = collect(text).filter(candidate => !SUBJECT_NOUN.test(text.slice(candidate.index + candidate.length)));
 
-  if (relative && !clocks.length) return { status: 'unique', relative, ...(day ? { day } : {}) };
+  // A span and a clock in one ask are not a settled time: the model's structured time carries that.
+  if (relative && clocks.length) return { status: 'inconclusive', reason: 'several_times' };
+  if (relative) return { status: 'unique', relative, ...(day ? { day } : {}) };
 
   if (!clocks.length) {
     if (day) return { status: 'partial', day };

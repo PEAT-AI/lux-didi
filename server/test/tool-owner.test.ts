@@ -1061,7 +1061,8 @@ test('W1030 create_event: the window comes from his words, a colleague stays uni
   const start = Number(line.split(':')[1]);
   const end = Number(line.split(':')[2]);
   assert.equal(end - start, 3_600_000, 'one hour from his words');
-  assert.match(line, /Zara/);
+  // C-TIME shape 7: the sentence never names a person, so no invented name reaches the description.
+  assert.doesNotMatch(line, /Zara/);
   assert.match(line, /not invited|no invitations were sent/i);
   assert.match(String(outcome.result_json), /"attendees":0/);
   assert.match(String(outcome.result_json), /"invitations":"none"/);

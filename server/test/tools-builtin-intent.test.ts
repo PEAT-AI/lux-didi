@@ -101,7 +101,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     }, `${definition.name} must accept its stored intent`);
   }
   await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
-    const args = { fire_at_utc: alarmNow + 1000 };
+    // C-TIME: the model states a span; the host adds it to its own clock, and the canary floor holds.
+    const args = { time: { mode: 'relative', amount: 1, unit: 'minutes' } };
     owner.ownerRequests.answered!(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
     const definition = live.find(tool => tool.name === 'set_alarm')!;

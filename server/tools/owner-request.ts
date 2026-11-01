@@ -68,7 +68,11 @@ export class OwnerRequests implements OwnerRequestPort {
     // fresh grant instead of replaying a spent one. Only an unsettled ask merges (the split-ask case).
     const settled = previous !== undefined && [...previous.grants.values()].some(grant =>
       grant.target !== undefined || grant.inFlight === true || (grant.targets?.size ?? 0) > 0);
-    if (previous && !settled && previous.spent !== true && this.clock() - previous.start <= 120000) {
+    // C-TIME: a clarified or failed ask still takes the short answer it asked for ("ten five,
+    // today"), and never absorbs a complete new ask ("set an alarm for 6 pm"), which the retry
+    // reads on its own words.
+    const completeAsk = /\b(?:set|put|make|create|add)\b[^.!?]{0,24}\balarm\b|\bwake me\b|\bremind me\b|\bsnooze\b|\bcancel\b/i.test(words);
+    if (previous && !settled && !(previous.spent === true && completeAsk) && this.clock() - previous.start <= 120000) {
       // A split ask grants on the combined turn: the intent and the target may arrive apart.
       const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;

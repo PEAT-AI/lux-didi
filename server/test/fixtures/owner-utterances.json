@@ -397,7 +397,7 @@
    "fire_at_utc": null,
    "tool": "set_alarm"
   },
-  "code": "unsupported_time_expression",
+  "code": "missing_time",
   "fire_at_utc": null
  },
  {
@@ -1910,7 +1910,7 @@
    "tool": "set_alarm",
    "fire_at_utc": 1793340600000
   },
-  "code": "unsupported_time_expression",
-  "fire_at_utc": null
+  "code": "ready",
+  "fire_at_utc": 1793340600000
  }
 ]

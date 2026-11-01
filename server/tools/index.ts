@@ -1147,7 +1147,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               try {
                 let evidence: Awaited<ReturnType<typeof reader.call>>;
                 try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
-                  hostLogEvent({ event: 'tool_handler_debug_probe', tool: name, message: error instanceof Error ? `${error.name}: ${error.message}` : String(error), stack: error instanceof Error ? String(error.stack).split('\n').slice(0,4).join(' | ') : '' });
                   const code = resultScope.failureCode ?? (error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome');
                   const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
                   if (failure) hostLogEvent(failure);

@@ -772,6 +772,21 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
 });
 
+// P-R8: the executor itself must complete the dropped-recurrence ask. A throw inside it becomes the
+// opaque handler_outcome the model sees, so this test names the throw before the production path does.
+test('#796 executor: set_alarm completes when the model rule is dropped', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
+  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
+  const call = { ...f.intent('run:1:0', 'set_alarm', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
+  f.owner.journal.intent(call);
+  const definition = liveTools(f).find(tool => tool.name === 'set_alarm');
+  assert.ok(definition, 'the live table offers set_alarm');
+  let thrown: unknown, outcome: Awaited<ReturnType<typeof definition.execute>> | undefined;
+  try { outcome = await definition.execute({ kind: 'daily' }, { ...call, signal: f.signal } as never); } catch (error) { thrown = error; }
+  assert.equal(thrown, undefined, `set_alarm threw: ${String(thrown)}`);
+  assert.equal(outcome?.status, 'completed', JSON.stringify(outcome)?.slice(0, 600));
+});
+
 // #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
 test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });

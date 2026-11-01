@@ -891,8 +891,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 for (const reason of options.alarms?.health().reasons ?? ['shell_unreachable']) hostLogEvent({ event: 'alarm_degraded', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason });
               }
             }
-            options.alarms?.recheck();
           }
+          // The scheduler rechecks after any alarm mutation, outside the commit transaction, so a
+          // failure here is visible to the caller and never silently skipped.
+          if (consumed) options.alarms?.recheck();
           return { status: 'completed' as const, result };
         },
       });

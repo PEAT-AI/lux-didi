@@ -352,6 +352,9 @@ def check_virtual_bass_spectrum():
             # Virtual bass replaces H1 entirely with H2 and H3.
             x = 10**(level/20)*(.1*np.sin(2*np.pi*2*hz*t) +
                                     .06*np.sin(2*np.pi*3*hz*t))
+            # Intentional harmonics above H10 must not count as buzz either.
+            for h in range(11, 16):
+                x += .003*np.sin(2*np.pi*h*hz*t)
             x += rng.normal(0, 1e-4, len(t))
             clean = spectral.measure(x, gap, fs, hz)
             clean.update(hz=hz, level=level)

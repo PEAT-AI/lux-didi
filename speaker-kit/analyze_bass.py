@@ -43,7 +43,12 @@ def measure(x, gap, fs, hz):
     between = (f >= max(35, hz - 15)) & (f <= hz * 10 + 12)
     for band in bands:
         between &= ~band
-    above = (f > hz * 10 + 12) & (f <= 12000)
+    above = (f > hz * 10 + 16) & (f <= 12000)
+    # Above H10 still contains intentional higher harmonics. Keep the raw band,
+    # but rank only the portion outside every harmonic's Blackman main lobe.
+    above_nonharmonic = above.copy()
+    for h in range(11, int(min(12000, fs/2)/hz)+1):
+        above_nonharmonic &= abs(f-h*hz) > 16
     def band(mask):
         level, floor = db(mean[mask].sum()), db(noise[mask].sum())
         return dict(dbfs=level, gap_dbfs=floor, over_gap_db=level-floor)
@@ -51,10 +56,10 @@ def measure(x, gap, fs, hz):
     energy = p[(f >= 35) & (f <= 12000)].sum(axis=0)
     flutter = 10 * np.log10(max(np.percentile(energy, 90), 1e-20) /
                            max(np.percentile(energy, 10), 1e-20))
-    inter, high = band(between), band(above)
+    inter, high, nonharm = band(between), band(above), band(above_nonharmonic)
     return dict(fundamental=ladder[0], harmonics=ladder[1:], between=inter,
-                above_h10=high, flutter_db=float(flutter),
-                score_db=max(inter['over_gap_db'], high['over_gap_db']))
+                above_h10=high, above_h10_nonharmonic=nonharm, flutter_db=float(flutter),
+                score_db=max(inter['over_gap_db'], nonharm['over_gap_db']))
 
 
 def locate(y, fs, entries, pre, gap, timestamps=None):
@@ -125,7 +130,7 @@ def analyze(run):
         end = start+e['duration_s']
         x = y[int((start+.15)*fs):int((end-.15)*fs)]
         # Closest preceding silent gap, avoiding the window edges.
-        g = y[max(0, int((start-min(m['gap_s'], .8)+.12)*fs)):int((start-.12)*fs)]
+        g = y[max(0, int((start-min(m['gap_s'], .9)+.12)*fs)):int((start-.3)*fs)]
         if len(g) < fs*.25:
             align['resolved'] = False
             continue
@@ -157,7 +162,7 @@ def analyze(run):
                          r['channel']==row['channel'] and
                          r['level']=={-6:-12, -3:-6}.get(row['level'])), None)
         row['growth_db'] = ({k:row[k]['dbfs']-previous[k]['dbfs']
-                             for k in ('fundamental', 'between', 'above_h10')} if previous else None)
+                             for k in ('fundamental', 'between', 'above_h10', 'above_h10_nonharmonic')} if previous else None)
     channel_growth = []
     for left in tones:
         if left['channel'] != 'L' or left['growth_db'] is None:
@@ -183,12 +188,12 @@ def analyze(run):
 
 
 def table(result):
-    lines = ['| Hz | Channel | Input dBFS | Between / gap dBFS | Above H10 / gap dBFS | Excess dB | Flutter dB | Timing |',
+    lines = ['| Hz | Channel | Input dBFS | Between / gap dBFS | Above H10 nonharmonic / gap dBFS | Excess dB | Flutter dB | Timing |',
              '| --- | --- | --- | --- | --- | --- | --- | --- |']
     for r in result['tones']:
         lines.append('| %g | %s | %g | %.1f / %.1f | %.1f / %.1f | %.1f | %.1f | %s |' % (
             r['hz'], r['channel'], r['level'], r['between']['dbfs'], r['between']['gap_dbfs'],
-            r['above_h10']['dbfs'], r['above_h10']['gap_dbfs'], r['score_db'],
+            r['above_h10_nonharmonic']['dbfs'], r['above_h10_nonharmonic']['gap_dbfs'], r['score_db'],
             r['flutter_db'], 'candidate' if not r['resolved'] else 'located'))
     return '\n'.join(lines)
 

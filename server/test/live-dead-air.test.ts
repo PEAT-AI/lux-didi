@@ -245,7 +245,9 @@ test('C-REBUILD B: the unspoken result never goes into a response that is in fli
 
 test('C-REBUILD B: a late finding is held for the continuation while a response is in flight', () => {
   const state = { now: 5_000, answeredAt: 0, alreadySpoken: false, ownerWords: 0, responseInProgress: true };
-  assert.equal(lateCommentarySilence(state), 'response_in_flight', 'the note stays in the ledger, unspoken');
+  // Held, not parked: the response's own terminal is the event that offers the note on the continuation. A torn
+  // down generation is the one case that never sends it, and then it lives in the research ledger alone.
+  assert.equal(lateCommentarySilence(state), 'response_in_flight', 'the note is held while the response is open');
   assert.equal(lateHoldMs('response_in_flight'), undefined, 'and no timer of its own may ever send it');
   assert.equal(lateCommentarySilence({ ...state, responseInProgress: false }), null,
     'with no response in flight the note is spoken as before');

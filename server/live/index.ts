@@ -932,6 +932,9 @@ interface ActiveSession {
   turnToolCalls?: number | undefined; turnResponseCreated?: boolean | undefined;
   /** C-REBUILD #830: how many times this call has held a rebuild and how many it has stood down for. */
   rebuildHeld?: number | undefined; rebuildRemoved?: number | undefined;
+  /** C-REBUILD B: a late finding held by a response in flight, with the generation that must still be open when
+   *  that response terminates. A torn down generation never sends it, so it stays in the ledger only. */
+  lateHeld?: { generation: number; event: ResearchLateFindings }[] | undefined;
   /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
@@ -2916,6 +2919,16 @@ export class LiveSessionOwner {
         // VOICE-R4 / C-LIVE: dead air stays silent on every provider: a "Continue." user message is a fake owner turn.
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation, sinceTool });
+        // C-REBUILD C: the stand-down the council ruled sits on the path a no-ask turn really takes, which is this
+        // one: arm, nudge, stand down. A repeated mute still settles through #watchdogRecover's own door, and every
+        // other trigger reaches that door untouched.
+        if (silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
+          turnResponseCreated: handle.turnResponseCreated === true })) {
+          handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
+          hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
+            turnAgeMs, removedCount: handle.rebuildRemoved });
+          return;
+        }
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
         return;
       }
@@ -2978,6 +2991,8 @@ export class LiveSessionOwner {
     }
     if (type === 'turnComplete' || type === 'turnFailed') {
       handle.responseInProgress = false;
+      // C-REBUILD B: this is the response's own terminal, so the notes it held merge into the continuation now.
+      this.#drainLateHeld(handle);
       // C-DEPTH item 5 (W10-R13): the response just ended, which is the first boundary a rebuild may use.
       void this.#researchRebuildAtBoundary(handle);
       // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
@@ -4761,6 +4776,17 @@ export class LiveSessionOwner {
    * the owner is not talking, no answer audio is playing, no new question has started, and the answer is young.
    * One late line per call, and one delivery per source, so a slow source is never reported twice.
    */
+  /** C-REBUILD B: the response terminated, so the notes it held are offered on this continuation, once. A note
+   *  whose generation is gone is dropped here and lives on in the research ledger alone. */
+  #drainLateHeld(handle: ActiveSession): void {
+    const held = handle.lateHeld ?? [];
+    handle.lateHeld = [];
+    for (const entry of held) {
+      if (entry.generation !== handle.generation) continue;
+      this.#lateFindings(handle, handle.generation, entry.event);
+    }
+  }
+
   #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, destination: 'dropped', reason }); };
@@ -4793,6 +4819,13 @@ export class LiveSessionOwner {
         if (this.#settled(handle) || generation !== handle.generation) return;
         this.#lateFindings(handle, generation, event);
       }, holdMs);
+    }
+    if (reason === 'response_in_flight') {
+      // C-REBUILD B: the response in flight owns the wire, and its own terminal is what carries this note into the
+      // continuation path. The queue is the event, never a timer, and the generation rides with it so a torn down
+      // generation cannot send it later: that note stays in the ledger only.
+      handle.lateHeld = [...(handle.lateHeld ?? []), { generation, event }];
+      return hostLogEvent({ ...receipt, destination: 'held', reason });
     }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = lateFindingsText(event.source, event.items);

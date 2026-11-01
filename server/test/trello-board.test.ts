@@ -27,6 +27,9 @@ let dir: string;
 let board: TrelloBoard;
 const events: Record<string, unknown>[] = [];
 
+/** The configured owner identity the fixture board file and the fake member agree on. */
+const OWNER_EMAIL = 'owner@example.invalid';
+
 /** The owner's private key file, exactly as scripts/import-trello-key.sh writes it. */
 function writeKey(configDir: string, key = 'key-owner', token = 'token-owner'): void {
   writeFileSync(join(configDir, TRELLO_KEY_FILE), JSON.stringify({ key, token }), { mode: 0o600 });
@@ -37,7 +40,7 @@ before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'trello-board-'));
   writeKey(dir, fake.key, fake.token);
   // W7-R2: the name is the owner's private configuration, so the fixture writes that file.
-  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: OWNER_EMAIL }), { mode: 0o600 });
   board = createTrelloBoard({ configDir: dir, url: fake.url, timeZone: 'UTC', now, log: event => { events.push(event); } });
 });
 after(async () => { await fake.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -440,7 +443,7 @@ test('a revoked key is credential_revoked: loud, typed, and never an empty board
   const stale = mkdtempSync(join(tmpdir(), 'trello-revoked-'));
   try {
     writeKey(stale, local.key, 'a-token-trello-no-longer-accepts');
-    writeFileSync(join(stale, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+    writeFileSync(join(stale, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: OWNER_EMAIL }), { mode: 0o600 });
     const revoked = createTrelloBoard({ configDir: stale, url: local.url, timeZone: 'UTC', now });
     const read = await revoked.read(session(), { view: 'overview' });
     assert.equal(read.ok, false, 'a refused key is never an empty board');
@@ -470,17 +473,17 @@ test('a rate-limited call waits the retry-after once and then reports rate_limit
 test('the member behind the key must be the owner: email first, then the configured username', async () => {
   const matching = await startTrelloFake({ now: NOW });
   const other = await startTrelloFake({ now: NOW, member: { id: 'member0other', username: 'someone-else', email: 'someone@example.com' } });
-  const nameless = await startTrelloFake({ now: NOW, member: { id: 'member0named', username: 'robplantix' } });
+  const nameless = await startTrelloFake({ now: NOW, member: { id: 'member0named', username: 'owner-handle' } });
   const make = (target: TrelloFake, owner: Record<string, string>): string => {
     const configDir = mkdtempSync(join(tmpdir(), 'trello-identity-'));
     writeKey(configDir, target.key, target.token);
     writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ...owner }), { mode: 0o600 });
     return configDir;
   };
-  const dirs = [make(matching, { ownerIdentity: 'rob@plantix.net' }), make(other, { ownerIdentity: 'rob@plantix.net' }),
-    make(nameless, { ownerTrelloUsername: 'robplantix' }), make(nameless, { ownerTrelloUsername: 'another-account' })];
+  const dirs = [make(matching, { ownerIdentity: OWNER_EMAIL }), make(other, { ownerIdentity: OWNER_EMAIL }),
+    make(nameless, { ownerTrelloUsername: 'owner-handle' }), make(nameless, { ownerTrelloUsername: 'another-account' })];
   try {
-    assert.deepEqual(await trelloIdentity({ configDir: dirs[0]!, url: matching.url }), { ok: true, member: { username: 'robplantix', email: 'rob@plantix.net', fullName: 'Rob' } });
+    assert.deepEqual(await trelloIdentity({ configDir: dirs[0]!, url: matching.url }), { ok: true, member: { username: 'owner-handle', email: OWNER_EMAIL, fullName: 'Owner' } });
     assert.deepEqual(await trelloIdentity({ configDir: dirs[1]!, url: other.url }), { ok: false, code: 'credential_mismatch' }, 'another member never acts as the owner');
     assert.equal((await trelloIdentity({ configDir: dirs[2]!, url: nameless.url })).ok, true, 'without an email the username is the identity');
     assert.deepEqual(await trelloIdentity({ configDir: dirs[3]!, url: nameless.url }), { ok: false, code: 'credential_mismatch' });
@@ -553,7 +556,7 @@ test('C-ARGS: a limit above the page bound is clamped to TRELLO_PAGE_MAX where t
   const dir = mkdtempSync(join(tmpdir(), 'trello-clamp-'));
   try {
     writeKey(dir, local.key, local.token);
-    writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+    writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: OWNER_EMAIL }), { mode: 0o600 });
     const ideas = local.lists.find(list => list.name === 'Ideas')!;
     for (let index = 0; index < 30; index += 1) local.cards.push({ id: `ari:cloud:trello::card/workspace/${FAKE_WORKSPACE}/${objectId(NOW - 90_000 - index)}`, name: `Synthetic clamp ${index}`, desc: '', due: null, dueComplete: false, listId: ideas.id, boardId: ideas.boardId, closed: false, labelIds: [] });
     const clamping = createTrelloBoard({ configDir: dir, url: local.url, timeZone: 'UTC', now });

@@ -2,6 +2,7 @@ import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import {homedir} from 'node:os';
 import {startFixture} from './fixture.mjs';
 const artifacts=process.env.DIDI_WEB_ARTIFACTS||join(import.meta.dirname,'../test-artifacts/presentation');
 await mkdir(artifacts,{recursive:true});
@@ -20,7 +21,7 @@ try{
   const results=[];
   for(const mode of ['full','mini']){
     const page=await context.newPage();
-    if(process.env.LUX_BROWSER_SLOT_TOKEN){const {assertGpu}=await import('/Users/rob/GitHub/lux-harness/skills/pi-control/scripts/pi_browser_launch.mjs');await assertGpu(page);}
+    if(process.env.LUX_BROWSER_SLOT_TOKEN){const {assertGpu}=await import(process.env.PI_BROWSER_LAUNCH || join(homedir(), '.agents/skills/pi-control/scripts/pi_browser_launch.mjs'));await assertGpu(page);}
     await page.goto(`${fixture.url}/${mode==='mini'?'?view=mini':''}`);
     await page.locator('#didi-orb').waitFor();
     if(mode==='full'){await page.locator('#connection-state',{hasText:'Connected'}).waitFor();await page.waitForFunction(()=>!document.querySelector('.loading'));}

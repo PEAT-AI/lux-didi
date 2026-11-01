@@ -301,7 +301,7 @@ test('C-OPENWEB8: a domain is read back the way she says it, and a root is https
   assert.equal(spokenDomain('plantix.net.'), 'plantix.net', 'a closing period is the sentence, not the address');
   assert.equal(spokenDomain('plantix.net/private'), undefined);
   assert.equal(spokenDomain('plantix.net:8443'), undefined);
-  assert.equal(spokenDomain('owner@plantix.net'), undefined);
+  assert.equal(spokenDomain('owner@example.invalid'), undefined);
   assert.equal(siteRootUrl('plantix.net'), 'https://plantix.net/');
   assert.equal(siteRootUrl('plantix.net/private'), undefined);
 });

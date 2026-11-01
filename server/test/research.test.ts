@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, configureProjectNames, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, resolvedEntityQuestion, ResearchAdmission, RESEARCH_REFUSAL_REASONS, researchArgumentShape,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -1320,11 +1320,14 @@ test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox 
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed
 // field list, so the voice fields and the day bounds must be listed or the trace keeps a hash only.
 test('MED-1022: a voice search with a day filter keeps its arguments through the diagnostic projection', () => {
+  // K4: the project names come from the optional configuration key, so the test configures the one it asserts.
+  configureProjectNames(['Wriggler']);
   const subs = candidateSubs('knowledge_search', {
     question: "what did we decide in yesterday's Wriggler call about pricing",
     topic: "yesterday's Wriggler call pricing",
     configured: ['knowledge'], evidence: new Map(), nowMs: Date.parse('2026-10-22T06:00:00Z'), timeZone: 'Asia/Kolkata',
   });
+  configureProjectNames(undefined);
   const args = subs[0]!.args;
   assert.equal(args['detail'], 'voice');
   assert.equal(args['snippet_chars'], 300);

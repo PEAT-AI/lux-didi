@@ -221,7 +221,7 @@ export interface StdioMcpEndpointEntry {
   connector: string; account: string; resource: string; credentialRef: null; enabled: boolean; allowEgress: boolean;
 }
 export type McpEndpointEntry = HttpMcpEndpointEntry | StdioMcpEndpointEntry;
-export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[]; ownerIdentity: string | null; ownerChatUsername: string | null }
+export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[]; ownerIdentity: string | null; ownerChatUsername: string | null; /** The owner's own project names, which become knowledge search hints; absent means none. */ researchProjects?: readonly string[] }
 export type McpEndpointSelection = { state: 'missing' } | { state: 'configured'; catalog: McpEndpointCatalog };
 function endpointUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) fail('invalid_profile');
@@ -300,6 +300,15 @@ function replaceInstalledMongoose(rawEndpoints: readonly unknown[], events: McpC
   return rawEndpoints.flatMap(item => (item === legacy ? replacements : [item]));
 }
 
+/** An optional owner-side list of project names; absence is the deliberate vanilla default. */
+function optionalProjects(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64) fail('invalid_profile');
+  const names = value.filter((name): name is string => typeof name === 'string' && name.trim() !== '' && name.length <= 80);
+  if (names.length !== value.length) fail('invalid_profile');
+  return names;
+}
+
 /**
  * One Mongoose endpoint: exactly one of the three release-1023b paths, its own audience and its own
  * credential reference. `/mcp`, `/mcp/`, a toolset query, a retired name and admin are all refused,
@@ -335,10 +344,12 @@ export function loadMcpEndpoints(options: { configDir: string; events?: McpCatal
   const parsed = parseJson(raw);
   const present = (key: string): boolean => parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && Object.hasOwn(parsed, key);
   const optionalGrantMode = present('grantMode');
-  const file = fields(parsed, ['schemaVersion', ...(optionalGrantMode ? ['grantMode'] : []), ...(present('ownerIdentity') ? ['ownerIdentity'] : []), ...(present('ownerChatUsername') ? ['ownerChatUsername'] : []), 'endpoints'], 'invalid_profile');
+  const optionalResearchProjects = present('researchProjects');
+  const file = fields(parsed, ['schemaVersion', ...(optionalGrantMode ? ['grantMode'] : []), ...(present('ownerIdentity') ? ['ownerIdentity'] : []), ...(present('ownerChatUsername') ? ['ownerChatUsername'] : []), ...(optionalResearchProjects ? ['researchProjects'] : []), 'endpoints'], 'invalid_profile');
   if (file['schemaVersion'] !== 1) fail('invalid_profile');
   const ownerIdentity = optionalIdentity(file['ownerIdentity']);
   const ownerChatUsername = optionalUsername(file['ownerChatUsername']);
+  const researchProjects = optionalProjects(file['researchProjects']);
   const grantMode = file['grantMode'] ?? 'explicit';
   if (grantMode !== 'explicit' && grantMode !== 'owner-trusted-reads') fail('invalid_profile');
   const rawEndpoints = file['endpoints'];
@@ -352,5 +363,5 @@ export function loadMcpEndpoints(options: { configDir: string; events?: McpCatal
   }
   for (const item of migrated) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
   mongooseEndpointSet(endpoints);
-  return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
+  return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername, ...(researchProjects.length > 0 ? { researchProjects } : {}) } };
 }

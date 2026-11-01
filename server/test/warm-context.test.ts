@@ -405,7 +405,7 @@ test('a parked sign-in is one short line at call start and nothing when Mongoose
 // --- C-SIGNIN-LIVE: one sentence the call after a Mongoose endpoint came up, then silence. ---
 
 test('a newly connected Mongoose endpoint is announced once, in one sentence, and then never again', () => {
-  const owner = 'rob@plantix.net';
+  const owner = 'owner@example.invalid';
   const row = (endpoint: string, connected: boolean): Record<string, unknown> => ({
     id: `mongoose-${endpoint}`, connector: 'mongoose', state: connected ? 'connected' : 'error',
     ...(connected ? { identity: { proven: true, match: true, value: owner } } : {}),
@@ -414,12 +414,12 @@ test('a newly connected Mongoose endpoint is announced once, in one sentence, an
   // The first call of a session says nothing: it learns what was already connected.
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), undefined);
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]),
-    'Mongoose CRM is now connected as Rob; knowledge and data were already connected.');
+    'Mongoose CRM is now connected as Owner; knowledge and data were already connected.');
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]), undefined, 'spoken once, then cleared');
   // A row that never proves an identity is named, and the sentence never carries an address.
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]), undefined);
   assert.equal(notes.take([row('knowledge', false), row('data', true), row('crm', false)]), undefined);
-  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Rob; data was already connected.');
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Owner; data was already connected.');
 });
 
 // C-CAL8: a call start that found no digest asked the connector, the read outlived its deadline, and the day

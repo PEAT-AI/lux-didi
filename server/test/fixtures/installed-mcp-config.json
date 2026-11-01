@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "grantMode": "owner-trusted-reads",
   "ownerIdentity": "owner@example.invalid",
-  "ownerChatUsername": "robert",
+  "ownerChatUsername": "owner-chat",
   "endpoints": [
     {
       "id": "lux-knowledge",
@@ -110,7 +110,7 @@
       "unknownClass": "private",
       "transport": "stdio",
       "args": [
-        "/Users/rob/GitHub/mattermost-mcp/dist/index.cjs"
+        "/Users/example/GitHub/mattermost-mcp/dist/index.cjs"
       ],
       "connector": "mattermost",
       "account": "local",

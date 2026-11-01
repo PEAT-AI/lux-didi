@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, capReply, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, configureProjectNames, fallbackSelection, knowledgeQuery, projectHintOf, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -145,12 +145,21 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
 });
 
 test('K4: a known project name in the question supplies a hint, and never a hard filter', () => {
-  const hinted = candidateSubs('knowledge_search', { question: 'how is the Wriggler pipeline doing', topic: 'Wriggler pipeline', configured: CONFIGURED, evidence: new Map() });
-  assert.equal(hinted[0]!.args['project_hint'], 'Wriggler');
-  assert.equal('project' in hinted[0]!.args, false);
-  const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline', configured: CONFIGURED, evidence: new Map() });
-  assert.equal('project_hint' in plain[0]!.args, false);
-  assert.equal('project' in plain[0]!.args, false);
+  const ask = { question: 'how is the Wriggler pipeline doing', topic: 'Wriggler pipeline', configured: CONFIGURED, evidence: new Map() } as const;
+  // With no project names configured, which is the default, nothing is a hint and the search is unchanged.
+  assert.equal(projectHintOf(ask.question), undefined);
+  const unhinted = candidateSubs('knowledge_search', ask);
+  assert.equal('project_hint' in unhinted[0]!.args, false);
+  // K4: the project names are the optional configuration key, not code, so the test sets it.
+  configureProjectNames(['Wriggler', 'example-project']);
+  try {
+    const hinted = candidateSubs('knowledge_search', ask);
+    assert.equal(hinted[0]!.args['project_hint'], 'Wriggler', 'the configured name supplies the hint');
+    assert.equal('project' in hinted[0]!.args, false);
+    const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline', configured: CONFIGURED, evidence: new Map() });
+    assert.equal('project_hint' in plain[0]!.args, false);
+    assert.equal('project' in plain[0]!.args, false);
+  } finally { configureProjectNames(undefined); }
 });
 
 test('K6: a question with no content words asks rather than searching filler', () => {
@@ -422,4 +431,33 @@ test('C-POLISH10: a continue on a finished run answers already_delivered without
   assert.equal(reply['canContinue'], false);
   assert.match(String(reply['note']), /already gave its answer/u, 'the note is the pointer');
   assert.equal(executed.length, before, 'a finished run spends no read on a continue');
+});
+
+test('V-R2: the provider catalogue key researchProjects is the hint set, and a catalogue without it means none', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { loadMcpEndpoints } = await import('../config/mcp.js');
+  const catalogue = (extra: Record<string, unknown>): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'didi-research-projects-'));
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, endpoints: [], ...extra }), { mode: 0o600 });
+    return dir;
+  };
+  const ask = 'how is the Wriggler pipeline doing';
+  try {
+    const withKey = catalogue({ researchProjects: ['Wriggler', 'example-project'] });
+    const selection = loadMcpEndpoints({ configDir: withKey });
+    assert.equal(selection.state, 'configured');
+    configureProjectNames(selection.state === 'configured' ? selection.catalog.researchProjects : undefined);
+    assert.equal(projectHintOf(ask), 'Wriggler', 'the configured key supplies the hint');
+
+    const withoutKey = catalogue({});
+    const bare = loadMcpEndpoints({ configDir: withoutKey });
+    configureProjectNames(bare.state === 'configured' ? bare.catalog.researchProjects : undefined);
+    assert.equal(projectHintOf(ask), undefined, 'a catalogue without the key leaves the hint set empty');
+
+    const malformed = catalogue({ researchProjects: ['Wriggler', 42] });
+    assert.throws(() => loadMcpEndpoints({ configDir: malformed }), /invalid_profile/u, 'a key that is not a list of names is refused');
+    for (const dir of [withKey, withoutKey, malformed]) rmSync(dir, { recursive: true, force: true });
+  } finally { configureProjectNames(undefined); }
 });

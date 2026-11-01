@@ -257,7 +257,7 @@ async function harness(t: TestContext, overrides: {
         const text = req.params.name === 'mattermost_list_channels'
           ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
           : req.params.name === 'mattermost_whoami'
-            ? JSON.stringify({ username: 'robert', display_name: 'Robert Peat' })
+            ? JSON.stringify({ username: 'owner-chat', display_name: 'Owner Example' })
             : JSON.stringify(overrides.mattermostData ?? { posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
         return { content: [{ type: 'text', text }] };
       });

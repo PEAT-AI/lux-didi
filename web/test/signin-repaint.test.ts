@@ -146,3 +146,13 @@ test('W1-R1: a finished attempt never hides the row own step; only a live one, o
     assert.notEqual(at('unreachable', { attemptId, phase }, { retrying: true }), at('unreachable', undefined, { retrying: true }), `a ${phase} attempt shows on any row`);
   }
 });
+
+test('W1-R2 (V-R1): the wrong-account sentence names no account at all, only what to do', async () => {
+  const { connectorState, signInAttemptText } = await import('../src/settings-view.ts');
+  const attempt = { attemptId: '0123456789abcdef', phase: 'failed', reason: 'account_mismatch' };
+  const sentence = 'Signed in with the wrong Google account. Sign in again with the account Didi is configured for.';
+  assert.equal(signInAttemptText('Mongoose', attempt, 'mongoose'), sentence);
+  assert.doesNotMatch(sentence, /@/u, 'the sentence names no mailbox');
+  const row = connectorState({ id: 'mongoose-data', state: 'error', reasonCode: 'needs_sign_in', signIn: attempt })!;
+  assert.equal(row.next, sentence, 'the row says the same sentence');
+});

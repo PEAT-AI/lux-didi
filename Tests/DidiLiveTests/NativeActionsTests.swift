@@ -118,7 +118,7 @@ import Foundation
         check(OpenDestination.of("https://plantix.net/private", mattermostHost: nil) == nil, "a site path is refused")
         check(OpenDestination.of("http://plantix.net/", mattermostHost: nil) == nil, "a site over http is refused")
         check(OpenDestination.of("https://plantix.net:8443/", mattermostHost: nil) == nil, "a site with a port is refused")
-        check(OpenDestination.of("https://user:pw@plantix.net/", mattermostHost: nil) == nil, "a site with user info is refused")
+        check(OpenDestination.of("https://user:pw@example.com/", mattermostHost: nil) == nil, "a site with user info is refused")
         check(OpenDestination.of("https://plantix.net", mattermostHost: nil) == nil, "a site address without its slash is not the root the host builds")
         // Its own instance: the five-a-minute window above is already spent on the scoped actions.
         let web = NativeActions(home: home, opener: { _, _ in true }, browserState: { BrowserState(installed: true, running: true) })

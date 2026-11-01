@@ -31,8 +31,8 @@ The public `ownerProfile` projection is status and display information, not an e
 ```json
 { "version": 1,
   "people": [
-    { "id": "ravi-example", "name": "Ravi Example", "aliases": ["Ravi", "Robby"],
-      "role": "head of sales India", "circle": "plantix", "project": "",
+    { "id": "ravi-example", "name": "Ravi Example", "aliases": ["Ravi", "Rav"],
+      "role": "head of sales", "circle": "external", "project": "",
       "tier": 1, "email": ["ravi.example@example.test"], "mattermost": "ravi.e", "note": "" } ] }
 ```
 

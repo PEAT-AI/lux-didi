@@ -8,7 +8,8 @@ out="$(mktemp -d "${TMPDIR:-/tmp}/didi-archive-scale.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 export ARCHIVE_SCALE_SOURCE_SHA="$(git --no-pager rev-parse HEAD)"
 export ARCHIVE_SCALE_DIST="$out/dist"
-export ARCHIVE_SCALE_OUTPUT="${ARCHIVE_SCALE_OUTPUT:-/Users/rob/.lux/reports/lux-didi-overnight-1009/archive-scale/measurements-$ARCHIVE_SCALE_SOURCE_SHA.json}"
+# The measurement JSON is retained evidence; set ARCHIVE_SCALE_OUTPUT to keep it somewhere permanent.
+export ARCHIVE_SCALE_OUTPUT="${ARCHIVE_SCALE_OUTPUT:-${TMPDIR:-/tmp}/didi-archive-scale-measurements-$ARCHIVE_SCALE_SOURCE_SHA.json}"
 # Never turn a setup failure into an apparently empty/green benchmark.
 node --input-type=module - "$root" "$out" <<'NODE'
 import assert from 'node:assert/strict';

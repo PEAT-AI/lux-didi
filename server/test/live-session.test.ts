@@ -56,7 +56,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -4892,6 +4892,10 @@ test('#472: a late source result reaches the model while the session is live', a
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
   release();
@@ -4899,8 +4903,14 @@ test('#472: a late source result reaches the model while the session is live', a
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  // C-REBUILD B (council 2026-11-01): a note landing while a response is in flight is held, not written into it,
+  // and that response's own terminal is the one event that speaks it. This guard pinned the pre-ruling behaviour.
+  assert.equal(late[0]!['destination'], 'held', `a response in flight holds the note: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.texts.length, 0, 'nothing is written into the response in flight');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')).length, 1,
+    'the response terminal speaks the held note exactly once');
   assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
   assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
   assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
@@ -5193,7 +5203,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the result reaches the new session as text');
 });
 
-test('#538: model text never slides the audible debt, so the OpenAI rung hands over the unspoken result and rebuilds once', async t => {
+test('#538: model text never slides the audible debt, so the OpenAI rung holds the result, then rebuilds once', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
@@ -5218,15 +5228,23 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   assert.equal(fake.closes, 0, 'an announced response is never closed under');
   h.advance(7_000); scheduler.runDue(); await settlePort();
   // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
-  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
-  assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
+  // C-REBUILD B (council 2026-11-01): the announced response owns the wire, so the rung no longer writes the
+  // result into it. The result waits for that response's terminal, and the rebuild below is the path that carries it.
+  assert.equal(fake.closes, 0, 'the held rung never writes the result into a response in flight');
+  assert.equal(fake.textInputs.length, 0, 'the result waits for that response to end');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  // C-REBUILD A: the announced response holds the rebuild until its ceiling, so the waits below run until the
+  // ladder really reaches its decision instead of assuming one recovery delay is enough.
+  for (let spent = 0; spent < RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 30_000 && fake.closes === 0; spent += 500) {
+    h.advance(500); scheduler.runDue(); await settlePort();
+  }
   assert.equal(fake.closes, 1, 'a model still mute seven seconds later is the one replaced');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
   assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the new session is handed the result once');
   h.advance(4_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.textInputs.length, 2, 'the delivery is never replayed twice');
+  // C-REBUILD B: the rung no longer writes the result into the response in flight, so the one handover is the
+  // rebuild's own, and it is never replayed.
+  assert.equal(fake.textInputs.length, 1, 'the delivery is never replayed twice');
   // The recreated session answers audibly, which is what the owner hears.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await settlePort();
@@ -7508,6 +7526,9 @@ test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead o
   const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } as unknown as Parameters<typeof fake.emit>[0]);
   // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
   await ownerInput(fake);
+  // C-REBUILD C: the provider created a response for that turn, so the first mute is still recovered. Without it
+  // the ruling removed that rebuild, and the second-mute door this test guards would never be reached.
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   assert.equal(fake.sessionsOpened, 2, 'the first mute was recovered on a fresh session');
   // A lookup hands its result back, and the ladder spends its rung on that silence.
@@ -7541,8 +7562,10 @@ test('W4-R1: a genuine second mute with no tool result still ends the call', asy
   const scheduler = new DeadlineClock();
   const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   const { session } = await openPort(h, 'watchdog-note-window');
-  // No tool is called at all, so nothing forges a wait the model never had.
+  // No tool is called at all, so nothing forges a wait the model never had. C-REBUILD C: the provider created a
+  // response for that turn, which keeps the first mute recoverable; the repeated mute is what this test guards.
   await ownerInput(fake);
+  fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   await ownerInput(fake);
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));
@@ -8551,4 +8574,42 @@ test('#107 P-R9: a mail result fences the turn and the owner final opens it agai
   assert.equal(dispatched['status'], 'event_created', JSON.stringify(dispatched));
   assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
   attachment.close();
+});
+
+test('C-REBUILD B: a held note with no terminal before teardown stays ledger only', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const lateHeld = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(lateHeld.length, 1, 'one receipt for the source that landed later');
+  assert.equal(lateHeld[0]!['destination'], 'held', `a response in flight holds it: ${JSON.stringify(lateHeld[0])}`);
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'nothing is written into the response in flight');
+  // No terminal ever arrives: the teardown names the ledger-only disposition and speaks nothing.
+  h.owner.revoke(session.liveSessionId);
+  await settlePort();
+  const ledger = receipts.filter(entry => entry['event'] === 'live_late_note_ledger');
+  assert.equal(ledger.length, 1, 'a held note lost with its generation is named');
+  assert.equal(ledger[0]!['reason'], 'generation_torn_down');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
+    'and nothing is spoken into a session that is gone');
 });

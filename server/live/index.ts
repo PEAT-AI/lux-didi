@@ -503,6 +503,25 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
+/** C-REBUILD: the ceiling on a response in flight. A rebuild holds while the response the provider announced is
+ *  younger than this from its own creation and never shortens anything else: the rung, the recovery and the debt
+ *  clock keep their values. 12 s is the healthy silent-response max (9,680 ms, n=69) with room to spare. */
+export const MAX_IN_FLIGHT_RESPONSE_AGE_MS = 12_000;
+/** C-REBUILD A: how long a rebuild still waits while a response is in flight, or null when it may fire now. */
+export function inFlightResponseHold(state: {
+  responseInProgress?: boolean | undefined; responseCreatedAt?: number | undefined; now: number;
+}): number | null {
+  if (state.responseInProgress !== true || state.responseCreatedAt === undefined) return null;
+  const age = Math.max(0, state.now - state.responseCreatedAt);
+  return age < MAX_IN_FLIGHT_RESPONSE_AGE_MS ? MAX_IN_FLIGHT_RESPONSE_AGE_MS - age : null;
+}
+/** C-REBUILD C: an owner turn that asked the provider for nothing at all, which the council's ruling removed from
+ *  the rebuild triggers. A tool call or a created response makes the turn a real ask, and the rebuild stays. */
+export function silentOwnerTurn(state: {
+  ownerWords: boolean; turnToolCalls: number; turnResponseCreated: boolean;
+}): boolean {
+  return state.ownerWords && state.turnToolCalls === 0 && !state.turnResponseCreated;
+}
 /** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
 export const DEAD_AIR_CONTINUATION_MS = 2_500;
 /** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
@@ -703,6 +722,10 @@ export function lateFindingsText(source: string, items: readonly string[]): stri
 /** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
 export interface LateCommentaryState {
   now: number; answeredAt: number; alreadySpoken: boolean;
+  /** C-REBUILD B: a response in flight owns the channel, so a finding waits for its terminal, never a timer. */
+  responseInProgress?: boolean | undefined;
+  /** C-REBUILD B: this offer is a held note coming back on its terminal, so the window cannot drop it on the way. */
+  held?: boolean | undefined;
   inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
   /**
    * #1028 behaviour 4: when a newer research operation started, or a newer tool call was made, after the
@@ -720,7 +743,12 @@ export interface LateCommentaryState {
  */
 export function lateCommentarySilence(state: LateCommentaryState): string | null {
   if (state.alreadySpoken) return 'already_spoken';
-  if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+  // C-REBUILD B: a note held by a response in flight was deferred by the host, not by the owner's patience, so the
+  // window that guards an unprompted line does not expire it while it waits. Nothing else about the window moves.
+  // C-REBUILD B: the window never expires a note that a response in flight is about to hold, and never expires one
+  // the host deferred behind that response. Everything else about the window is unchanged.
+  if (state.held !== true && state.responseInProgress !== true
+    && state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
   const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
   const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
   // #1028 behaviour 4: a new question is one the host acted on, a research operation it started or a tool call
@@ -730,6 +758,9 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
     : state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate;
   if (askedAgain) return 'new_question';
   if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+  // C-REBUILD B: a response in flight owns the wire, so a finding waits for its terminal. The wait is an event, not
+  // a clock: the terminal is what offers the note, and nothing here may schedule a send of its own.
+  if (state.responseInProgress === true) return 'response_in_flight';
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
 }
@@ -940,6 +971,14 @@ interface ActiveSession {
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
    *  The rung never cuts off an answer the owner can hear; it grants it one short grace. */
   responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
+  /** C-REBUILD C: what this owner turn asked the provider for. A turn with no tool call and no created response is
+   *  the one the council removed from the rebuild triggers; both counters restart with every owner turn. */
+  turnToolCalls?: number | undefined; turnResponseCreated?: boolean | undefined;
+  /** C-REBUILD #830: how many times this call has held a rebuild and how many it has stood down for. */
+  rebuildHeld?: number | undefined; rebuildRemoved?: number | undefined;
+  /** C-REBUILD B: a late finding held by a response in flight, with the generation that must still be open when
+   *  that response terminates. A torn down generation never sends it, so it stays in the ledger only. */
+  lateHeld?: { generation: number; event: ResearchLateFindings }[] | undefined;
   /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
@@ -2719,7 +2758,11 @@ export class LiveSessionOwner {
     // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
     // the answer the owner asked for is not made to wait for two provider recreates.
     if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      if (!(await this.#deliverUnspoken(handle))) return;
+      // C-REBUILD B: a response in flight owns the wire, and a text handed over now would be a second create under
+      // the answer being spoken. The result waits for that response's own terminal, which is the continuation path
+      // that carries it, and if the response is torn down instead it travels in the new session's opening. The
+      // ladder keeps its timing either way: the rebuild rung still fires one recovery delay from here.
+      if (handle.responseInProgress !== true && !(await this.#deliverUnspoken(handle))) return;
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
@@ -2736,6 +2779,9 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
     if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
+    // C-REBUILD: the same one owner from the other side. A sliding watchdog still armed for this silence is
+    // cancelled here, so the debt door's rebuild is the turn's last word on it.
+    if (handle.watchdogTimer !== undefined) { handle.watchdogTimer.cancel(); handle.watchdogTimer = undefined; }
     // #660: the recovery hands the unspoken result to the session it opens, as the one input a fresh session
     // accepts. The retired call ids are never re-sent to a session that never delegated them.
     const opened = await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
@@ -2842,7 +2888,12 @@ export class LiveSessionOwner {
     if (handle.pendingCallIds.size > 0) return;
     // #660: a stall with no call in flight is a result the model never said, which the host hands it once, or
     // nothing at all, which makes the owner's next status answer the host's to give rather than the model's belief.
-    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) { void this.#deliverUnspoken(handle); return; }
+    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
+      // C-REBUILD B: the same hold as the rung, for the same reason. A response in flight owns the wire, and its
+      // terminal is what carries the result, so the stall is diagnosed and nothing is injected under it.
+      if (handle.responseInProgress !== true) void this.#deliverUnspoken(handle);
+      return;
+    }
     handle.hostStatusNote = true;
   }
 
@@ -2912,6 +2963,9 @@ export class LiveSessionOwner {
       // rebuilds inside that sentence; the clock restarts at his final fragment (the final transcription arms
       // this watchdog again). No timer value moves: only the moment the silence begins is judged.
       if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+        // C-REBUILD: every hold names itself. A reschedule with no receipt made a held deadline look like a phase
+        // that simply never advanced.
+        hostLogEvent({ event: 'live_watchdog_hold', reason: 'owner_speaking', generation, delayMs });
         this.#scheduleWatchdog(handle, delayMs, generation, step);
         return;
       }
@@ -2962,6 +3016,17 @@ export class LiveSessionOwner {
         // VOICE-R4 / C-LIVE: dead air stays silent on every provider: a "Continue." user message is a fake owner turn.
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation, sinceTool });
+        // C-REBUILD C: the stand-down the council ruled sits on the path a no-ask turn really takes, which is this
+        // one: arm, nudge, stand down. A repeated mute still settles through #watchdogRecover's own door, and every
+        // other trigger reaches that door untouched.
+        const repeatedMute = handle.watchdogRecoveredAt !== undefined
+          && this.#now() - handle.watchdogRecoveredAt < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle);
+        if (!repeatedMute && this.#noAskOwnerTurn(handle)) {
+          handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
+          hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
+            turnAgeMs, removedCount: handle.rebuildRemoved });
+          return;
+        }
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
         return;
       }
@@ -2998,6 +3063,8 @@ export class LiveSessionOwner {
       // owner hears: the first announced response after an owed answer stamps owner final to response to first audio.
       if (handle.responseInProgress !== true) handle.responseCreatedAt = this.#now();
       handle.responseInProgress = true;
+      // C-REBUILD C: this turn did ask the provider for an answer, so a mute from here is a real mute.
+      handle.turnResponseCreated = true;
       // C-DEADAIR: text the owner cannot hear, written while an answer is owed, is what the response-end rescue reads.
       if (handle.debtSince !== undefined && (type === 'modelText' || type === 'outputTranscription')) handle.debtTextSeen = true;
     }
@@ -3022,6 +3089,8 @@ export class LiveSessionOwner {
     }
     if (type === 'turnComplete' || type === 'turnFailed') {
       handle.responseInProgress = false;
+      // C-REBUILD B: this is the response's own terminal, so the notes it held merge into the continuation now.
+      this.#drainLateHeld(handle);
       // C-DEPTH item 5 (W10-R13): the response just ended, which is the first boundary a rebuild may use.
       void this.#researchRebuildAtBoundary(handle);
       // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
@@ -3056,12 +3125,38 @@ export class LiveSessionOwner {
    * C-WATCH: the model has not had the rung's silence after a tool result yet, so a mute now is not a mute. A result
    * handed back and judged inside the eight seconds any other tool output gets is a wait it never had.
    */
+  /** C-REBUILD C: the turn the council removed, read off the host's own facts: a finalized owner turn whose words
+   *  are in the journal since the model last spoke, with no tool call and no created response. A tool wait or an
+   *  announced response is a real ask, so both keep the ladder untouched. */
+  #noAskOwnerTurn(handle: ActiveSession): boolean {
+    // #607: an empty final is the pickup shape, and it is held by its own fact rather than by the owner's words.
+    if (handle.inputFinal === true && handle.ownerLastWords === 0) return false;
+    return silentOwnerTurn({ ownerWords: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
+      turnToolCalls: handle.turnToolCalls ?? 0, turnResponseCreated: handle.turnResponseCreated === true });
+  }
+
   #toolWaitUnjudged(handle: ActiveSession): boolean {
     return handle.lastToolResultAt !== undefined && this.#now() - handle.lastToolResultAt < AUDIBLE_DEBT_RUNG_MS;
   }
 
   async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
+    // C-REBUILD A: a response in flight younger than its own ceiling is not a mute the ladder may close. The
+    // longest healthy silent response ran 9,680 ms (n=69) and 7 of 19 owner rebuilds tore down one under 9.7 s old,
+    // so the rebuild waits out the remaining age and fires exactly as it did before once the ceiling has passed.
+    // The timer is the one this step already owns, so a response that ends inside the wait cancels it, and no other
+    // rung, recovery or debt value moves.
+    const hold = inFlightResponseHold({
+      responseInProgress: handle.responseInProgress, responseCreatedAt: handle.responseCreatedAt, now: this.#now(),
+    });
+    if (hold !== null) {
+      handle.rebuildHeld = (handle.rebuildHeld ?? 0) + 1;
+      hostLogEvent({ event: 'live_rebuild_held', reason: 'response_in_flight', generation, heldCount: handle.rebuildHeld,
+        ageMs: Math.max(0, this.#now() - (handle.responseCreatedAt ?? this.#now())), holdMs: hold });
+      if (handle.debtSince !== undefined) this.#scheduleDebt(handle, hold, 'rebuild');
+      else this.#scheduleWatchdog(handle, hold, generation, 'recover');
+      return;
+    }
     const previous = handle.watchdogRecoveredAt;
     // W3: the wait being judged started here, so a weak spell before it cannot relabel this timeout.
     const waitSince = handle.watchdogSince;
@@ -3081,6 +3176,19 @@ export class LiveSessionOwner {
       return;
     }
     // C-CONTINUITY R-10: the phase names what really happened, so `recovering` is written before the reopen and
+    // C-REBUILD C: an owner turn that made no tool call and created no response is a turn he may simply have stopped
+    // on, so the rebuild is removed for it, after the honest settlement a repeated mute still earns. The accepted
+    // failure is stated: a socket that is really dead on such a turn waits until he speaks again, and a final after
+    // that silence recovers through the triggers in force. Every other trigger is untouched.
+    if (this.#noAskOwnerTurn(handle)) {
+      handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
+      hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
+        turnAgeMs, removedCount: handle.rebuildRemoved });
+      return;
+    }
+    // C-REBUILD: one owed turn has one rebuild owner. The debt clock armed for this same silence is cancelled
+    // before this door opens, so the turn cannot be rebuilt a second time by the clock it never cancelled.
+    if (handle.debtTimer !== undefined) { handle.debtTimer.cancel(); handle.debtTimer = undefined; }
     // `recovered` only once the provider says the new session is live.
     hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation, sinceTool: waitedAfterTool });
     if (await this.#recoverFromDrop(handle, undefined, true, 'model_mute')) {
@@ -3133,6 +3241,8 @@ export class LiveSessionOwner {
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     handle.modelTextSinceOpen = false;
+    // C-REBUILD C: the turn's own record of what it asked for restarts with the owner's words.
+    handle.turnToolCalls = 0; handle.turnResponseCreated = false;
     // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
@@ -4098,6 +4208,8 @@ export class LiveSessionOwner {
           await this.#replayRecordedCalls(handle, event);
           if (!event.calls.length) continue;
           handle.toolCalls += event.calls.length;
+          // C-REBUILD C: the owner turn did ask for tool work, so its silences stay the ladder's to recover.
+          handle.turnToolCalls = (handle.turnToolCalls ?? 0) + event.calls.length;
           // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
           handle.hostStatusNote = false;
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
@@ -4787,7 +4899,23 @@ export class LiveSessionOwner {
    * the owner is not talking, no answer audio is playing, no new question has started, and the answer is young.
    * One late line per call, and one delivery per source, so a slow source is never reported twice.
    */
-  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
+  /** C-REBUILD B: the response terminated, so the notes it held are offered on this continuation, once. A note
+   *  whose generation is gone is dropped here and lives on in the research ledger alone. */
+  #drainLateHeld(handle: ActiveSession): void {
+    const held = handle.lateHeld ?? [];
+    handle.lateHeld = [];
+    for (const entry of held) {
+      if (entry.generation !== handle.generation) {
+        // C-REBUILD B (finding 8): the response that held this note was torn down, so the note is not sent at all
+        // and stays in the research ledger. The disposition is named here instead of being an absence.
+        hostLogEvent({ event: 'live_late_note_ledger', reason: 'generation_torn_down', generation: entry.generation });
+        continue;
+      }
+      this.#lateFindings(handle, handle.generation, entry.event, true);
+    }
+  }
+
+  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings, held = false): void {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, destination: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
@@ -4806,7 +4934,7 @@ export class LiveSessionOwner {
     // as an unknown frame and a commentary append is refused on delegation_id), so a late finding is either
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
-    const reason = this.#lateCommentaryReason(handle, event);
+    const reason = this.#lateCommentaryReason(handle, event, held);
     // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
     // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
     // G5: her own answer audio is a hold too. A result that lands while she is still speaking is rescheduled for
@@ -4819,6 +4947,13 @@ export class LiveSessionOwner {
         if (this.#settled(handle) || generation !== handle.generation) return;
         this.#lateFindings(handle, generation, event);
       }, holdMs);
+    }
+    if (reason === 'response_in_flight') {
+      // C-REBUILD B: the response in flight owns the wire, and its own terminal is what carries this note into the
+      // continuation path. The queue is the event, never a timer, and the generation rides with it so a torn down
+      // generation cannot send it later: that note stays in the ledger only.
+      handle.lateHeld = [...(handle.lateHeld ?? []), { generation, event }];
+      return hostLogEvent({ ...receipt, destination: 'held', reason });
     }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = lateFindingsText(event.source, event.items);
@@ -4855,7 +4990,7 @@ export class LiveSessionOwner {
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
-  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
+  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings, held = false): string | null {
     return lateCommentarySilence({
       now: this.#now(),
       answeredAt: handle.researchAnsweredAt ?? this.#now(),
@@ -4863,6 +4998,7 @@ export class LiveSessionOwner {
       inputAt: handle.inputAt,
       ownerWords: handle.ownerLastWords,
       lastModelAudioAt: handle.lastModelAudioAt,
+      responseInProgress: handle.responseInProgress === true, held,
       newerWorkAt: Math.max(handle.researchStartedAt ?? 0, handle.lastToolCallAt ?? 0),
     });
   }
@@ -5304,6 +5440,12 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
+    // C-REBUILD B: a note still held when the session ends never gets the terminal that would have spoken it, so
+    // its ledger-only disposition is named here instead of vanishing with the handle.
+    for (const entry of handle.lateHeld ?? []) {
+      hostLogEvent({ event: 'live_late_note_ledger', reason: 'generation_torn_down', generation: entry.generation });
+    }
+    handle.lateHeld = [];
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();

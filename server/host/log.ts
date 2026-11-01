@@ -1253,6 +1253,39 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
     return { event: 'turn_failed', reason: value.reason };
   }
+  if (value.event === 'live_late_note_ledger') {
+    // C-REBUILD B: a held late finding whose response was torn down stays in the research ledger. Named, counted,
+    // and never a send.
+    if (!closedKeys(value, ['event', 'reason', 'generation'])) return;
+    if (!isSafeMember(value.reason, ['generation_torn_down'])) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_late_note_ledger', reason: value.reason, generation: value.generation };
+  }
+  if (value.event === 'live_watchdog_hold') {
+    // C-REBUILD: a watchdog deadline held back, with the reason it was held. Counts and enums only.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'delayMs'])) return;
+    if (!isSafeMember(value.reason, ['owner_speaking'])) return;
+    for (const field of ['generation', 'delayMs']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_watchdog_hold', reason: value.reason, generation: value.generation, delayMs: value.delayMs };
+  }
+  if (value.event === 'live_rebuild_held') {
+    // C-REBUILD A: a rebuild that stood down because a response was in flight, with its named reason, that
+    // response's age, the wait it took instead and how many times this call has held. A count, never an absence.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'ageMs', 'holdMs', 'heldCount'])) return;
+    if (!isSafeMember(value.reason, ['response_in_flight'])) return;
+    for (const field of ['generation', 'ageMs', 'holdMs', 'heldCount']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_rebuild_held', reason: value.reason, generation: value.generation, ageMs: value.ageMs,
+      holdMs: value.holdMs, heldCount: value.heldCount };
+  }
+  if (value.event === 'live_rebuild_removed') {
+    // C-REBUILD C: the owner turn whose rebuild was removed. The reason is the council's own: no tool work and no
+    // response created, so nothing was owed to the provider and a dead socket waits for him to speak again.
+    if (!closedKeys(value, ['event', 'reason', 'generation', 'turnAgeMs', 'removedCount'])) return;
+    if (!isSafeMember(value.reason, ['owner_turn_no_tool_no_response'])) return;
+    for (const field of ['generation', 'turnAgeMs', 'removedCount']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_rebuild_removed', reason: value.reason, generation: value.generation,
+      turnAgeMs: value.turnAgeMs, removedCount: value.removedCount };
+  }
   if (value.event === 'live_rebuild') {
     // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close

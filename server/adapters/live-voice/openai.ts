@@ -648,6 +648,8 @@ class Session implements LiveVoiceSession {
   private readonly clock: LiveVoiceClock;
   /** O1b-A: the host-minted key of each provider response, so a receipt joins a response to its calls. */
   private readonly responseKeys = new Map<string, string>();
+  /** C-REBUILD: the responses this session created and has not terminated yet, so a teardown settles each one. */
+  private readonly openResponses = new Set<string>();
   private responseKeySeq = 0;
   private readonly observedResponses = new Set<string>();
   /** O1b-A: when each call was delegated and by which response, for the executed/written receipts' ms. */
@@ -1215,6 +1217,7 @@ class Session implements LiveVoiceSession {
         if (this.firstResponseTiming !== undefined && this.firstResponseTiming.responseKey === undefined) {
           this.firstResponseTiming.responseKey = this.responseKeyOf(responseId);
         }
+        this.openResponses.add(this.responseKeyOf(responseId));
         this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
           createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
         });
@@ -1319,6 +1322,7 @@ class Session implements LiveVoiceSession {
     // too, with the provider's own status and the reason this adapter read from it.
     const responseKey = this.currentResponseKey;
     if (responseKey !== undefined) {
+      this.openResponses.delete(responseKey);
       const status = typeof message?.['status'] === 'string' ? message['status'] : undefined;
       this.receipt('response.terminal', { responseKey }, {
         terminalAt: this.clock.now(), status: TERMINAL_STATUS[status ?? ''] ?? 'completed', terminalReason: terminalReasonOf(status),
@@ -2150,6 +2154,20 @@ class Session implements LiveVoiceSession {
 
   close(): void { if (this.checkpoint()) this.finish('closed'); }
 
+  /** C-REBUILD: every response this session created and never terminated, closed with the one status the store
+   *  keeps for it. A rebuild can leave more than one open: the delegated response was replaced by its continuation
+   *  and neither ever saw a `response.done`. */
+  private settleSuperseded(): void {
+    this.delegatedOutstanding = false;
+    const open = [...this.openResponses];
+    this.openResponses.clear();
+    for (const responseKey of open) {
+      this.receipt('response.terminal', { responseKey }, {
+        terminalAt: this.clock.now(), status: 'superseded', terminalReason: 'superseded',
+      });
+    }
+  }
+
   private finish(code: LiveVoiceErrorCode, upstream?: LiveVoiceUpstreamDrop) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
@@ -2157,6 +2175,10 @@ class Session implements LiveVoiceSession {
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     this.clearNoItemTimer();
     this.discardHeadStart();
+    // C-REBUILD: a teardown under a response the provider announced and never terminated is the one case the wire
+    // never settles. The response is settled here as superseded, so a rebuild, a drop or an ended call leaves no
+    // response pending in the store for the life of the call (t59 and t64 in 47bf2e88 still listed theirs).
+    this.settleSuperseded();
     // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);

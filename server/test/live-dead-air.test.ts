@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, liveMigrations, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, lateCommentarySilence, lateHoldMs,
+  liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -56,6 +57,7 @@ const rungReceipts = (live: DeadAir): Record<string, unknown>[] => live.receipts
 
 interface DeadAir {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; scheduler: DeadlineClock;
+  liveSessionId: string;
   emit(event: FakeLiveVoiceEvent): Promise<void>; advance(ms: number): Promise<void>; sentTexts: number;
 }
 
@@ -80,7 +82,7 @@ async function openCall(t: TestContext): Promise<DeadAir> {
   await attachment.ready;
   await settle();
   return {
-    owner, fake, receipts, scheduler, sentTexts: fake.texts.length,
+    owner, fake, receipts, scheduler, liveSessionId: session.liveSessionId, sentTexts: fake.texts.length,
     emit: async event => { fake.emit(event); await settle(); },
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await settle(); },
   };
@@ -114,7 +116,11 @@ test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buy
   const rungs = rungReceipts(live);
   assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
   assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it delivers the held result');
+  // C-REBUILD B (council 2026-11-01): a response in flight owns the wire, so this rung no longer hands the result
+  // over. It waits for that response's own terminal, which is the ruling's continuation path for it.
+  assert.equal(live.fake.texts.length, live.sentTexts, 'the held result is not written into a response in flight');
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and the response end delivers it exactly once');
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {
@@ -163,4 +169,219 @@ test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner senten
   await live.emit(ownerFinal('book a table for four'));
   for (let spent = 0; spent < AUDIBLE_DEBT_RUNG_MS + 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
   assert.equal(rungReceipts(live).length, 1, 'the rung is judged from his final fragment, not before it');
+});
+
+// C-REBUILD (council verdict, standard round 2026-11-01, PERF.md finding 2): 7 of 19 owner rebuilds tore down a
+// response in flight under 9.7 s old, against a healthy silent-response max of 9,680 ms (n=69). A response in
+// flight younger than its own ceiling is therefore never the ladder's to lose. The rung, the recovery and the debt
+// clock keep their values: only the moment the rebuild may fire moves, and it may only move later.
+/** Drive the fake clock in the host's own step, so every awaited recovery completes between two steps. */
+async function drive(live: DeadAir, until: () => boolean, budgetMs: number): Promise<number> {
+  let spent = 0;
+  while (spent < budgetMs && !until()) { await live.advance(250); spent += 250; }
+  return spent;
+}
+const heldRebuilds = (live: DeadAir): Record<string, unknown>[] =>
+  live.receipts.filter(record => record.event === 'live_rebuild_held');
+const removedRebuilds = (live: DeadAir): Record<string, unknown>[] =>
+  live.receipts.filter(record => record.event === 'live_rebuild_removed');
+
+test('C-REBUILD A: a held rebuild waits for the response in flight to reach its ceiling', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('d1'));
+  // The answer is announced as the rung lands, so the rebuild step finds it seven seconds old: the age the
+  // 09:31:32Z rebuild in 47bf2e88 tore down.
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  assert.equal(rungReceipts(live).length, 1, 'the rung landed, so the rebuild step is armed behind it');
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  const created = live.scheduler.now;
+  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'the wedged response is still rebuilt: the ceiling does not remove one');
+  const ageAtRebuild = live.scheduler.now - created;
+  assert.ok(ageAtRebuild >= MAX_IN_FLIGHT_RESPONSE_AGE_MS,
+    `the rebuilt response was ${ageAtRebuild} ms old, and the ceiling is ${MAX_IN_FLIGHT_RESPONSE_AGE_MS}`);
+  const held = heldRebuilds(live);
+  assert.ok(held.length >= 1, 'the hold is a named receipt, not an absence');
+  assert.equal(held[0]!.reason, 'response_in_flight');
+  assert.equal(held[0]!.heldCount, 1);
+});
+
+test('C-REBUILD A: a response that finishes inside the hold is never rebuilt', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('d2'));
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  assert.equal(rungReceipts(live).length, 1, 'the rung landed, so the rebuild step is armed behind it');
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  const textsAtResponse = live.fake.texts.length;
+  // The ladder reaches its rebuild step and holds: that receipt is the proof the decision was made.
+  await drive(live, () => heldRebuilds(live).length > 0, 40_000);
+  assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder held rather than tore the answer down');
+  assert.equal(live.fake.sessionsOpened, 1, 'nothing rebuilds under a response that is still open');
+  await live.emit(audible());
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'and the held timer never fires after the answer was heard');
+  assert.equal(live.fake.texts.length, textsAtResponse, 'nothing is injected while or after the answer is spoken');
+});
+
+test('C-REBUILD B: the unspoken result never goes into a response that is in flight', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('d3'));
+  await drive(live, () => false, 1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  // Step the clock until the rebuild, watching the old session's texts: nothing may be written into a response
+  // that is still open. What the new session is handed afterwards is that rebuild's own continuation path.
+  let intoOldSession: number | undefined;
+  for (let spent = 0; spent < 60_000 && live.fake.sessionsOpened === 1; spent += 250) {
+    await live.advance(250);
+    if (live.fake.sessionsOpened === 1) intoOldSession = live.fake.texts.length;
+  }
+  assert.equal(intoOldSession, live.sentTexts, 'a result is never pushed into a response in flight');
+  assert.equal(live.fake.sessionsOpened, 2, 'a response past its ceiling is still rebuilt');
+});
+
+test('C-REBUILD B: a late finding is held for the continuation while a response is in flight', () => {
+  const state = { now: 5_000, answeredAt: 0, alreadySpoken: false, ownerWords: 0, responseInProgress: true };
+  // Held, not parked: the response's own terminal is the event that offers the note on the continuation. A torn
+  // down generation is the one case that never sends it, and then it lives in the research ledger alone.
+  assert.equal(lateCommentarySilence(state), 'response_in_flight', 'the note is held while the response is open');
+  assert.equal(lateHoldMs('response_in_flight'), undefined, 'and no timer of its own may ever send it');
+  assert.equal(lateCommentarySilence({ ...state, responseInProgress: false }), null,
+    'with no response in flight the note is spoken as before');
+});
+
+test('C-REBUILD C: an owner turn with no tool work and no response is never rebuilt', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('The bridge is still out, I will drive instead.'));
+  await drive(live, () => false, 60_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'the accepted failure: a dead socket here waits for him to speak again');
+  assert.equal(live.fake.texts.length, live.sentTexts, 'and no filler is spoken into the silence');
+  assert.notEqual(live.owner.get(live.liveSessionId).lifecycle, 'terminal', 'the call is left open, listening');
+  const removed = removedRebuilds(live);
+  assert.equal(removed.length >= 1, true, 'the decision that stood down is a named receipt');
+  assert.equal(removed[0]!.reason, 'owner_turn_no_tool_no_response');
+  assert.equal(removed[0]!.removedCount, 1);
+});
+
+test('C-REBUILD C: a mute after tool work still rebuilds, exactly as before', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('Look up when the synthetic bridge reopens'));
+  await live.emit(toolCall('d4'));
+  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'a tool turn that is owed an answer still recovers it');
+});
+
+// C-REBUILD (B-R7): the contract's invariant replays. One owed turn has one continuation owner: note delivery,
+// silent rescue, watchdog re-evaluation and the provider terminal are mediated by that one owner, and no path may
+// send a second create while one is active or after audio for that turn. Each replay asserts one answer and no
+// replay of spoken content, on the same fakes the rest of this file uses.
+const answeredOnce = (live: DeadAir): boolean => live.fake.texts.length <= live.sentTexts + 1;
+
+test('C-REBUILD invariant: chained responses are two answers, never a third create', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('c1'));
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  for (const answer of ['first', 'second']) {
+    await live.emit(portEvent({ type: 'modelTurnStarted' }));
+    await live.emit(audible());
+    await live.emit(portEvent({ type: 'modelText', text: `answer ${answer}`, thought: false }));
+    await live.emit(portEvent({ type: 'turnComplete' }));
+  }
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'two chained answers never rebuild the session');
+  assert.equal(heldRebuilds(live).length, 0, 'and no rebuild is held or taken for either of them');
+  assert.equal(answeredOnce(live), true, 'the turn keeps one continuation owner and one injected line at most');
+});
+
+test('C-REBUILD invariant: a held note, the terminal and the rescue arriving together send one line', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c2'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(portEvent({ type: 'modelText', text: 'reading', thought: false }));
+  // The terminal lands on the same tick the rung would speak, which is the shape that double spoke before.
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  // One ladder round, not two: this replay is about the turn's one continuation owner, and the next window's
+  // repeated-mute door has its own guards.
+  await drive(live, () => false, 4_000);
+  // The ladder's own rebuild after a silent text response is unchanged; what the invariant forbids is a second
+  // line for one owed turn, and that is what is asserted here.
+  assert.equal(live.fake.sessionsOpened <= 2, true, 'a terminal and a rescue in one tick take at most the ladder rebuild');
+  assert.equal(answeredOnce(live), true, 'and they never send more than one continuation line');
+});
+
+test('C-REBUILD invariant: a reordered or repeated terminal changes nothing', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c3'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await drive(live, () => false, 30_000);
+  assert.equal(live.fake.sessionsOpened <= 2, true, 'a repeated terminal is not a second reason to rebuild beyond the ladder');
+  assert.equal(answeredOnce(live), true, 'and it never re-sends what was already said');
+});
+
+test('C-REBUILD invariant: a stale timer after the answer was heard does nothing', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c4'));
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(audible());
+  const textsAtAnswer = live.fake.texts.length;
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 60_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'no timer left over from the hold rebuilds a heard answer');
+  assert.equal(live.fake.texts.length, textsAtAnswer, 'and nothing is injected after the answer was heard');
+});
+
+test('C-REBUILD invariant: owner speech during a deferral leaves one answer', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('c5'));
+  // The deferral is the hold A keeps for a response in flight, so the response is announced young: after the rung,
+  // so the rebuild step finds it inside its ceiling. A response announced at the start is already past that ceiling
+  // by the step, and nothing is held, which is what this replay measured before it was corrected.
+  await drive(live, () => rungReceipts(live).length > 0, 20_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await drive(live, () => heldRebuilds(live).length > 0, 20_000);
+  assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder reached its rebuild step and held for the response');
+  await live.emit(ownerFinal('and the other bridge too'));
+  await live.emit(audible());
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  await drive(live, () => false, 4_000);
+  assert.equal(live.fake.sessionsOpened <= 2, true,
+    `his words inside the deferral add no rebuild of their own; rebuilds=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild'))} held=${JSON.stringify(heldRebuilds(live))}`);
+  assert.equal(answeredOnce(live), true, 'and the deferred turn still keeps one continuation owner');
+});
+
+test('C-REBUILD invariant: a session replacement during a deferral carries one line, never two', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('c6'));
+  await live.advance(1_000);
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  // The response is past its ceiling at the rebuild step, so the replacement really happens.
+  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'the wedged response is replaced');
+  await drive(live, () => false, 10_000);
+  assert.equal(answeredOnce(live), true, 'the replacement carries the result once and never replays it');
+});
+
+test('C-REBUILD B: a held note is not dropped by the late window on its way back', () => {
+  const past = { now: 60_000, answeredAt: 0, alreadySpoken: false, ownerWords: 0 };
+  assert.equal(lateCommentarySilence(past), 'window_elapsed', 'an unprompted late line still expires');
+  assert.equal(lateCommentarySilence({ ...past, responseInProgress: true }), 'response_in_flight',
+    'and a note held by a response in flight is held, not expired, on the way in');
+  assert.equal(lateCommentarySilence({ ...past, held: true, responseInProgress: false }), null,
+    'on its terminal the same note is spoken, however long the response held it');
 });

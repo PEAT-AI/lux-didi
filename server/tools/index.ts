@@ -800,7 +800,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                   say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
               }
               const armed = (): JsonObject => {
-                const alarms = listPendingAlarms(tx).map(entry => {
+                const alarms = listPendingAlarms(tx).slice(0, 5).map(entry => {
                   const read = alarmReadBack(entry.fireAtUtc, entry.tz);
                   return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
                 });
@@ -837,7 +837,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const hostZone = String(options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '',
               ask.observedAt ?? now, snoozeRow ? String(snoozeRow.tz) : hostZone, input.time);
-            const armed = name === 'set_alarm' ? listPendingAlarms(tx).map(entry => {
+            // Five is enough to say what still stands, and it keeps the receipt small.
+            const armed = name === 'set_alarm' ? listPendingAlarms(tx).slice(0, 5).map(entry => {
               const read = alarmReadBack(entry.fireAtUtc, entry.tz);
               return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
             }) : [];

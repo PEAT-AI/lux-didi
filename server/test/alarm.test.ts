@@ -269,14 +269,14 @@ test('C-RECUR: an evening half past ten and a weekly weekday set stay exact', ()
   assert.equal(evening.series.hour, 22);
   assert.equal(evening.series.minute, 30);
   assert.deepEqual(parseSeriesRule('every saturday and sunday at ten'), { kind: 'weekly', weekdays: [0, 6] });
-  const weekend = parseAlarmTime('every saturday and sunday at ten remind me to run', Date.parse('2026-10-30T15:00:00+08:00'), tz);
+  const weekend = parseAlarmTime('every saturday and sunday at ten remind me to run', Date.parse('2026-10-30T15:00:00+08:00'), tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(weekend.status, 'ready');
   if (weekend.status === 'ready' && weekend.series) assert.equal(seriesText(weekend.series), 'every Sunday and Saturday at 10:00 Singapore time');
 });
 
 test('C-RECUR: a host time zone change never moves a series', () => {
   const t0 = Date.parse('2026-10-30T15:00:00+08:00');
-  const parsed = parseAlarmTime('Every Saturday at ten remind me to do cardio.', t0, tz);
+  const parsed = parseAlarmTime('Every Saturday at ten remind me to do cardio.', t0, tz, modelAt(Date.parse('2026-10-31T10:00:00+08:00')));
   assert.equal(parsed.status, 'ready');
   if (parsed.status !== 'ready' || !parsed.series) return;
   const previous = process.env.TZ;
@@ -333,14 +333,14 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
   }
   for (const ask of ['wake me at 7 and tell me about the deck', 'wake me at 7 and talk to me about the deck',
     'check in with me at 7 about the deck']) {
-    const subject = parseAlarmTime(ask, now_, tz);
+    const subject = parseAlarmTime(ask, now_, tz, modelAt(Date.parse('2026-10-28T07:00:00+08:00')));
     assert.equal(subject.status, 'ready', ask);
     if (subject.status === 'ready') assert.match(subject.confirmation, /^Alarm set for /, ask);
   }
   // A stated clock after the subject belongs to the alarm, never to the label.
   for (const ask of ['tell me about the deck at 9', 'talk to me about the deck at 9',
     'check in with me at 7 about the deck']) {
-    const clocked = parseAlarmTime(ask, now_, tz);
+    const clocked = parseAlarmTime(ask, now_, tz, modelAt(Date.parse('2026-10-28T09:00:00+08:00')));
     assert.equal(clocked.status, 'ready', ask);
     if (clocked.status === 'ready') {
       assert.match(clocked.confirmation, /^Alarm set for /, ask);

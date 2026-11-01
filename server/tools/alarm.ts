@@ -135,7 +135,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
     if (checked.hour !== undefined) {
       // "at six" fixes the hour but not half of the day: a model time settles the meridian, and
       // "wake me" permits the morning default the owner's words carry. A bare set asks.
-      if (!clock && !/\bwake me\b/i.test(words)) return { status: 'clarify', reason: 'ambiguous_time' };
+      if (!clock && !/\bwake (?:me|up)\b/i.test(words)) return { status: 'clarify', reason: 'ambiguous_time' };
       let hour = checked.hour;
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
       else if (!clock) hour = hour === 12 ? 0 : hour;

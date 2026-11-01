@@ -211,9 +211,13 @@ export function checkOwnerTime(words: string): OwnerTimeCheck {
   }
 
   // A period word settles an hour that had no meridian of its own.
-  const settled = clocks.map(candidate => candidate.exact || period === undefined
+  // A period word settles a 12 hour reading, whether or not the clock was self-anchored:
+  // "half past ten in the evening" is 22:30 and "eleven ten tonight" is 23:10.
+  const withPeriod = (hour: number, statedPeriod: 'am' | 'pm'): number =>
+    hour >= 12 ? hour : statedPeriod === 'pm' ? hour + 12 : hour;
+  const settled = clocks.map(candidate => period === undefined || candidate.hour >= 12
     ? { hour: candidate.hour, minute: candidate.minute, exact: candidate.exact, stated: candidate.stated }
-    : { hour: period === 'pm' ? (candidate.hour === 12 ? 12 : candidate.hour + 12) : (candidate.hour === 12 ? 0 : candidate.hour), minute: candidate.minute, exact: true, stated: candidate.stated });
+    : { hour: withPeriod(candidate.hour, period), minute: candidate.minute, exact: true, stated: candidate.stated });
 
   const distinct = new Set(settled.map(clock => `${clock.hour}:${clock.minute}`));
   if (distinct.size > 1) return { status: 'inconclusive', reason: 'several_times' };

@@ -22,7 +22,7 @@ interface CorpusRow {
   args2?: Record<string, unknown>; words2?: string; expects: Record<string, unknown>;
 }
 
-const corpus: CorpusRow[] = readFileSync(new URL('./fixtures/time-corpus.jsonl', import.meta.url), 'utf8')
+const corpus: CorpusRow[] = readFileSync(new URL('../../test/fixtures/time-corpus.jsonl', import.meta.url), 'utf8')
   .split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as CorpusRow);
 
 /**

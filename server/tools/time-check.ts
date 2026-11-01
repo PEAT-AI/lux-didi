@@ -55,7 +55,7 @@ const WORD_TENS = ['fifty', 'forty', 'thirty', 'twenty'];
 // A tens word may take a unit (twenty five), and a tens-free word never takes a second number,
 // so "eleven ten" stays two numbers of words and not the number twenty one.
 const WORD_ONES = ['nine', 'eight', 'seven', 'six', 'five', 'four', 'three', 'two', 'one'];
-const WORD_NUMBER = `(?:${WORD_TENS.join('|')}(?:[ -](?:${WORD_ONES.join('|')}))?|${WORD_UNITS.join('|')})`;
+const WORD_NUMBER = `(?:(?:${WORD_TENS.join('|')})(?:[ -](?:${WORD_ONES.join('|')}))?|${WORD_UNITS.join('|')})`;
 const NUMBER = `(?:\\d{1,2}|${WORD_NUMBER})`;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 

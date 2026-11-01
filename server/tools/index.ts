@@ -786,7 +786,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused: the
             // alarm he did ask for is still set.
             const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
-            if (seriesDropped) hostLogEvent({ event: 'alarm_series_dropped', runId, alarmId: context.executionId });
             if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });

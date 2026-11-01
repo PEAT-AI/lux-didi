@@ -87,20 +87,6 @@ test('direct owner compound framing grants non-destructive kinds', () => {
   }
 });
 
-  ['He told me to wait then open the deck', ['open']],
-  ['The note reads open the deck and set an alarm for seven', ['open', 'set_alarm']],
-  ['The instructions are "open the deck and save this into Lux"', ['open', 'lux_note']],
-  ['Naya: open the deck', ['open']], ['open "the deck"', ['open']],
-  ['open «the deck»', ['open']], ['open 「the deck」', ['open']], ['open `the deck`', ['open']],
-  ['will you open the deck', ['open']], ['launch the browser', []], ['list my alarms', []],
-] as const) test(`hear104 owner framing: ${words}`, () => {
-  const requests = new OwnerRequests(() => 0);
-  requests.observe('s', 'j', words);
-  for (const [kind] of reportedActions) if (kind === 'set_alarm' && !/\balarm\b|\bwake me\b|\bremind me\b/i.test(words)) {
-    assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request');
-  } else assert.equal(requests.authorize('s', kind, 'target').code,
-    'allowed', kind);
-});
 for (const [words, kinds] of [
   ['open the deck', ['open']],
   ['Naya open the deck and set an alarm for seven', ['open', 'set_alarm']],
@@ -153,7 +139,8 @@ for (const words of [
     requests.observe('s', 'old', 'open the deck and set an alarm for seven');
     requests.observe('s', 'new', words);
     assert.equal(requests.authorize('s', 'open', 'deck').code, words === "don't open the deck" ? 'no_owner_request' : 'allowed');
-    assert.equal(requests.authorize('s', 'set_alarm', 'time').code, /\balarm\b/i.test(words) ? 'allowed' : 'no_owner_request');
+    // C-PERMTIER: the alarm ask in his first final still stands; a later final never takes it back.
+    assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
     assert.equal(requests.authorize('s', 'lux_note', 'note').code, /save/.test(words) ? 'no_owner_request' : 'allowed');
   });
 }

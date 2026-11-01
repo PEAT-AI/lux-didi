@@ -77,7 +77,8 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
     if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery'
-      || record.event === 'live_rebuild' || record.event === 'live_idle_arm') receipts.push(record);
+      || record.event === 'live_rebuild' || record.event === 'live_idle_arm'
+    || record.event === 'live_rebuild_removed' || record.event === 'live_rebuild_held') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
@@ -474,7 +475,7 @@ test('C-REBUILD C: a real question with no tool work and no response is no longe
     await live.advance(250);
   }
   assert.equal(removed(live).length > 0, true,
-    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))} trace=${JSON.stringify(live.receipts.filter(record => record.event === 'live_watchdog_hold'))} probe=${JSON.stringify(live.receipts.filter(record => record.event === 'live_noask_probe'))}; inputFinal=${(live.owner.get(live.liveSessionId) as unknown as { inputFinal?: unknown }).inputFinal === undefined ? 'nofield' : 'field'} lastWords=${JSON.stringify(live.receipts.filter(record => record.event === 'live_debt').length)}`);
+    `the decision names what it stood down for; phases=${JSON.stringify(phases(live))} opens=${live.fake.sessionsOpened} terminal=${String(terminalCode(live))} held=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild_held'))} trace=${JSON.stringify(live.receipts.filter(record => record.event === 'live_watchdog_hold'))}; inputFinal=${(live.owner.get(live.liveSessionId) as unknown as { inputFinal?: unknown }).inputFinal === undefined ? 'nofield' : 'field'} lastWords=${JSON.stringify(live.receipts.filter(record => record.event === 'live_debt').length)}`);
   assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
   assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],

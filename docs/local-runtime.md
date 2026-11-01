@@ -22,7 +22,7 @@ The host's private data includes its SQLite state, writer-lock database, `admin-
 
 ## App-owned supervision
 
-`supervise` in `server/host/supervision.ts` implements `--supervised`. The native supervisor starts the child with an anonymous stdin pipe and sends a bounded start frame with a nonce. The host emits its ready frame only after actual startup and keeps the pipe as its lifetime boundary. EOF shuts the owned host down; a nonce is rendezvous metadata, not an authentication secret.
+`supervise` in `server/host/supervision.ts` implements `--supervised`. The native supervisor starts the child with an anonymous stdin pipe and sends a bounded start frame with a nonce. The host emits its ready frame only after actual startup and keeps the pipe as its lifetime boundary. EOF shuts the owned host down; a clean quit writes one stop frame carrying the app's own closed `live_end` reason before it closes the pipe, and EOF with no stop frame names the end `shell_lost` rather than the owner quitting. A nonce is rendezvous metadata, not an authentication secret.
 
 `NativeServiceSupervisor` in `Sources/LuxDidi/NativeServiceSupervisor.swift` owns the native side. Keep the frame schema in those source owners rather than copying it into a second parser or this page. Ordinary foreground starts do not require the supervised handshake.
 

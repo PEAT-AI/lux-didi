@@ -1510,6 +1510,11 @@ export function subResultOf(key: string, name: string, response: Record<string, 
     ...(ok && typeof response['classified'] === 'string' ? { classified: response['classified'] } : {}) } as IntentSubResult;
 }
 
+/** C-LABELS 2: the Stop reasons whose terminal code is the reason itself, because the owner provably pressed
+ *  nothing. Every other reason the app sends still settles `user_stop`: C-HEADPHONES 5 deliberately keeps a
+ *  route change as the owner's own stop on the terminal line, pinned by its live test. */
+const TERMINAL_CODE_OF_STOP: Readonly<Record<string, string>> = { session_lost: 'session_lost' };
+
 export class LiveSessionOwner {
   /** C-LOGS11: when each turn's owner final landed, so a later native receipt can close that turn's
    *  final-to-audible latency. Session-scoped and pruned with the turn it belongs to. */
@@ -2130,17 +2135,20 @@ export class LiveSessionOwner {
     handle.abort.abort();
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(reason: string = 'app_quit'): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#expiryTimer?.cancel();
     this.#expiryTimer = undefined;
+    // C-LABELS 1: the code names who ended the call. `shell_lost` is the supervised shell disappearing with
+    // the call still live; every reason the app itself names is still the app asking, so it stays app_quit.
+    const code = reason === 'shell_lost' ? 'shell_lost' : 'app_quit';
     const handles = [...this.#active.values()];
     for (const handle of handles) {
       // The app quit with the call still live: the session ends here, named apart from the Stop button.
       if (!this.#settled(handle)) {
-        this.#settle(handle, { state: 'closed', code: 'app_quit' }, true, 'ended', null);
-        hostLogEvent({ event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+        this.#settle(handle, { state: 'closed', code }, true, 'ended', null);
+        hostLogEvent({ event: 'session_end', reason: code, msAfterStop: 0 });
       }
       handle.consumer?.discard();
       handle.session.close();
@@ -3963,7 +3971,7 @@ export class LiveSessionOwner {
     // user_stop: the log never invents a reason it was not told.
     const reason = nativeReason && (NATIVE_END_REASONS as readonly string[]).includes(nativeReason)
       ? nativeReason : 'user_stop';
-    this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
+    this.#settle(handle, { state: 'closed', code: TERMINAL_CODE_OF_STOP[reason] ?? 'user_stop' }, true, 'ended', null);
     hostLogEvent({ event: 'session_end', reason, msAfterStop: 0 });
   }
 

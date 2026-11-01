@@ -38,7 +38,7 @@ const NAMED: Readonly<Record<string, Severity>> = {
   clock_sync: { level: 'info', cause: 'host' },
   host_resources: { level: 'debug', cause: 'host' },
   config_seeded: { level: 'info', cause: 'config' },
-  live_terminal: { level: 'info', cause: 'owner' },
+  // C-LABELS 1: live_terminal and session_end are classified by the code in the record, not by this table.
   live_state: { level: 'debug', cause: 'owner' },
   live_idle_arm: { level: 'debug', cause: 'owner' },
   live_turn_open: { level: 'debug', cause: 'owner' },
@@ -70,9 +70,22 @@ const NAMED: Readonly<Record<string, Severity>> = {
 /** A degradation is a warn, an unclassified host_error is an error, and the rest is routine. */
 const FAILURE_SUFFIX = /(?:^|_)(?:failed|failure|error|rejected|refused|unavailable|dropped|lost|timeout|stalled)$/;
 
-export function severityOf(name: string, fields?: { deadAirMs?: unknown; msSinceTool?: unknown; msSinceAudible?: unknown }): Severity {
+/** C-LABELS 1 and 2: an end line names who ended the call, and the word that ended it says who. A shell that
+ *  was lost is the host's, a session that was lost is the provider's (the host is alive and writing this line),
+ *  and every end the app asked for stays the owner's. Nothing else changes a cause. */
+function endCause(code: unknown): LogCause {
+  if (code === 'shell_lost') return 'host';
+  if (code === 'session_lost') return 'provider';
+  return 'owner';
+}
+
+export function severityOf(name: string, fields?: { deadAirMs?: unknown; msSinceTool?: unknown; msSinceAudible?: unknown; code?: unknown; reason?: unknown }): Severity {
   if (name === 'live_dead_air' && typeof fields?.deadAirMs === 'number' && fields.deadAirMs >= 0 && fields.deadAirMs < 3000
       && fields.msSinceTool === undefined && fields.msSinceAudible === undefined) return { level: 'info' };
+  // A terminal and a session end are read from the record: the code is the fact, the table is not.
+  if (name === 'live_terminal') return { level: 'info', cause: endCause(fields?.code) };
+  if (name === 'session_end') return { level: 'info', ...(fields?.reason === 'shell_lost' || fields?.reason === 'session_lost'
+    ? { cause: endCause(fields.reason) } : {}) };
   const named = NAMED[name];
   if (named) return named;
   if (FAILURE_SUFFIX.test(name)) return { level: 'warn' };

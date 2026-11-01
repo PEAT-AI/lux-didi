@@ -436,12 +436,12 @@ import WebKit
     /// The status menu's item travels through the web state machine and comes back as a bridge
     /// command, so its trigger is armed here and consumed by exactly that one Stop.
     var stopTrigger = LiveStopTriggerLatch()
-    func stopLive(trigger: LiveStopTrigger = .other) {
+    func stopLive(reason: NativeLiveEndReason = .userStop, trigger: LiveStopTrigger = .other) {
         let named = stopTrigger.take(trigger)
         let conversation = live
         orbLevels?.stop(); orbLevels = nil
         conversation?.stopCapture()
-        Task { await conversation?.stop(trigger: named) }
+        Task { await conversation?.stop(reason: reason, trigger: named) }
     }
 
     // MARK: - Presence effects (council 2026-10-17, option C)
@@ -712,7 +712,8 @@ struct RootView: View {
     private lazy var presence = NativePresence(effects: PresenceEffects(
         openSession: { [weak self] generation in self?.openPresenceSession(generation) },
         cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
-        closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
+        // C-LABELS 2: the presence says why it closed, so a lost session is never logged as the owner's Stop.
+        closeSession: { [weak self] reason in self?.model.stopLive(reason: reason, trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         providerInputMute: { [weak self] muted in self?.model.setPresenceProviderInputMute(muted) },

@@ -464,7 +464,13 @@ enum State: String, CaseIterable {
         // #613: the owner's own stop latches, so no recovery restarts this call behind him.
         if reason == .userStop { latch.ownerStopped() }
         let firstStop = !endRecorded
-        if !endRecorded { endRecorded = true; journal.append(reason) }
+        if !endRecorded {
+            endRecorded = true; journal.append(reason)
+            // C-LABELS 2: an end the owner did not press travels with the close, so the host repeats the
+            // app's own reason instead of inventing the owner's Stop. A real Stop names nothing and stays
+            // user_stop on the host side, exactly as before.
+            if reason != .userStop { pendingEndReason = reason }
+        }
         let token = generation
         let confirmed = await closeOrDeadline(trigger: trigger)
         if let receipt = confirmed {

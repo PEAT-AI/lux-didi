@@ -101,7 +101,7 @@ The silence lines carry no static `cause` at all: `live_heard_silence` and `live
 | `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
 | `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
 
-A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
+A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`, and a `shell_lost` close) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. On a `live_terminal` and a `session_end` the `cause` follows the code in the record: `shell_lost` is the supervised shell disappearing, so `cause=host`; `session_lost` is the app's socket closing with no terminal frame while the host kept running, so `cause=provider`; every end the app asked for stays `cause=owner`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
 
 Host lines carry no content: no utterance, query, address or body. The assembled utterance of a closed turn lives in `trace_utterance` where `final=1`, which is what answers "what was said"; `live_journal` keeps the fragments and an empty closing row, so every concatenating reader still yields each turn once.
 

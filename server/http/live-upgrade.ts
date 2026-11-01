@@ -55,7 +55,8 @@ export interface LiveService {
   revoke(liveSessionId: string): void;
   attach(liveSessionId: string, context: LiveContext): LiveAttachment;
   text(text: string): void;
-  shutdown(): Promise<void>;
+  /** C-LABELS 1: why the host is closing, so the live session names the end it was told. */
+  shutdown(reason?: string): Promise<void>;
 }
 
 const audioPath = /^\/api\/v1\/live-sessions\/([^/]+)\/audio$/;
@@ -130,10 +131,13 @@ export function onceDetach(attachment: LiveAttachment): () => void {
 /** The socket surface the output pump needs, so a test can drive a socket that goes CLOSING. */
 type OutputSocket = Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | 'close'>;
 
-/** The owner's stop is the one terminal that outranks queued speech and consumer backpressure. */
+/** The owner's stop is the one terminal that outranks queued speech and consumer backpressure. C-LABELS 2:
+ *  a session the app declared lost is over just as surely, and nothing is listening on it, so its terminal
+ *  takes the same branch: the terminal goes out and the queued speech behind it is dropped. */
+const STOP_TERMINAL_CODES: ReadonlySet<string> = new Set(['user_stop', 'voice_stop', 'session_lost']);
 function stopTerminal(snapshot: LiveSessionSnapshot | null): boolean {
   const terminal = snapshot?.terminal;
-  return terminal?.state === 'closed' && (terminal.code === 'user_stop' || terminal.code === 'voice_stop');
+  return terminal?.state === 'closed' && terminal.code !== undefined && STOP_TERMINAL_CODES.has(terminal.code);
 }
 
 /** Drain the session's output onto its socket, then report the terminal the session really reached. */

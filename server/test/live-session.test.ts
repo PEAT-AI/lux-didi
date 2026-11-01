@@ -850,6 +850,23 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'the five second net never fires');
 }
 
+// C-LABELS 2, F-3: a session the app declared lost is over as surely as a Stop, so the pump must treat its
+// terminal the same way: the terminal goes out first and the queued speech behind it is never delivered.
+test('C-LABELS 2: a session_lost terminal outranks queued speech the way a Stop does', async () => {
+  const frames: unknown[] = [];
+  const socket = { OPEN: 1, readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); },
+    close: () => { socket.readyState = 3; } };
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'session_lost' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('a lost session outranks queued speech and backpressure'); },
+  };
+  await pumpOutput(socket as unknown as PumpSocket, attachment as unknown as Parameters<typeof pumpOutput>[1], () => { assert.fail('not detached'); }, 1_000);
+  assert.deepEqual(frames.map(frame => JSON.parse(String(frame))),
+    [{ type: 'terminal', state: 'closed', code: 'session_lost', complete: true }], 'the lost terminal is the only frame, with no queued audio behind it');
+});
+
 test('an output pump whose socket goes CLOSING mid-answer detaches once and ends the session as consumer_closed', async t => {
   await pumpIntoDeadSocket(t, false);
 });
@@ -871,6 +888,37 @@ test('a Quit ends the live session as app_quit, never as the Stop button', async
   const end = receipts.filter(record => record.event === 'session_end');
   assert.equal(end.length, 1, 'one receipt for the Quit');
   assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+});
+
+// C-LABELS 1: the app names its end on the wire before stdin closes; a shell that vanished names nothing, and
+// EOF with no stop frame is the shell's loss rather than the owner's Quit.
+test('C-LABELS 1: a shell that vanished ends the live session as shell_lost, never as app_quit', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const quitSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => quitSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'shell-lost');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  await h.owner.shutdown('shell_lost');
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'shell_lost', msAfterStop: 0 }]);
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'shell_lost' }, 'the terminal names the shell, not the owner');
+});
+
+// C-LABELS 2: a session the app could not vouch for is named apart from the owner's own Stop, and the host
+// repeats the word the app sent instead of inventing its own.
+test('C-LABELS 2: a Stop naming a lost session logs session_lost, never user_stop', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, {});
+  const { attachment } = await attached(h);
+  attachment.close('session_lost');
+  // C-LABELS 2, F-1: the terminal code is the fact the audit reads, so it names the lost session too. A
+  // `session_end` that says session_lost over a `live_terminal` that says user_stop is two labels for one end.
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'session_lost' });
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'session_lost', msAfterStop: 0 }]);
 });
 
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
@@ -8306,11 +8354,17 @@ function liveToolResponse(h: Harness, id: string): Record<string, unknown> {
 test('#107: a direct owner ask writes one calendar block through the live grant set', async t => {
   const port = composePort();
   const h = await harness(t, { tools: true, compose: port, grantMode: 'owner-trusted-reads' });
+  const outcomes: Record<string, unknown>[] = [];
+  const outcomeSink = attachHostLogSink({ event: raw => { outcomes.push(raw as Record<string, unknown>); } });
+  t.after(() => outcomeSink());
   const { attachment } = await attached(h, 'compose-create');
   await ownerSpoke(h, 'put a block in my calendar tomorrow at noon for two hours');
   await settleLiveTool(h, 'w1', 'create_event', { summary: 'block' });
   const response = liveToolResponse(h, 'w1');
   assert.equal(response['status'], 'event_created', JSON.stringify(response));
+  // C-LABELS 3: the audit's own outcome word for a calendar write that came back created. An unknown
+  // outcome reads as a failure the owner never had, so an unanswered audit hides a working call.
+  assert.deepEqual(outcomes.filter(record => record.event === 'tool_call_outcome' && record.tool === 'create_event').map(record => record.outcome), ['completed']);
   assert.equal(port.log.length, 1, 'one write for one ask');
   const { clientRequestId, startUtc, endUtc, ...asked } = JSON.parse(port.log[0]!) as Record<string, unknown>;
   assert.deepEqual(asked, { command: 'calendar.insert_event', summary: 'block', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });

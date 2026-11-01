@@ -131,6 +131,13 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
 /** L8-Q04: the failure receipts of one call: rejected commands, stalls, failed responses and failed calls. */
 const FAILED_RESPONSE_REASONS = new Set(['failed', 'provider_error', 'timeout']);
 const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
+/** C-LABELS 4: every way a model announces the look-up it is about to run. A turn that says one of these and
+ *  runs no call after it promised the owner something it never did, whatever words it chose to promise it.
+ *  A fragment may carry a `%` of its own: the scheduled filler puts other words between the two halves. */
+const ANNOUNCED_LOOKUPS = ['looking this up', 'looking that up', 'looking it up', 'looking into it', "i'll check",
+  'i will check', 'let me check', 'let me look', 'let me see', 'let me find', 'let me pull', 'let me take a look',
+  'let me have a look', "let's check", "let's see", "let's look", "let's take a look", "let's have a look",
+  'take a look', 'have a look', 'pull that up', 'one second%checking', 'checking now'] as const;
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
@@ -195,16 +202,15 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   const journalAvailable = !!read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_journal'");
   const claimText = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END' : 'u.text';
   const claimFinal = journalAvailable ? 'CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END' : 'u.final';
+  // C-LABELS 4: the detector matched two fixed phrases, so a call whose model said "let's have a look" or
+  // "let's see" reported one unfulfilled announcement where the records held seven. It now counts every way a
+  // model announces a look-up it then owes, and still only a turn that ran no call after saying it.
   const announcedClaimsWithoutCall = Number(read.get(`SELECT COUNT(DISTINCT u.turn_id) AS count
     FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
     ${journalAvailable ? 'LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id' : ''}
     WHERE t.live_session_id=? AND u.role='model'
       AND (${claimFinal})=1
-      AND (lower(${claimText}) LIKE '%looking this up%'
-        OR lower(${claimText}) LIKE '%looking that up%'
-        OR lower(${claimText}) LIKE '%looking it up%'
-        OR lower(${claimText}) LIKE '%let me check%'
-        OR lower(${claimText}) LIKE '%one second%checking%')
+      AND (${ANNOUNCED_LOOKUPS.map(phrase => `lower(${claimText}) LIKE '%${phrase.replaceAll("'", "''")}%'`).join('\n        OR ')})
       AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
 
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));

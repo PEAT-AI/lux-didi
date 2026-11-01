@@ -21,6 +21,8 @@ import Foundation
         var muted: [Bool] = []
         var opened: [UInt64] = []
         var receipts: [[String: Any]] = []
+        /// C-LABELS 2: the reason each close carried, so `user_stop` is provable rather than assumed.
+        var closeReasons: [NativeLiveEndReason] = []
         var clock: Double = 0
     }
 
@@ -53,6 +55,8 @@ import Foundation
         try require(record.opened.isEmpty, "nothing reconnects to resolve the uncertainty")
         try require(record.muted == [true], "the capture fence is cut exactly once")
         try require(record.calls.contains("close"), "the session is closed")
+        // C-LABELS 2: nothing was pressed, so the end is the lost session and never the owner's Stop.
+        try require(record.closeReasons == [.sessionLost], "the uncertain path names session_lost, not user_stop")
         try require(record.calls.last == "close", "the fence and the close are the whole teardown")
         let receipt = record.receipts.last
         try require(receipt?["to"] as? String == "cold", "the receipt names the cold move")
@@ -82,6 +86,8 @@ import Foundation
         presence.endAfterHostTerminal(voiceStop: true, generation: generation)
         try require(record.calls.contains("goodbye"), "the current voice stop sounds the goodbye")
         try require(presence.state == .cold, "the current voice stop ends cold")
+        // C-LABELS 2: the owner's own stop keeps its own reason; only the uncertain path renames its end.
+        try require(record.closeReasons == [.userStop], "a voice stop still logs user_stop")
     }
 
     /// Fix 2, the latch contract the conversation's interruption recovery re-checks after its await.
@@ -264,7 +270,7 @@ import Foundation
         PresenceEffects(
             openSession: { generation in record.opened.append(generation); record.calls.append("open") },
             cancelConnecting: { record.calls.append("cancelConnecting") },
-            closeSession: { record.calls.append("close") },
+            closeSession: { reason in record.calls.append("close"); record.closeReasons.append(reason) },
             setCaptureMuted: { muted in record.calls.append("fence"); record.muted.append(muted) },
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },

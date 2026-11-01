@@ -141,6 +141,13 @@ scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -st
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift Tests/DidiLiveTests/AudioOwnerTests.swift "$work/audio-callback-bridge.o" "$work/avfaudio-guard.o" -o "$work/native-audio-owner"
 "$work/native-audio-owner"
+# T2: the exception mechanism itself, as its own executable: if the guard ever stops protecting the
+# concurrency runtime, this process dies instead of failing one line inside a longer run.
+scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -import-objc-header Sources/LuxDidi/AVFAudioGuard.h \
+  -target "$target" \
+  Tests/DidiLiveTests/NativeExecutorMechanism.swift "$work/avfaudio-guard.o" -o "$work/native-executor-mechanism"
+"$work/native-executor-mechanism"
 # The closed native-live end reasons, their timestamps and the diagnostics snapshot fields, no audio or supervisor.
 scripts/with-compile-lock.sh -- swiftc "${swift_serial[@]}" -swift-version 6 -strict-concurrency=complete -warnings-as-errors -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library \
   Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift \

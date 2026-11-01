@@ -780,7 +780,8 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
   // so the one call he made still sets the alarm he did ask for.
   const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.equal(dropped.status, 'completed');
+  // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
+  assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
   assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
   assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
   assert.doesNotMatch(String(dropped.result_json), /series_id/);

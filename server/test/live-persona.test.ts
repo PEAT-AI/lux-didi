@@ -246,7 +246,8 @@ test('declarations add the tools section verbatim between base and overlay with 
 test('PV2: the target budget yields memory whole and then the tools conduct whole, and never drops the overlay', () => {
   // Under the target nothing yields at all.
   const ownerProfile = syntheticOwner('S'.repeat(6_000), 'OWNER LORE BLOCK');
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(19_900) };
+  // PT-1101: the write paragraph grows by 91 chars, so the overlay gives back 100.
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(19_800) };
   // C-OPENWEB8: the memory fixture is sized to the instruction, so it still sits under the target.
   // W3-R2: the instruction gains the reviewer's 89-char rule, so the overlay gives back the same room.
   // W1030: the write paragraph is 504 chars, so the memory fixture gives back the room it took: the
@@ -261,7 +262,7 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   const result = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500),
     runtimeContext: 'R'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - withoutMemory.text.length - 1_000) });
   assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${result.text.length} must fit the target`);
-  assert.ok(result.text.includes('O'.repeat(19_900)), 'the overlay never yields');
+  assert.ok(result.text.includes('O'.repeat(19_800)), 'the overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
   assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
   const toolsSection = result.sections.find(s => s.id === 'tools');
@@ -369,10 +370,11 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-RESEARCH8: the one-operation voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '1c1cbe22504344e141ec1f50454efeb8c49b7df7cf719181a1101c2e66a5115a');
+  // PT-1101: the write paragraph's truth fixes re-pin it again.
+  assert.equal(sha(NAYA_VOICE_TOOLS), '54bce101dcc476fa155a9ac3395c56b3f2a88d616740f6228658a88188a0026d');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '0e9a39533a8afd671c93647dede3500a632e14667e32cd9faa135920e75f81a7');
+  assert.equal(sha(NAYA_TOOLS), '3b1ce0a43707afa9220046832c4e541762b9990692e0f326404f521693595a5e');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -705,7 +707,7 @@ const WRAPPER_3O_CHARS = 6603;
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
 // W3-R2 set this 14_559 ceiling; TRAIN9-R2 preserves every rule within it through equivalent wording.
 // W1030: the four write abilities re-pin the measure to 14_778, since TR-R5 re-pins and never trims.
-const WRAPPER_W5_CHARS = 14_778;
+const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -736,7 +738,9 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // merged measure and no reviewed rule is trimmed for it.
   // C-OPENWEB8: the open_web clause in the open paragraph is the growth this bound carries (7_871).
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
-  const cap = 8_200;
+  // PT-1101: the write paragraph names the delete cases, the absent RSVP, the refusal cause and the exposure fence
+  // (+91 chars, 8_266 measured); the bound carries it as TR-R5 re-pins a house budget, no reviewed rule trimmed.
+  const cap = 8_300;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1596,4 +1600,9 @@ test('W1030: the four write abilities are stated once with the never-send, never
   assert.match(NAYA_WRITE_SURFACE, /sending is his click/u);
   assert.match(NAYA_WRITE_SURFACE, /another person's name goes in the description, never an invitation/u);
   assert.doesNotMatch(NAYA_WRITE_SURFACE, /say it was sent|tell him it is posted|confirm the invitation/u);
+  // PT-1101: no RSVP tool exists, a delete admits two cases, a refusal names its cause and the exposure fence is said.
+  assert.match(NAYA_WRITE_SURFACE, /never answer an invite/u);
+  assert.match(NAYA_WRITE_SURFACE, /one this call made or one he named that a calendar read here returned/u);
+  assert.match(NAYA_WRITE_SURFACE, /say its cause in your words, never blame him/u);
+  assert.match(NAYA_WRITE_SURFACE, /a write waits for his next words: ask a one-word yes/u);
 });

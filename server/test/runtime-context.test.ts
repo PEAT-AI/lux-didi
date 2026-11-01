@@ -14,7 +14,7 @@ test('the runtime context block is computed from a frozen clock and an explicit 
     'Today: 2026-10-14 (Wed). Tomorrow: 2026-10-15 (Thu). Yesterday: 2026-10-13 (Tue).',
     'This week: 2026-10-12T00:00:00+05:30 to 2026-10-18T23:59:59+05:30.',
     'Connected now: knowledge base, calendar.',
-    'Naya can read and search; she cannot send anything to anyone.',
+    'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.',
   ].join('\n'));
 });
 
@@ -27,7 +27,7 @@ test('a DST boundary week carries each endpoint day’s own offset', () => {
     'Today: 2026-03-26 (Thu). Tomorrow: 2026-03-27 (Fri). Yesterday: 2026-03-25 (Wed).',
     'This week: 2026-03-23T00:00:00+01:00 to 2026-03-29T23:59:59+02:00.',
     'Connected now: none.',
-    'Naya can read and search; she cannot send anything to anyone.',
+    'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.',
   ].join('\n'));
 });
 
@@ -40,7 +40,7 @@ test('the runtime block carries only the named fields, never an owner line or pr
   }
   assert.ok(!/^Owner:/m.test(text), 'no owner line');
   assert.ok(lines.every(line => line.startsWith('# Runtime context') || /^(Now|Today|This week|Connected now|Connectors):/.test(line)
-    || line === 'Naya can read and search; she cannot send anything to anyone.'));
+    || line === 'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.'));
 });
 
 test('W4: the runtime context carries one live connector line and the no-denial-without-a-check rule', () => {
@@ -91,16 +91,16 @@ test('W4: every credential or identity code the host reports reads as a sign-in,
 
 test('tool and connector names map to the human group names', () => {
   assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search']),
-    ["Rob's private notes", 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
+    ['his private notes', 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
   assert.deepEqual(connectorGroupNames('google'), ['calendar', 'mail']);
   assert.deepEqual(connectorGroupNames('mattermost'), ['team chat']);
-  assert.deepEqual(connectorGroupNames('lux-knowledge'), ["Rob's private notes"], 'the owner\'s own notes, not a second knowledge base');
+  assert.deepEqual(connectorGroupNames('lux-knowledge'), ['his private notes'], 'the owner\'s own notes, not a second knowledge base');
   assert.deepEqual(connectorGroupNames('mongoose'), ['company knowledge']);
 });
 
 test('#623: the mongoose reads are grouped by the endpoint that serves them, so company knowledge is named', () => {
   // The served names themselves, not a retired prefix: search and read are the knowledge endpoint's own.
-  assert.deepEqual(toolGroupNames(['search', 'read', 'search_knowledge']), ['company knowledge', "Rob's private notes"]);
+  assert.deepEqual(toolGroupNames(['search', 'read', 'search_knowledge']), ['company knowledge', 'his private notes']);
   assert.deepEqual(toolGroupNames(['ask_data_agent', 'data_agent_job']), ['company numbers'],
     'the numbers endpoint is company numbers, never company knowledge');
   assert.deepEqual(toolGroupNames(['get_company', 'list_inbound_leads']), ['customers']);
@@ -111,8 +111,8 @@ test('#623: the mongoose reads are grouped by the endpoint that serves them, so 
 });
 
 test('L8-10: a session that can search the web names it among what it can reach', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ["Rob's private notes", 'mail', 'memory', 'web search']);
-  assert.deepEqual(toolGroupNames(['search_knowledge']), ["Rob's private notes"], 'no web group without the web read');
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ['his private notes', 'mail', 'memory', 'web search']);
+  assert.deepEqual(toolGroupNames(['search_knowledge']), ['his private notes'], 'no web group without the web read');
 });
 
 test('C-LUXSAVE11: Runtime context never duplicates the generated save capability', () => {
@@ -134,4 +134,9 @@ test('C-LUXSAVE11: Runtime context never duplicates the generated save capabilit
     connectors: [{ connector: 'mattermost', state: 'refused', reasonCode: 'owner-approval-required' }] });
   assert.equal(text.split('\n').find(line => line.startsWith('Connected now:')), 'Connected now: web search.');
   assert.match(text, /team chat needs approval/);
+});
+
+test('a Trello read or write names the board group, so a declared board is never read as not connected', () => {
+  assert.deepEqual(toolGroupNames(['trello_read', 'trello_write']), ['Trello board']);
+  assert.ok(!toolGroupNames(['search_knowledge', 'trello_read']).some(group => /Rob/u.test(group)), 'no owner name in a public group label');
 });

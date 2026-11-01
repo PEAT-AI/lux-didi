@@ -8,6 +8,8 @@ import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } f
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
+import { activeAlarms, guardWriteClaims, writeFacts, type ActiveAlarm } from '../domain/write-claims.js';
+import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
@@ -225,6 +227,27 @@ export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataCl
     if (loops.length === OPEN_LOOP_SOURCES) break;
   }
   return loops;
+}
+
+/** C-MEMORYTRUTH: one entry per armed alarm, read from the alarms table at this start, so the seed names its
+ *  time, label and id whatever an earlier summary said about it. */
+export function armedAlarmsNote(alarms: readonly ActiveAlarm[] | null): string | undefined {
+  if (alarms === null || alarms.length === 0) return undefined;
+  return alarms.map(alarm => `${new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit', hour12: false })
+    .format(new Date(alarm.fireAtUtc))} ${alarm.label} (alarm ${alarm.id.slice(0, 8)})`).join('; ');
+}
+
+/** C-MEMORYTRUTH: an earlier call's summary reaches the seed only with the claims that call's own receipts and
+ *  this start's alarms table support. The stored row is left as it is. */
+export function guardSeededSummaries<T extends { readonly liveSessionId?: string; readonly summary: string }>(
+  tx: Transaction, candidates: readonly T[], alarms: readonly ActiveAlarm[] | null,
+): readonly T[] {
+  return candidates.map(candidate => {
+    if (candidate.liveSessionId === undefined) return candidate;
+    const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId), alarms);
+    const guarded = guardWriteClaims(candidate.summary, facts);
+    return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
+  });
 }
 
 /** Contract 1023 N8: the call that ended under two minutes ago has no summary yet, so its last owner words carry
@@ -1747,6 +1770,12 @@ export class LiveSessionOwner {
       // them; the warm calendar digest supplies the first option when the host built one.
       const summarySelection = summaries.summarySelection(tx, this.#profile.route.dataClasses);
       const storedSummaries = summarySelection.candidates;
+      // C-MEMORYTRUTH: what is armed is read from the alarms table at this start, and a stored summary keeps
+      // only the write claims its own call's receipts and this table support, so the greeting cannot repeat a
+      // refused write as done. The stored rows are untouched.
+      const armedAlarms = this.#tools ? activeAlarms(tx) : null;
+      const alarmNote = armedAlarmsNote(armedAlarms);
+      const seededSummaries = guardSeededSummaries(tx, storedSummaries, armedAlarms);
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
@@ -1768,6 +1797,7 @@ export class LiveSessionOwner {
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
         ...(calendar ? { calendar } : {}),
+        ...(alarmNote === undefined ? {} : { alarms: alarmNote }),
         ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
@@ -1777,7 +1807,7 @@ export class LiveSessionOwner {
       catch { throw new LiveError('memory_unavailable'); }
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         const basis = composeSession(undefined, this.#calendar);
-        earlier = buildEarlierConversationsSection(storedSummaries,
+        earlier = buildEarlierConversationsSection(seededSummaries,
           { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],

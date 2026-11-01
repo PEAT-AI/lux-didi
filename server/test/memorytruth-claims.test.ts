@@ -14,7 +14,7 @@ import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { activeAlarms } from '../domain/write-claims.js';
 import { armedAlarmsNote, guardSeededSummaries } from '../live/index.js';
-import { composeLiveInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
 import { createSummarizer, type SummarizerLogEvent } from '../services/summarize.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 
@@ -176,7 +176,8 @@ test('an armed alarm reaches the next seed from the alarms table though the summ
       assert.ok(note, 'the table holds one armed alarm');
       const guarded = guardSeededSummaries(tx, [{ id: 'sum-1', liveSessionId: 's-alarm-seed', endedAt: SUMMARY_NOW,
         summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }], alarms);
-      return composeLiveInstruction({ base: NAYA_LIVE_BASE, alarms: note, earlierConversations: guarded[0]!.summary });
+      return composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [], trustedChars: 4000,
+        alarms: note, earlierConversations: guarded[0]!.summary });
     });
     assert.match(seed.text, /wake up for the standup/, 'the seed names the label');
     assert.match(seed.text, /alarm 4f2c9a1b/, 'the seed names the id');

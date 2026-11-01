@@ -852,6 +852,8 @@ export function composeLiveSessionInstruction(input: {
   readonly now?: number; readonly timeZone?: string;
   /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
   readonly calendar?: string;
+  /** C-MEMORYTRUTH: the alarms table at the moment of the seed, so an armed alarm reaches the next call. */
+  readonly alarms?: string;
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
@@ -876,7 +878,11 @@ export function composeLiveSessionInstruction(input: {
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   // R7: the warm digest is one lead line, so the model reads it as today's calendar and not as a note.
   const digest = input.calendar?.trim();
-  const calendar = digest?.length ? `Today: ${digest}` : undefined;
+  const alarmList = input.alarms?.trim();
+  // C-MEMORYTRUTH: the armed alarms ride the day's state line, beside the digest, so what is actually armed
+  // reaches the seed whatever an earlier summary said about it.
+  const calendar = [digest?.length ? `Today: ${digest}` : undefined, alarmList?.length ? `Armed alarms: ${alarmList}` : undefined]
+    .filter((line): line is string => line !== undefined).join('\n') || undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
   const style = owner.filter(section => section.id === 'owner-style').map(section => section.text);
   const lore = owner.filter(section => section.id === 'owner-lore').map(section => clipOwnerLore(section.text));

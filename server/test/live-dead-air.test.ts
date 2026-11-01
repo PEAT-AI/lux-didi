@@ -116,7 +116,11 @@ test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buy
   const rungs = rungReceipts(live);
   assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
   assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it delivers the held result');
+  // C-REBUILD B (council 2026-11-01): a response in flight owns the wire, so this rung no longer hands the result
+  // over. It waits for that response's own terminal, which is the ruling's continuation path for it.
+  assert.equal(live.fake.texts.length, live.sentTexts, 'the held result is not written into a response in flight');
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and the response end delivers it exactly once');
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {
@@ -210,6 +214,7 @@ test('C-REBUILD A: a response that finishes inside the hold is never rebuilt', a
   await drive(live, () => rungReceipts(live).length > 0, 20_000);
   assert.equal(rungReceipts(live).length, 1, 'the rung landed, so the rebuild step is armed behind it');
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  const textsAtResponse = live.fake.texts.length;
   // The ladder reaches its rebuild step and holds: that receipt is the proof the decision was made.
   await drive(live, () => heldRebuilds(live).length > 0, 40_000);
   assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder held rather than tore the answer down');
@@ -218,7 +223,7 @@ test('C-REBUILD A: a response that finishes inside the hold is never rebuilt', a
   await live.emit(portEvent({ type: 'turnComplete' }));
   await drive(live, () => false, 30_000);
   assert.equal(live.fake.sessionsOpened, 1, 'and the held timer never fires after the answer was heard');
-  assert.equal(live.fake.texts.length, live.sentTexts, 'nothing is injected after a spoken answer');
+  assert.equal(live.fake.texts.length, textsAtResponse, 'nothing is injected while or after the answer is spoken');
 });
 
 test('C-REBUILD B: the unspoken result never goes into a response that is in flight', async t => {
@@ -227,8 +232,14 @@ test('C-REBUILD B: the unspoken result never goes into a response that is in fli
   await live.emit(toolCall('d3'));
   await drive(live, () => false, 1_000);
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
-  assert.equal(live.fake.texts.length, live.sentTexts, 'a result is never pushed into a response in flight');
+  // Step the clock until the rebuild, watching the old session's texts: nothing may be written into a response
+  // that is still open. What the new session is handed afterwards is that rebuild's own continuation path.
+  let intoOldSession: number | undefined;
+  for (let spent = 0; spent < 60_000 && live.fake.sessionsOpened === 1; spent += 250) {
+    await live.advance(250);
+    if (live.fake.sessionsOpened === 1) intoOldSession = live.fake.texts.length;
+  }
+  assert.equal(intoOldSession, live.sentTexts, 'a result is never pushed into a response in flight');
   assert.equal(live.fake.sessionsOpened, 2, 'a response past its ceiling is still rebuilt');
 });
 

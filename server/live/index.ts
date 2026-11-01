@@ -3034,17 +3034,6 @@ export class LiveSessionOwner {
       else this.#scheduleWatchdog(handle, hold, generation, 'recover');
       return;
     }
-    // C-REBUILD C: an owner turn that made no tool call and created no response is a turn he may simply have stopped
-    // on, so the rebuild is removed for it. The accepted failure is stated: a socket that is really dead on such a
-    // turn waits until he speaks again, and a final after that silence recovers through the triggers in force. Every
-    // other trigger is untouched, and a second-mute settlement is left to turns that really asked for something.
-    if (silentOwnerTurn({ ownerWords: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
-      turnToolCalls: handle.turnToolCalls ?? 0, turnResponseCreated: handle.turnResponseCreated === true })) {
-      handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
-      hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
-        turnAgeMs, removedCount: handle.rebuildRemoved });
-      return;
-    }
     const previous = handle.watchdogRecoveredAt;
     // W3: the wait being judged started here, so a weak spell before it cannot relabel this timeout.
     const waitSince = handle.watchdogSince;
@@ -3064,6 +3053,17 @@ export class LiveSessionOwner {
       return;
     }
     // C-CONTINUITY R-10: the phase names what really happened, so `recovering` is written before the reopen and
+    // C-REBUILD C: an owner turn that made no tool call and created no response is a turn he may simply have stopped
+    // on, so the rebuild is removed for it, after the honest settlement a repeated mute still earns. The accepted
+    // failure is stated: a socket that is really dead on such a turn waits until he speaks again, and a final after
+    // that silence recovers through the triggers in force. Every other trigger is untouched.
+    if (silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
+      turnResponseCreated: handle.turnResponseCreated === true })) {
+      handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
+      hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,
+        turnAgeMs, removedCount: handle.rebuildRemoved });
+      return;
+    }
     // `recovered` only once the provider says the new session is live.
     hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation, sinceTool: waitedAfterTool });
     if (await this.#recoverFromDrop(handle, undefined, true, 'model_mute')) {

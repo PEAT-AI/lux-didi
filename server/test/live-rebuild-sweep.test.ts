@@ -271,13 +271,16 @@ test('C-REBUILD: a rebuild settles the response it tears down as superseded', as
     await elapsedBy(r, 2_900); await announced('resp_1b', 'd_1')(r);
     await r.advance(60_000);
     await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
+    const rebuiltAt = r.clock.now();
     const rows = r.store.transaction(tx => tx.all(
       "SELECT status, terminal_reason FROM trace_response WHERE live_session_id=? AND provider_response_id='resp_1b'",
       [r.liveSessionId]));
     assert.deepEqual(rows.map(row => [row['status'], row['terminal_reason']]), [['superseded', 'superseded']],
       `the torn down response is settled at the rebuild: ${JSON.stringify(rows)}`);
+    // Only what existed before the rebuild: the session it opened is still speaking for the call it now owns.
     const open = r.store.transaction(tx => tx.all(
-      "SELECT response_key FROM trace_response WHERE live_session_id=? AND terminal_at IS NULL", [r.liveSessionId]));
+      "SELECT response_key FROM trace_response WHERE live_session_id=? AND terminal_at IS NULL AND created_at<?",
+      [r.liveSessionId, rebuiltAt]));
     assert.deepEqual(open, [], `no response is left pending by a rebuild: ${JSON.stringify(open)}`);
   } finally { await r.release(); }
 });

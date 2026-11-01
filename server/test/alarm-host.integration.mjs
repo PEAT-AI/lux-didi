@@ -121,7 +121,10 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(Number(due.fire_at_utc), now + 60000, 'the due alarm is anchored to the injected host wall clock');
   now += 60000;
   assert.equal((await post('/api/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
-  for (let count = 0; count < 10 && !eventWire.includes('alarm_due'); count++) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.equal(rows().find(row => row.id === due.id).state, 'ringing', 'recheck settles the due alarm before shell delivery');
+  // Earlier mutations can queue any number of state snapshots ahead of the due frame. Read the ordered
+  // stream to the event under this test's existing deadline, not an unrelated ten-chunk ceiling.
+  while (!eventWire.includes('alarm_due')) eventWire += new TextDecoder().decode((await reader.read()).value);
   assert.match(eventWire, /alarm_due/);
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');

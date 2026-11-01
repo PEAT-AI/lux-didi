@@ -28,5 +28,17 @@ if [ "$#" -eq 0 ] && [ -z "${DIDI_ALARM_RESOURCES:-}" ]; then
 fi
 service="$resources/server/node_modules/@lux-didi/service"
 test -f "$service/dist/host/runtime.js" || { echo 'ALARM CHECK FAIL: installed host runtime missing' >&2; exit 1; }
+alarm_log="$work/alarm.log"
 DIDI_ALARM_SERVICE_ROOT="$service" DIDI_ALARM_WEB_ROOT="$resources/web/dist" \
-  "$alarm_node" --test --test-timeout=15000 server/test/alarm-host.integration.mjs
+  "$alarm_node" --test --test-timeout=15000 server/test/alarm-host.integration.mjs >"$alarm_log" 2>&1 \
+  || { cat "$alarm_log"; exit 1; }
+cat "$alarm_log"
+# C-ALARMSPEECH: the native client demands its own key back, so this check compares the key the route
+# echoed with the key that was sent. A route that names the session itself fails here, not in the field.
+echoed=$(sed -n 's/.*alarm route key echo: sent=\([^ ]*\) returned=\([^ ]*\) equal=\([^ ]*\).*/\1 \2 \3/p' "$alarm_log" | head -1)
+[ -n "$echoed" ] || { echo 'ALARM CHECK FAIL: the alarm route never reported the key it echoed' >&2; exit 1; }
+read -r sent returned equal <<<"$echoed"
+if [ "$sent" != "$returned" ] || [ "$equal" != "true" ]; then
+  echo "ALARM CHECK FAIL: the alarm route echoed $returned for the caller key $sent" >&2; exit 1
+fi
+echo "ALARM CHECK: the alarm route echoed the caller key $sent"

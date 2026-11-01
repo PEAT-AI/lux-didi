@@ -29,7 +29,15 @@ The shell immediately plays a short chime through the existing cached connecting
 
 A due alarm uses Naya's normal live persona, memory, calendar digest and research tools, with an alarm block appended to the normal instructions. She opens with the owner's name, the time and the reminder in her own words first ("Rob, it is 10:30, time for sport"), and gives a short day overview when the reminder asks for a brief, briefing, overview, rundown, check-in or what's on. The label comes from the owner's own words: "remind me to go to sport" stores `go to sport`, "brief me" and "give me a briefing" store a brief, and "check in with me in an hour about the deck" stores `the deck` on a relative alarm. An alarm does not receive the normal fresh-opening direction.
 
-With no live call, the shell starts an alarm call. During an existing call it routes the alarm into that call immediately as a host note, with no competing chime. When an alarm call becomes live, any fallback chime stops. The notification fallback has the default sound. No sleeping-Mac guarantee is made.
+With no live call, the shell starts an alarm call. During an existing call it routes the alarm into that call immediately as a host note, with no competing chime. When an alarm call becomes live, any fallback chime stops. The notification fallback has the default sound, and the app asks for notification sound permission with the alert permission. No sleeping-Mac guarantee is made.
+
+An alarm call is a normal live session with a caller-chosen idempotency key: `POST /api/v1/alarms/session` requires the key the client sent, answers with it, and binds that key to one alarm occurrence. A retried start with the same key replays the session it opened; a different key opens no second session. Without that echo the native client refuses the host's own reply as a grant mismatch and the alarm never attaches.
+
+The alarm call opens through the presence machine with an alarm trigger, so the machine reaches LIVE, the chime stops when she is audible, and the Right Command key acts on that call (muting her) instead of finding a cold orb. The call opens before the first chime, so the microphone path is claimed before the app's own ring and voice processing keeps echo cancellation on built-in audio.
+
+When the call cannot open, the chime keeps ringing, `live_outcome_unknown` and `alarm_speech_failed` name one closed reason (`snapshot_mismatch`, `create_refused`, `create_unknown`, `audio_failed`, `socket_lost`, `already_live` or `start_refused`), and one immediate notification says "Naya could not start. Your alarm is still ringing." under its own `alarm-failed:<id>` identifier. It never carries the alarm label. One retry is allowed while the ring deadline is open, and only when the first attempt opened no session; a second failure is final and no watchdog of a normal call is shortened.
+
+The alarm block is appended after the live instruction is composed, so its size is measured separately: with a 17,000-character owner style the whole instruction measures about 32,900 characters, an 813-character alarm block against the composer's 52,000-character limit and the trusted 60,000-character ceiling. A safety line is never traded for the byte count and no ceiling is raised silently.
 
 The host requests a shorter, friendly wake line after 30 seconds without model audio and repeats until acknowledgement, snooze/cancel, or the ten-minute ring deadline. The host idle budget covers the ring deadline; an alarm allows one provider rebuild while that deadline remains open. Chimes remain the standalone fallback when no call is available.
 
@@ -55,7 +63,11 @@ launchd defines (Minute, Hour, Day, Month): an agent that fires is rewritten or 
 comes back.
 
 A launch with `--alarm-relaunch` logs `launch_kind alarm_relaunch`, shows no window and takes no
-focus, starts the host, and opens a live session only for the due alarm. Display sleep is fine:
+focus, starts the host, and opens a live session only for the due alarm. `open` cannot pass an
+argument to an app that is already running, so the agent's own reopen of a running app is recognised
+by the arming instant: a reopen inside the agent's own minute logs the same `launch_kind
+alarm_relaunch`, once, and shows nothing extra. Any other reopen stays the owner's Dock click and
+keeps its orb. Display sleep is fine:
 the wake timer fires while the display is off. A closed lid or a manual sleep still blocks it, as
 does a shutdown, and the agent cannot bring back a Mac that is not awake at the due time.
 
@@ -66,7 +78,7 @@ opens one for the alarm.
 
 ## Diagnostics and verification
 
-Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_announced`, `alarm_acknowledged`, `alarm_missed`, `alarm_relaunch_scheduled`, `alarm_relaunch_removed`, `alarm_relaunch_failed` and `alarm_degraded`. `alarm_announced` carries `alarmId` and `mode` (`new_session` or `in_call`) and is written when the alarm block reaches the provider, which is the only proof that she was asked to speak. `alarm_degraded` with reason `notifications_not_asked` stays distinct from `notifications_denied`: the shell reports `not_asked` while the request runs and `allowed` or `denied` once it resolved, so a guess is never sent. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
+Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm_ring_started`, `alarm_announced`, `alarm_acknowledged`, `alarm_missed`, `alarm_relaunch_scheduled`, `alarm_relaunch_removed`, `alarm_relaunch_failed`, `alarm_speech_failed` and `alarm_degraded`. `alarm_announced` carries `alarmId` and `mode` (`new_session` or `in_call`) and is written when the alarm block reaches the provider, which is the only proof that she was asked to speak. `alarm_degraded` with reason `notifications_not_asked` stays distinct from `notifications_denied`: the shell reports `not_asked` while the request runs and `allowed` or `denied` once it resolved, so a guess is never sent. `alarm_scheduler_started` is written once when the host arms the scheduler and carries only the pending alarm count. The other events contain only the alarm id, scheduled UTC milliseconds, actual UTC milliseconds and a closed reason code. Owner words, labels and display names are not included in these events.
 
 `bash scripts/check-host.sh` compiles a temporary shell on macOS without launching it and runs the synthetic alarm matrix against an offline-packed host. The matrix uses a stub clock, fake provider and fake shell; no real audio or accounts are used. `bash scripts/check-live-session.sh` runs the parser, authority, storage, scheduler and log tests; `bash scripts/check-native-live.sh` exercises injected power, notification and audio-output policy. `bash scripts/check-docs.sh` verifies public documentation and prompt surfaces.
 

@@ -149,6 +149,9 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
   assert.equal(alarmCreated.status, 201, JSON.stringify(alarmCreated.body));
   assert.equal(alarmCreated.body.data.idempotencyKey, alarmKey);
+  // The installed check compares the two keys itself, so the fact survives outside this runner.
+  t.diagnostic(`alarm route key echo: sent=${alarmKey} returned=${alarmCreated.body.data.idempotencyKey} `
+    + `equal=${alarmKey === alarmCreated.body.data.idempotencyKey}`);
   // One alarm occurrence, one session: the same key replays the same session, a different key opens none.
   const alarmRetry = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, alarmKey);
   assert.equal(alarmRetry.status, 200, JSON.stringify(alarmRetry.body));

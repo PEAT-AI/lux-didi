@@ -8,7 +8,8 @@ set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
-helper="$(pwd)/scripts/npm-ci-offline.sh"
+root="$(pwd)"
+helper="$root/scripts/npm-ci-offline.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-live-session.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # Distinct isolated configuration files; never inherit account npm configuration.
@@ -95,7 +96,7 @@ group_canary() {
 
 # The runner's own proof: a red in group 1 must not hide a red in group 3. Synthetic shell groups only,
 # no build and no network, so it runs first and cheaply on every execution of this check.
-group_selftest() { bash "$(pwd)/scripts/lib/check-groups-selftest.sh" || return 1; }
+group_selftest() { bash "$root/scripts/lib/check-groups-selftest.sh" || return 1; }
 
 # Every group runs even when an earlier one failed; the fail list is complete before the exit.
 group selftest group_selftest

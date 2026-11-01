@@ -371,14 +371,16 @@ private func checkFormatChangeRebuild() throws {
     print("PASS other-audio ducking set to the minimum while voice processing is on")
 }
 
-// OUTCOME 3: the weak reference proves deallocation, else audio_release_leak is logged.
-@MainActor private func checkReleaseLeakAndDeallocation() throws {
+// OUTCOME 3: the weak reference proves deallocation, else audio_release_leak is logged. The leak is
+// reported when the release settles (#1101), because the handles are held for the settle interval.
+@MainActor private func checkReleaseLeakAndDeallocation() async throws {
     let journal = NativeAudioJournal(fileURL: nil)
     let retained = NativeLiveAudioDevice(owner: AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("a1-leak-" + UUID().uuidString)),
                                          journal: journal, deviceState: { _ in false })
     var held: AVAudioEngine? = AVAudioEngine()
     retained.adoptEngineForTesting(held!, player: AVAudioPlayerNode())
     retained.releaseForTesting()
+    await retained.settleForTesting()
     try audioRequire(journal.events.contains { $0.name == "audio_release_leak" },
                      "a retained engine logs audio_release_leak on release")
     held = nil
@@ -386,6 +388,7 @@ private func checkFormatChangeRebuild() throws {
     let clean = NativeLiveAudioDevice(journal: cleanJournal, deviceState: { _ in false })
     clean.adoptEngineForTesting(AVAudioEngine(), player: AVAudioPlayerNode())
     clean.releaseForTesting()
+    await clean.settleForTesting()
     try audioRequire(!cleanJournal.events.contains { $0.name == "audio_release_leak" },
                      "a deallocated engine does not log audio_release_leak")
     print("PASS weak-ref dealloc and audio_release_leak")
@@ -851,6 +854,8 @@ private func checkPrimaryChannelConversion() throws {
         device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
         device.startForTesting = { _ in starts += 1 }
         device.onCapturePrepared = { captures.append($0) }
+        // #1101: the release settle is faked, so the unmute rebuild lands without a real interval.
+        device.settleWaitForTesting = { _ in }
         let sends = NativeAudioSendProbe()
         try await device.start { await sends.send($0) }
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
@@ -877,6 +882,8 @@ private func checkPrimaryChannelConversion() throws {
                          "the release record carries the closed tokens it ended")
 
         device.setMuted(false)
+        // #1101: the unmute build waits the release settle out, so it lands in its own task.
+        await device.finishMuteResumeForTesting()
         try audioRequire(starts == 2, "unmute starts the engine exactly once, got \(starts - 1)")
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
                          "unmute rebuilds capture and holds the owner again")
@@ -901,6 +908,7 @@ private func checkPrimaryChannelConversion() throws {
                          "unmute delivers frames on the same send closure, so nothing reconnected")
 
         for _ in 0..<10 { device.setMuted(true); device.setMuted(false) }
+        await device.finishMuteResumeForTesting()
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
                          "ten fast toggles end with exactly one engine when unmuted")
         try audioRequire(!journal.events.contains { $0.name == "audio_release_leak" },
@@ -936,6 +944,7 @@ private func checkPrimaryChannelConversion() throws {
         let taken = AudioOwner(lockFileURL: lockURL)
         try taken.acquire(holder: ObjectIdentifier(taken))
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         let refused = journal.events.filter { $0.name == "audio_refused" }
         try audioRequire(refused.map { $0.fields["reason"] } == ["already_in_use", "audio_already_in_use"],
                          "a refused re-acquire on unmute surfaces audio_refused, got \(refused.map { $0.fields["reason"] ?? "-" })")
@@ -964,6 +973,7 @@ private func checkPrimaryChannelConversion() throws {
         device.startForTesting = { _ in }
         device.setMuted(true)
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         let skipped = journal.events.filter { $0.name == "audio_muted_reacquire_skipped" }
         try audioRequire(skipped.count == 1 && skipped[0].fields["reason"] == "no_send",
                          "an unmute with no session says so in one record, never silently")
@@ -997,9 +1007,11 @@ private func checkPrimaryChannelConversion() throws {
         try audioRequire(journal.events.contains { $0.name == "audio_muted_start_skipped" },
                          "the start held back by the mute leaves one record")
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         try audioRequire(starts == 1 && device.hasEngine && owner.isOwned,
                          "unmute opens the one engine the mute held back")
         device.stop()
+        await device.settleForTesting()
         print("PASS mute before capture: a connecting mute keeps the microphone closed until unmute")
     }
 
@@ -1187,6 +1199,9 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(builds == 1 && paused == input && recovery.awaitingResume,
                              "input change needs owner Resume, not a new session")
             recovery.resume()
+            // #1101: Resume is a release-then-build path and the build waits the release settle out,
+            // so it lands in the pending task rather than in the calling turn.
+            await recovery.pending?.value
             try audioRequire(builds == 2 && !recovery.awaitingResume, "Resume rebuilds authorized capture")
             recovery.changed(); recovery.stop(); await recovery.pending?.value
             try audioRequire(builds == 2, "Stop fences queued recovery")
@@ -1211,7 +1226,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkStopOutcome()
             try checkProductionAudioJournal()
             try checkMinimumDucking()
-            try checkReleaseLeakAndDeallocation()
+            try await checkReleaseLeakAndDeallocation()
             try await checkStartFailureCircuitBreaker()
             try await checkBusyDeviceSkipsVoiceProcessing()
             try await checkMuteReleasesMicrophone()
@@ -1255,7 +1270,7 @@ private func checkPrimaryChannelConversion() throws {
             injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             captures.last!.append(try tone(format, start: 0, count: 2000))
             try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
-                             "actual rebuilt converter and drain preserve mute")
+                             "actual rebuilt converter and drain preserve mute: captures \(captures.count), capturing \(injectedDevice.isCapturing), pending \(captures.last!.next().0 != nil) journal \(injectedDevice.journal?.events.map(\.name) ?? [])")
             injectedDevice.setMuted(false)
             var sentFrames = sends.frames.makeAsyncIterator()
             captures.last!.append(try tone(format, start: 2000, count: 1024))
@@ -1371,7 +1386,247 @@ private func checkPrimaryChannelConversion() throws {
                 builtIn: true, deviceBusy: true, voiceProcessingFailed: false) == "device_busy",
                              "busy device logs audio_vpio_skipped reason=device_busy")
             print("PASS silent real AVAudioConverter irregular stereo tone, frame continuity, partial discard, ring overflow, lazy device")
+            // #1101 runs last: its engines are fakes, but each release now holds its handles for the
+            // settle interval and a torn-down voice-processing engine makes CoreAudio post a
+            // configuration change to the next one, so nothing else may run after it.
+            try await AudioGraphLifecycleTests.run()
             print("UNVERIFIED hardware: voice processing on both IO nodes and physical device loss; Start verifies both enabled flags")
         } catch { print("FAIL native audio: \(error)"); exit(1) }
+    }
+}
+
+// #1101: the voice-processing graph is built once per start and every release settles before the
+// next build. Kept in this file because the checker compiles this list explicitly.
+/// #1101: the voice-processing graph is built once per start, and every release settles before the
+/// next build. Every case uses the fake engine seams (engineFactoryForTesting, startForTesting,
+/// prepareForTesting, firstBufferWindowForTesting, settleWaitForTesting): no engine is started, no
+/// microphone or speaker is opened, and no case waits on a real interval.
+@MainActor
+enum AudioGraphLifecycleTests {
+    static func run() async throws {
+        try await checkStartBuildsTheGraphOnce()
+        try await checkUnmuteWaitsForTheSettle()
+        try await checkWatchdogRestartWaitsForTheSettle()
+        try await checkReleaseWaitsForAPendingConfigurationChange()
+        try await checkStartWaitsForTheSettle()
+        try await checkSecondReleaseKeepsTheSettledHandle()
+        print("PASS audio lifecycle: one graph build per start, unmute, the mic watchdog and a start wait the release "
+              + "settle, a pending configuration change is waited for and bounded")
+    }
+
+    private final class Trace {
+        var order: [String] = []
+        var waits: [Int] = []
+        var waited = 0
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds) * 1000 + Int(duration.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    private static func format() throws -> AVAudioFormat {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2,
+                                         interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        return format
+    }
+
+    /// A device on built-in speakers with no other app holding the microphone, so the start takes
+    /// voice processing, exactly as a silent call does. Every settle wait is recorded, never slept.
+    private static func makeDevice(_ journal: NativeAudioJournal, _ trace: Trace) throws -> NativeLiveAudioDevice {
+        let format = try format()
+        let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("audio-graph-\(UUID().uuidString)"), journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                           defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                           owner: owner, journal: journal, deviceState: { _ in false },
+                                           isBuiltInOutput: { true },
+                                           defaultOutput: { (id: "synthetic-out", name: "Synthetic output") },
+                                           transport: { _ in "BuiltIn" })
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.settleWaitForTesting = { duration in
+            let ms = milliseconds(duration)
+            trace.waits.append(ms)
+            trace.waited += ms
+            trace.order.append("settle")
+        }
+        return device
+    }
+
+    private static func waitUntil(_ what: String, seconds: Double = 2, _ condition: @MainActor () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while !condition() {
+            try audioRequire(ContinuousClock.now < deadline, "timed out waiting: \(what)")
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// (#1101 a) The voice-processing graph is built once per start: ducking, then the one enable, then
+    /// the player attach and connect, then one prepare, then start.
+    private static func checkStartBuildsTheGraphOnce() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.prepareForTesting = { _ in trace.order.append("prepare") }
+        device.startForTesting = { _ in trace.order.append("start") }
+        try await device.start { _ in }
+
+        let steps = device.graphBuildSteps
+        try audioRequire(steps == ["ducking", "voice_processing", "player_attached", "prepare", "start"],
+                         "the graph is built once, in one order: ducking, enable, attach and connect, prepare, start, got \(steps)")
+        try audioRequire(device.engineStartCount == 1, "one engine start for the call, got \(device.engineStartCount)")
+        try audioRequire(device.isVoiceProcessingEnabledForTesting, "voice processing is still on for the start")
+        let built = journal.events.filter { $0.name == "audio_graph_built" }
+        try audioRequire(built.count == 1, "one audio_graph_built per start, got \(built.count)")
+        try audioRequire(built.first?.fields["steps"] == "ducking,voice_processing,player_attached,prepare,start",
+                         "audio_graph_built carries the steps, got \(built.first?.fields["steps"] ?? "none")")
+        try audioRequire(built.first?.fields["starts"] == "1" && built.first?.fields["voiceProcessing"] == "true",
+                         "and the call's engine start count and voice-processing state")
+        try audioRequire(built.first?.fields["configChanges"] != nil,
+                         "and the configuration changes the start saw")
+
+        device.releaseForTesting()
+        await device.settleForTesting()
+    }
+
+    /// (#1101 b) An unmute is a release-then-build path: it waits the release settle out, then builds
+    /// once, never in the same turn as the mute's release.
+    private static func checkUnmuteWaitsForTheSettle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in trace.order.append("build") }
+        try await device.start { _ in }
+        trace.order = []; trace.waits = []; trace.waited = 0
+
+        device.setMuted(true)
+        device.setMuted(false)
+        try audioRequire(trace.order.isEmpty,
+                         "the unmute rebuild does not run in the same turn as the mute release, got \(trace.order)")
+        await device.finishMuteResumeForTesting()
+        try audioRequire(trace.order == ["settle", "build"],
+                         "the unmute waited the release settle, then built once, got \(trace.order)")
+        try audioRequire(trace.waits == [NativeLiveAudioDevice.releaseSettleMs],
+                         "and it waited exactly the named settle interval, got \(trace.waits)")
+        try audioRequire(device.hasEngine && device.isCapturing, "the microphone is back after the settle")
+
+        device.stop()
+        await device.settleForTesting()
+    }
+
+    /// (#1101 c) A mic-watchdog restart is a release-then-build path too: it waits the settle of the
+    /// engine it just stopped before it builds the next one.
+    private static func checkWatchdogRestartWaitsForTheSettle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in trace.order.append("build") }
+        // No tap buffer ever arrives, so the first-buffer watchdog restarts the engine once.
+        device.firstBufferWindowForTesting = .milliseconds(5)
+        try await device.start { _ in }
+
+        try await waitUntil("the watchdog restart builds again") {
+            trace.order.filter { $0 == "build" }.count >= 2
+        }
+        try audioRequire(Array(trace.order.prefix(3)) == ["build", "settle", "build"],
+                         "the restart waited the release settle before it built again, got \(trace.order)")
+        try audioRequire(trace.waits.first == NativeLiveAudioDevice.releaseSettleMs,
+                         "and the wait was the named settle interval, got \(trace.waits)")
+
+        device.stop()
+        await device.settleForTesting()
+    }
+
+    /// (#1101 d) A release with a configuration change in flight waits for it and stops at the bound:
+    /// the reset, the dropped handles and the settled record all come after the wait.
+    /// (#1101 e) A start is a release-then-build path too: it waits the settle a release left running,
+    /// so the next engine is never built while the previous one is still held (STAGE3-2).
+    private static func checkStartWaitsForTheSettle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in trace.order.append("build") }
+        try await device.start { _ in }
+        // Release, then start inside the settle the release left running. Nothing is awaited between
+        // the two, so the settle's first wait can only happen inside the start.
+        device.releaseForTesting()
+        try audioRequire(device.isSettling,
+                         "control: the release left a settle running")
+        try await device.start { _ in }
+
+        try audioRequire(trace.order == ["build", "settle", "build"],
+                         "the start waited the release settle before it built, got \(trace.order)")
+        try audioRequire(device.settledReleaseCount == 1 && device.hasEngine,
+                         "the previous handle was settled and dropped, the new engine is up")
+        device.stop()
+        await device.settleForTesting()
+    }
+
+    /// (#1101 f) A second release inside the settle must not drop the parked handle (STAGE3-3): the
+    /// reachable trigger is the route-recovery release landing on a mute release.
+    private static func checkSecondReleaseKeepsTheSettledHandle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+
+        device.releaseForTesting()
+        try audioRequire(device.isSettling && device.holdsSettledHandle,
+                         "control: the first release parks the handle for its settle")
+        device.releaseForTesting()
+        try audioRequire(device.holdsSettledHandle,
+                         "a second release inside the settle keeps the parked handle alive")
+
+        await device.settleForTesting()
+        try audioRequire(!device.holdsSettledHandle && !device.isSettling,
+                         "the settle that owns the handle drops it at the end")
+        try audioRequire(device.settledReleaseCount == 1 && device.engineResetCount == 1,
+                         "one settle reset the handle once, got settled \(device.settledReleaseCount) and "
+                         + "\(device.engineResetCount) resets")
+        let settled = journal.events.filter { $0.name == "audio_release_settled" }
+        try audioRequire(settled.count == 1, "one audio_release_settled for the pair, got \(settled.count)")
+    }
+
+    private static func checkReleaseWaitsForAPendingConfigurationChange() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+
+        // A configuration change lands inside every wait and the device never settles, so the wait
+        // runs to its bound and no further. No real interval passes: this seam returns at once.
+        // The observer is still installed on every wait, so the production delivery path exists for
+        // this whole window and not only the seam the test drives.
+        var observerDuringSettle: [Bool] = []
+        device.settleWaitForTesting = { duration in
+            trace.waits.append(milliseconds(duration))
+            trace.waited += milliseconds(duration)
+            observerDuringSettle.append(device.hasConfigurationObserver)
+            device.configurationChangeForTesting()
+        }
+        device.releaseForTesting()
+        try audioRequire(device.hasConfigurationObserver,
+                         "the release keeps the configuration observer while the settle holds the engine")
+        await device.settleForTesting()
+
+        let bound = NativeLiveAudioDevice.releaseSettleMs + NativeLiveAudioDevice.settleConfigWaitLimitMs
+        try audioRequire(trace.waits.first == NativeLiveAudioDevice.releaseSettleMs,
+                         "the settle starts at the named interval, got \(trace.waits.first ?? 0) ms")
+        try audioRequire(trace.waited >= NativeLiveAudioDevice.settleConfigWaitLimitMs,
+                         "the pending change is waited for, got \(trace.waited) ms")
+        try audioRequire(trace.waited <= bound, "and never past the bound of \(bound) ms, got \(trace.waited) ms")
+        let settled = journal.events.filter { $0.name == "audio_release_settled" }
+        try audioRequire(settled.count == 1, "one audio_release_settled, got \(settled.count)")
+        try audioRequire(settled[0].fields["settleMs"] == String(trace.waited)
+                         && settled[0].fields["configChangePending"] == "true",
+                         "audio_release_settled reports the settle it waited and that a change was pending")
+        try audioRequire(device.settledReleaseCount == 1 && device.engineResetCount == 1,
+                         "the handles are reset and dropped once, after the wait")
+        try audioRequire(observerDuringSettle.count == trace.waits.count && observerDuringSettle.allSatisfy { $0 },
+                         "the observer was installed for every settle wait, got \(observerDuringSettle)")
+        try audioRequire(!device.hasConfigurationObserver, "and the configuration observer goes with them")
     }
 }

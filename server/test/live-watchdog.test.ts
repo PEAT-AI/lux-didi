@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -468,8 +468,9 @@ test('C-REBUILD C: a real question with no tool work and no response is no longe
   // C-RECOVERY (d) pinned this rebuild as the ruled trigger. Council 2026-11-01 removed it for a turn that made
   // no tool call and created no response, and stated the accepted failure: this socket waits for him to speak again.
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 4_000);
-  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 4_000);
-  await live.advance(1_000);
+  // C-REBUILD A holds a rebuild while the announced response is younger than its ceiling, so the decision is
+  // reached once the ceiling has passed rather than one recovery delay after the nudge.
+  await until(live, () => removed(live).length > 0, RESPONSE_WATCHDOG_RECOVERY_MS + MAX_IN_FLIGHT_RESPONSE_AGE_MS + 4_000);
   assert.equal(live.fake.sessionsOpened, 1, 'the removed trigger rebuilds nothing');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild is filed');
   assert.deepEqual(removed(live).map(record => record.reason), ['owner_turn_no_tool_no_response'],

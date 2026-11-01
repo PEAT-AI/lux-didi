@@ -1225,6 +1225,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
     return { event: 'turn_failed', reason: value.reason };
   }
+  if (value.event === 'live_noask_probe') {
+    // C-REBUILD B-R5: the facts the no-ask stand-down reads at the moment it decides. Booleans and counts only.
+    if (!closedKeys(value, ['event', 'generation', 'inputFinal', 'journalWords', 'responseCreated', 'toolCalls'])) return;
+    for (const field of ['inputFinal', 'journalWords', 'responseCreated']) if (typeof value[field] !== 'boolean') return;
+    for (const field of ['generation', 'toolCalls']) if (!isSafeCount(value[field])) return;
+    return { event: 'live_noask_probe', generation: value.generation, inputFinal: value.inputFinal,
+      journalWords: value.journalWords, responseCreated: value.responseCreated, toolCalls: value.toolCalls };
+  }
   if (value.event === 'live_watchdog_hold') {
     // C-REBUILD: a watchdog deadline held back, with the reason it was held. Counts and enums only.
     if (!closedKeys(value, ['event', 'reason', 'generation', 'delayMs'])) return;

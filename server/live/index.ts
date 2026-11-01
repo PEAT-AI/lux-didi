@@ -2925,6 +2925,11 @@ export class LiveSessionOwner {
         // C-REBUILD C: the stand-down the council ruled sits on the path a no-ask turn really takes, which is this
         // one: arm, nudge, stand down. A repeated mute still settles through #watchdogRecover's own door, and every
         // other trigger reaches that door untouched.
+        // C-REBUILD probe (B-R5): the three facts the stand-down reads, logged at the decision site itself, so a
+        // silence that reaches neither branch says why.
+        hostLogEvent({ event: 'live_noask_probe', generation, inputFinal: handle.inputFinal === true,
+          journalWords: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
+          responseCreated: handle.turnResponseCreated === true, toolCalls: handle.turnToolCalls ?? 0 });
         const repeatedMute = handle.watchdogRecoveredAt !== undefined
           && this.#now() - handle.watchdogRecoveredAt < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle);
         if (!repeatedMute && this.#noAskOwnerTurn(handle)) {

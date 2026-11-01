@@ -2922,7 +2922,9 @@ export class LiveSessionOwner {
         // C-REBUILD C: the stand-down the council ruled sits on the path a no-ask turn really takes, which is this
         // one: arm, nudge, stand down. A repeated mute still settles through #watchdogRecover's own door, and every
         // other trigger reaches that door untouched.
-        if (silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
+        const repeatedMute = handle.watchdogRecoveredAt !== undefined
+          && this.#now() - handle.watchdogRecoveredAt < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle);
+        if (!repeatedMute && silentOwnerTurn({ ownerWords: handle.ownerLastWords > 0, turnToolCalls: handle.turnToolCalls ?? 0,
           turnResponseCreated: handle.turnResponseCreated === true })) {
           handle.rebuildRemoved = (handle.rebuildRemoved ?? 0) + 1;
           hostLogEvent({ event: 'live_rebuild_removed', reason: 'owner_turn_no_tool_no_response', generation,

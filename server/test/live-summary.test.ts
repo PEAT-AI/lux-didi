@@ -757,3 +757,18 @@ test('the real start puts the armed alarm into the accepted instruction', async 
       'the start names the armed alarm from the table');
   } finally { await owner.shutdown(); h.cleanup(); }
 });
+
+// C-MEMORYTRUTH review F7: a dot inside a number is not a sentence end, so dropping a claim never mangles the
+// sentence beside it.
+test('a dot inside a number does not split the sentence a claim is dropped from', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-time-dot');
+    insertToolCall(h.store, 's-time-dot', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
+    const claimed = 'The owner woke at 9.30. Naya created the event on the calendar.';
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: claimed }))]);
+    await worker(h.store, model, []).distill('s-time-dot');
+    assert.equal(storedRow(h.store, 's-time-dot')!.summary, 'The owner woke at 9.30.',
+      'the time survives whole and only the refused claim goes');
+  } finally { h.cleanup(); }
+});

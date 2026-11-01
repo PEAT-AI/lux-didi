@@ -67,9 +67,12 @@ export interface GuardedClaims {
   readonly kept: number;
 }
 
-/** A sentence is a run of text up to a sentence end, so a dropped claim never leaves its neighbours cut. */
+/**
+ * A sentence is a run of text up to a sentence end, so a dropped claim never leaves its neighbours cut. A dot
+ * inside a number ("9.30") or an abbreviation is not a sentence end, so the run continues past it.
+ */
 function sentences(text: string): readonly string[] {
-  return text.match(/[^.!?]+[.!?]*[\s]*/g) ?? (text ? [text] : []);
+  return text.match(/[^.!?]+(?:[.!?]+(?!\d)[\s]*|$)/g) ?? (text ? [text] : []);
 }
 
 /** True when the sentence claims a change that the records do not support, or denies one they record. */

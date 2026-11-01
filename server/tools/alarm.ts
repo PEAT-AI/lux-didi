@@ -26,14 +26,14 @@ export type AlarmTime = AlarmReady
   | { status: 'clarify'; reason: 'missing_time' | 'ambiguous_time' | 'past_time' };
 
 export function alarmReadBack(instant: number, tz: string): AlarmReadBack {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(instant);
-  const get = (type: string): string => parts.find(part => part.type === type)?.value ?? '';
-  const date = `${get('year')}-${get('month')}-${get('day')}`;
-  const localTime = `${get('hour')}:${get('minute')}`;
-  return { date, weekday: get('weekday'), localTime, spoken: `${get('weekday')} ${Number(get('day'))} ${get('month')} at ${localTime} (${tz})` };
+  const formatter = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, ...options }).formatToParts(instant);
+  const long = formatter({ year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const iso = formatter({ year: 'numeric', month: '2-digit', day: '2-digit' });
+  const get = (parts: Intl.DateTimeFormatPart[], type: string): string => parts.find(part => part.type === type)?.value ?? '';
+  const date = `${get(iso, 'year')}-${get(iso, 'month')}-${get(iso, 'day')}`;
+  const localTime = `${get(long, 'hour')}:${get(long, 'minute')}`;
+  return { date, weekday: get(long, 'weekday'), localTime,
+    spoken: `${get(long, 'weekday')} ${Number(get(long, 'day'))} ${get(long, 'month')} at ${localTime} (${tz})` };
 }
 
 function isZone(value: string | undefined): value is string {

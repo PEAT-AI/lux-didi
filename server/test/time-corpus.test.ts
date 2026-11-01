@@ -75,7 +75,7 @@ async function alarmHarness(t: TestContext) {
     assert.equal(outcome.status, 'completed', `${name} reached its receipt transaction`);
     const stored = store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
     assert.equal(stored?.state, 'completed', `${name} stores a completed call`);
-    const reply = JSON.parse(String(stored?.result_json ?? '{}')) as Record<string, unknown>;
+    const reply = (JSON.parse(String(stored?.result_json ?? '{}')) as { response?: Record<string, unknown> }).response ?? {};
     const row = store.transaction(tx => tx.get('SELECT fire_at_utc,tz,label,state FROM alarms WHERE id=?', [intent.executionId]));
     return { intent, reply, row };
   };

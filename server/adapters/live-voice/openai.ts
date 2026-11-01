@@ -399,10 +399,13 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     const room = Math.max(1, SEED_MESSAGE_LIMIT - (appendedChars > 0 ? 1 : 0) - (framed ? 1 : 0));
     let kept = history.slice(Math.max(0, history.length - room));
     const totalOf = (turns: readonly { text: string }[]): number => turns.reduce((sum, turn) => sum + turn.text.length, 0) + appendedChars;
-    while (kept.length > 1 && totalOf(kept) > SEED_CHAR_LIMIT) kept = kept.slice(1);
-    if (kept.length > 0 && totalOf(kept) > SEED_CHAR_LIMIT) {
+    // The framing is part of the same budget, so the trim reserves it instead of letting a seed that fills the ceiling
+    // take it over and be refused at the open.
+    const budget = SEED_CHAR_LIMIT - (framed ? SEED_FRAMING.length : 0);
+    while (kept.length > 1 && totalOf(kept) > budget) kept = kept.slice(1);
+    if (kept.length > 0 && totalOf(kept) > budget) {
       const last = kept[kept.length - 1]!;
-      const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (totalOf(kept) - last.text.length));
+      const roomLeft = Math.max(0, budget - (totalOf(kept) - last.text.length));
       const keep = Math.max(roomLeft - 3, 0);
       kept = [...kept.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
     }

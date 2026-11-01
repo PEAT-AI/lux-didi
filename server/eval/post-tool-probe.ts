@@ -81,8 +81,8 @@ export interface ProbeAskRecord {
   readonly stopped?: string;
 }
 
-/** The tap sees outbound command types and inbound audio deltas, and nothing else: no payload is kept. */
-interface WireTap { readonly creates: number[]; readonly audibleAt: number[] }
+/** The tap counts the creates the adapter writes, and nothing else: no payload is kept, no audio is stored. */
+interface WireTap { readonly creates: number[] }
 
 export const tappedSocketFactory = (tap: WireTap): LiveSocketFactory =>
   (destination: string, options: ClientOptions) => {
@@ -91,7 +91,7 @@ export const tappedSocketFactory = (tap: WireTap): LiveSocketFactory =>
     socket.send = ((data: string, callback?: (error?: Error) => void) => {
       if (typeof data === 'string' && data.length && data[0] === '{') {
         const frame = JSON.parse(data) as { type?: string };
-        if (frame.type === 'response.create') tap.creates.push(Date.now());
+        if (frame.type === 'response.create') tap.creates.push(tap.creates.length);
       }
       return send(data, callback);
     }) as typeof socket.send;
@@ -118,18 +118,25 @@ export interface ProbeDeps {
   readonly log?: (line: string) => void;
 }
 
-/** Runs one ask end to end and records counts only. */
+/**
+ * Runs one ask end to end and records counts only. Whether a response spoke is decided by event order, not by a
+ * clock: each audible frame is tagged with how many post-tool creates had been written when it arrived, so the
+ * counts hold even when two frames share a millisecond.
+ */
 async function runAsk(
   deps: ProbeDeps, variant: ProbeVariant, evalCase: EvalCase, toolMap: ToolMap,
 ): Promise<ProbeAskRecord> {
-  const tap: WireTap = { creates: [], audibleAt: [] };
+  const tap: WireTap = { creates: [] };
   const port = deps.portFactory(deps.port, variant, tap);
   const timeoutMs = deps.timeoutMs ?? 90_000;
+  let createsAtToolOutput: number | null = null;
   let toolOutputAt: number | null = null;
   let firstAudioAt: number | null = null;
   let audioDeltas = 0;
   let textChars = 0;
   let stopped: string | undefined;
+  /** For every audible frame after the tool output: how many creates had been written by then. */
+  const audibleAfterCreate: number[] = [];
   const startUtc = Date.parse(evalCase.setup.clock_T0);
   const env = alarmWorld(startUtc);
   const world = fakeWorld({ case: evalCase, clock: env.clock, alarms: env.world, toolMap });
@@ -147,7 +154,7 @@ async function runAsk(
           if (!result.ok) stopped = `tool_error:${call.name}`;
           return { id: call.id, name: call.name, response: { ok: result.ok, ...result.data } };
         });
-        if (toolOutputAt === null) toolOutputAt = Date.now();
+        if (createsAtToolOutput === null) { createsAtToolOutput = tap.creates.length; toolOutputAt = Date.now(); }
         const outcome = session.sendToolResponse({ responses });
         if (outcome === 'failed') stopped = 'protocol_rejection';
         if (stopped !== undefined) break;
@@ -155,7 +162,8 @@ async function runAsk(
       if (event.type === 'audio') {
         audioDeltas += 1;
         if (event.audible) {
-          tap.audibleAt.push(Date.now());
+          const creates = tap.creates.length - (createsAtToolOutput ?? tap.creates.length);
+          if (creates >= 1) audibleAfterCreate.push(creates);
           if (firstAudioAt === null && toolOutputAt !== null) firstAudioAt = Date.now();
         }
       }
@@ -172,24 +180,17 @@ async function runAsk(
   } finally {
     session.close();
   }
-  const creates = tap.creates.filter(time => toolOutputAt !== null && time >= toolOutputAt);
-  const audible = tap.audibleAt.filter(time => toolOutputAt !== null && time >= toolOutputAt);
-  // One audible stretch per create that was followed by audio: a later create starts a new stretch.
-  let audibleResponses = 0;
-  for (const [index, at] of creates.entries()) {
-    const next = creates[index + 1];
-    if (audible.some(time => time >= at && (next === undefined || time < next))) audibleResponses += 1;
-  }
-  const beforeSecondCreate = (time: number) => creates[1] === undefined || time < creates[1];
-  const firstResponseAudio = creates.length > 0 && audible.some(time => time >= creates[0]! && beforeSecondCreate(time));
-  const silentRescueUsed = creates.length > 1 && !audible.some(time => time >= creates[0]! && time < creates[1]!);
+  const postToolCreates = createsAtToolOutput === null ? 0 : tap.creates.length - createsAtToolOutput;
+  const audibleResponses = new Set(audibleAfterCreate).size;
+  const firstResponseAudio = audibleAfterCreate.includes(1);
+  const silentRescueUsed = postToolCreates > 1 && !firstResponseAudio;
   if (audibleResponses > 1 && stopped === undefined) stopped = 'duplicate_speech';
   return {
     caseId: evalCase.id,
     firstResponseAudio,
     toolOutputToAudioMs: firstAudioAt === null || toolOutputAt === null ? null : Math.max(0, firstAudioAt - toolOutputAt),
     silentRescueUsed,
-    postToolCreates: creates.length,
+    postToolCreates,
     audibleResponses,
     audioDeltas,
     textTokens: Math.round(textChars / 4),

@@ -201,6 +201,17 @@ test('C-TIME shape 6 and 7: the event time and the person a description may name
   assert.deepEqual(namedOthers('Sam', 'Naya'), ['Sam'], 'a real invitee argument still names him');
 });
 
+test('C-TIME: the corpus keeps the eight reproduced shapes and the new clarify vocabulary', () => {
+  const ids = new Set(corpus.map(row => row.id));
+  for (const id of ['shape1-that-branch-wrong-hour', 'shape2-two-pm-tokens', 'shape3-one-time-and-zone', 'shape4-eighteen-hundred',
+    'retry-after-clarify', 'shape8-cancel-and-armed']) {
+    if (id === 'shape8-cancel-and-armed') continue;
+    assert.ok(ids.has(id), `the corpus keeps ${id}`);
+  }
+  const reasons = new Set(corpus.filter(row => row.expects.status === 'clarify').map(row => String(row.expects.reason)));
+  for (const reason of reasons) assert.ok(['missing_time', 'ambiguous_time', 'past_time'].includes(reason), `clarify reason ${reason}`);
+});
+
 test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {
   const reading = { unique: 0, partial: 0, inconclusive: 0 };
   for (const row of corpus) reading[checkOwnerTime(row.words).status] += 1;

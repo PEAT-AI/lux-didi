@@ -55,6 +55,7 @@ export class OwnerRequests implements OwnerRequestPort {
     this.pendingFinal.delete(session);
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
+    if (process.env.DIDI_PROBE) console.error('PROBE observe', session, journalId, JSON.stringify(words), 'prev=', previous && { id: previous.id, journalId: previous.journalId, finals: previous.finals, start: previous.start, age: this.clock() - previous.start });
     if (previous?.journalId === journalId) return;
     const grants = new Map<ActionKind, Grant>();
     // C-PERMTIER: a finalized owner turn is authority for every free tool. There is no cue regex and

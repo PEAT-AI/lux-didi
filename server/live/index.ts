@@ -4818,6 +4818,7 @@ export class LiveSessionOwner {
     const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
+    if (process.env.DIDI_PROBE) console.error('PROBE batch', JSON.stringify(event.calls.map(call => call.name)), 'inputAt', handle.inputAt);
     // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
     // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
     // before any argument check, with the same shape and the same closed reason.
@@ -4899,9 +4900,11 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const runBatch = async (calls: { id: string; name: string; args: JsonObject }[], useStep: number): Promise<Batch | undefined> => {
         if (calls.length === 0) return undefined;
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
+        if (process.env.DIDI_PROBE) console.error('PROBE pre-raw', JSON.stringify(calls.map(call => call.name)));
         const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
           step: useStep, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
+        if (process.env.DIDI_PROBE) console.error('PROBE raw', JSON.stringify(raw.tools.map(tool => ({ n: tool.name, s: tool.status, r: tool.reason }))));
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });

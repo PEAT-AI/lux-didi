@@ -81,6 +81,34 @@ per IO node pair, and the whole `AUVoiceIO` property surface (`AudioUnitProperti
 input-side echo cancellation keeps the downlink chain, so we build that graph cleanly and stop
 rebuilding it rather than trying to take her voice out of it.
 
+Every thin AVFAudio call that can raise instead of returning (attach, connect, installTap, prepare,
+removeTap, scheduleBuffer, play) goes through `Sources/LuxDidi/AVFAudioGuard.h`, the one Objective-C
+file, because only Objective-C can catch what AVFAudio raises: in Swift the exception unwinds the
+frame and leaves the concurrency runtime's current executor pointing at a dead stack. The guard
+throws `NativeAudioGraphException`, the call ends, and `audio_graph_exception` in `logs/audio.log`
+names the call and the exception. It is a boundary check, never a fallback.
+
+The tap installs with `format: nil`, so AVFAudio uses the node's own current output format and can
+never compare a stale client format against the hardware: on the headset route that comparison
+raised `Format mismatch: input hw 1 ch 48000 Hz, client format 1 ch 16000 Hz` and failed the tap.
+The capture buffer takes its converter from the first buffer it actually receives, so nothing
+downstream depends on the format read before the tap.
+
+A call start writes `logs/call-start.json` before presence starts, with the pid, the wall time and
+the output transport, and clears it once a capture frame and one model chunk have both arrived or
+the call ends cleanly. A launch that finds a marker younger than two minutes from another pid logs
+`launch_after_failed_start` in native-live.log and does not auto connect: on 2026-11-01 three
+crashes in 35 s each launched straight back into the same fault. The app stays open and a key press
+still starts a call, and the orb visuals are unchanged.
+
+The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
+`NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
+processing, constructs a real input node, pins a device or stops and resets a real engine: measured
+before this seam existed, the test binaries caused 907 speaker DSP graph rebuilds against 12 from
+real calls (see the 2026-11-01 audio investigation). Real voice processing coverage is now the
+owner-only command `scripts/owner-audio-hardware-proof.sh`, which no check calls and which starts no
+engine, so nothing is audible.
+
 ## Notes and deletion
 
 Voice can save local memories and owner-requested Lux notes. Composed Lux notes are gated off by default and require staged readback and confirmation; a tool call alone is not a save. Trello card writes have their own board-scoped authority. [Privacy and authority](privacy-and-authority.md) owns these distinctions.

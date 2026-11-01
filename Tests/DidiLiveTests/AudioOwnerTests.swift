@@ -114,6 +114,8 @@ import Foundation
         // 6. L12a/L12b: the output receipt and the played-level window, on fakes, with no device and
         // no wait. A regression in the reading text, the decibel math or the window arithmetic fails here.
         failures += await section_12()
+        failures += await section_13()
+        failures += await section_14()
 
         exit(failures == 0 ? 0 : 1)
     }
@@ -184,6 +186,83 @@ import Foundation
         check(afterSilence.count == 2 && afterSilence.last?.fields["peakDb"] == "-120.0",
               "a window of digital silence reports the floor, got \(String(describing: afterSilence.last?.fields))")
         device.stop()
+        return failures
+    }
+
+    /// T1: orbBands survives a render time that is neither sample-time nor host-time valid, which is
+    /// the clock a headset route handed it. Before the guard, this call raised an Objective-C
+    /// com.apple.coreaudio.avfaudio exception on the main actor and took the process with it.
+    @MainActor private static func section_13() async -> Int {
+        var failures = 0
+        func check(_ condition: Bool, _ label: String) {
+            if condition { print("PASS \(label)") } else { print("FAIL \(label)"); failures += 1 }
+        }
+        /// A player whose render clock never validates: the shape orbBands met on the headset route.
+        final class InvalidRenderTimePlayer: AVAudioPlayerNode, @unchecked Sendable {
+            override var lastRenderTime: AVAudioTime? {
+                var stamp = AudioTimeStamp()
+                return AVAudioTime(audioTimeStamp: &stamp, sampleRate: 48_000)
+            }
+        }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+            check(false, "the synthetic 48 kHz format is unavailable"); return failures + 1
+        }
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                           defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                           owner: AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                                               .appendingPathComponent("a1-render-time-\(UUID().uuidString)")),
+                                           journal: NativeAudioJournal(fileURL: nil),
+                                           deviceState: { _ in false },
+                                           isBuiltInOutput: { true })
+        device.engineFactoryForTesting = { (AVAudioEngine(), InvalidRenderTimePlayer(), format) }
+        device.startForTesting = { _ in }
+        do { try await device.start { _ in } } catch {
+            check(false, "the fake start threw \(error)"); return failures + 1
+        }
+        let bands = device.orbBands()
+        check(bands.output == .silent, "an invalid render clock leaves the orb quiet instead of throwing")
+        check(bands.output.level == 0, "the quiet orb reports level 0, got \(bands.output.level)")
+        device.releaseForTesting()
+        await device.settleForTesting()
+        return failures
+    }
+
+    /// T3: an AVFAudio call that raises instead of returning must end the call with a named error.
+    /// A mixer that was never attached to an engine raises com.apple.coreaudio.avfaudio from
+    /// installTap ("required condition is false: NULL != engine"), so the proof needs no hardware.
+    /// Without the guard this test kills the process, which is what happened on her headset route.
+    @MainActor private static func section_14() async -> Int {
+        var failures = 0
+        func check(_ condition: Bool, _ label: String) {
+            if condition { print("PASS \(label)") } else { print("FAIL \(label)"); failures += 1 }
+        }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+            check(false, "the synthetic 48 kHz format is unavailable"); return failures + 1
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("a1-graph-exception-\(UUID().uuidString)"), journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                           defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                           owner: owner, journal: journal, deviceState: { _ in false },
+                                           isBuiltInOutput: { true })
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in }
+        device.installTapForTesting = {
+            AVAudioMixerNode().installTap(onBus: 0, bufferSize: 1024, format: nil) { _, _ in }
+        }
+        var failure: Error?
+        do { try await device.start { _ in } } catch { failure = error }
+        let raised = failure as? NativeAudioGraphException
+        check(raised?.call == "install_tap" && (raised?.name.contains("avfaudio") ?? false),
+              "an AVFAudio exception ends the start with a named error instead of killing the process, got \(String(describing: failure))")
+        check(device.sessionFailedForTesting, "the session is marked failed, so nothing retries it")
+        check(!owner.isOwned, "the audio owner is released")
+        let logged = journal.events.filter { $0.name == "audio_graph_exception" }
+        check(logged.count == 1, "one audio_graph_exception is journaled, got \(logged.count)")
+        check(logged.first?.fields["call"] == "install_tap" && (logged.first?.fields["name"] ?? "").contains("avfaudio"),
+              "and it names the thin call and the exception, got \(String(describing: logged.first?.fields))")
+        await device.settleForTesting()
         return failures
     }
 

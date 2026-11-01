@@ -92,6 +92,34 @@ import Foundation
         check(!LaunchKind.uiProof.activates && !LaunchKind.selfCheck.activates && !LaunchKind.installedProof.activates,
               "proof, self-check and ui-proof never activate")
 
+        // T4 (F6): a launch that finds a call start younger than two minutes from another pid does
+        // not auto connect. Three crashes in 35 s each launched straight back into the same fault.
+        for kind in allKinds {
+            check(OrbFirstAutoConnect.decide(kind: kind, serviceReady: true, pageHostable: true,
+                                             attempted: false, previousStartDied: true) == .never,
+                  "a \(kind) launch with a start that died never auto connects")
+        }
+        do {
+            let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("didi-call-start-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = CallStartMarker.url(in: directory)
+            let now = Date(timeIntervalSince1970: 10_000)
+            check(CallStartMarker.previousStartDied(url, now: now, pid: 4242) == nil,
+                  "no marker means no refused auto-connect")
+            let record = CallStartMarker.Record(pid: 99, startedAt: now.addingTimeInterval(-30), transport: "bluetooth")
+            check(CallStartMarker.write(record, to: url), "the start marker is written")
+            let found = CallStartMarker.previousStartDied(url, now: now, pid: 4242)
+            check(found == record, "another pid's start inside two minutes is a start that died, got \(String(describing: found))")
+            check(CallStartMarker.previousStartDied(url, now: now, pid: 99) == nil,
+                  "a marker this process wrote is not another process's death")
+            check(CallStartMarker.previousStartDied(url, now: now.addingTimeInterval(121), pid: 4242) == nil,
+                  "a start older than two minutes is no longer a loop")
+            CallStartMarker.clear(url)
+            check(CallStartMarker.previousStartDied(url, now: now, pid: 4242) == nil, "a cleared marker refuses nothing")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
         // 3. The guard decision holds for every launch kind.
         for kind in allKinds {
             let expectedYield = (kind != .verification)

@@ -113,7 +113,9 @@ assert not bad, f'COMPANION FAIL: staged Node violates installed dependency poli
 print('PASS companion Node matches installed dependency policy')
 PY
 start=$SECONDS
-"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
+# The AVFAudio boundary guard is Objective-C: only it can catch what AVFAudio raises.
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun clang -fobjc-arc -c Sources/LuxDidi/AVFAudioGuard.m -o "$work/AVFAudioGuard.o"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift "$work/AVFAudioGuard.o" -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"
 app="$work/Companion Proof.app"
 mkdir -p "$app/Contents/MacOS"

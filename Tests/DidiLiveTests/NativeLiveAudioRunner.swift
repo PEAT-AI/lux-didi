@@ -371,14 +371,16 @@ private func checkFormatChangeRebuild() throws {
     print("PASS other-audio ducking set to the minimum while voice processing is on")
 }
 
-// OUTCOME 3: the weak reference proves deallocation, else audio_release_leak is logged.
-@MainActor private func checkReleaseLeakAndDeallocation() throws {
+// OUTCOME 3: the weak reference proves deallocation, else audio_release_leak is logged. The leak is
+// reported when the release settles (#1101), because the handles are held for the settle interval.
+@MainActor private func checkReleaseLeakAndDeallocation() async throws {
     let journal = NativeAudioJournal(fileURL: nil)
     let retained = NativeLiveAudioDevice(owner: AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("a1-leak-" + UUID().uuidString)),
                                          journal: journal, deviceState: { _ in false })
     var held: AVAudioEngine? = AVAudioEngine()
     retained.adoptEngineForTesting(held!, player: AVAudioPlayerNode())
     retained.releaseForTesting()
+    await retained.settleForTesting()
     try audioRequire(journal.events.contains { $0.name == "audio_release_leak" },
                      "a retained engine logs audio_release_leak on release")
     held = nil
@@ -386,6 +388,7 @@ private func checkFormatChangeRebuild() throws {
     let clean = NativeLiveAudioDevice(journal: cleanJournal, deviceState: { _ in false })
     clean.adoptEngineForTesting(AVAudioEngine(), player: AVAudioPlayerNode())
     clean.releaseForTesting()
+    await clean.settleForTesting()
     try audioRequire(!cleanJournal.events.contains { $0.name == "audio_release_leak" },
                      "a deallocated engine does not log audio_release_leak")
     print("PASS weak-ref dealloc and audio_release_leak")
@@ -851,6 +854,8 @@ private func checkPrimaryChannelConversion() throws {
         device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
         device.startForTesting = { _ in starts += 1 }
         device.onCapturePrepared = { captures.append($0) }
+        // #1101: the release settle is faked, so the unmute rebuild lands without a real interval.
+        device.settleWaitForTesting = { _ in }
         let sends = NativeAudioSendProbe()
         try await device.start { await sends.send($0) }
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
@@ -877,6 +882,8 @@ private func checkPrimaryChannelConversion() throws {
                          "the release record carries the closed tokens it ended")
 
         device.setMuted(false)
+        // #1101: the unmute build waits the release settle out, so it lands in its own task.
+        await device.finishMuteResumeForTesting()
         try audioRequire(starts == 2, "unmute starts the engine exactly once, got \(starts - 1)")
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
                          "unmute rebuilds capture and holds the owner again")
@@ -901,6 +908,7 @@ private func checkPrimaryChannelConversion() throws {
                          "unmute delivers frames on the same send closure, so nothing reconnected")
 
         for _ in 0..<10 { device.setMuted(true); device.setMuted(false) }
+        await device.finishMuteResumeForTesting()
         try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
                          "ten fast toggles end with exactly one engine when unmuted")
         try audioRequire(!journal.events.contains { $0.name == "audio_release_leak" },
@@ -936,6 +944,7 @@ private func checkPrimaryChannelConversion() throws {
         let taken = AudioOwner(lockFileURL: lockURL)
         try taken.acquire(holder: ObjectIdentifier(taken))
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         let refused = journal.events.filter { $0.name == "audio_refused" }
         try audioRequire(refused.map { $0.fields["reason"] } == ["already_in_use", "audio_already_in_use"],
                          "a refused re-acquire on unmute surfaces audio_refused, got \(refused.map { $0.fields["reason"] ?? "-" })")
@@ -964,6 +973,7 @@ private func checkPrimaryChannelConversion() throws {
         device.startForTesting = { _ in }
         device.setMuted(true)
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         let skipped = journal.events.filter { $0.name == "audio_muted_reacquire_skipped" }
         try audioRequire(skipped.count == 1 && skipped[0].fields["reason"] == "no_send",
                          "an unmute with no session says so in one record, never silently")
@@ -997,9 +1007,11 @@ private func checkPrimaryChannelConversion() throws {
         try audioRequire(journal.events.contains { $0.name == "audio_muted_start_skipped" },
                          "the start held back by the mute leaves one record")
         device.setMuted(false)
+        await device.finishMuteResumeForTesting()
         try audioRequire(starts == 1 && device.hasEngine && owner.isOwned,
                          "unmute opens the one engine the mute held back")
         device.stop()
+        await device.settleForTesting()
         print("PASS mute before capture: a connecting mute keeps the microphone closed until unmute")
     }
 
@@ -1187,6 +1199,9 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(builds == 1 && paused == input && recovery.awaitingResume,
                              "input change needs owner Resume, not a new session")
             recovery.resume()
+            // #1101: Resume is a release-then-build path and the build waits the release settle out,
+            // so it lands in the pending task rather than in the calling turn.
+            await recovery.pending?.value
             try audioRequire(builds == 2 && !recovery.awaitingResume, "Resume rebuilds authorized capture")
             recovery.changed(); recovery.stop(); await recovery.pending?.value
             try audioRequire(builds == 2, "Stop fences queued recovery")
@@ -1211,7 +1226,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkStopOutcome()
             try checkProductionAudioJournal()
             try checkMinimumDucking()
-            try checkReleaseLeakAndDeallocation()
+            try await checkReleaseLeakAndDeallocation()
             try await checkStartFailureCircuitBreaker()
             try await checkBusyDeviceSkipsVoiceProcessing()
             try await checkMuteReleasesMicrophone()
@@ -1255,7 +1270,7 @@ private func checkPrimaryChannelConversion() throws {
             injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             captures.last!.append(try tone(format, start: 0, count: 2000))
             try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
-                             "actual rebuilt converter and drain preserve mute")
+                             "actual rebuilt converter and drain preserve mute: captures \(captures.count), capturing \(injectedDevice.isCapturing), pending \(captures.last!.next().0 != nil) journal \(injectedDevice.journal?.events.map(\.name) ?? [])")
             injectedDevice.setMuted(false)
             var sentFrames = sends.frames.makeAsyncIterator()
             captures.last!.append(try tone(format, start: 2000, count: 1024))
@@ -1371,6 +1386,10 @@ private func checkPrimaryChannelConversion() throws {
                 builtIn: true, deviceBusy: true, voiceProcessingFailed: false) == "device_busy",
                              "busy device logs audio_vpio_skipped reason=device_busy")
             print("PASS silent real AVAudioConverter irregular stereo tone, frame continuity, partial discard, ring overflow, lazy device")
+            // #1101 runs last: its engines are fakes, but each release now holds its handles for the
+            // settle interval and a torn-down voice-processing engine makes CoreAudio post a
+            // configuration change to the next one, so nothing else may run after it.
+            try await AudioGraphLifecycleTests.run()
             print("UNVERIFIED hardware: voice processing on both IO nodes and physical device loss; Start verifies both enabled flags")
         } catch { print("FAIL native audio: \(error)"); exit(1) }
     }

@@ -515,7 +515,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
 @MainActor final class NativeAudioRouteRecovery {
     private let input: () -> String
     private let release: () -> Void
-    private let rebuild: () async throws -> Void
+    private let rebuild: @MainActor () async throws -> Void
     private let paused: (String) -> Void
     private let failed: () -> Void
     private var previousInput = ""
@@ -524,7 +524,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private(set) var awaitingResume = false
     private(set) var pending: Task<Void, Never>?
     init(input: @escaping () -> String, release: @escaping () -> Void,
-         rebuild: @escaping () async throws -> Void, paused: @escaping (String) -> Void,
+         rebuild: @escaping @MainActor () async throws -> Void, paused: @escaping (String) -> Void,
          failed: @escaping () -> Void) {
         self.input = input; self.release = release; self.rebuild = rebuild
         self.paused = paused; self.failed = failed
@@ -564,6 +564,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
     }
     private func recover() async {
+        FileHandle.standardError.write(Data("DBG recovery.recover\n".utf8))
         do { try await rebuild() }
         catch { stop(); failed() }
     }
@@ -722,6 +723,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private var settledEngine: AVAudioEngine?
     private var settledPlayer: AVAudioPlayerNode?
     private var settleTask: Task<Void, Never>?
+    private var settleGeneration: UInt64 = 0
     private var settling = false
     /// Set by the configuration observer while a settle runs: the change the settle waits out.
     private var configurationChangePending = false
@@ -734,7 +736,9 @@ struct NativeLiveInterruptionSample: Sendable {
     var prepareForTesting: ((AVAudioEngine) -> Void)?
     /// C-AUDIO 2: every settle wait, so a test records it and never sleeps.
     var settleWaitForTesting: (@MainActor (Duration) async -> Void)?
-    private var resumeFromMuteTask: Task<Void, Never>?
+    /// The unmute rebuilds in flight, keyed so each removes itself when it lands.
+    private var resumeFromMuteTasks: [UInt64: Task<Void, Never>] = [:]
+    private var nextResumeID: UInt64 = 0
     /// C-AUDIO 1 and 4: the graph steps of the last build and the engine starts inside this call.
     private(set) var graphBuildSteps: [String] = []
     private(set) var engineStartCount = 0
@@ -831,6 +835,7 @@ struct NativeLiveInterruptionSample: Sendable {
         "Using " + name + " microphone, built-in not available"
     }
     func routeChanged() {
+        FileHandle.standardError.write(Data("DBG routeChanged muted=\(muted) muteHolds=\(muteHoldsMicrophone) engine=\(engine != nil) settling=\(settling)\n".utf8))
         let input = captureDevice
         let output = outputDevice()
         route = "Microphone: " + input.name + " · Output: " + output.name
@@ -1338,6 +1343,7 @@ struct NativeLiveInterruptionSample: Sendable {
         // C-AUDIO 1 and 4: the steps of this build, in order, and the configuration changes seen
         // while it starts. Reset here so `audio_graph_built` reports one build, not a call history.
         graphBuildSteps = []; configChangesDuringStart = 0; starting = true
+        FileHandle.standardError.write(Data("DBG build entry\n".utf8))
         var engine = AVAudioEngine(), player = AVAudioPlayerNode()
         var stretch: AVAudioUnitTimePitch?
         // C-HEADPHONES 1 and 6: capture is pinned to the chosen device by id before any format is
@@ -1362,6 +1368,9 @@ struct NativeLiveInterruptionSample: Sendable {
                 try Self.enableVoiceProcessing(engine: engine)
                 graphBuildSteps.append("voice_processing")
             }
+            // The fake-engine seam builds the same playback graph the hardware path does, so a test
+            // proves the order the real start uses instead of a shape only tests have.
+            stretch = try connectPlaybackGraph(engine, player)
         } else if useVoiceProcessing {
             do {
                 Self.applyMinimumDucking(to: engine.inputNode)
@@ -1461,6 +1470,7 @@ struct NativeLiveInterruptionSample: Sendable {
         route = "Microphone: " + input.name + " · Output: " + outputDevice().name
         activateCapture(capture, send: send)
         ready = true
+        FileHandle.standardError.write(Data("DBG build ready\n".utf8))
         armFirstBufferWatchdog(capture, voiceProcessing: useVoiceProcessing, format: hardware)
     }
     /// C-MICWATCH 1: no tap buffer within the window after start means the graph is not running. The
@@ -1544,12 +1554,19 @@ struct NativeLiveInterruptionSample: Sendable {
         } else {
             // C-AUDIO 2: the rebuild behind an unmute waits the release settle out, so it never
             // builds on top of CoreAudio's teardown of the engine the mute just stopped.
-            resumeFromMuteTask = Task { @MainActor [weak self] in await self?.resumeCaptureFromMute() }
+            let id = nextResumeID
+            nextResumeID &+= 1
+            resumeFromMuteTasks[id] = Task { @MainActor [weak self] in
+                await self?.resumeCaptureFromMute()
+                self?.resumeFromMuteTasks[id] = nil
+            }
         }
     }
-    /// The rebuild an unmute started, for a caller that must see it land.
+    /// Every unmute rebuild a setMuted(false) started, for a caller that must see them land.
     func finishMuteResumeForTesting() async {
-        await resumeFromMuteTask?.value
+        while !resumeFromMuteTasks.isEmpty {
+            for task in Array(resumeFromMuteTasks.values) { await task.value }
+        }
         await awaitSettle()
     }
     /// Muting hands the microphone back to the machine: another app must be able to run its own
@@ -1825,6 +1842,7 @@ struct NativeLiveInterruptionSample: Sendable {
         }
     }
     private func releaseAudio(keepingSlot: Bool = false) {
+        FileHandle.standardError.write(Data("DBG release keepingSlot=\(keepingSlot) engine=\(engine != nil) muted=\(muted) muteHolds=\(muteHoldsMicrophone) capturing=\(isCapturing)\n".utf8))
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
@@ -1859,18 +1877,20 @@ struct NativeLiveInterruptionSample: Sendable {
         settling = true
         configurationChangePending = false
         settleDeviceIDs = (inputDevice().id, outputDevice().id)
+        settleGeneration &+= 1
         settleTask = Task { @MainActor [weak self] in await self?.settleRelease() }
     }
     /// Awaits the settle a release started. Returns at once when nothing is settling.
     func awaitSettle() async {
         while let task = settleTask {
+            let generation = settleGeneration
             await task.value
-            if settleTask === task { return }
+            if settleGeneration == generation { return }
         }
     }
     func settleForTesting() async { await awaitSettle() }
     private func settleRelease() async {
-        guard let engine = settledEngine else { settling = false; settleTask = nil; return }
+        guard settledEngine != nil else { settling = false; settleTask = nil; return }
         // C-AUDIO 2: start at 250 ms, then wait out an in-flight configuration change or a default
         // device that is still moving, bounded at one second so a release is never held forever.
         var waitedMs = Self.releaseSettleMs
@@ -1883,15 +1903,16 @@ struct NativeLiveInterruptionSample: Sendable {
         let pending = configurationChangePending
         configurationChangePending = false
         settleWaitedMs = waitedMs
-        engine.reset()
+        settledEngine?.reset()
         engineResetCount += 1
-        weak var retained = settledEngine
+        weak let retained = settledEngine
         settledEngine = nil; settledPlayer = nil
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil
         settling = false
         settleTask = nil
         settledReleaseCount += 1
+        FileHandle.standardError.write(Data("DBG settled starts=\(engineStartCount)\n".utf8))
         log("audio_release_settled", ["settleMs": String(waitedMs),
                                       "configChangePending": pending ? "true" : "false",
                                       "starts": String(engineStartCount)])

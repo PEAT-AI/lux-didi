@@ -95,6 +95,8 @@ test('C-TIME corpus: the owner time wins through the real alarm handler', { time
       const h = await alarmHarness(batchT);
       for (const row of batch) {
         await batchT.test(row.id, async () => {
+          // Every row is its own owner turn, never a follow-up of the row before it.
+          h.owner.ownerRequests.release(h.session.liveSessionId);
           h.clock.now = Date.parse(row.now);
           h.options.timezone = row.tz;
           if (row.words2 !== undefined) {

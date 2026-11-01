@@ -4,6 +4,27 @@ import Combine
 import CoreAudio
 import Foundation
 
+/// An AVFAudio boundary call raised an Objective-C exception. Swift cannot catch one: the unwind
+/// leaves the concurrency runtime's current executor pointing at a dead stack frame. The guard turns
+/// it into this error, so the call ends loudly instead of a later MainActor.assumeIsolated jumping
+/// through garbage.
+struct NativeAudioGraphException: Error, LocalizedError, Equatable {
+    /// The thin call, from the closed list below.
+    let call: String
+    /// The exception name the OS reported.
+    let name: String
+    var errorDescription: String? { "audio_graph_exception call=\(call) name=\(name)" }
+}
+
+/// The Swift face of Sources/LuxDidi/AVFAudioGuard.h, the one Objective-C file in the project.
+enum AVFAudioGuard {
+    /// Runs one thin AVFAudio call and throws when AVFAudio raised an exception instead of returning.
+    static func run(_ call: String, _ body: () -> Void) throws {
+        guard let raised = DIDIAVFAudioGuard(body) else { return }
+        throw NativeAudioGraphException(call: call, name: DIDIAVFAudioExceptionName(raised))
+    }
+}
+
 /// What the input node reports back after minimum ducking is applied: the two properties that
 /// decide how far other audio is pushed down.
 struct NativeDuckingReading: Equatable {
@@ -762,8 +783,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private(set) var inputSeam: (any NativeLiveInputSeam)?
     /// A test seam standing in for the input node; nil on every real start.
     var inputSeamForTesting: (any NativeLiveInputSeam)?
-    /// The fake path installs no tap, so a test drives the tap failure through this seam. The body
-    /// runs where the real installTap call runs, in the same place in the build.
+    /// The fake path installs no tap, so a test drives the guarded tap failure through this seam.
     var installTapForTesting: (() -> Void)?
     /// The seam that owns the live engine's lifecycle, kept past `releaseAudio` for the settle.
     private var settledSeam: (any NativeLiveInputSeam)?
@@ -1292,6 +1312,16 @@ struct NativeLiveInterruptionSample: Sendable {
         if let fake { return NativeFakeInputSeam(format: fake) }
         return NativeLiveInputNodeSeam(engine: engine)
     }
+    /// An AVFAudio boundary call raised an Objective-C exception. Journal the thin call's closed
+    /// name and the exception name, then let the error end the call: this is a boundary check, never
+    /// a fallback.
+    private func guardedNativeCall(_ call: String, _ body: () -> Void) throws {
+        do { try AVFAudioGuard.run(call, body) }
+        catch let raised as NativeAudioGraphException {
+            log("audio_graph_exception", ["call": raised.call, "name": raised.name])
+            throw raised
+        }
+    }
     /// The ducking configuration read back from the node, so the journal shows the level that took
     /// effect instead of the one that was requested.
     private func logDuckingApplied(_ reading: NativeDuckingReading) {
@@ -1377,7 +1407,12 @@ struct NativeLiveInterruptionSample: Sendable {
         // C-AUDIO 4: engine starts are counted per call, so a rebuilt graph inside one call shows up.
         engineStartCount = 0; configChangesDuringStart = 0
         do { try build(send: send); recovery.begin() }
-        catch { sendFrame = nil; throw error }
+        catch {
+            sendFrame = nil
+            // An AVFAudio exception ends this call: a process past one has already lost its executor.
+            if error is NativeAudioGraphException { sessionFailed = true }
+            throw error
+        }
     }
     /// P3: the single playback graph builder. `rate` is the pitch-preserving speed for the whole
     /// utterance. At 1.0 the graph is exactly the two connections it always was: no unit is inserted,
@@ -1395,32 +1430,37 @@ struct NativeLiveInterruptionSample: Sendable {
         guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
             throw NativeLiveAudioError.unsupportedFormat
         }
-        engine.attach(player)
+        try AVFAudioGuard.run("attach") { engine.attach(player) }
         var stretch: AVAudioUnitTimePitch?
         if rate == 1 {
-            engine.connect(player, to: engine.mainMixerNode, format: output)
+            try AVFAudioGuard.run("connect") { engine.connect(player, to: engine.mainMixerNode, format: output) }
         } else {
             let unit = AVAudioUnitTimePitch()
             unit.rate = Float(rate)
             // Her voice is the voice: only the pace moves, never the pitch.
             unit.pitch = 0
-            engine.attach(unit)
-            engine.connect(player, to: unit, format: output)
-            engine.connect(unit, to: engine.mainMixerNode, format: output)
+            try AVFAudioGuard.run("attach") { engine.attach(unit) }
+            try AVFAudioGuard.run("connect") { engine.connect(player, to: unit, format: output) }
+            try AVFAudioGuard.run("connect") { engine.connect(unit, to: engine.mainMixerNode, format: output) }
             stretch = unit
         }
         // VP output requires its input-bus format, not the player's 24 kHz mono client format.
-        engine.connect(engine.mainMixerNode, to: outputNode, format: hardwareOutput)
+        try AVFAudioGuard.run("connect") { engine.connect(engine.mainMixerNode, to: outputNode, format: hardwareOutput) }
         return stretch
     }
     /// C-AUDIO 1: the playback graph as one recorded step. It is built after voice processing is
     /// enabled and ducked, so the attach and the connect never reconfigure the unit.
     private func connectPlaybackGraph(_ engine: AVAudioEngine, _ player: AVAudioPlayerNode)
         throws -> AVAudioUnitTimePitch? {
-        let stretch = try Self.connectPlayback(engine: engine, player: player,
-                                               outputNode: engine.outputNode, rate: sessionRate)
-        graphBuildSteps.append("player_attached")
-        return stretch
+        do {
+            let stretch = try Self.connectPlayback(engine: engine, player: player,
+                                                   outputNode: engine.outputNode, rate: sessionRate)
+            graphBuildSteps.append("player_attached")
+            return stretch
+        } catch let raised as NativeAudioGraphException {
+            log("audio_graph_exception", ["call": raised.call, "name": raised.name])
+            throw raised
+        }
     }
     private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
         let input = captureDevice
@@ -1533,15 +1573,18 @@ struct NativeLiveInterruptionSample: Sendable {
         // Tap format is the input node's current output format at install time, never one
         // captured before voice processing was enabled.
         if engineFactoryForTesting == nil {
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+            try guardedNativeCall("install_tap") {
+                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+            }
             tapInstalled = true
         } else if let installTapForTesting {
-            installTapForTesting()
+            // The fake path skips the tap, so a test drives the failure path with its own body.
+            try guardedNativeCall("install_tap", installTapForTesting)
         }
         // C-AUDIO 1: exactly one prepare per build, before start. The fake-engine path records the
         // step through prepareForTesting and never touches the device.
         if engineFactoryForTesting == nil {
-            engine.prepare()
+            try guardedNativeCall("prepare") { engine.prepare() }
             graphBuildSteps.append("prepare")
         } else if let prepareForTesting {
             prepareForTesting(engine)
@@ -1556,11 +1599,13 @@ struct NativeLiveInterruptionSample: Sendable {
                                                    "toChannels": String(prepared.channelCount),
                                                    "fromSampleRate": String(Int(hardware.sampleRate)),
                                                    "toSampleRate": String(Int(prepared.sampleRate))])
-                engine.inputNode.removeTap(onBus: 0)
+                try guardedNativeCall("remove_tap") { engine.inputNode.removeTap(onBus: 0) }
                 hardware = prepared
                 capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
                 capture.setMuted(muted); self.capture = capture
-                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+                try guardedNativeCall("install_tap") {
+                    engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+                }
             }
         }
         // C-MICWATCH 2: observe configuration changes before the engine starts, so a change posted
@@ -1925,11 +1970,15 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         }
         if let driver = playbackDriverForTesting { driver.schedule(buffer, completion: completion) }
-        else if let player { player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() } }
+        else if let player {
+            try guardedNativeCall("schedule") {
+                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
+            }
+        }
         else { throw LiveClientError.unavailable }
         if newSegment { emitReceipt(.enqueued, segment: playbackSegment) }
         if arrival.start {
-            if let driver = playbackDriverForTesting { driver.play() } else { player?.play() }
+            if let driver = playbackDriverForTesting { driver.play() } else { try guardedNativeCall("play") { player?.play() } }
             emitReceipt(.started, segment: playbackSegment)
         }
         publishPlaybackState()

@@ -313,17 +313,25 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
     private func play(_ buffer: AVAudioPCMBuffer, loops: Bool) -> Bool {
         rampTask?.cancel()
         rampTask = nil
-        if connectedFormat != buffer.format {
-            if connectedFormat != nil { engine.disconnectNodeOutput(player) }
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
-            connectedFormat = buffer.format
-        }
-        engine.prepare()
-        do { try engine.start() } catch { return false }
-        player.volume = 1
-        player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
-        player.play()
+        // Every AVFAudio call below can raise instead of returning, and the ring is not worth a
+        // process: the guard turns the exception into a Swift throw and the ring reports silence.
+        do {
+            try AVFAudioGuard.run("connect") {
+                if connectedFormat != buffer.format {
+                    if connectedFormat != nil { engine.disconnectNodeOutput(player) }
+                    engine.attach(player)
+                    engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
+                    connectedFormat = buffer.format
+                }
+                engine.prepare()
+            }
+            try engine.start()
+            player.volume = 1
+            try AVFAudioGuard.run("schedule") {
+                player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
+            }
+            try AVFAudioGuard.run("play") { player.play() }
+        } catch { return false }
         return true
     }
 

@@ -89,9 +89,15 @@ cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # Canonical native compile identity. Production never defines COMPANION_TEST.
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw Resources/Info.plist)"
 [[ "$minimum_macos" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo 'build-macos-app.sh: macOS minimum must be a numeric version' >&2; exit 2; }
+# The AVFAudio boundary guard is the one Objective-C file: only Objective-C can catch the exception
+# AVFAudio raises where Swift would leave a dead executor behind, so it compiles here and is linked in.
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun clang -fobjc-arc -O2 \
+  -target "arm64-apple-macosx$minimum_macos" \
+  -c Sources/LuxDidi/AVFAudioGuard.m -o "$cache/AVFAudioGuard.o"
 "$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
   -target "arm64-apple-macosx$minimum_macos" \
-  -module-cache-path "$cache" -parse-as-library Sources/LuxDidi/*.swift \
+  -module-cache-path "$cache" -import-objc-header Sources/LuxDidi/AVFAudioGuard.h -parse-as-library Sources/LuxDidi/*.swift \
+  "$cache/AVFAudioGuard.o" \
   -o "$app/Contents/MacOS/LuxDidi"
 
 if [ -n "$assets" ]; then

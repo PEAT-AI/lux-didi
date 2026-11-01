@@ -253,12 +253,15 @@ import Foundation
         }
         var failure: Error?
         do { try await device.start { _ in } } catch { failure = error }
-        check(failure != nil, "an AVFAudio exception ends the start with an error instead of killing the process, got \(String(describing: failure))")
+        let raised = failure as? NativeAudioGraphException
+        check(raised?.call == "install_tap" && (raised?.name.contains("avfaudio") ?? false),
+              "an AVFAudio exception ends the start with a named error instead of killing the process, got \(String(describing: failure))")
         check(device.sessionFailedForTesting, "the session is marked failed, so nothing retries it")
         check(!owner.isOwned, "the audio owner is released")
-        let raised = journal.events.filter { $0.name == "audio_graph_exception" }
-        check(raised.count == 1, "one audio_graph_exception is journaled, got \(raised.count)")
-        check(raised.first?.fields["call"] == "install_tap", "and it names the thin call, got \(String(describing: raised.first?.fields))")
+        let logged = journal.events.filter { $0.name == "audio_graph_exception" }
+        check(logged.count == 1, "one audio_graph_exception is journaled, got \(logged.count)")
+        check(logged.first?.fields["call"] == "install_tap" && (logged.first?.fields["name"] ?? "").contains("avfaudio"),
+              "and it names the thin call and the exception, got \(String(describing: logged.first?.fields))")
         await device.settleForTesting()
         return failures
     }

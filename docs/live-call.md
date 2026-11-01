@@ -81,6 +81,13 @@ per IO node pair, and the whole `AUVoiceIO` property surface (`AudioUnitProperti
 input-side echo cancellation keeps the downlink chain, so we build that graph cleanly and stop
 rebuilding it rather than trying to take her voice out of it.
 
+Every thin AVFAudio call that can raise instead of returning (attach, connect, installTap, prepare,
+removeTap, scheduleBuffer, play) goes through `Sources/LuxDidi/AVFAudioGuard.h`, the one Objective-C
+file, because only Objective-C can catch what AVFAudio raises: in Swift the exception unwinds the
+frame and leaves the concurrency runtime's current executor pointing at a dead stack. The guard
+throws `NativeAudioGraphException`, the call ends, and `audio_graph_exception` in `logs/audio.log`
+names the call and the exception. It is a boundary check, never a fallback.
+
 The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
 `NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
 processing, constructs a real input node, pins a device or stops and resets a real engine: measured

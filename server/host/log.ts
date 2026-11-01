@@ -1259,7 +1259,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.script, ['latin', 'devanagari', 'telugu', 'kannada', 'mixed'])) return;
     if (!isSafeCount(value.latinChars) || !isSafeCount(value.devanagariChars) || !isSafeCount(value.teluguChars) || !isSafeCount(value.kannadaChars)) return;
     if (typeof value.afterTool !== 'boolean' || typeof value.interrupted !== 'boolean') return;
-    return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, afterTool: value.afterTool, interrupted: value.interrupted };
+    return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, teluguChars: value.teluguChars, kannadaChars: value.kannadaChars, afterTool: value.afterTool, interrupted: value.interrupted };
   }
   if (value.event === 'live_state') {
     // F7/GL2-R1: one closed-shape transition record per projected state change, with the state it came from

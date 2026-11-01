@@ -4075,8 +4075,8 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
-          // #795: the response's own words, so a question back to the owner keeps his write ask standing.
-          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId, handle.answeredWords);
+          // C-PERMTIER: the model's turnComplete is not the owner speaking, so it never marks his ask
+          // answered. The ask stands until his own next final or the request window closes.
           handle.answeredWords = undefined;
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).

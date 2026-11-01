@@ -783,12 +783,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (parsed.status !== 'ready') { ownerRequests.clarify(runId, name, parsed.reason); return finish(parsed); }
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');
-            if (name === 'set_alarm' && !verifyAlarmRule(input, spec)) {
-              // A recurrence he never said spends nothing: the ask stands, so the retry this response names
-              // is the one-time alarm he asked for.
-              ownerRequests.failed(runId, name, requestTarget, ask.id);
-              return finish({ status: 'refused', reason: 'rule_mismatch', fixNotForSpeech: 'He said no repeat: call set_alarm once more for the same time with kind and weekdays omitted.' });
-            }
+            // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused: the
+            // alarm he did ask for is still set.
+            const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
+            if (seriesDropped) hostLogEvent({ event: 'alarm_series_dropped', runId, alarmId: context.executionId });
             if (tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
             if (input.fire_at_utc !== undefined && input.fire_at_utc !== parsed.fireAtUtc) {
               hostLogEvent({ event: 'alarm_model_time_ignored', skewMs: input.fire_at_utc - parsed.fireAtUtc });
@@ -814,7 +812,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
-              say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
+              say: parsed.confirmation + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
           if (consumed) {
             ownerRequests.commit(runId, name, requestTarget, actionReceipt);

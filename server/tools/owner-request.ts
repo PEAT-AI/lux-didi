@@ -1,11 +1,12 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
-import { COMPOSE_GRANT_KINDS, composeGrantKinds, type ComposeGrantKind } from './compose.js';
+import { composeGrantKinds } from './compose.js';
+import { advancesExposure, tierOf } from './tiers.js';
 const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
-const alarmCue = /\balarm\b|\bwake me\b|\bremind me\b/i;
-/** #795: the model handed the ask back as a question, so his next final is still the answer to it. */
-const questionBack = /\?\s*$|^\s*(?:how|what|which|when|who|where|should i|do you|would you|can you)\b/i;
-/** #795: a time, a length or a yes can settle the ask a question asked about; unrelated speech cannot. */
-const followUpCue = /(?:\d|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|hours?|minutes?|mins?|am|pm|noon|midnight|morning|afternoon|evening|night|tonight|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|yes|yeah|yep|sure|ok|okay|correct|right|please|go ahead)\b)/i;
+/** Every free write whose authority is the open owner call itself, never a phrase of his. */
+const isFreeKind = (kind: ActionKind): boolean =>
+  kind === 'open' || kind === 'lux_note' || tierOf(kind) === 'free';
+const FREE_ACTION_KINDS: readonly ActionKind[] = ['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm',
+  'lux_note', 'draft_email', 'draft_chat', 'create_event'];
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
   id: string; words: string; start: number; observedAt: number; finals: number; journalId: string;
@@ -41,42 +42,28 @@ export class OwnerRequests implements OwnerRequestPort {
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
     const grants = new Map<ActionKind, Grant>();
-    // Finalized owner input is authority for non-destructive tools, not a phrase grammar.
-    for (const kind of ['open', 'cancel_alarm', 'snooze_alarm', 'list_alarms'] as const) grants.set(kind, {});
-    grants.set('lux_note', {});
-    const alarmIntent = alarmCue.test(words);
-    const timeFragment = /^(?:[\d\s:.,!?-]|(?:at|in|for|a|an|and|from|now|please|um|uh|up|past|to|where|you|wake|so|like|basically|have|put|it|again|today|tomorrow|morning|evening|noon|midnight|am|pm|p|m|utc|singapore|time|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|half|quarter|minutes?|hours?|seconds?)\b)+$/i.test(words);
-    const alarmFollowup = timeFragment && previous?.alarmWords !== undefined && this.clock() - previous.start <= 120000 && (previous.pending?.kind === 'set_alarm' || !previous.answered && previous.grants.get('set_alarm')?.target === undefined);
-    const alarmWordsRaw = alarmIntent ? previous?.alarmWords && !previous.answered && previous.grants.get('set_alarm')?.target === undefined && this.clock() - previous.start <= 120000 ? `${previous.alarmWords} ${words}` : words : alarmFollowup ? `${previous.alarmWords ?? previous.words} ${words}` : undefined;
-    const alarmWords = alarmWordsRaw === undefined ? undefined : normalizeOwnerWords(alarmWordsRaw);
-    if (alarmWords !== undefined) grants.set('set_alarm', {});
-    // Each write tool carries its own intent: drafting, messaging, scheduling or cancelling.
+    // C-PERMTIER: a finalized owner turn is authority for every free tool. There is no cue regex and
+    // no verb set here, and no later fragment can take an earned grant back.
+    for (const kind of FREE_ACTION_KINDS) grants.set(kind, {});
+    // Only the guarded compose writes read his words at all, and they keep their own selector.
     for (const kind of composeGrantKinds(words)) grants.set(kind, {});
-    // #795: a grant held across the model's question is joined only by an answer that can settle it.
-    const carriesOn = previous?.pending?.field !== 'model_question' || followUpCue.test(words);
-    if (previous && carriesOn && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
+    if (previous && this.clock() - previous.start <= 120000) {
+      // A split ask grants on the combined turn: the intent and the target may arrive apart.
       const combined = normalizeOwnerWords(words.startsWith(previous.words) ? words : `${previous.words} ${words}`);
       const relative = /\bin\s+(?:\d+|[a-z]+(?:[ -][a-z]+)?)\s+(?:minutes?|hours?)\b/i;
       if (!relative.test(previous.words) && relative.test(combined)) previous.observedAt = observedAt;
-      // A wake-up cue can be split across the two finals ("Wake", then "me at seven."):
-      // only the combined ask can carry it, and only when the earlier final carried none.
-      const mergedAlarmWords = alarmWords ?? (!alarmCue.test(previous.words) && alarmCue.test(combined) ? combined : undefined);
       previous.words = combined;
-      if (mergedAlarmWords === undefined) { delete previous.alarmWords; previous.grants.delete('set_alarm'); }
-      else {
-        previous.alarmWords = mergedAlarmWords;
-        if (!alarmFollowup) previous.grants.set('set_alarm', {});
-      }
-      previous.answered = false;
-      previous.finals++; previous.journalId = journalId;
-      // A split ask grants on the combined turn: the intent and the target may arrive apart.
-      for (const kind of composeGrantKinds(combined)) grants.set(kind, {});
-      for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
+      previous.alarmWords = combined;
+      previous.journalId = journalId;
+      previous.finals++;
       delete previous.pending;
+      for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
+      this.mark(session, 'owner');
       return;
     }
-    // Retain even a cue-free first fragment: the next final may finish the request.
-    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt, finals: 1, journalId, grants, ...(alarmWords === undefined ? {} : { alarmWords }), sources: {}, shown: [] });
+    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), observedAt, finals: 1, journalId,
+      grants, alarmWords: words, sources: {}, shown: [] });
+    this.mark(session, 'owner');
   }
 
   invalidateAlarm(session: string): void {
@@ -86,35 +73,39 @@ export class OwnerRequests implements OwnerRequestPort {
     delete request.alarmWords;
     if (request.pending?.kind === 'set_alarm') delete request.pending;
   }
-  answered(session: string, spoken?: string): void {
-    const request = this.requests.get(session);
-    if (!request) return;
-    request.answered = true;
-    // #795: when the model answers a write ask with a question, the grant the ask already earned waits for
-    // his reply inside the same window, exactly as a split alarm cue does. The reply still has to settle it.
-    if (spoken === undefined || !questionBack.test(spoken.trim())) return;
-    const held = [...request.grants.keys()].find(kind => COMPOSE_GRANT_KINDS.includes(kind as ComposeGrantKind) && request.grants.get(kind)?.target === undefined);
-    if (held !== undefined) request.pending = { kind: held, field: 'model_question' };
-  }
+  /** C-PERMTIER: assistant speech is not owner speech, so it never withdraws an ask. */
+  answered(_session: string, _spoken?: string): void {}
+  /** The guarded gate: a write that reaches another person or deletes something keeps its own selector. */
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
+    // C-PERMTIER: a free kind is admitted by the open owner call itself, never by his exact words.
+    if (isFreeKind(kind)) return this.freeGate(session, kind, target);
     const request = this.requests.get(session);
-    if (!request || request.answered) return { code: 'no_owner_request' };
-    const common = { id: request.id, words: kind === 'set_alarm' ? request.alarmWords ?? '' : request.words, journalId: request.journalId, observedAt: request.observedAt };
+    if (!request) return { code: 'no_owner_request' };
+    const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
     const negations = /\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)\s+([^.!?]*)/gi;
+    const guardedWrite = /\b(?:draft|write|send|e-?mail|mail|message|reply|schedule|block|add|put|book|cancel|delete|remove)\b/i;
     for (const match of request.words.matchAll(negations)) {
-      const clause = match[1]!;
-      const negated = kind === 'open' ? /\b(?:open|show|launch)\b/i.test(clause)
-        : kind === 'set_alarm' ? /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b/i.test(clause)
-        : kind === 'cancel_alarm' ? /\b(?:cancel|stop)\b/i.test(clause)
-        : kind === 'snooze_alarm' ? /\bsnooze\b/i.test(clause)
-        : kind === 'list_alarms' ? /\b(?:list|show)\b.*\balarm/i.test(clause)
-        : kind === 'lux_note' ? /\b(?:save|remember|note|write|put)\b/i.test(clause)
-        : COMPOSE_GRANT_KINDS.includes(kind as ComposeGrantKind) ? /\b(?:draft|write|send|e-?mail|mail|message|reply|tell|schedule|block|add|put|book|cancel|delete|remove)\b/i.test(clause)
-        : false;
-      if (negated) return { ...common, code: 'no_owner_request' };
+      if (guardedWrite.test(match[1]!)) return { ...common, code: 'no_owner_request' };
     }
+    return this.settle(request, kind, target, common);
+  }
+  /**
+   * C-PERMTIER: the free gate. The owner's live call is open and no third-party text reached the model
+   * after his last words; nothing else is asked of his speech.
+   */
+  freeGate(session: string, kind: ActionKind, target: string): RequestAuthorization {
+    const request = this.requests.get(session);
+    if (!request) return { code: 'no_owner_request' };
+    const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
+    const age = this.clock() - request.start;
+    if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
+    if (this.fenced(session)) return { ...common, code: 'external_text_only' };
+    return this.settle(request, kind, target, common);
+  }
+  private settle(request: Request, kind: ActionKind, target: string,
+    common: { id: string; words: string; journalId: string; observedAt: number }): RequestAuthorization {
     const authority = request.grants.get(kind);
     if (!authority) return { ...common, code: 'no_owner_request' };
     const grant = kind === 'open' ? authority.targets?.get(target) ?? {} : authority;
@@ -176,8 +167,27 @@ export class OwnerRequests implements OwnerRequestPort {
   externalContentPresent(session: string): boolean { return this.external.has(session); }
   source(session: string, kind: string, requestId?: string): void {
     this.external.add(session);
+    // C-PERMTIER: third-party text advances the exposure position before the model ever sees it.
+    if (advancesExposure(kind)) this.mark(session, 'exposure');
     const request = this.requests.get(session);
     if (request && (requestId === undefined || request.id === requestId) && this.clock() - request.start <= 120000) request.sources[kind] = (request.sources[kind] ?? 0) + 1;
+  }
+  /**
+   * C-PERMTIER injection floor. Owner finals and third-party exposures share one monotonic order for
+   * the whole session, so no model turn, assistant speech, tool result or retry moves the owner mark.
+   */
+  private order = 0;
+  private positions = new Map<string, { owner: number; exposure: number }>();
+  private mark(session: string, side: 'owner' | 'exposure'): void {
+    const at = this.positions.get(session) ?? { owner: 0, exposure: 0 };
+    at[side] = ++this.order;
+    this.positions.set(session, at);
+  }
+  /** Called immediately before third-party text (mail, chat, web, research) is handed to the model. */
+  expose(session: string): void { this.mark(session, 'exposure'); }
+  private fenced(session: string): boolean {
+    const at = this.positions.get(session);
+    return at !== undefined && at.exposure > at.owner;
   }
   sources(session: string): Record<string, number> { return { ...this.requests.get(session)?.sources }; }
   audit(session: string, kind: ActionKind): { ownerFinals: number; requestAgeMs: number; grantKind: ActionKind; grantState: string } {
@@ -187,7 +197,7 @@ export class OwnerRequests implements OwnerRequestPort {
       grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined || [...(grant.targets?.values() ?? [])].some(target => target.target !== undefined) ? 'spent' : 'available' };
   }
   release(session: string): void {
-    this.requests.delete(session); this.pendingFinal.delete(session); this.external.delete(session);
+    this.requests.delete(session); this.pendingFinal.delete(session); this.external.delete(session); this.positions.delete(session);
     for (const finish of this.finalListeners.get(session) ?? []) finish();
   }
 }
@@ -195,6 +205,7 @@ export class OwnerRequests implements OwnerRequestPort {
 export function requestRefusal(code: string): { status: 'refused'; code: string; say: string } {
   const sentences: Record<string, string> = {
     no_owner_request: 'There is no current owner request authorizing that action.',
+    external_text_only: 'Outside text arrived after your last words; say it again and I will do it.',
     request_expired: 'That owner request has expired.', grant_spent: 'That request has already completed this kind of action.',
     target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?',
     missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',

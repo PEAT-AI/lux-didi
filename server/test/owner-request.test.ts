@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime, parseSeriesRule, verifyAlarmRule } from '../tools/alarm.js';
 import { OwnerRequests, requestRefusal } from '../tools/owner-request.js';
+import { tierOf } from '../tools/tiers.js';
 import { COMPOSE_NAMES, COMPOSE_TOOLS, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
 
 test('direct102 authority: finals alone grant compound effects, consumed once with idempotent retries', () => {
@@ -461,5 +462,124 @@ test('W1030 closed schemas: the write tools take no address, no epoch and no att
   assert.equal(validateCreateEvent({ summary: 'gym', attendees: ['z@example.test'] }), false);
   assert.equal(validateDeleteEvent({ event_id: 'e1' }), true);
   assert.equal(validateDeleteEvent({ event_id: 'e1', send_updates: 'all' }), false);
-  assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), true);
+  // C-PERMTIER (P-R2): the words gate no longer covers the free drafts; the tier table does, and only
+  // the guarded delete still reads his ask.
+  assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), false);
+  assert.equal(tierOf('draft_email'), 'free');
+});
+
+// C-PERMTIER (P-R1): the assertions retired with the cue machinery, rewritten to the tier table. Each
+// name here replaces one block the change deleted; the report carries the mapping.
+test('P-R1 fragments settle the ask inside the window (was: fragments only join a pending clarification)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'set an alarm for', 0);
+  requests.observe('s', 'j2', 'seven', 1_000);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('P-R1 external provenance is counted, and the fence is what refuses (was: a grant is never created)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'read my mail', 0);
+  requests.source('s', 'mail');
+  assert.deepEqual(requests.sources('s'), { mail: 1 });
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'external_text_only');
+});
+
+test('P-R1 in-flight reservations still serialize same-target opens', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'open the deck', 0);
+  assert.equal(requests.claim('s', 'open', 'deck', requests.currentId('s')!).code, 'allowed');
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'grant_spent');
+  requests.commit('s', 'open', 'deck', { status: 'opened' }, requests.currentId('s')!);
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'idempotent');
+});
+
+test('P-R1 shown handles stay scoped to this request', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'open the first one', 0);
+  const id = requests.currentId('s')!;
+  requests.shown('s', id, [{ handle: 'h1', kind: 'deck' }]);
+  assert.equal(requests.topShown('s', ['deck']), 'h1');
+});
+
+test('P-R1 a mail read cannot unseat his ask, only fence it (was: a mail turn cannot inherit an alarm grant)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'set an alarm for seven', 0);
+  requests.source('s', 'mail');
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'external_text_only');
+  requests.observe('s', 'j2', 'set an alarm for seven', 1_000);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('P-R1 any finalized ask admits a free write (was: a non-alarm finalized ask never grants set_alarm)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'good morning', 0);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('P-R1 a non-command turn admits the free writes and still not the guarded delete', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'I was thinking about the deck later', 0);
+  assert.equal(requests.authorize('s', 'draft_email', 'draft-1').code, 'allowed');
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
+  assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'no_owner_request');
+});
+
+test('P-R1 a split or lone alarm fragment is admitted by the open call (was: the split alarm cue rows)', () => {
+  for (const finals of [['Wake', 'me at seven.'], ['Remind', 'me to stretch at six'], ['Wake']]) {
+    const requests = new OwnerRequests(() => 0);
+    finals.forEach((words, index) => requests.observe('s', `j${index}`, words, index));
+    assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed', finals.join(' / '));
+  }
+});
+
+test('P-R1 a turn without write words still admits a free write and still refuses a guarded delete', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'thursday is busy', 0);
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
+  assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'no_owner_request');
+  requests.observe('s', 'j1', 'cancel my standup meeting', 1_000);
+  assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'allowed');
+});
+
+test('P-R1 assistant speech never grants and never revokes (was: a reply to an answered ask reopens nothing)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'draft a message to Sam', 0);
+  requests.answered('s', 'What should it say?');
+  assert.equal(requests.authorize('s', 'draft_chat', 'draft-1').code, 'allowed');
+  requests.observe('s', 'j2', 'check my mail', 1_000);
+  requests.source('s', 'mail');
+  assert.equal(requests.authorize('s', 'draft_chat', 'draft-1').code, 'external_text_only');
+});
+
+test('P-R1 a quoted or relayed final is still his final (was: hear104 owner framing)', () => {
+  for (const words of ['Naya: open the deck', 'open "the deck"', 'He told me to wait then open the deck', 'list my alarms']) {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words, 0);
+    const kind = /alarm/.test(words) ? 'list_alarms' : 'open';
+    assert.equal(requests.authorize('s', kind, 'deck').code, 'allowed', words);
+  }
+});
+
+test('P-R1 a non-imperative final is admitted, and negation still voids only its kind (was: hear104 nonimperative)', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j', 'could you open the deck', 0);
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
+  const negated = new OwnerRequests(() => 0);
+  negated.observe('s', 'j', "don't open the deck", 0);
+  assert.equal(negated.authorize('s', 'open', 'deck').code, 'no_owner_request');
+  assert.equal(negated.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+// P-R3: an alarm whose time only the model supplied still executes from the model's own argument, and
+// never comes back as no_owner_request.
+test('P-R3 an alarm with no time in his words executes from the model time argument', () => {
+  const now = 1_700_000_000_000;
+  const requests = new OwnerRequests(() => 0, () => now);
+  requests.observe('s', 'j1', 'set an alarm please', now);
+  const ask = requests.authorize('s', 'set_alarm', 'alarm-1');
+  assert.equal(ask.code, 'allowed');
+  const parsed = parseAlarmTime(ask.code === 'allowed' ? ask.words : '', now, 'UTC', now + 3_600_000);
+  assert.equal(parsed.status, 'ready');
+  assert.equal(parsed.status === 'ready' ? parsed.fireAtUtc : 0, now + 3_600_000);
 });

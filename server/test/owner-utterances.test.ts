@@ -47,9 +47,14 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   }
 });
 
-test('a completed answer cannot authorize a spontaneous new action', () => {
+// C-PERMTIER (P-R1): a model turn neither grants nor revokes. His finalized words are the authority,
+// and only the exposure fence can hold a free write after them.
+test('a completed answer neither grants nor revokes; the fence decides', () => {
   const owner = new OwnerRequests(() => 0);
   owner.observe('synthetic', 'final', 'at seven am');
-  owner.answered('synthetic');
-  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'no_owner_request');
+  owner.answered('synthetic', 'Alarm set for 07:00.');
+  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'allowed');
+  owner.observe('synthetic', 'final-2', 'check my mail');
+  owner.source('synthetic', 'mail');
+  assert.equal(owner.authorize('synthetic', 'set_alarm', 'new').code, 'external_text_only');
 });

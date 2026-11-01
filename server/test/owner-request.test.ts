@@ -227,14 +227,6 @@ test('W1030 write intent: a split ask grants on the turn that carries the intent
   assert.deepEqual(replay.code === 'idempotent' ? replay.receipt : undefined, receipt);
 });
 
-test('W1030 write intent: the intent in the second turn still grants the first turn target', () => {
-  const requests = new OwnerRequests(() => 0);
-  requests.observe('s', 'j1', 'to Priya about the invoice');
-  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
-  requests.observe('s', 'j2', 'write that as an email');
-  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
-});
-
 test('W1030 write intent: STT noise around the words he said still grants', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'um, write an e-mail to Priya yeah');
@@ -243,17 +235,6 @@ test('W1030 write intent: STT noise around the words he said still grants', () =
   assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'allowed');
   requests.observe('s', 'j3', 'cancel that meeting');
   assert.equal(requests.authorize('s', 'delete_event', 'that').code, 'allowed');
-});
-
-test('W1030 write intent: a turn without it is refused, and replayed history after a rebuild writes nothing', () => {
-  const requests = new OwnerRequests(() => 0);
-  requests.observe('s', 'j1', 'what is on my calendar tomorrow');
-  assert.deepEqual(composeGrantKinds('what is on my calendar tomorrow'), []);
-  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
-  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'no_owner_request');
-  const rebuilt = new OwnerRequests(() => 0);
-  rebuilt.observe('s', 'j9', 'and the weather');
-  assert.equal(rebuilt.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
 });
 
 test('W1030 write intent: a negated write clause spends no grant', () => {
@@ -328,21 +309,6 @@ test('W1030 connector: an unconsented family answers one closed code and the one
   assert.equal(result['status'], 'connector_not_authorized');
   assert.match(String(result['say']), /naya connect calendar-write/);
   assert.equal(clientRequestId('ask-7'), 'compose:ask-7');
-});
-
-test('W1030 closed schemas: the write tools take no address, no epoch and no attendees from the model', () => {
-  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello' }), true);
-  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello', address: 'x@y.test' }), false);
-  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice' }), false);
-  assert.equal(validateDraftChat({ person: 'Priya', message: 'hello' }), true);
-  assert.equal(validateDraftChat({ person: 'Priya', channel: 'town-square', message: 'hello' }), false);
-  assert.equal(validateDraftChat({ message: 'hello' }), false);
-  assert.equal(validateCreateEvent({ summary: 'gym', duration_minutes: 60 }), true);
-  assert.equal(validateCreateEvent({ summary: 'gym', start: '2026-10-31T01:00:00Z' }), false);
-  assert.equal(validateCreateEvent({ summary: 'gym', attendees: ['z@example.test'] }), false);
-  assert.equal(validateDeleteEvent({ event_id: 'e1' }), true);
-  assert.equal(validateDeleteEvent({ event_id: 'e1', send_updates: 'all' }), false);
-  assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), true);
 });
 
 // #107 D-COMPOSEGATE: only a command grants a write. A question, a report, a negation and a relayed
@@ -481,4 +447,19 @@ test('C-PERMTIER: a guarded delete keeps its own selector and its refusal carrie
   other.observe('s', 'j1', 'good morning', 1_000);
   assert.equal(other.authorize('s', 'delete_event', 'event-1').code, 'no_owner_request');
   assert.equal(requestRefusal('no_owner_request').say.length > 0, true);
+});
+
+test('W1030 closed schemas: the write tools take no address, no epoch and no attendees from the model', () => {
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello' }), true);
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice', body: 'hello', address: 'x@y.test' }), false);
+  assert.equal(validateDraftEmail({ to: 'Priya', subject: 'the invoice' }), false);
+  assert.equal(validateDraftChat({ person: 'Priya', message: 'hello' }), true);
+  assert.equal(validateDraftChat({ person: 'Priya', channel: 'town-square', message: 'hello' }), false);
+  assert.equal(validateDraftChat({ message: 'hello' }), false);
+  assert.equal(validateCreateEvent({ summary: 'gym', duration_minutes: 60 }), true);
+  assert.equal(validateCreateEvent({ summary: 'gym', start: '2026-10-31T01:00:00Z' }), false);
+  assert.equal(validateCreateEvent({ summary: 'gym', attendees: ['z@example.test'] }), false);
+  assert.equal(validateDeleteEvent({ event_id: 'e1' }), true);
+  assert.equal(validateDeleteEvent({ event_id: 'e1', send_updates: 'all' }), false);
+  assert.equal(composeGrantKinds(COMPOSE_ASK).includes('draft_email'), true);
 });

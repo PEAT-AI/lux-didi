@@ -8,7 +8,7 @@ const NEGATED_CLAUSE = /\b(?:don['’]?t|do not|never mind|forget it|never|not|n
 /** What a negated clause has to name to void this kind, and only this kind. */
 const NEGATED_ACTION: Record<string, RegExp> = {
   open: /\b(?:open|show|launch)\b/i,
-  set_alarm: /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b|\balarm/i,
+  set_alarm: /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b/i,
   cancel_alarm: /\b(?:cancel|stop)\b/i,
   snooze_alarm: /\bsnooze\b/i,
   list_alarms: /\b(?:list|show)\b.*\balarm/i,

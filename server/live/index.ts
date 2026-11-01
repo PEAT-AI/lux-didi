@@ -465,6 +465,8 @@ export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
+/** C-RESEARCH #107 (#719): the continuation window after a silent tool batch, inside the dead-air rung. */
+export const DEAD_AIR_CONTINUATION_MS = 2_500;
 /** C-RESEARCH #107 (#719): the one host line that re-requests the answer a silent batch never produced. */
 export const CONTINUATION_RE_REQUEST_NOTE = 'The lookup has finished. Answer the owner now from the results you already have. Do not look anything else up.';
 
@@ -490,10 +492,6 @@ export function budgetedReads(
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
-/** C-RECONNECT #1072: a tool result's silence earns one continuation re-request, and a provider still mute after it is
- *  rebuilt at this delta rather than the owner-turn seven seconds. The rung is 8 s, so the owner's whole wait after a
- *  tool result is these 9 s. The owner-turn watchdog's own timings are untouched. */
-export const AUDIBLE_DEBT_POST_TOOL_REBUILD_MS = 1_000;
 /** #656: owner audio that arrives while a rebuild is open is held for the new session, newest last. The cap is three
  *  seconds of the 16 kHz s16 mono uplink (32 bytes per millisecond); past it the oldest held frame is the one dropped. */
 export const REBUILD_AUDIO_HOLD_MS = 3_000;
@@ -886,9 +884,6 @@ interface ActiveSession {
   lastToolResultAt?: number | undefined;
   /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
   debtHeldForTool?: boolean | undefined;
-  /** C-RECONNECT #1072: this clock began at a tool result, so its rung is judged as a post-tool silence: the answer is
-   *  re-requested once and a provider still mute is rebuilt at AUDIBLE_DEBT_POST_TOOL_REBUILD_MS. */
-  debtPostTool?: boolean | undefined;
   /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
   rebuildAudio: Uint8Array[]; rebuildAudioBytes: number;
   /** #538: the audible debt clock, the debt the owner can hear is unanswered. It is non-sliding: it starts when the
@@ -2479,7 +2474,6 @@ export class LiveSessionOwner {
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
-    handle.debtPostTool = reason === 'tool_output';
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
     handle.deadAirNudgedAt = undefined;
@@ -2504,7 +2498,7 @@ export class LiveSessionOwner {
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
-    handle.debtDeferred = false; handle.debtHeldForTool = false; handle.debtPostTool = false;
+    handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
   }
 
@@ -2577,9 +2571,6 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
-    // C-RECONNECT #1072: a clock that began at a tool result is a post-tool silence whether or not the adapter had
-    // its own no-item signal to add, so the rung below judges it the same way either route reaches it.
-    postToolNoOutput = postToolNoOutput || handle.debtPostTool === true;
     // C-REBUILD8: the speaking hold the sliding watchdog keeps, at the layer that owns the dead-air nudge. The
     // 2026-10-28 N12 nudge came from here (`live_debt phase=rung reason=dead_air` then `live_dead_air_nudge`), so a
     // sentence still being spoken holds the rung and its rebuild back; the ladder re-anchors and judges the
@@ -2607,56 +2598,22 @@ export class LiveSessionOwner {
       return;
     }
     // C-RESEARCH #107 (#719): a batch that settled with no continuation gets the answer re-requested once
-    // inside the rung, instead of being waited out to a dead-air rebuild. C-RECONNECT #1072: a tool result's silence
-    // is the same shape even when the adapter had no no-item signal to add, and the rebuild that follows the
-    // re-request comes at the post-tool delta: the 8 s rung plus those 1 s are the owner's whole wait. Only the
-    // OpenAI adapter has a continuation the host can re-ask for, so no other provider is ever handed the note.
-    if (postToolNoOutput && this.#profile.provider === 'openai' && step === 'rung' && !this.#continuationReRequested.has(handle)) {
+    // inside the rung, instead of being waited out to a dead-air rebuild.
+    if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
       try {
         const ask = handle.session.sendText;
         if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
       } catch { /* a closed transport settles on its own */ }
-      this.#noteDebt(handle, 'rung', 'dead_air');
-      this.#noteDeadAirNudge(handle, turnAgeMs);
-      this.#scheduleDebt(handle, AUDIBLE_DEBT_POST_TOOL_REBUILD_MS, 'rebuild');
+      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
-    if (step === 'rebuild') {
-      // C-RECONNECT #1072: the response watchdog refuses to act while a call is still pending, and a tool result's
-      // silence is the debt ladder's to recover, so the post-tool step takes the recreate path that guard does not
-      // block. Every other silence keeps the watchdog's own decision, a second mute inside its window included.
-      if (postToolNoOutput && handle.pendingCallIds.size > 0) { await this.#recreateForDeadAir(handle, 'dead_air'); return; }
-      await this.#watchdogRecover(handle, generation, turnAgeMs); return;
-    }
-    this.#noteDeadAirNudge(handle, turnAgeMs);
-    // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
-    // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
-    // C-RECONNECT #1072: a post-tool silence rebuilds at its own delta, which is what bounds the owner's wait.
-    const rebuildDelta = postToolNoOutput ? AUDIBLE_DEBT_POST_TOOL_REBUILD_MS : RESPONSE_WATCHDOG_RECOVERY_MS;
-    if (this.#profile.provider !== 'openai') {
-      this.#scheduleDebt(handle, rebuildDelta, 'rebuild');
-      return;
-    }
-    // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
-    // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
-    // the answer the owner asked for is not made to wait for two provider recreates.
-    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      if (!(await this.#deliverUnspoken(handle))) return;
-      this.#scheduleDebt(handle, rebuildDelta, 'rebuild');
-      return;
-    }
-    const recreated = await this.#recreateForDeadAir(handle, 'dead_air');
-    if (!recreated) return;
-  }
-
-  /** The receipts one rung's intervention has always written, whichever provider answers it and whether the
-   *  intervention was the unspoken result, the continuation re-request or the rebuild that follows. */
-  #noteDeadAirNudge(handle: ActiveSession, turnAgeMs: number): void {
+    if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
+    // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
-    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: Math.round(turnAgeMs) });
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
@@ -2665,6 +2622,22 @@ export class LiveSessionOwner {
         stalledAt: this.#now(), turnAgeMs, anyAudio: handle.firstAudioAt !== undefined, inaudibleMs: Math.round(handle.inaudibleMs),
       });
     }
+    // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
+    // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
+    if (this.#profile.provider !== 'openai') {
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      return;
+    }
+    // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
+    // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
+    // the answer the owner asked for is not made to wait for two provider recreates.
+    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
+      if (!(await this.#deliverUnspoken(handle))) return;
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      return;
+    }
+    const recreated = await this.#recreateForDeadAir(handle, 'dead_air');
+    if (!recreated) return;
   }
 
   /**

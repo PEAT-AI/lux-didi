@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, liveMigrations, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -113,10 +113,8 @@ test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buy
   for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
   const rungs = rungReceipts(live);
   assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
-  // C-RECONNECT #1072: a post-tool rung answers the silence with the host's continuation re-request instead of the
-  // held result, and the rung still names the eight second silence it judged.
   assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it re-requests the answer the batch never produced');
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it delivers the held result');
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {
@@ -141,31 +139,6 @@ test('C-DEADAIR: the provider latency is recorded apart from the wait, owner fin
   assert.equal(record['msSinceResponseCreated'], undefined, 'response age is not provider latency');
   assert.equal(typeof record['msSinceToolOutput'], 'number');
   assert.ok(Number(record['msSinceOwnerFinal']) >= 1_000, 'the wait is measured from the owner final words');
-});
-
-// C-RECONNECT #1072: after a tool result the provider may still owe the continuation the adapter already asked for,
-// so the rung re-requests the answer (the #719 note) and the rebuild that follows it is brought forward to the
-// post-tool delta. The owner's worst case is the 8 s rung plus that delta, never the old rung plus seven seconds.
-// The owner-turn watchdog's own timings are untouched: this is the debt ladder's post-tool shape only.
-test('C-RECONNECT: a silent post-tool continuation is re-requested at the rung and rebuilt inside nine seconds', async t => {
-  assert.deepEqual([RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS], [8_000, 7_000],
-    'the owner-turn watchdog timings stay where they were');
-  const live = await openCall(t);
-  await live.emit(ownerFinal('What did we decide about the bridge?'));
-  const toolAt = live.scheduler.now;
-  await live.emit(toolCall('p1'));
-  assert.equal(live.fake.toolResponses.length, 1, 'the lookup answered before the wait starts');
-  for (let spent = 0; spent <= AUDIBLE_DEBT_RUNG_MS + 500 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
-  assert.equal(rungReceipts(live).length, 1, 'the rung judged the post-tool silence');
-  const notes = live.fake.texts.slice(live.sentTexts);
-  assert.equal(notes.length, 1, `the silent continuation is re-requested once, never looped: ${JSON.stringify(notes)}`);
-  assert.match(notes[0]!, /Answer the owner now from the results you already have/u, 'and the re-request is the host note');
-  const rebuilt = (): Record<string, unknown> | undefined => live.receipts.find(record => record.event === 'live_rebuild');
-  for (let spent = 0; spent < 10_000 && rebuilt() === undefined; spent += 250) await live.advance(250);
-  assert.ok(rebuilt() !== undefined, 'a provider still mute is rebuilt instead of waited out');
-  const waited = live.scheduler.now - toolAt;
-  assert.ok(waited <= 9_000, `the owner's wait after a tool result is inside the nine second ceiling (${waited} ms)`);
-  assert.equal(notes.length, 1, 'the rebuild never loops the re-request');
 });
 
 // C-REBUILD8 (review BL1): the debt ladder owns the same speaking hold the sliding watchdog keeps. On 2026-10-28

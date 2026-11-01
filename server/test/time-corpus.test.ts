@@ -85,40 +85,48 @@ async function alarmHarness(t: TestContext) {
 
 test('C-TIME corpus: the owner time wins through the real alarm handler', { timeout: 120000 }, async t => {
   assert.ok(corpus.length >= 60, `the corpus carries at least sixty messy shapes, saw ${corpus.length}`);
-  // Each row is its own owner turn and its own live session, so no row can arm an alarm for another.
-  for (const row of corpus) {
-    await t.test(row.id, async rowT => {
-      const h = await alarmHarness(rowT);
-      h.clock.now = Date.parse(row.now);
-      h.options.timezone = row.tz;
-      if (row.words2 !== undefined) {
-        const first = await h.dispatch('set_alarm', row.args, row.words);
-        assert.notEqual(first.reply.status, 'set', `${row.id}: the first ask must not commit an alarm`);
+  // slow: a live session per batch of twelve rows, because one session for all sixty-six rows grows
+  // the stored model snapshot past its ceiling. Twelve keeps the file near two seconds, and the
+  // reason is recorded in the author report.
+  const BATCH = 12;
+  for (let start = 0; start < corpus.length; start += BATCH) {
+    const batch = corpus.slice(start, start + BATCH);
+    await t.test(`rows ${start + 1} to ${start + batch.length}`, async batchT => {
+      const h = await alarmHarness(batchT);
+      for (const row of batch) {
+        await batchT.test(row.id, async () => {
+          h.clock.now = Date.parse(row.now);
+          h.options.timezone = row.tz;
+          if (row.words2 !== undefined) {
+            const first = await h.dispatch('set_alarm', row.args, row.words);
+            assert.notEqual(first.reply.status, 'set', `${row.id}: the first ask must not commit an alarm`);
+          }
+          const { intent, reply, row: committed } = await h.dispatch('set_alarm', row.words2 !== undefined ? (row.args2 ?? {}) : row.args,
+            row.words2 ?? row.words);
+          if (row.expects.status !== undefined) {
+            assert.equal(reply.status, row.expects.status, `${row.id}: ${JSON.stringify(reply)}`);
+            assert.equal(reply.reason, row.expects.reason, `${row.id}: reason`);
+            assert.equal(committed, undefined, `${row.id}: a clarify commits no alarm row`);
+            return;
+          }
+          assert.equal(reply.status, 'set', `${row.id}: ${JSON.stringify(reply)}`);
+          assert.ok(committed, `${row.id}: the alarm row is committed`);
+          assert.equal(committed.state, 'pending');
+          if (row.expects.relative_ms !== undefined) {
+            assert.equal(Number(committed.fire_at_utc) - h.clock.now, row.expects.relative_ms, `${row.id}: the span is added to the host clock`);
+          } else {
+            assert.equal(reply.local_time, row.expects.local_time, `${row.id}: local time`);
+            assert.equal(reply.date, row.expects.date, `${row.id}: date`);
+            assert.equal(committed.tz, row.expects.tz ?? row.tz, `${row.id}: zone`);
+            assert.equal(reply.id, intent.executionId, `${row.id}: the read-back names its id`);
+            assert.match(String(reply.say), new RegExp(`^Alarm set for \\w+day \\d{1,2} \\w+ at ${String(row.expects.local_time)}`), `${row.id}: she says the read-back`);
+          }
+          if (row.expects.corrected !== undefined) assert.equal(reply.corrected, row.expects.corrected, `${row.id}: the correction is named`);
+          if (row.expects.series !== undefined) assert.ok(reply.series_id, `${row.id}: a stated repeat becomes a series`);
+          if (row.expects.series_dropped === true) assert.match(String(reply.say), /I set it once/);
+          if (row.expects.label !== undefined) assert.equal(reply.label, row.expects.label, `${row.id}: the label is the model's short label`);
+        });
       }
-      const { intent, reply, row: committed } = await h.dispatch('set_alarm', row.words2 !== undefined ? (row.args2 ?? {}) : row.args,
-        row.words2 ?? row.words);
-      if (row.expects.status !== undefined) {
-        assert.equal(reply.status, row.expects.status, `${row.id}: ${JSON.stringify(reply)}`);
-        assert.equal(reply.reason, row.expects.reason, `${row.id}: reason`);
-        assert.equal(committed, undefined, `${row.id}: a clarify commits no alarm row`);
-        return;
-      }
-      assert.equal(reply.status, 'set', `${row.id}: ${JSON.stringify(reply)}`);
-      assert.ok(committed, `${row.id}: the alarm row is committed`);
-      assert.equal(committed.state, 'pending');
-      if (row.expects.relative_ms !== undefined) {
-        assert.equal(Number(committed.fire_at_utc) - h.clock.now, row.expects.relative_ms, `${row.id}: the span is added to the host clock`);
-      } else {
-        assert.equal(reply.local_time, row.expects.local_time, `${row.id}: local time`);
-        assert.equal(reply.date, row.expects.date, `${row.id}: date`);
-        assert.equal(committed.tz, row.expects.tz ?? row.tz, `${row.id}: zone`);
-        assert.equal(reply.id, intent.executionId, `${row.id}: the read-back names its id`);
-        assert.match(String(reply.say), new RegExp(`^Alarm set for \\w+day \\d{1,2} \\w+ at ${String(row.expects.local_time)}`), `${row.id}: she says the read-back`);
-      }
-      if (row.expects.corrected !== undefined) assert.equal(reply.corrected, row.expects.corrected, `${row.id}: the correction is named`);
-      if (row.expects.series !== undefined) assert.ok(reply.series_id, `${row.id}: a stated repeat becomes a series`);
-      if (row.expects.series_dropped === true) assert.match(String(reply.say), /I set it once/);
-      if (row.expects.label !== undefined) assert.equal(reply.label, row.expects.label, `${row.id}: the label is the model's short label`);
     });
   }
 });

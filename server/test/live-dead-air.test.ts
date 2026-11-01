@@ -357,7 +357,8 @@ test('C-REBUILD invariant: owner speech during a deferral leaves one answer', as
   await live.emit(audible());
   await live.emit(portEvent({ type: 'turnComplete' }));
   await drive(live, () => false, 4_000);
-  assert.equal(live.fake.sessionsOpened <= 2, true, 'his words inside the deferral add no rebuild of their own');
+  assert.equal(live.fake.sessionsOpened <= 2, true,
+    `his words inside the deferral add no rebuild of their own; rebuilds=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild'))} held=${JSON.stringify(heldRebuilds(live))}`);
   assert.equal(answeredOnce(live), true, 'and the deferred turn still keeps one continuation owner');
 });
 

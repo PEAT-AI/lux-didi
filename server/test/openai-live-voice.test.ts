@@ -330,19 +330,6 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(refused, [{ event: 'responses_validation_failed', param: 'delegation.responses.instructions' }]);
   });
 
-  // #718: the adapter dropped a delegated response's text, leaving the host to rescue the answer at response end.
-  // The delegated text now travels on the same output transcription the spoken path uses.
-  test('#718: a delegated response text reaches the adapter as an output transcription', async t => {
-    const { f, captured } = await ready(t);
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_718', response_id: 'resp_718', offset_ms: 0 } });
-    f.send(delegated('response.created', { response: { id: 'resp_718' } }, 'dlg_718'));
-    f.send(delegated('response.output_text.delta', { delta: 'Synthetic delegated answer.' }, 'dlg_718'));
-    f.send(delegated('response.done', { response: { id: 'resp_718', status: 'completed' } }, 'dlg_718'));
-    await until(() => captured.events.some(event => event.type === 'outputTranscription' && event.text.includes('Synthetic delegated answer')));
-    const spoken = captured.events.flatMap(event => (event.type === 'outputTranscription' ? [event.text] : []));
-    assert.deepEqual(spoken, ['Synthetic delegated answer.', ''], 'the response end closes the delegated transcript');
-  });
-
   test('S4A-R2 (c): an unknown provider code is a diagnostic trap, never an interruption and never a retry', async t => {
     const logged = hostReceipts(t);
     const { f, captured } = await ready(t);

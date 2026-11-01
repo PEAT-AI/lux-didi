@@ -8494,6 +8494,7 @@ test('C-REBUILD B: a held late finding is spoken once on the terminal of the res
   h.owner.revoke(session.liveSessionId);
   // A response is in flight when the late source lands, which is the shape this ruling is about.
   fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
   release();
   await settlePort();
   const lateReceipts = receipts.filter(entry => entry['event'] === 'research_late_findings');

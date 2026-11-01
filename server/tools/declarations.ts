@@ -247,6 +247,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         }
         if (error instanceof Interrupted) interrupted = error;
       }
+      if (process.env.DIDI_PROBE) console.error('PROBE record', call.name, JSON.stringify({ status: record.status, reason: record.reason, dispatched, journalState, tool: Boolean(tool) }));
       if (journalState === 'failed') return { record, fatal: { status: 'error', reason: 'tool_journal_failed' } };
       if (journalState === 'existing') { record.status = 'unknown'; record.reason = 'tool_intent_exists'; return { record, fatal: { status: 'uncertain', reason: 'tool_intent_exists' } }; }
       let ref: ToolResultRef;

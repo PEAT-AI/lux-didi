@@ -1771,6 +1771,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
     return { event: 'provider_error_unclassified', type: value.type, code: value.code, param: value.param };
   }
+  if (value.event === 'first_response_audio_unsupported') {
+    // C-POSTTOOL switch a: the provider refused the delegated audio output, at most once per session, so the
+    // field, its code and its parameter are the whole receipt.
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'first_response_audio_unsupported', type: value.type, code: value.code, param: value.param };
+  }
   if (value.event === 'responses_validation_failed') {
     // S4a-R4: the backend refused its own delegation config. The refused field, once per session.
     if (!closedKeys(value, ['event', 'param'])) return;

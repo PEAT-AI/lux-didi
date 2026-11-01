@@ -7,7 +7,7 @@ import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DE
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_BREVITY_TIGHT, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
+import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, GPT_LIVE_CREATE_FIELDS, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
@@ -2754,9 +2754,10 @@ test('F10: a mid-thought tail holds the answer for the longer window, a finished
 // C-POSTTOOL 1: the double-speech guard. A response that speaks is already the answer, so the first audible
 // frame of the active response clears an owed continuation. The replay is event ordered, because the guard is
 // about the order of audio and terminal events within one response.
-const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1) as { modalities?: unknown } | undefined;
+const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
 /** Inbound audible speech on the fake socket: the same 400 ms stretch the wire fixture's speak() sends. */
-const speakFrame = (f: FakeSocket) => f.send(JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') }));
+const speakFrame = (f: FakeSocket) => f.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') });
+const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session['delegation'] as { responses: Record<string, unknown> };
 
 test('C-POSTTOOL: the first audible delta of the active response clears an owed continuation', async t => {
   const opened = await continuation(t);
@@ -2772,9 +2773,11 @@ test('C-POSTTOOL: the first audible delta of the active response clears an owed 
   assert.equal(creates(opened.socket).length, before, 'a response that speaks gets no second create');
 });
 
-test('C-POSTTOOL: audio before the tool output still clears the owed continuation', async t => {
+test('C-POSTTOOL: audio that arrives before the tool output does not suppress the answer', async t => {
   const opened = await continuation(t);
   const before = creates(opened.socket).length;
+  // The response spoke, then called a tool, then the owner's result lands: the speech was not the answer to the
+  // tool, so the owed continuation is still owed. This is the other event order of the same two frames.
   speakFrame(opened.socket);
   await quiet();
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-later', name: 'research', arguments: '{}' } }));
@@ -2782,7 +2785,7 @@ test('C-POSTTOOL: audio before the tool output still clears the owed continuatio
   assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-later', name: 'research', response: { ok: true } }] }), 'deferred');
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
   await quiet();
-  assert.equal(creates(opened.socket).length, before, 'the reordered replay still gets no second create');
+  assert.equal(creates(opened.socket).length, before + 1, 'the tool result is still answered once');
 });
 
 test('C-POSTTOOL: a silent active response still resumes its owed continuation', async t => {
@@ -2796,23 +2799,26 @@ test('C-POSTTOOL: a silent active response still resumes its owed continuation',
   assert.equal(creates(opened.socket).length, before + 1, 'a silent response still asks for its answer');
 });
 
-// C-POSTTOOL 2: switch a. The post-tool create names audio only when the switch is on, and a provider that
-// refuses the field turns the switch off for the session.
-test('C-POSTTOOL: firstResponseAudio names audio on the post-tool create only when it is on', async t => {
+// C-POSTTOOL 2: switch a. The wire fixture records the provider refusing any create field beyond type and
+// event_id (10.5.1, unknown_parameter param=response), so the audio request rides on the delegation's response
+// settings at session start, and the create stays exactly as the fixture pins it.
+test('C-POSTTOOL: firstResponseAudio names audio on the delegated response, never on the create', async t => {
   const off = await continuation(t);
-  assert.equal('modalities' in (postToolCreate(off.socket) ?? {}), false, 'the default create stays bare');
+  assert.equal('audio' in delegationOf(off.socket.sent).responses, false, 'the default delegation names no audio');
+  assert.deepEqual(Object.keys(postToolCreate(off.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort());
   const opened = await continuation(t, true, { firstResponseAudio: true });
-  assert.deepEqual(postToolCreate(opened.socket)?.['modalities'], ['audio', 'text']);
+  assert.deepEqual(delegationOf(opened.socket.sent).responses['audio'], { output: { voice: 'marin' } });
+  assert.deepEqual(Object.keys(postToolCreate(opened.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort(),
+    'the create keeps the two fields the provider accepts');
 });
 
-test('C-POSTTOOL: a provider refusal of the modalities field turns the switch off for the session', async t => {
+test('C-POSTTOOL: a provider refusal of the audio field is logged and turns the switch off for the session', async t => {
   const logged = hostReceipts(t);
   const opened = await continuation(t, true, { firstResponseAudio: true });
-  assert.deepEqual(postToolCreate(opened.socket)?.['modalities'], ['audio', 'text']);
-  opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unsupported_parameter', param: 'modalities' } });
+  opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unsupported_parameter', param: 'audio' } });
   await until(() => logged().some(entry => entry['event'] === 'first_response_audio_unsupported'));
   assert.deepEqual(logged().filter(entry => entry['event'] === 'first_response_audio_unsupported'),
-    [{ event: 'first_response_audio_unsupported', type: 'invalid_request_error', code: 'unsupported_parameter', param: 'modalities' }]);
+    [{ event: 'first_response_audio_unsupported', type: 'invalid_request_error', code: 'unsupported_parameter', param: 'audio' }]);
   const before = creates(opened.socket).length;
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-after-refusal', name: 'research', arguments: '{}' } }));
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
@@ -2820,7 +2826,8 @@ test('C-POSTTOOL: a provider refusal of the modalities field turns the switch of
   opened.session.sendToolResponse({ responses: [{ id: 'synthetic-after-refusal', name: 'research', response: { ok: true } }] });
   await quiet();
   assert.equal(creates(opened.socket).length, before + 1);
-  assert.equal('modalities' in (postToolCreate(opened.socket) ?? {}), false, 'the retried create is bare');
+  assert.deepEqual(Object.keys(postToolCreate(opened.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort(),
+    'no later create repeats the refused field');
 });
 
 // C-POSTTOOL 3: switch b. The tighter brevity line changes the delegated instructions and nothing else.

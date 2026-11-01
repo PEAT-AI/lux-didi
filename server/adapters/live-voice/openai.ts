@@ -54,14 +54,18 @@ function voicePayload(voice: string): string | { id: string } { return isCustomV
 export const OPENAI_BACKEND_TEMPLATE = 'You are helping an assistant in a live voice conversation. Return the relevant facts, the task\'s current status, and the next step.';
 /** Brevity rule: the backend's text is read by a model that has to say it out loud. */
 export const OPENAI_BACKEND_BREVITY = 'Telegraphic facts, at most about 120 words; the voice model elaborates.';
+/** C-POSTTOOL switch b: a tighter brevity line for the same backend, so the response the voice model has to
+ *  read is shorter. It changes the line only; no output token cap is set. */
+export const OPENAI_BACKEND_BREVITY_TIGHT = 'Telegraphic facts, at most about 60 words; the voice model elaborates.';
 /** The documented 500 token ceiling on a progress or thinking append, kept as a character bound. */
 const APPEND_CHAR_LIMIT = 2_000;
 /** S4a-R2 (d): the ledger keeps this many command ids, oldest dropped first. */
 const COMMAND_LEDGER_LIMIT = 64;
 /** Verbosity of the backend's own prose. Documented low setting, so the second leg stops writing essays. */
 const DELEGATION_TEXT_VERBOSITY = 'low';
-export function openAiBackendInstructions(procedure?: string): string {
-  const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`;
+export function openAiBackendInstructions(procedure?: string, tight = false): string {
+  const brevity = tight ? OPENAI_BACKEND_BREVITY_TIGHT : OPENAI_BACKEND_BREVITY;
+  const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${brevity}`;
   return typeof procedure === 'string' && procedure.length ? `${base}\n\n${procedure}` : base;
 }
 export const OPENAI_TOOLS_SECTION = 'Tools: call one when the answer depends on the owner\'s world or on current data rather than on general knowledge.';
@@ -266,6 +270,7 @@ interface Settings {
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
   clock: LiveVoiceClock | undefined; backendProcedure: string | undefined;
+  firstResponseAudio: boolean; backendBrevityTight: boolean;
   /** O1b-A: the host's receipt door for this session and connection epoch. Absent, this adapter records nothing. */
   trace: LiveTracePort | undefined;
 }
@@ -319,6 +324,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits), socketFactory,
       clock: options.clock, backendProcedure: options.backendProcedure,
+      firstResponseAudio: options.firstResponseAudio === true, backendBrevityTight: options.backendBrevityTight === true,
       trace: undefined,
     });
   }
@@ -364,9 +370,13 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, instructions: openAiBackendInstructions(settings.backendProcedure),
+        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, instructions: openAiBackendInstructions(settings.backendProcedure, settings.backendBrevityTight),
           text: { verbosity: DELEGATION_TEXT_VERBOSITY }, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
-          parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT } } },
+          parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT },
+          // C-POSTTOOL switch a: the delegation names audio output, so the delegated response speaks instead of
+          // writing text. It cannot ride on `response.create`: the recorded 10.5.1 refusal names an extra create
+          // field as unknown_parameter param=response, and the wire fixture pins creates to type and event_id.
+          ...(settings.firstResponseAudio ? { audio: { output: { voice: voicePayload(settings.voice) } } } : {}) } },
       },
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
@@ -541,6 +551,12 @@ class Session implements LiveVoiceSession {
   /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
    *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
   private continuationOwed = false;
+  /** C-POSTTOOL switch a as the session is running it: off from the start unless the provider config asks for
+   *  it, and off for the rest of the session once the provider refuses the field. */
+  private firstResponseAudio: boolean;
+  /** C-POSTTOOL: whether the response that is active now has made audio audible. An audible frame clears an owed
+   *  continuation, and a response that is cut or fails re-arms it, because that speech was not the answer. */
+  private activeResponseSpoke = false;
   /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
   private continuationsSent = 0;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
@@ -579,6 +595,7 @@ class Session implements LiveVoiceSession {
 
   /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
   private openResponseTiming(): void {
+    this.activeResponseSpoke = false;
     this.logResponseFirstAudio();
     this.firstResponseTiming = { kind: this.continuationsSent === 0 ? 'first' : 'continuation', createdAt: this.clock.now(), firstItemAt: null, firstAudioAt: null };
   }
@@ -655,6 +672,7 @@ class Session implements LiveVoiceSession {
     private readonly answerOnReady = false, private readonly openerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
+    this.firstResponseAudio = settings.firstResponseAudio;
     let consumed = false;
     this.events = { [Symbol.asyncIterator]: () => {
       if (consumed) fail('invalid_request');
@@ -900,6 +918,7 @@ class Session implements LiveVoiceSession {
     // resets any window that is waiting for the answer to end.
     const level = pcm16RmsDbfs(pcm);
     const audible = level >= AUDIBLE_RMS_DBFS;
+    if (audible) this.responseSpoke();
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
     // Contract invariant (ruling W1-R1): output audio is never dropped. An input transcript never silences the
@@ -933,9 +952,19 @@ class Session implements LiveVoiceSession {
    * modelled playback queue and the 2000 ms turn idle), which is what lets LISTENING and THINKING appear while the
    * provider keeps streaming.
    */
+  /** C-POSTTOOL: the first audible frame of the active response is that response answering, so a continuation
+   *  it owed is no longer owed and no second create speaks the same answer twice. Every path that makes audio
+   *  audible for the owner, the delta and the released assignment, passes here; `endResponse` re-arms the flag
+   *  when the response did not complete, since a cut or failed answer is still owed. */
+  private responseSpoke(): void {
+    this.activeResponseSpoke = true;
+    this.continuationOwed = false;
+  }
+
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
+      this.responseSpoke();
       this.noteResponseTiming('firstAudioAt');
       if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
         this.continuationTiming.firstAudioAt = this.clock.now();
@@ -1281,6 +1310,11 @@ class Session implements LiveVoiceSession {
       // `research_cap_reached`; the real research cap below keeps that code for itself.
       this.continuationOwed = true;
     }
+    // C-POSTTOOL: a spoken response that is cut or fails did not deliver its answer, so the continuation its
+    // speech cleared is owed again, exactly as before the guard. A completed response owes nothing.
+    if (!completed && this.activeResponseSpoke && !this.continuationOwed && this.continuationCalls > 0) {
+      this.continuationOwed = true;
+    }
     // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here
     // too, with the provider's own status and the reason this adapter read from it.
     const responseKey = this.currentResponseKey;
@@ -1450,6 +1484,13 @@ class Session implements LiveVoiceSession {
     const errorCode = typeof error.code === 'string' && error.code.length ? error.code : 'none';
     const param = typeof error.param === 'string' && error.param.length ? error.param : 'none';
     hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param });
+    // C-POSTTOOL switch a: a provider that names the delegated audio output as unsupported is the one answer
+    // that decides the switch for this session. The refusal is logged once and the switch goes off, so no later
+    // request in this session repeats the field; the probe reports the refusal and the master decides.
+    if (this.firstResponseAudio && /audio|modalities/i.test(param === 'none' ? `${type} ${errorCode}` : param)) {
+      this.firstResponseAudio = false;
+      hostLogEvent({ event: 'first_response_audio_unsupported', type, code: errorCode, param });
+    }
     // S4a-R2 (c): the disposition comes from the code or type map, and the client event id is read from the
     // ledger only to name which command it was.
     const disposition = dispositionOf(type, errorCode);

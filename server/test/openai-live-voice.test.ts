@@ -461,6 +461,26 @@ describe('openai gpt-live adapter', () => {
       'no owner turn is rewritten into third-person narration');
   });
 
+  // B1 (review of 76cd18b3): the framing shares the documented 8,192-token proxy with the turns it introduces. A seed
+  // whose turns fill that proxy exactly is not trimmed, so charging the framing on top of it refused the open that a
+  // long call needs most: the recovery rebuild. The trim reserves the framing instead.
+  test('#1072 B1: a seed that fills the character ceiling still opens, framing first', async t => {
+    const f = await fixture(t);
+    const chunk = 'x'.repeat(8_191);
+    const history = Array.from({ length: 4 }, (_, index) => ({
+      role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `${index}${chunk}`, dataClass: 'ordinary' as const }));
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    const input = start.session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
+    const characters = input.reduce((sum, item) => sum + item.content[0]!.text.length, 0);
+    assert.ok(characters <= 8_192 * 4, `the seed and its framing stay inside the ceiling (${characters})`);
+    assert.ok(input.length > 1, 'the newest turns are kept and condensed, never dropped for the framing');
+  });
+
   // C-RECOVERY (a): a long call must still reopen. The adapter keeps the newest turns and the pickup line's slot
   // instead of refusing the whole open, which is what lost the 2026-10-27 call.
   test('C-RECOVERY (a): a history over the 128-message ceiling is trimmed to its newest turns and still opens', async t => {

@@ -14,7 +14,7 @@ import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { activeAlarms } from '../domain/write-claims.js';
 import { armedAlarmsNote, guardSeededSummaries } from '../live/index.js';
-import { composeLiveSessionInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { createSummarizer, type SummarizerLogEvent } from '../services/summarize.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 
@@ -176,7 +176,7 @@ test('an armed alarm reaches the next seed from the alarms table though the summ
       assert.ok(note, 'the table holds one armed alarm');
       const guarded = guardSeededSummaries(tx, [{ id: 'sum-1', liveSessionId: 's-alarm-seed', endedAt: SUMMARY_NOW,
         summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }], alarms);
-      return composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [], trustedChars: 4000,
+      return composeLiveSessionInstruction({ text: 'Synthetic base instruction.', tools: [], records: [], trustedChars: 4_000,
         alarms: note, earlierConversations: guarded[0]!.summary });
     });
     assert.match(seed.text, /wake up for the standup/, 'the seed names the label');
@@ -192,7 +192,7 @@ test('a stored summary keeps a write claim its own receipts settle and loses one
     seedConversation(h.store, 's-seeded-refused');
     seedConversation(h.store, 's-seeded-created');
     insertToolCall(h.store, 's-seeded-refused', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
-    insertToolCall(h.store, 's-seeded-created', 'create_event', 'completed', { code: 'event_created' }, 0);
+    insertToolCall(h.store, 's-seeded-created', 'create_event', 'completed', { code: 'event_created' }, 2);
     const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [
       { id: 'sum-refused', liveSessionId: 's-seeded-refused', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },
       { id: 'sum-created', liveSessionId: 's-seeded-created', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },

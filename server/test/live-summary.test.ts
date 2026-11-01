@@ -457,7 +457,7 @@ test('C-START10: quit grace completes an eight-second summary and the next start
     let calls = 0;
     const model: ModelPort = { generate: () => {
       calls += 1; entered();
-      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic note."}')), 8_000));
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner talked about a synthetic note."}')), 8_000));
     } };
     const summarizer = worker(h.store, model, []);
     summarizer.schedule('s-quit-grace');
@@ -487,7 +487,7 @@ test('C-START10: an eight-second startup summary does not delay provider open pa
     const generating = new Promise<void>(resolve => { entered = resolve; });
     const model: ModelPort = { generate: () => {
       entered();
-      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic startup note."}')), 8_000));
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner talked about a synthetic startup note."}')), 8_000));
     } };
     const summarizer = worker(h.store, model, []);
     const settling = summarizer.recoverAtStart();

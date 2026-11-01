@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_BREVITY_TIGHT, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
@@ -2419,9 +2419,9 @@ test('alarm sessions seed no fresh-opening direction', async t => {
 
 
 const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
-async function continuation(t: TestContext, accepted = true) {
+async function continuation(t: TestContext, accepted = true, overrides: Partial<LiveVoiceAdapterOptions> = {}) {
   const clock = new FakeClock();
-  const opened = await fakeReady(t, { clock });
+  const opened = await fakeReady(t, { clock, ...overrides });
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-initial' } }));
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-call', name: 'research', arguments: '{}' } }));
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-initial', status: 'completed' } }));
@@ -2749,4 +2749,86 @@ test('F10: a mid-thought tail holds the answer for the longer window, a finished
     'a trailing preposition holds the answer past the old quiet window');
   assert.deepEqual(await held('book the table for two at seven.'), { atSevenHundred: 1, afterHold: 1 },
     'a finished sentence answers at the same 700 ms as before');
+});
+
+// C-POSTTOOL 1: the double-speech guard. A response that speaks is already the answer, so the first audible
+// frame of the active response clears an owed continuation. The replay is event ordered, because the guard is
+// about the order of audio and terminal events within one response.
+const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1) as { modalities?: unknown } | undefined;
+/** Inbound audible speech on the fake socket: the same 400 ms stretch the wire fixture's speak() sends. */
+const speakFrame = (f: FakeSocket) => f.send(JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') }));
+
+test('C-POSTTOOL: the first audible delta of the active response clears an owed continuation', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-late', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-late', name: 'research', response: { ok: true } }] }), 'deferred',
+    'the call is answered while its response is still active, so the continuation is deferred');
+  speakFrame(opened.socket);
+  await quiet();
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before, 'a response that speaks gets no second create');
+});
+
+test('C-POSTTOOL: audio before the tool output still clears the owed continuation', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  speakFrame(opened.socket);
+  await quiet();
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-later', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-later', name: 'research', response: { ok: true } }] }), 'deferred');
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before, 'the reordered replay still gets no second create');
+});
+
+test('C-POSTTOOL: a silent active response still resumes its owed continuation', async t => {
+  const opened = await continuation(t);
+  const before = creates(opened.socket).length;
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-silent', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-silent', name: 'research', response: { ok: true } }] }), 'deferred');
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, before + 1, 'a silent response still asks for its answer');
+});
+
+// C-POSTTOOL 2: switch a. The post-tool create names audio only when the switch is on, and a provider that
+// refuses the field turns the switch off for the session.
+test('C-POSTTOOL: firstResponseAudio names audio on the post-tool create only when it is on', async t => {
+  const off = await continuation(t);
+  assert.equal('modalities' in (postToolCreate(off.socket) ?? {}), false, 'the default create stays bare');
+  const opened = await continuation(t, true, { firstResponseAudio: true });
+  assert.deepEqual(postToolCreate(opened.socket)?.['modalities'], ['audio', 'text']);
+});
+
+test('C-POSTTOOL: a provider refusal of the modalities field turns the switch off for the session', async t => {
+  const logged = hostReceipts(t);
+  const opened = await continuation(t, true, { firstResponseAudio: true });
+  assert.deepEqual(postToolCreate(opened.socket)?.['modalities'], ['audio', 'text']);
+  opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unsupported_parameter', param: 'modalities' } });
+  await until(() => logged().some(entry => entry['event'] === 'first_response_audio_unsupported'));
+  assert.deepEqual(logged().filter(entry => entry['event'] === 'first_response_audio_unsupported'),
+    [{ event: 'first_response_audio_unsupported', type: 'invalid_request_error', code: 'unsupported_parameter', param: 'modalities' }]);
+  const before = creates(opened.socket).length;
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-after-refusal', name: 'research', arguments: '{}' } }));
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
+  await quiet();
+  opened.session.sendToolResponse({ responses: [{ id: 'synthetic-after-refusal', name: 'research', response: { ok: true } }] });
+  await quiet();
+  assert.equal(creates(opened.socket).length, before + 1);
+  assert.equal('modalities' in (postToolCreate(opened.socket) ?? {}), false, 'the retried create is bare');
+});
+
+// C-POSTTOOL 3: switch b. The tighter brevity line changes the delegated instructions and nothing else.
+test('C-POSTTOOL: backendBrevityTight swaps the brevity line in the delegated instructions only', async t => {
+  const tight = await fakeReady(t, { backendBrevityTight: true });
+  const start = JSON.parse(tight.socket.sent[0]!) as Start;
+  const delegation = start.session['delegation'] as { responses: { instructions: string } };
+  assert.equal(delegation.responses.instructions, `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY_TIGHT}`);
+  assert.equal(String(start.session['instructions']).includes(OPENAI_BACKEND_BREVITY_TIGHT), false,
+    'the voice model instructions keep the delivery sections');
 });

@@ -53,7 +53,7 @@ Drive setup is optional and requires its own consent. When it is unavailable, a 
 
 ## One owner account, proven before every use
 
-Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (`rob@plantix.net` today) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).
+Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (for example `owner@example.invalid`) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).
 
 - Gmail proves itself with the profile's `emailAddress`, Calendar with the primary calendar id, and Mattermost with the session email (its username only when the session reports no email at all).
 - Drive proves itself from the helper's own account pin, `helper_pin`: the lux-cli helper compares every refreshed `id_token`'s verified address with `LUX_GOOGLE_MCP_ACCOUNT` and refuses every read otherwise (`tools/google-mcp/google_mcp/creds.py`, `assert_identity`, raising `AccountMismatch`/`IdentityUnverified`). Didi therefore requires each Google child's `LUX_GOOGLE_MCP_ACCOUNT` to equal `ownerIdentity` exactly (case-insensitive) when the catalog loads, and refuses a child pinned to any other account with `identity_mismatch` before it spawns. Drive stays strict, and the helper's `account_mismatch` or `identity_unverified` is its runtime refusal.

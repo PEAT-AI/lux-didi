@@ -124,7 +124,14 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing', 'recheck settles the due alarm before shell delivery');
   // Earlier mutations can queue any number of state snapshots ahead of the due frame. Read the ordered
   // stream to the event under this test's existing deadline, not an unrelated ten-chunk ceiling.
-  while (!eventWire.includes('alarm_due')) eventWire += new TextDecoder().decode((await reader.read()).value);
+  const hasDueFrame = () => eventWire.split('\n\n').slice(0, -1).some(frame => {
+    const data = frame.split('\n').find(line => line.startsWith('data: '));
+    if (!data) return false;
+    const event = JSON.parse(data.slice(6));
+    return event.type === 'alarm_due' && event.alarm.id === String(due.id);
+  });
+  while (!hasDueFrame()) eventWire += new TextDecoder().decode((await reader.read()).value);
+  assert.ok(hasDueFrame(), 'the shell receives this alarm due event, not an earlier occurrence');
   assert.match(eventWire, /alarm_due/);
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');

@@ -22,6 +22,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
+import { refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -4454,11 +4455,11 @@ export class LiveSessionOwner {
       if (!row) { remaining.push(call); continue; }
       const stored = JSON.parse(String(row.intent_json)) as { toolName: string };
       let response: JsonObject;
-      if (stored.toolName !== call.name) response = { status: 'refused', reason: 'replay_identity_mismatch' };
+      if (stored.toolName !== call.name) response = { status: 'refused', reason: 'replay_identity_mismatch', ...refusalCauseOf('replay_identity_mismatch') };
       else {
         const gate = await this.#tools.owner.resultGate.authorize({ ...host, grants: [] }, [{ executionId: String(row.execution_id), name: call.name, callId: call.id,
           contentIndex: 0, partIndex: 0, result: { id: String(row.result_id), sha256: String(row.result_sha256) } }], [handle.inputClass], handle.abort.signal);
-        response = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable' };
+        response = gate.state === 'allowed' ? gate.results[0]!.response : { status: 'refused', reason: 'recorded_result_unavailable', ...refusalCauseOf('recorded_result_unavailable') };
       }
       const responses = [{ id: call.id, name: call.name, response }];
       exposeToolResults(responses);
@@ -4638,7 +4639,7 @@ export class LiveSessionOwner {
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
+        response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined, handle.researchAdmission.running());
       } else if (verdict !== undefined && verdict.attach === true && handle.researchAdmission.deliveredReply() !== undefined) {
         // C-RESEARCH #107: a paraphrase or repeat of this job's own owner ask returns the job's terminal result
         // instead of starting a second operation, so it dispatches nothing and spends no budget.
@@ -4648,8 +4649,21 @@ export class LiveSessionOwner {
         // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.
         try {
           const priorRunId = handle.researchLedger.last()?.researchId;
-          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
-        } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+          // C-TOOLTRUTH: the operation is on the host's own record while it really runs, so a refusal in a
+          // rebuilt generation can name it, and the record is cleared the moment it settles.
+          handle.researchAdmission.working(parsed.call.question ?? '');
+          try {
+            response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
+          } finally { handle.researchAdmission.settledWork(); }
+        } catch (error) {
+          // C-TOOLTRUTH: a failed run names its cause and that nothing is left running, never a bare message.
+          response = {
+            error: error instanceof Error ? error.message : 'research_failed',
+            cause: 'The research run itself failed before it could answer.',
+            next: 'Nothing is running now, and this turn holds no research result from it.',
+            state: runningStateLine([]),
+          };
+        }
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);

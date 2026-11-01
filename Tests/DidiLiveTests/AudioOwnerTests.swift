@@ -115,6 +115,7 @@ import Foundation
         // no wait. A regression in the reading text, the decibel math or the window arithmetic fails here.
         failures += await section_12()
         failures += await section_13()
+        failures += await section_14()
 
         exit(failures == 0 ? 0 : 1)
     }
@@ -222,6 +223,42 @@ import Foundation
         check(bands.output == .silent, "an invalid render clock leaves the orb quiet instead of throwing")
         check(bands.output.level == 0, "the quiet orb reports level 0, got \(bands.output.level)")
         device.releaseForTesting()
+        await device.settleForTesting()
+        return failures
+    }
+
+    /// T3: an AVFAudio call that raises instead of returning must end the call with a named error.
+    /// A mixer that was never attached to an engine raises com.apple.coreaudio.avfaudio from
+    /// installTap ("required condition is false: NULL != engine"), so the proof needs no hardware.
+    /// Without the guard this test kills the process, which is what happened on her headset route.
+    @MainActor private static func section_14() async -> Int {
+        var failures = 0
+        func check(_ condition: Bool, _ label: String) {
+            if condition { print("PASS \(label)") } else { print("FAIL \(label)"); failures += 1 }
+        }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+            check(false, "the synthetic 48 kHz format is unavailable"); return failures + 1
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("a1-graph-exception-\(UUID().uuidString)"), journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                           defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                           owner: owner, journal: journal, deviceState: { _ in false },
+                                           isBuiltInOutput: { true })
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in }
+        device.installTapForTesting = {
+            AVAudioMixerNode().installTap(onBus: 0, bufferSize: 1024, format: nil) { _, _ in }
+        }
+        var failure: Error?
+        do { try await device.start { _ in } } catch { failure = error }
+        check(failure != nil, "an AVFAudio exception ends the start with an error instead of killing the process, got \(String(describing: failure))")
+        check(device.sessionFailedForTesting, "the session is marked failed, so nothing retries it")
+        check(!owner.isOwned, "the audio owner is released")
+        let raised = journal.events.filter { $0.name == "audio_graph_exception" }
+        check(raised.count == 1, "one audio_graph_exception is journaled, got \(raised.count)")
+        check(raised.first?.fields["call"] == "install_tap", "and it names the thin call, got \(String(describing: raised.first?.fields))")
         await device.settleForTesting()
         return failures
     }

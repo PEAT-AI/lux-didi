@@ -762,6 +762,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private(set) var inputSeam: (any NativeLiveInputSeam)?
     /// A test seam standing in for the input node; nil on every real start.
     var inputSeamForTesting: (any NativeLiveInputSeam)?
+    /// The fake path installs no tap, so a test drives the tap failure through this seam. The body
+    /// runs where the real installTap call runs, in the same place in the build.
+    var installTapForTesting: (() -> Void)?
     /// The seam that owns the live engine's lifecycle, kept past `releaseAudio` for the settle.
     private var settledSeam: (any NativeLiveInputSeam)?
     private var tapInstalled = false
@@ -1532,6 +1535,8 @@ struct NativeLiveInterruptionSample: Sendable {
         if engineFactoryForTesting == nil {
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
             tapInstalled = true
+        } else if let installTapForTesting {
+            installTapForTesting()
         }
         // C-AUDIO 1: exactly one prepare per build, before start. The fake-engine path records the
         // step through prepareForTesting and never touches the device.

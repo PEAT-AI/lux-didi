@@ -1116,9 +1116,9 @@ test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient
   const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at the
-  // recipient the harness roster does not hold: it still writes nothing.
-  assert.match(String(refused.result_json), /recipient_unknown|external_text_only|no_owner_request/);
+  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at exactly
+  // one cause: the recipient the harness roster does not hold. It still writes nothing.
+  assert.match(String(refused.result_json), /"code":"recipient_unknown"/, String(refused.result_json));
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {

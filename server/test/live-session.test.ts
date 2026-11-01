@@ -8461,3 +8461,56 @@ test('#107 P-R9: a mail result fences the turn and the owner final opens it agai
   assert.equal(port.log.length, 1, 'the owners own next final opens the write again');
   attachment.close();
 });
+
+// C-REBUILD B (B-R14): a late finding that lands while a response is in flight is held, not dropped and not
+// written into that response, and its own terminal is what speaks it once.
+test('C-REBUILD B: a held late finding is spoken once on the terminal of the response that held it', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-held-rebuild');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt for the source that landed later');
+  assert.equal(late[0]!['source'], 'chat');
+  assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
+  assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
+  assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
+  h.owner.revoke(session.liveSessionId);
+  // A response is in flight when the late source lands, which is the shape this ruling is about.
+  fake.emit({ type: 'modelTurnStarted' });
+  release();
+  await settlePort();
+  const lateReceipts = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(lateReceipts.length, 1, 'one receipt for the source that landed later');
+  assert.equal(lateReceipts[0]!['destination'], 'held', `a response in flight holds the note: ${JSON.stringify(lateReceipts[0])}`);
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('Late findings from your lookup')), [],
+    'nothing is written into the response in flight');
+  // The response terminates, which is the one event that may speak the held note.
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  const lateLines = fake.texts.filter(text => text.startsWith('Late findings from your lookup'));
+  assert.equal(lateLines.length, 1, `the terminal speaks the held note exactly once: ${JSON.stringify(fake.texts)}`);
+  const after = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(after.length, 2, 'and the offer on the terminal is its own receipt, never a second send of the same line');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.texts.filter(text => text.startsWith('Late findings from your lookup')).length, 1,
+    'a later terminal never replays it');
+  h.owner.revoke(session.liveSessionId);
+});

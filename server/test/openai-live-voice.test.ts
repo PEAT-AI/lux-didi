@@ -2751,7 +2751,7 @@ test('F10: a mid-thought tail holds the answer for the longer window, a finished
     'a finished sentence answers at the same 700 ms as before');
 });
 
-// C-POSTTOOL 1: the double-speech guard. A response that speaks is already the answer, so the first audible
+// C-POSTTOOL fallback (#868): generic speech is not proof of an answer for a tool batch. The first audible
 // frame of the active response clears an owed continuation. The replay is event ordered, because the guard is
 // about the order of audio and terminal events within one response.
 const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
@@ -2759,7 +2759,7 @@ const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
 const speakFrame = (f: FakeSocket) => f.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') });
 const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session['delegation'] as { responses: Record<string, unknown> };
 
-test('C-POSTTOOL: the first audible delta of the active response clears an owed continuation', async t => {
+test('C-POSTTOOL fallback: uncorrelated audible speech cannot cancel an owed continuation', async t => {
   const opened = await continuation(t);
   const before = creates(opened.socket).length;
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-late', name: 'research', arguments: '{}' } }));
@@ -2770,7 +2770,7 @@ test('C-POSTTOOL: the first audible delta of the active response clears an owed 
   await quiet();
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
   await quiet();
-  assert.equal(creates(opened.socket).length, before, 'a response that speaks gets no second create');
+  assert.equal(creates(opened.socket).length, before + 1, 'uncorrelated speech is not proof of an answer to this batch');
 });
 
 test('C-POSTTOOL: audio that arrives before the tool output does not suppress the answer', async t => {

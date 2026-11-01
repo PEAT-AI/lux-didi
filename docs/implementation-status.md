@@ -6,7 +6,7 @@ State of the source tree for release 10.8 (based on main `781f5992750398dbc62dd9
 
 | Release | Date | What changed for the owner |
 | --- | --- | --- |
-| 10.8 | 2026-11-01 | Truthful conversation recall and tool outcomes; clearer session logs; local time and calendar corrections; call-start crash protection and audio diagnostics; alarm speech retry and notification delivery; idle startup preparation; bounded reconnect recovery; post-tool replies remain off by default. |
+| 10.8 | 2026-11-01 | Truthful conversation recall and tool outcomes; clearer session logs; local time and calendar corrections; call-start crash protection and audio diagnostics; alarm speech retry and notification delivery; idle startup preparation; bounded reconnect recovery; post-tool experimental switches remain off by default; unproved double-speech suppression is deferred. |
 | 10.7.3 | 2026-11-01 | A request phrased "don't forget to ..." executes; the prompt states exactly what she can and cannot do; the public repo carries no owner identity |
 | 10.7.2 | 2026-11-01 | Direct asks (alarms, calendar entries, drafts, notes) execute; outside text from mail, chat or the web can still not trigger a write; a stalled model reconnects silently; the voice engine is built once per call and released cleanly; the call audit view works again |
 | 10.7.1 | 2026-11-01 | Native action checks no longer depend on whether a browser is open; README and CLAUDE.md describe 10.7 |

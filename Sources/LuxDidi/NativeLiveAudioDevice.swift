@@ -1787,6 +1787,9 @@ struct NativeLiveInterruptionSample: Sendable {
     /// #283: the orb frame for this instant: the owner's latest capture window (silent once older than
     /// 200 ms or while muted) and the model output window at the playback position.
     func orbBands() -> (input: NativeOrbBands, output: NativeOrbBands) {
+        // F5, measure only: the main thread went silent for 5 s on the headset route, and a wedged
+        // engine must show up here as a number instead of a mystery. The clock design is untouched.
+        let enteredAt = self.now()
         let now = nowMs()
         let input = !muted && now - inputBandsAtMs <= 200 ? inputBands : .silent
         let renderTime = player?.lastRenderTime
@@ -1796,8 +1799,14 @@ struct NativeLiveInterruptionSample: Sendable {
         let clock = renderTime.flatMap {
             $0.isSampleTimeValid || $0.isHostTimeValid ? player?.playerTime(forNodeTime: $0) : nil
         }
-        return (input, outputOrb.sample(renderedSample: clock?.sampleTime, sampleRate: clock?.sampleRate ?? Double(NativePlaybackQueue.frameRate)))
+        let bands = (input, outputOrb.sample(renderedSample: clock?.sampleTime,
+                                             sampleRate: clock?.sampleRate ?? Double(NativePlaybackQueue.frameRate)))
+        let stalledMs = Int(self.now().timeIntervalSince(enteredAt) * 1000)
+        if stalledMs > Self.orbClockStallMs { log("orb_clock_stall", ["durationMs": String(stalledMs)]) }
+        return bands
     }
+    /// F5: one orbBands call longer than this is a stall worth journaling.
+    static let orbClockStallMs = 100
     /// E1: append one already-computed meter level to a small bounded ring. Stores the number only.
     private func recordLevel(_ value: Float) {
         levelRing.append((at: now(), level: value))

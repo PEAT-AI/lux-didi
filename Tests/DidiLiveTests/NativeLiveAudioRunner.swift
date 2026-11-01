@@ -761,6 +761,35 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS memory guard continuation retains current frame and rejects external mute generation; hardware=false")
 }
 
+/// F5: one orbBands call longer than 100 ms is journaled as `orb_clock_stall` with its duration and
+/// the same call at normal speed writes nothing. The stall is measured on the injected clock, so the
+/// proof never sleeps.
+@MainActor private func checkOrbClockStallIsMeasured() async throws {
+    final class ScriptedClock: @unchecked Sendable {
+        var calls = 0
+        let base = Date(timeIntervalSince1970: 1000)
+        /// The stall a case asks for, added on the second reading of the call.
+        let stall: TimeInterval
+        init(stall: TimeInterval) { self.stall = stall }
+        func next() -> Date { calls += 1; return base.addingTimeInterval(calls >= 2 ? stall : 0) }
+    }
+    for (stall, expected) in [(0.0, 0), (0.15, 1)] {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let clock = ScriptedClock(stall: stall)
+        let device = NativeLiveAudioDevice(journal: journal, now: { clock.next() })
+        _ = device.orbBands()
+        let stalls = journal.events.filter { $0.name == "orb_clock_stall" }
+        try audioRequire(stalls.count == expected,
+                         "a \(Int(stall * 1000)) ms orbBands writes \(expected) orb_clock_stall, got \(stalls.count)")
+        if expected == 1 {
+            let durationMs = Int(stalls.first?.fields["durationMs"] ?? "") ?? 0
+            try audioRequire(durationMs >= 100 && durationMs <= 160,
+                             "the line carries the measured duration, got \(String(describing: stalls.first?.fields))")
+        }
+    }
+    print("PASS orbBands journals a stall over 100 ms with its duration and nothing at normal speed")
+}
+
 @MainActor private func checkPlaybackGapMetrics() async throws {
     let scenarios: [(Int16, Int16, Int, Int)] = [
         (0, 0, 0, 0), (5000, 5000, 0, 0), (5000, 5000, 25, 1),
@@ -1099,7 +1128,8 @@ private func checkPrimaryChannelConversion() throws {
         catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
         do { try checkOneReleaseRecord() }
         catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
-        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
+        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics()
+             try await checkOrbClockStallIsMeasured() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }
         catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }

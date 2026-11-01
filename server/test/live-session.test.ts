@@ -7786,7 +7786,8 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   const retried = coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-alarm-key');
   assert.equal(retried.status, 'attempted');
   assert.equal(retried.liveSessionId, session.liveSessionId);
-  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-other-key').liveSessionId, undefined);
+  // A different key names the same occurrence, so it is refused at the route, never opened again.
+  assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-other-key').status, 'attempted');
   assert.equal(fake.sessionsOpened, 1);
   assert.equal(fake.texts.length, 1);
   assert.match(fake.texts[0]!, /call the bank/);

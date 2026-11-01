@@ -27,6 +27,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { draftChatResult, draftEmailResult } from '../tools/compose.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
+import type { HostEvent } from '../adapters/live-voice/types.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
@@ -45,7 +46,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { LIVE_DROPPED_LINE_EVENT, LIVE_MUTE_EVENT, LIVE_RECOVERY_EVENT } from '../live/index.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -56,7 +58,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -2546,7 +2548,7 @@ test('a resumed setup rejection falls back to one fresh seeded session with the 
   assert.equal(h.requests[1]!.resumptionHandle, 'synthetic-policy-resumption-secret', 'the first recovery reuses the handle');
   const seeded = h.requests[2]!;
   assert.equal(seeded.resumptionHandle, undefined, 'the fresh seeded setup carries no handle');
-  assert.equal(seeded.openingText, LIVE_RECOVERY_PICKUP, 'the pickup line replaces the fresh-call greeting');
+  assert.deepEqual(seeded.hostEvent, LIVE_RECOVERY_EVENT, 'the typed host event replaces the fresh-call greeting');
   assert.deepEqual(seeded.history!.map(turn => [turn.role, turn.text]), [['user', 'first turn'], ['model', 'first answer'], ['user', 'second turn']], 'the journal turns are in order');
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0, 'the call did not end');
   h.owner.revoke(session.liveSessionId);
@@ -2746,8 +2748,11 @@ test('L19: a call seeded after a dead one marks its last answer heard and never 
   const request = h.requests.at(-1)!;
   const history = request.history ?? [];
   assert.ok(history.some(turn => turn.role === 'model' && turn.text.includes('never reached her')), 'the dead answer is still history');
-  assert.equal(history.at(-1)?.role, 'user', 'and the seed closes it as heard');
-  assert.match(history.at(-1)!.text, /line dropped/i, 'the seed says the line dropped instead of inviting a repeat');
+  // C-HOSTFACTS BUILD-01: the dropped line is not closed by an owner-role turn. No seeded turn pretends he
+  // said anything about it; the host event carries the fact.
+  assert.equal(history.some(turn => turn.role === 'user' && /line dropped/i.test(turn.text)), false,
+    'no seeded owner turn claims the line dropped');
+  assert.deepEqual(request.hostEvent, LIVE_DROPPED_LINE_EVENT, 'the host event names the dropped line instead');
   h.owner.revoke(next.liveSessionId);
 });
 
@@ -2770,10 +2775,13 @@ test('L19: after a dead call the silent owner hears the drop line, and one who a
   h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
   await tick();
   const silentRequest = h.requests.at(-1)!;
-  assert.equal(silentRequest.openingText, LIVE_DROPPED_LINE_MARK, 'the silent owner gets the drop line, never a repeat');
-  assert.equal((silentRequest.history ?? []).at(-1)?.role, 'user', 'and the dead answer is closed as heard');
+  assert.deepEqual(silentRequest.hostEvent, LIVE_DROPPED_LINE_EVENT, 'the silent owner gets the drop event, never a repeat');
+  assert.equal(silentRequest.history?.some(turn => turn.role === 'user' && /line dropped/i.test(turn.text)), false,
+    'C-HOSTFACTS: no seeded owner turn claims the line dropped');
+  assert.equal((silentRequest.history ?? []).some(turn => turn.role === 'user' && /line dropped/i.test(turn.text)), false,
+    'and the dead answer stays the last thing on the record, with no owner turn closing it');
   // R7: the owner is silent here, so the opener is the one-line drop acknowledgement, not a repeat.
-  assert.match(String(silentRequest.openingText), /line dropped/i, 'the opener names the dropped line');
+  assert.equal(JSON.stringify(silentRequest.hostEvent).includes('line_dropped'), true, 'the host event names the dropped line');
   h.owner.revoke(silent.liveSessionId);
 });
 
@@ -2853,7 +2861,7 @@ test('a provider session deadline continues in a new seeded window; the call cei
   await transcription(output, 'still here');
   h.advance(1000); scheduler.runDue();
   await h.f.frame(2); h.f.send({ setupComplete: {} });
-  assert.equal(h.requests[1]!.openingText, LIVE_RECOVERY_PICKUP, 'the session deadline continues through the fresh seeded path');
+  assert.deepEqual(h.requests[1]!.hostEvent, LIVE_RECOVERY_EVENT, 'the session deadline continues through the fresh seeded path');
   assert.deepEqual(h.requests[1]!.history!.map(turn => [turn.role, turn.text]), [['user', 'still here']]);
   h.advance(500); scheduler.runDue();
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'session_timeout' }, 'only the call ceiling ends a call for time');
@@ -2871,7 +2879,7 @@ test('the owner hard deadline ends a call terminally while a continuation is in 
   // The provider session limit is a window, not a call length: the call continues in a fresh seeded window.
   h.advance(1000); scheduler.runDue();
   await h.f.frame(2);
-  assert.equal(h.requests[1]!.openingText, LIVE_RECOVERY_PICKUP, 'the provider session limit continues in a fresh seeded window');
+  assert.deepEqual(h.requests[1]!.hostEvent, LIVE_RECOVERY_EVENT, 'the provider session limit continues in a fresh seeded window');
   // Drop the fresh window before it is ready: the continuation is in flight in a recovery backoff.
   h.f.remoteClose('', 1011);
   await tick();
@@ -2950,7 +2958,7 @@ test('revoked resumption handle is cleared before a recoverable loss', async t =
   await h.f.frame(2);
   const seeded = h.requests.at(-1)!;
   assert.equal(seeded.resumptionHandle, undefined, 'a cleared handle forces a fresh seeded setup');
-  assert.equal(seeded.openingText, LIVE_RECOVERY_PICKUP);
+  assert.deepEqual(seeded.hostEvent, LIVE_RECOVERY_EVENT);
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0, 'the call did not end');
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
@@ -4568,6 +4576,7 @@ function progressPort() {
   let commentaryDelivered = true;
   /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
   const texts: string[] = [];
+  const hostEvents: HostEvent[] = [];
   /** #660: every text input tagged with the provider session that received it, and how often one was refused. */
   const textInputs: { session: number; text: string }[] = [];
   let textRefusals = 0;
@@ -4630,7 +4639,10 @@ function progressPort() {
           // #660: a fresh session answers not_ready before its ready event, exactly as the adapter does.
           if (refuseText > 0) { refuseText -= 1; textRefusals += 1; throw new Error('not_ready'); }
           texts.push(input.text); textInputs.push({ session: sessionsOpened, text: input.text });
-        }, endAudioStream(): void {},
+        },
+        // C-HOSTFACTS: a host event is host data. This fake records it apart from the owner's texts.
+        sendHostEvent(input: { event: HostEvent }): void { hostEvents.push(input.event); },
+        endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
@@ -4640,7 +4652,7 @@ function progressPort() {
       };
     },
   };
-  return { port, commentary, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+  return { port, commentary, thinking, texts, hostEvents, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
     /** #660: the next text inputs meet a session that is not ready; one retry is all the host gives. */
     refuseText: (times = 1) => { refuseText = times; },
     refuseTextOnce: () => { refuseText = 1; },
@@ -6858,8 +6870,9 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   await attachment.ready;
   await h.f.frame(2);
   const request = h.requests.at(-1)!;
-  assert.equal(request.openingText, LIVE_DROPPED_LINE_MARK, 'the new call opens with the dropped-line marker');
-  assert.equal((request.history ?? []).at(-1)?.role, 'user', 'the dead answer is closed as heard');
+  assert.deepEqual(request.hostEvent, LIVE_DROPPED_LINE_EVENT, 'the new call opens with the dropped-line host event');
+  assert.equal((request.history ?? []).some(turn => turn.role === 'user' && /line dropped/i.test(turn.text)), false,
+    'no owner turn closes the dead answer');
   assert.ok((request.history ?? []).some(turn => turn.text.includes('the last answer of the dead call')), 'and it is still history');
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
@@ -7263,10 +7276,10 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   // C-PICKUP: the model went quiet, nothing dropped, so no rebuilt session is told the call came back.
   assert.equal(receipts.filter(entry => entry['event'] === 'live_recovery').at(-1)?.['pickup'], 'mute',
     'the recovery line names the pickup kind it chose');
-  assert.equal(fake.requests.some(request => request.openingText === LIVE_RECOVERY_PICKUP), false,
+  assert.equal(fake.requests.some(request => request.hostEvent?.kind === LIVE_RECOVERY_EVENT.kind), false,
     'and no rebuilt session carries the connection pickup after a mute');
-  assert.ok(fake.requests.filter(request => request.openingText !== undefined)
-    .every(request => request.openingText === LIVE_MUTE_PICKUP), 'any pickup a mute rebuild sends is the mute one');
+  assert.ok(fake.requests.filter(request => request.hostEvent !== undefined)
+    .every(request => request.hostEvent?.kind === LIVE_MUTE_EVENT.kind), 'any pickup a mute rebuild sends is the mute one');
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
   h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')
@@ -7448,7 +7461,7 @@ test('#660: a result that returned unspoken reaches the session that replaced it
   const second = fake.textInputs.filter(entry => entry.session === 2);
   assert.equal(second.length, 1, 'the fresh session receives the unspoken result exactly once');
   assert.equal(fake.requests[1]!.opening, 'model_first', 'the rebuilt session speaks without waiting for the owner');
-  assert.equal(fake.requests[1]!.openingText, undefined, 'and carries no pickup line to answer instead');
+  assert.equal(fake.requests[1]!.hostEvent, undefined, 'and carries no pickup event to answer instead');
   const refused = receipts.filter(record => record['event'] === 'live_debt' && record['reason'] === 'send_failed');
   assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
   // #667: the recreate names how many unspoken results the new session was handed.

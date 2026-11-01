@@ -7,12 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
-import { LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
+import { LIVE_DROPPED_LINE_EVENT, LIVE_MUTE_EVENT } from '../live/index.js';
+import type { LiveVoiceRequest } from '../adapters/live-voice/types.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm, ready as providerReady } from './live-voice-fixture.js';
@@ -119,7 +120,7 @@ const continuityEvents = (live: Live): unknown[] => live.output
   .filter(chunk => chunk.marker.kind === 'continuity').map(chunk => chunk.marker.event);
 const removed = (live: Live): Record<string, unknown>[] => live.receipts.filter(record => record.event === 'live_rebuild_removed');
 const rebuildTriggers = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_rebuild').map(record => record.trigger);
-const openingText = (live: Live): string | undefined => live.fake.requests.at(-1)?.openingText;
+const openingEvent = (live: Live): LiveVoiceRequest['hostEvent'] => live.fake.requests.at(-1)?.hostEvent;
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
 const terminalCode = (live: Live): string | undefined => {
   const terminal = live.owner.get(live.liveSessionId).terminal;
@@ -149,7 +150,7 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
     'the recovery is the fresh seeded path with reason model_mute');
   // C-PICKUP: a mute is the model's silence, not a dropped line, so the owner is asked to wait in one short
   // sentence instead of being told the call came back.
-  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'the model went mute, so the pickup names the silence');
+  assert.deepEqual(openingEvent(live), LIVE_MUTE_EVENT, 'the model went mute, so the pickup names the silence');
   assert.equal(live.receipts.filter(record => record.event === 'live_recovery').at(-1)?.pickup, 'mute',
     'and the recovery line says which pickup it chose');
   assert.equal(live.fake.requests.at(-1)?.opening, 'model_first', 'and the rebuilt session is still asked to continue');
@@ -171,7 +172,7 @@ test('#591: an ambient-only turn closes at the watchdog without a nudge, a chime
   await until(live, () => phases(live).includes('closed'), RESPONSE_WATCHDOG_NUDGE_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'closed'], 'no nudge and no rebuild: the turn is closed and the call listens on');
   assert.equal(live.fake.sessionsOpened, 1, 'ambient sound never rebuilds the provider session');
-  assert.equal(openingText(live), undefined, 'nothing is told to speak, so there is no "I am back"');
+  assert.equal(openingEvent(live), undefined, 'nothing is told to speak, so there is no "I am back"');
   assert.deepEqual(continuityEvents(live), [], 'no reconnect marker reaches the native shell, so no ring and no chime');
   assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild to name');
   await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
@@ -209,7 +210,7 @@ test('an open model turn that emits one chunk and then nothing is nudged once an
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
   assert.equal(live.fake.sessionsOpened, 2);
   // #591: the model spoke, but the owner never did, so nothing is owed and the rebuild arrives unannounced.
-  assert.equal(openingText(live), undefined, 'no owner words since the model spoke means no pickup to answer');
+  assert.equal(openingEvent(live), undefined, 'no owner words since the model spoke means no pickup to answer');
   assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'and nothing instructs the rebuilt session to open');
   assert.deepEqual(continuityEvents(live), [], 'and no reconnect marker for the native ring to chime on');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names the silence it walked into');
@@ -228,14 +229,14 @@ test('#591: a turn that produced model text is not the ambient case, so it is st
 
 test('#591: a quiet rebuild drops the dropped-line opener the call inherited from a silent start', async t => {
   const live = await openLive(t, { deadLine: true });
-  assert.equal(live.fake.requests.at(-1)?.openingText, LIVE_DROPPED_LINE_MARK, 'this call opened by naming the lost line');
+  assert.deepEqual(live.fake.requests.at(-1)?.hostEvent, LIVE_DROPPED_LINE_EVENT, 'this call opened by naming the lost line');
   // The model opens its own turn and goes quiet. The owner never spoke, so nothing was asked of the rebuild.
   await live.emit({ type: 'modelTurnStarted' });
   for (let chunk = 0; chunk < 3; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.equal(live.fake.sessionsOpened, 2, 'the stalled turn was rebuilt');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild is the quiet one');
-  assert.equal(live.fake.requests.at(-1)?.openingText, undefined, 'and it carries no inherited "I am back" line');
+  assert.equal(live.fake.requests.at(-1)?.hostEvent, undefined, 'and it carries no inherited "I am back" event');
   assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'nor an instruction to open');
 });
 
@@ -400,7 +401,7 @@ test('#607 unfinished owner fragments before an empty final produce a pickup reb
   // C-RECONNECT #1072: the pickup still answers the owner, but the rebuild behind it is the model's own silence,
   // so it stays quiet: no ring and no chime for a mute.
   assert.equal(continuityEvents(live).includes('rebuilding'), false, 'a mute rebuild rings nothing');
-  assert.ok(openingText(live), 'the pickup rebuild carries its owner-facing marker');
+  assert.ok(openingEvent(live), 'the pickup rebuild carries its host-owned marker');
 });
 
 // C-LIVE N-2: the provider streams digital silence for the whole call. Those frames are not conversation, so the
@@ -499,7 +500,7 @@ test('C-REBUILD8: a mute after an ack-only response takes the mute pickup and re
   await live.emit({ type: 'outputTranscription', text: 'One second.', finished: true });
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the filler answered nothing, so the owner is still owed an answer');
-  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'the rebuilt session is told the model went quiet and to continue');
+  assert.deepEqual(openingEvent(live), LIVE_MUTE_EVENT, 'the rebuilt session is told the model went quiet and to continue');
   assert.equal(live.receipts.filter(record => record.event === 'live_recovery').at(-1)?.pickup, 'mute',
     'the receipt names the pickup that was actually sent');
   const history = live.fake.requests.at(-1)!.history ?? [];

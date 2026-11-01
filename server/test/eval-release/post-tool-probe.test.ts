@@ -46,6 +46,7 @@ const stubSession = (steps: readonly Step[]): LiveVoiceSession => ({
   sendToolResponse: () => 'sent',
   sendAudio: () => {},
   sendText: () => {},
+  sendHostEvent: () => {},
   endAudioStream: () => {},
   close: () => {},
 });

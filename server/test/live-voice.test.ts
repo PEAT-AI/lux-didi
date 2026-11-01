@@ -9,7 +9,8 @@ import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
 import { liveVoiceActivityDefaults } from '../adapters/live-voice/gemini.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { LIVE_RECOVERY_EVENT } from '../live/index.js';
+import { hostEventPayload } from '../adapters/live-voice/types.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
@@ -940,20 +941,23 @@ test('P2: the model-first opening nudge carries no accent text', async t => {
   void events;
 });
 
-test('a fresh seeded opening sends the journal history then the pickup line as the opening input', async t => {
+test('a fresh seeded opening sends the journal history then the host event as the opening input', async t => {
   const f = await providerFixture(t);
   const settings = options({ socketFactory: f.socketFactory });
   const input = request();
   input.opening = 'model_first';
   input.history = [{ role: 'user', text: 'earlier question', dataClass: 'ordinary' }];
-  input.openingText = LIVE_RECOVERY_PICKUP;
+  input.hostEvent = LIVE_RECOVERY_EVENT;
   const session = new GeminiLiveVoiceAdapter(settings).open(input, control()); t.after(() => session.close());
   collect(session);
   await f.frame(1); f.send({ setupComplete: {} }); await f.frame(2);
   assert.deepEqual(f.frames[1], { clientContent: { turns: [
     { role: 'user', parts: [{ text: 'earlier question' }] },
-    { role: 'user', parts: [{ text: LIVE_RECOVERY_PICKUP }] },
-  ], turnComplete: true } }, 'the history turns precede the pickup line as the opening input');
+    { role: 'user', parts: [{ text: hostEventPayload(LIVE_RECOVERY_EVENT) }] },
+  ], turnComplete: true } }, 'the history turns precede the host event as the opening input');
+  // C-HOSTFACTS: the turn carries the application host origin, so the recovery is host data, not owner words.
+  assert.deepEqual(JSON.parse(hostEventPayload(LIVE_RECOVERY_EVENT)),
+    { host_event: { origin: 'host', kind: 'connection_recovered', id: 'live-recovery-pickup' } });
 });
 
 test('#1023: a new call with seeded history still sends the fresh opening directive', async t => {
@@ -972,18 +976,19 @@ test('#1023: a new call with seeded history still sends the fresh opening direct
 });
 
 test('#1023: a silent start keeps its own marker and never adds the fresh opening directive', async t => {
+  const silentMark = { origin: 'host' as const, kind: 'unknown' as const, id: 'silent-start-mark' };
   const f = await providerFixture(t);
   const input = request();
   input.opening = 'model_first';
   input.history = [{ role: 'user', text: 'earlier question', dataClass: 'ordinary' }];
-  input.openingText = 'SILENT_START_MARK';
+  input.hostEvent = silentMark;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(input, control());
   t.after(() => session.close());
   collect(session);
   await f.frame(1); f.send({ setupComplete: {} }); await f.frame(2);
   assert.deepEqual(f.frames[1], { clientContent: { turns: [
     { role: 'user', parts: [{ text: 'earlier question' }] },
-    { role: 'user', parts: [{ text: 'SILENT_START_MARK' }] },
+    { role: 'user', parts: [{ text: hostEventPayload(silentMark) }] },
   ], turnComplete: true } }, 'the silent-start marker alone opens the call');
   assert.equal(JSON.stringify(f.frames[1]).includes(FRESH_OPENING), false);
 });

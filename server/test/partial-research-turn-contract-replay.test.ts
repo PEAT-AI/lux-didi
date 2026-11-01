@@ -108,6 +108,7 @@ function providerPort() {
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
         sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); },
+        sendHostEvent(): void {},
         /** R2: the speakable-progress channel, which is how the owner hears a still-searching line. */
         sendCommentary(input: { text: string }): boolean { commentaries.push(input.text); return true; },
         endAudioStream(): void {},

@@ -8,8 +8,9 @@ import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, fitSeedTurns, LIVE_DROPPED_LINE_MARK, liveMigrations, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { createLiveSessionOwner, fitSeedTurns, liveMigrations, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { LIVE_DROPPED_LINE_EVENT, LIVE_RECOVERY_EVENT } from '../live/index.js';
+import { hostEventPayload } from '../adapters/live-voice/types.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -95,7 +96,7 @@ function drivenPort() {
       };
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
-        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(): void {}, sendHostEvent(): void {}, endAudioStream(): void {},
         sendToolResponse(input): 'sent' { toolResponses.push([...input.responses]); return 'sent'; },
         close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
       };
@@ -530,12 +531,12 @@ test('C-RECOVERY (a): a 300-fragment call plus ledger and dropped-line mark fits
   const fragments = Array.from({ length: 300 }, (_, index) => ({
     role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `fragment ${index} ${'word '.repeat(8)}` }));
   const ledger = { role: 'user' as const, text: `${'ledger finding '.repeat(200)}` };
-  const fitted = fitSeedTurns([...fragments, { role: 'user' as const, text: LIVE_DROPPED_LINE_MARK }], [ledger]);
+  const fitted = fitSeedTurns([...fragments, { role: 'user' as const, text: hostEventPayload(LIVE_DROPPED_LINE_EVENT) }], [ledger]);
   assert.ok(fitted.turns.length <= SEED_MESSAGE_LIMIT, `the seed keeps the adapter's room for its opener: ${fitted.turns.length}`);
   assert.ok(fitted.chars <= SEED_CHAR_LIMIT, `the seed plus the ledger stays inside the history budget: ${fitted.chars}`);
   assert.ok(SEED_CHAR_LIMIT <= SEED_TOKEN_PROXY_LIMIT * 4, 'and that budget is the documented 8,192-token proxy');
   assert.equal(fitted.turns.at(-1)!.text, ledger.text, 'the ledger always rides last');
-  assert.equal(fitted.turns.at(-2)!.text, LIVE_DROPPED_LINE_MARK, 'and the dropped-line mark closes the transcript');
+  assert.equal(fitted.turns.at(-2)!.text, hostEventPayload(LIVE_DROPPED_LINE_EVENT), 'and the dropped-line event closes the transcript');
   assert.ok(fitted.condensed, 'the oldest turns were dropped, not kept whole');
 });
 
@@ -560,7 +561,7 @@ test('C-RECOVERY (b): a refused seed is retried smaller, and the last attempt is
   assert.equal((firstRefused!.history ?? []).length, 2, 'the refused open carried the whole conversation');
   assert.ok((smaller!.history ?? []).length < (firstRefused!.history ?? []).length, 'the refused seed is retried smaller');
   assert.deepEqual(plain!.history ?? [], [], 'the last attempt carries only the summary context');
-  assert.equal(plain!.openingText, LIVE_RECOVERY_PICKUP, 'and it is still an open the owner hears');
+  assert.deepEqual(plain!.hostEvent, LIVE_RECOVERY_EVENT, 'and it is still an open the owner hears');
   assert.equal(h.owner.get(created.liveSessionId).terminal, null, 'the call is back up on the plain open');
 });
 
@@ -647,7 +648,7 @@ test('C-MICWATCH (e): a provider session that expires with zero owner audio ends
   const next = h.owner.create({ idempotencyKey: 'mic-dead-next', inputClass: 'ordinary' }, h.ctx);
   h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
   await sessionAt(h, 1);
-  assert.equal((h.port.requests.at(-1)!.history ?? []).some(turn => turn.text === LIVE_DROPPED_LINE_MARK), false, 'the next call is not told the line dropped');
+  assert.deepEqual((h.port.requests.at(-1)!.history ?? []).some(turn => turn.text === hostEventPayload(LIVE_DROPPED_LINE_EVENT)), false, 'the next call is not told the line dropped');
   h.owner.revoke(next.liveSessionId);
 });
 

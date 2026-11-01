@@ -11,7 +11,10 @@ import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, GP
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { hostEventPayload } from '../adapters/live-voice/types.js';
+/** C-HOSTFACTS: the recovery seed is one typed host event, and this is its wire payload. */
+const SEEDED_EVENT = Object.freeze({ origin: 'host' as const, kind: 'connection_recovered' as const, id: 'live-recovery-pickup' });
+const SEEDED_EVENT_TEXT = hostEventPayload(SEEDED_EVENT);
 import { attachHostLogSink } from '../tools/host-events.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -418,7 +421,7 @@ describe('openai gpt-live adapter', () => {
     const f = await fixture(t);
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
     const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
-      .open(request({ history, openingText: 'Pick up where we left off.', opening: 'model_first' }), control());
+      .open(request({ history, hostEvent: SEEDED_EVENT, opening: 'model_first' }), control());
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
@@ -430,8 +433,8 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(seeded.slice(1), [
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Plan the week' }] },
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Monday first' }] },
-      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Pick up where we left off.' }] },
-    ], 'the framed seeded conversation, then the pickup line');
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: SEEDED_EVENT_TEXT }] },
+    ], 'the framed seeded conversation, then the host event');
   });
 
   // C-RECONNECT #1072: a rebuilt session reads this call's own transcript, and without a word about whose words are
@@ -444,7 +447,7 @@ describe('openai gpt-live adapter', () => {
       { role: 'model' as const, text: 'Monday, after the inspection.', dataClass: 'ordinary' as const },
     ];
     const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
-      .open(request({ history, openingText: 'Pick up where we left off.', opening: 'model_first' }), control());
+      .open(request({ history, hostEvent: SEEDED_EVENT, opening: 'model_first' }), control());
     t.after(() => session.close());
     await f.frame(1);
     const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
@@ -456,7 +459,7 @@ describe('openai gpt-live adapter', () => {
     assert.doesNotMatch(framing, /\b(?:he|him|his)\b/u, 'never a third-person narration of the owner');
     // His own words ride unchanged: the framing marks them, the host never re-narrates them.
     assert.deepEqual(input.slice(1).map(item => item.content[0]!.text),
-      ['What did we settle about the bridge?', 'Monday, after the inspection.', 'Pick up where we left off.']);
+      ['What did we settle about the bridge?', 'Monday, after the inspection.', SEEDED_EVENT_TEXT]);
     assert.equal(input.slice(1).some(item => item.role === 'user' && /^(?:the |he |his )/iu.test(item.content[0]!.text)), false,
       'no owner turn is rewritten into third-person narration');
   });
@@ -488,7 +491,7 @@ describe('openai gpt-live adapter', () => {
     const history = Array.from({ length: 140 }, (_, index) => ({
       role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `turn ${index}`, dataClass: 'ordinary' as const }));
     const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
-      .open(request({ history, openingText: 'Pick up where we left off.' }), control());
+      .open(request({ history, hostEvent: SEEDED_EVENT }), control());
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
@@ -497,7 +500,8 @@ describe('openai gpt-live adapter', () => {
     assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
     assert.equal(input[1]!.content[0]!.text, 'turn 14', 'the oldest turns are the ones that go, and the framing costs one slot');
     assert.equal(input[126]!.content[0]!.text, 'turn 139', 'the newest turn is always kept');
-    assert.equal(input[127]!.content[0]!.text, 'Pick up where we left off.', 'and the pickup line keeps its slot');
+    assert.equal(input[127]!.content[0]!.text, SEEDED_EVENT_TEXT, 'and the host event keeps its slot');
+    assert.equal(input[127]!.role, 'developer', 'C-HOSTFACTS: the seeded event is host data, never the owner\u2019s words');
   });
 
   test('#1023: a new call with seeded history still seeds the fresh opening directive', async t => {
@@ -542,7 +546,7 @@ describe('openai gpt-live adapter', () => {
   test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const },
       { role: 'user' as const, text: 'And Thursday', dataClass: 'ordinary' as const }];
-    const { f } = await ready(t, {}, { history, openingText: 'Pick up where we left off.', opening: 'model_first' });
+    const { f } = await ready(t, {}, { history, hostEvent: SEEDED_EVENT, opening: 'model_first' });
     // The frame crosses a real socket, so wait for its receipt rather than for one scheduler tick.
     for (let attempt = 0; attempt < 50 && f.frames.length < 2; attempt += 1) await tick();
     assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }],
@@ -594,10 +598,11 @@ describe('openai gpt-live adapter', () => {
   });
 
   test('1023-N3: a recovery seed asks for its pickup once and carries no fresh opening directive', async t => {
-    const { f } = await ready(t, {}, { opening: 'model_first', openingText: LIVE_RECOVERY_PICKUP });
+    const { f } = await ready(t, {}, { opening: 'model_first', hostEvent: SEEDED_EVENT });
     await tally(f.frames, 2);
     const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
-    assert.equal(input.at(-1)!.content[0]!.text, LIVE_RECOVERY_PICKUP, 'the pickup is the seeded line');
+    assert.equal(input.at(-1)!.content[0]!.text, SEEDED_EVENT_TEXT, 'the host event is the seeded line');
+    assert.equal(input.at(-1)!.role, 'developer', 'and it rides the host surface, never the owner turn');
     assert.equal(JSON.stringify(f.frames[0]).includes(FRESH_OPENING), false, 'a recovery seed never carries a fresh opener');
     await quiet();
     assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the pickup answer is the one request');

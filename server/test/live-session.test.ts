@@ -7243,9 +7243,9 @@ test('#656: the ladder waits out each call on that call\'s own ceiling, a resear
   h.advance(TOOL_CEILING_MS - 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'inside its ceiling the call holds the silence');
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
-  // #660: the rung offers the unspoken result first, so the rebuild follows a delivery that got no answer.
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
-  console.error('DEBUG656', JSON.stringify(receipts.map(r => [String(r['event']), String(r['phase'] ?? r['reason'] ?? ''), String(r['trigger'] ?? '')])));
+  // C-RECONNECT #1072: the settled call re-anchors the clock, so the ladder's next rung and the rebuild that follows
+  // it are one rung plus the post-tool delta apart. A further ceiling of clock walks both.
+  h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its ceiling the ladder recovers the silence');
   release();
 });test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
@@ -7271,8 +7271,9 @@ test('#656: the ladder waits out each call on that call\'s own ceiling, a resear
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'the read in flight holds the ladder');
   // TOOL_CEILING_MS is the call's own hard ceiling: past it the call is no longer the owner of the silence.
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
-  // #660: the rung offers the unspoken result first, so the rebuild follows a delivery that got no answer.
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  // C-RECONNECT #1072: the settled call re-anchors the clock, so the ladder's next rung and the rebuild that follows
+  // it are one rung plus the post-tool delta apart. A further ceiling of clock walks both.
+  h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a wedged call still recovers');
   release();
 });

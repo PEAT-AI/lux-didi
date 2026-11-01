@@ -842,6 +842,23 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'the five second net never fires');
 }
 
+// C-LABELS 2, F-3: a session the app declared lost is over as surely as a Stop, so the pump must treat its
+// terminal the same way: the terminal goes out first and the queued speech behind it is never delivered.
+test('C-LABELS 2: a session_lost terminal outranks queued speech the way a Stop does', async () => {
+  const frames: unknown[] = [];
+  const socket = { OPEN: 1, readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); },
+    close: () => { socket.readyState = 3; } };
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'session_lost' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('a lost session outranks queued speech and backpressure'); },
+  };
+  await pumpOutput(socket as unknown as PumpSocket, attachment as unknown as Parameters<typeof pumpOutput>[1], () => { assert.fail('not detached'); }, 1_000);
+  assert.deepEqual(frames.map(frame => JSON.parse(String(frame))),
+    [{ type: 'terminal', state: 'closed', code: 'session_lost', complete: true }], 'the lost terminal is the only frame, with no queued audio behind it');
+});
+
 test('an output pump whose socket goes CLOSING mid-answer detaches once and ends the session as consumer_closed', async t => {
   await pumpIntoDeadSocket(t, false);
 });

@@ -278,7 +278,7 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
       assert.equal(retry['insightId'], 'synthetic-81');
       assert.equal(h.saved.length, 1, 'same candidate is idempotent');
       // P-R10: a different FREE write is a new write, not a spent grant. Only an exact replay is deduped.
-      const second = await call(h, 'stage_lux_note', { ...candidate, title: 'Different note' });
+      const second = await call(h, 'stage_lux_note', { ...candidate, title: 'Different note', body: 'A different synthetic note.' });
       assert.equal(second['saved'], true, JSON.stringify(second));
       assert.equal(h.saved.length, 2);
     } else {

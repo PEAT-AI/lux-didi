@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback; };
 const web = resolve(opt('--web', resolve(import.meta.dirname, '..')));
 const tag = opt('--tag', 'after');
-const out = resolve(opt('--out', '/Users/rob/.lux/reports/lux-didi-stability-1015/orb-alive-shots'));
+const out = resolve(opt('--out', resolve(import.meta.dirname, '../test-artifacts/orb-alive-shots')));
 const legacy = args.includes('--legacy');
 const size = Number(opt('--size', '300'));
 await mkdir(out, { recursive: true });

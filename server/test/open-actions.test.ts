@@ -31,7 +31,7 @@ test('the declared argument shapes accept what the allowlist allows and refuse t
   assert.equal(validateOpen({ app: 'slack' }, home), false, 'the schema refuses any home page but the three');
   assert.equal(validateOpen({ url: 'https://example.test/doc' }, home), false, 'open_home takes no url');
   assert.equal(validateOpen({ path: '~/notes/a.md' }, file), true);
-  assert.equal(validateOpen({ path: '/Users/rob/notes/a.md' }, file), true);
+  assert.equal(validateOpen({ path: '/Users/example/notes/a.md' }, file), true);
   assert.equal(validateOpen({ path: '' }, file), false);
   assert.equal(validateOpen({ name: 'Safari.app' }, app), true);
   assert.equal(validateOpen({ name: '' }, app), false);
@@ -39,13 +39,13 @@ test('the declared argument shapes accept what the allowlist allows and refuse t
 
 test('the receipt names the scheme or extension and never the URL path or file name', () => {
   assert.equal(receiptDetail('open_url', 'https://example.test/private/plan.pdf'), 'https');
-  assert.equal(receiptDetail('open_file', '/Users/rob/notes/private-plan.pdf'), 'pdf');
-  assert.equal(receiptDetail('open_file', '/Users/rob/notes/LICENSE'), 'none');
+  assert.equal(receiptDetail('open_file', '/Users/example/notes/private-plan.pdf'), 'pdf');
+  assert.equal(receiptDetail('open_file', '/Users/example/notes/LICENSE'), 'none');
   assert.equal(receiptDetail('open_app', 'Safari'), 'app');
   const receipt = safeEvent({ event: 'native_action', action: 'open_file', code: 'opened', detail: 'pdf' });
   assert.deepEqual(receipt, { event: 'native_action', action: 'open_file', code: 'opened', detail: 'pdf' });
   assert.equal(safeEvent({ event: 'native_action', action: 'open_file', code: 'opened', detail: 'private-plan.pdf' }), undefined, 'the whitelist refuses a file name');
-  assert.equal(safeEvent({ event: 'native_action', action: 'open_file', code: 'opened', detail: 'pdf', target: '/Users/rob/notes/private-plan.pdf' }), undefined, 'the whitelist refuses a target');
+  assert.equal(safeEvent({ event: 'native_action', action: 'open_file', code: 'opened', detail: 'pdf', target: '/Users/example/notes/private-plan.pdf' }), undefined, 'the whitelist refuses a target');
 });
 
 test('the destination policy parses the url, matches an exact host and keeps a viewer path', () => {
@@ -201,7 +201,7 @@ test('Open2-2: the opened result names the kind and the safe title, never a url'
   assert.ok('target' in app);
   assert.equal(app.target.kind, 'app');
   assert.equal(app.target.title, 'Safari');
-  const file = openTarget('open_file', { path: '/Users/rob/notes/ocp-deck.key' }, 'open the local file /Users/rob/notes/ocp-deck.key');
+  const file = openTarget('open_file', { path: '/Users/example/notes/ocp-deck.key' }, 'open the local file /Users/example/notes/ocp-deck.key');
   assert.ok('target' in file);
   assert.equal(file.target.kind, 'file');
   assert.equal(file.target.title, 'ocp-deck.key', 'a file title is its name, never the whole path');

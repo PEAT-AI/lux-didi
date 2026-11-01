@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { startFixture } from './fixture.mjs';
 
 const shots = process.env.DIDI_MINI_SHOTS
-  || '/Users/rob/.lux/reports/lux-didi-stability-1015/mini2-shots';
+  || join(import.meta.dirname, '../test-artifacts/mini2-shots');
 await mkdir(shots, { recursive: true });
 
 /// A PNG's IHDR width and height, read from the file's own bytes.

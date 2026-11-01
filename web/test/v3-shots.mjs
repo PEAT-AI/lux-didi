@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 
 const { chromium } = createRequire(new URL('../package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
-const out = '/Users/rob/.lux/reports/lux-didi-stability-1015/ui3b-shots';
+const out = process.env.DIDI_V3_SHOTS || resolve(import.meta.dirname, '../test-artifacts/ui3b-shots');
 await mkdir(out, { recursive: true });
 const state = await mkdtemp(join(tmpdir(), 'v3-shots-'));
 let child, descriptor, stderr = '';

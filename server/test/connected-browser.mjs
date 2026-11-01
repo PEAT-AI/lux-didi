@@ -99,7 +99,7 @@ try {
   // the owner's way before reading or clicking its content.
   await openPanel('right');
   await step('U3 declutter shots: the open chat without a grant', async () => {
-    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    const u3 = process.env.DIDI_U3_SHOTS || join(tmpdir(), 'lux-didi-u3-shots');
     await mkdir(u3, { recursive: true });
     await page.locator('#connected-consent').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
@@ -128,7 +128,7 @@ try {
     assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/);
   });
   await step('U3 declutter shots: the granted chat and the Settings switch', async () => {
-    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    const u3 = process.env.DIDI_U3_SHOTS || join(tmpdir(), 'lux-didi-u3-shots');
     await mkdir(u3, { recursive: true });
     await page.locator('#connected-entries .assistant').first().waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });

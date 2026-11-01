@@ -80,7 +80,7 @@ const SEED_CHAR_LIMIT = 8192 * 4;
 /** C-RECONNECT #1072: a seeded open hands the new session this call's own transcript, so it is told whose words are
  *  whose before it reads them. Without the framing a rebuilt session narrates the owner in the third person ("he
  *  asked") instead of answering him, because a bare history reads as somebody else's conversation. */
-export const SEED_FRAMING = 'The messages after this one are this call, already in progress. A user message is the owner speaking to you directly; an assistant message is your own earlier speech in this same call. Continue it as one conversation: answer him as "you", and never describe him, his name or what he asked in the third person.';
+export const SEED_FRAMING = 'The messages after this one are this call, already in progress. A user message is the owner speaking to you directly; an assistant message is your own earlier speech in this same call. Continue it as one conversation and address the owner as "you": never refer to the owner or to what was asked in the third person.';
 const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
 /** A refused setup keeps 300 characters of the provider's own message: enough to name the field, bounded. */

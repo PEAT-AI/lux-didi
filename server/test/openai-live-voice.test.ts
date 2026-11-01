@@ -589,7 +589,8 @@ describe('openai gpt-live adapter', () => {
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
     const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
     assert.equal(input.length, 128, 'the seed stays within the documented 128 messages');
-    assert.equal(input[0]!.content[0]!.text, 'turn 1', 'the oldest turn makes room for the directive');
+    assert.equal(input[0]!.role, 'developer', 'the framing takes the first slot');
+    assert.equal(input[1]!.content[0]!.text, 'turn 2', 'the oldest turns make room for the framing and the directive');
     assert.deepEqual(input.at(-1), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
   });
 

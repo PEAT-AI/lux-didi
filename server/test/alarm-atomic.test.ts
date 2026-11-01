@@ -58,10 +58,12 @@ test('alarm atomicity: crash after commit before confirmation leaves one alarm a
   const recurring: ToolCallIntent = { ...intent, executionId: randomUUID(), callId: randomUUID() };
   owner.observeAlarmOwner(session.liveSessionId, 'synthetic-recurring-journal', 'every saturday at ten remind me to do one hour of cardio', Date.now());
   assert.equal(owner.journal.intent(recurring), 'fresh');
-  await assert.rejects(tool.execute(args, { ...recurring, signal }), /synthetic_crash_after_commit/);
+  // C-TIME T-R1: the model states the wall clock the owner's words name, so the series is created.
+  const recurringArgs = { time: { mode: 'wall', date: { kind: 'next_weekday', weekday: 6 }, local_time: '10:00' } };
+  await assert.rejects(tool.execute(recurringArgs, { ...recurring, signal }), /synthetic_crash_after_commit/);
   const counts = () => store.transaction(tx => [Number(tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), Number(tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), Number(tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences')?.n)]);
   assert.deepEqual(counts(), [2, 1, 1], 'one series with exactly one linked pending occurrence');
-  await tool.execute(args, { ...recurring, signal });
+  await tool.execute(recurringArgs, { ...recurring, signal });
   assert.deepEqual(counts(), [2, 1, 1], 'a replayed recurring set_alarm creates nothing');
   await service.shutdown(); store.close();
   const recovered = new Store(directory, migrations);

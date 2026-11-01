@@ -4798,6 +4798,9 @@ test('#472: a late source result reaches the model while the session is live', a
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
+  // The response is announced before the late source lands at 4.5 s, so the note arrives inside it.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
@@ -8493,8 +8496,6 @@ test('C-REBUILD B: a held late finding is spoken once on the terminal of the res
   assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
   h.owner.revoke(session.liveSessionId);
   // A response is in flight when the late source lands, which is the shape this ruling is about.
-  fake.emit({ type: 'modelTurnStarted' });
-  await settlePort();
   release();
   await settlePort();
   const lateReceipts = receipts.filter(entry => entry['event'] === 'research_late_findings');

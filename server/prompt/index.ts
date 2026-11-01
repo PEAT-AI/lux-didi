@@ -107,17 +107,23 @@ function validateSnapshot(raw: unknown): CapabilitySnapshot {
 export function publicOwnerProfile(ownerId: string): OwnerProfileSnapshot {
   return Object.freeze({ schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' });
 }
+/** #698: the exact keys an owner profile may carry, so a wrong key is named instead of a bare schema code. */
+export const OWNER_PROFILE_KEYS: Readonly<Record<'default' | 'profile', readonly string[]>> = Object.freeze({
+  default: Object.freeze(['schemaVersion', 'kind', 'ownerId', 'displayName']),
+  profile: Object.freeze(['schemaVersion', 'kind', 'ownerId', 'profileVersion', 'displayName', 'style', 'lore']),
+});
+
 /** Revalidate both file and durable-record boundaries; deep freeze the validated copy. */
 export function validateOwnerProfile(raw: unknown, ownerId: string): OwnerProfileSnapshot {
   const o = object(raw);
   if (o['schemaVersion'] !== 1) fail('version');
   if (o['ownerId'] !== ownerId) fail('owner');
   if (o['kind'] === 'default') {
-    fields(o, ['schemaVersion', 'kind', 'ownerId', 'displayName']);
+    fields(o, [...OWNER_PROFILE_KEYS.default]);
     if (o['displayName'] !== 'Lux Didi') fail('schema');
     return publicOwnerProfile(ownerId);
   }
-  fields(o, ['schemaVersion', 'kind', 'ownerId', 'profileVersion', 'displayName', 'style', 'lore']);
+  fields(o, [...OWNER_PROFILE_KEYS.profile]);
   if (o['kind'] !== 'profile') fail('schema');
   const displayName = text(o['displayName'], 80);
   if (displayName.trim() !== displayName || /[\u0000-\u001f\u007f-\u009f]/.test(displayName)) fail('schema');

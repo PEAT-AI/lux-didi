@@ -281,16 +281,34 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   });
   if (named.length === 1) { const only = named[0]!; return { channel: only.id ?? only.name ?? wanted }; }
   if (named.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${named.map(label).join(', ')}` };
-  // The refusal carries at most three closest names, so a caller can voice them: a channel sharing
-  // more of the reference's words ranks first, then a first letter prefix.
+  // The refusal carries at most three closest names, so a caller can voice them.
+  const closest = closestChannelLabels(wanted, channels);
+  return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
+}
+
+/**
+ * #669: the at most three channel names closest to a reference the owner named: a channel sharing more of
+ * the reference's words ranks first, then a first letter prefix. Also voiced on the composed read's miss.
+ */
+function closestChannelLabels(wanted: string, channels: readonly MattermostChannel[]): string[] {
+  const words = (text: string): string[] => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
+  const referenceWords = words(wanted);
+  const lower = wanted.trim().toLowerCase();
+  const label = (channel: MattermostChannel) => channel.displayName ?? channel.name ?? channel.id ?? '';
   const closeness = (channel: MattermostChannel): number => {
     const own = words(`${channel.name ?? ''} ${channel.displayName ?? ''}`);
     const shared = referenceWords.filter(word => own.includes(word)).length;
     const prefix = label(channel).toLowerCase().startsWith(lower[0] ?? '') ? 1 : 0;
     return shared === 0 ? prefix : shared * 2 + prefix;
   };
-  const closest = [...channels].sort((a, b) => closeness(b) - closeness(a)).map(label).filter(Boolean).slice(0, 3);
-  return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
+  return [...channels].sort((a, b) => closeness(b) - closeness(a)).map(label).filter(Boolean).slice(0, 3);
+}
+
+/** #669: the names that refusal carries, at most three, so the composed read can voice them. */
+function closestChannelNames(refusal: string): string[] {
+  const detail = /closest names:\s*([^;]*)/iu.exec(refusal)?.[1];
+  if (detail === undefined) return [];
+  return detail.split(',').map(name => name.trim()).filter(name => name !== '' && !/^none$/iu.test(name)).slice(0, 3);
 }
 
 /** The text a completed child read carries inside its MCP content envelope. */
@@ -1061,7 +1079,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         if (spokenChannel === undefined) return { ok: false, result: { state: 'refused', reason: 'invalid-channel' } };
         const resolved = await resolveChannel(spokenChannel, signal);
         if (typeof resolved !== 'string') {
-          return { ok: false, result: finish({ ...base, read: `a channel called ${spokenChannel}`, notFound: `I do not know a channel called ${spokenChannel}. Which channel did you mean?` }) };
+          // #669: the resolver's own refusal names the closest channels, so the owner hears the one she meant.
+          const closest = closestChannelNames(resolved.error);
+          const hint = closest.length === 0 ? '' : ` The closest names I have are ${closest.length === 1 ? closest[0]! : `${closest.slice(0, -1).join(', ')} and ${closest[closest.length - 1]!}`}.`;
+          return { ok: false, result: finish({ ...base, read: `a channel called ${spokenChannel}`, notFound: `I do not know a channel called ${spokenChannel}.${hint} Which channel did you mean?` }) };
         }
         return { ok: true, args: { channel_id: resolved }, label: `the channel ${spokenChannel}` };
       }
@@ -1182,6 +1203,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const key = nameKey(spoken);
       if (key === '') return { state: 'refused', reason: 'invalid-channel' };
       let rows: MattermostChannel[];
+      // #669: the loaded channel list's closest names, so a miss voices the channels the owner probably meant.
+      let closest: string[] = [];
       const filters = listFilters();
       if (filters.query && filters.types) {
         // W2B-R6, W2B-R8: the child ranks the words the owner said, folding case and "&" only, never plurals
@@ -1205,6 +1228,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       } else {
         const channels = await loadChannels(signal, capture);
         if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+        closest = closestChannelLabels(spoken, channels);
         const wanted = key.split(' ');
         rows = channels.filter(channel => channel.type !== 'D' && channel.type !== 'G').filter(channel => {
           const own = nameKey(`${channel.name ?? ''} ${channel.displayName ?? ''}`).split(' ');
@@ -1215,7 +1239,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const target = strong.length === 1 ? strong[0]! : undefined;
       if (target === undefined || target.id === undefined) {
         // A successful discovery with no match is an empty read the model can speak, not a failed handler.
-        if (rows.length === 0) return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I do not know a channel called ${spoken}. Which channel did you mean?` });
+        if (rows.length === 0) {
+          // #669 F1: a child that ranks its own list answers with no rows, so the miss reads the channel index
+          // once and ranks it, instead of voicing the refusal with no names at all.
+          if (closest.length === 0) {
+            const known = await loadChannels(signal, capture);
+            if (Array.isArray(known)) closest = closestChannelLabels(spoken, known);
+          }
+          const hint = closest.length === 0 ? '' : ` The closest names I have are ${spokenList(closest, 'and')}.`;
+          return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I do not know a channel called ${spoken}.${hint} Which channel did you mean?` });
+        }
         const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
         return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
       }

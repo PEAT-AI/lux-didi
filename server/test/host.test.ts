@@ -15,6 +15,7 @@ import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { ConfigError } from '../config/files.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
@@ -351,6 +352,22 @@ test('host fails fatal configuration/listener/descriptor startup and releases it
     assert.equal((await once(help, 'exit'))[0], 0);
     assert.match(text, /loopback-only/);
   } finally { await new Promise<void>(resolve => blocker.close(() => resolve())); await rm(dir, { recursive: true, force: true }); }
+});
+
+// #698 F2: the plain line is the one wire between the loader and the refusal the owner reads, so pin it here.
+test('#698: a host start refuses an unknown owner-profile key with a line that names it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-owner-key-'));
+  try {
+    await chmod(dir, 0o700);
+    const profile = join(dir, 'profile.json');
+    await writeFile(profile, JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture',
+      displayName: 'Example', style: { text: 'SYNTHETIC style', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'private' },
+      features: { composedNotes: true } }), { mode: 0o600 });
+    await assert.rejects(startHost({ dataDir: join(dir, 'state'), webRoot, port: 0, ownerProfilePath: profile }),
+      (error: unknown) => error instanceof ConfigError && error.code === 'invalid_profile'
+        && /unknown key "features"/.test(error.message) && /live\.json/.test(error.message),
+      'the refused start names the key and where the composed-notes switch belongs');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('supervised actual child reports bounded matching readiness, closes on pipe EOF and preserves data', async () => {

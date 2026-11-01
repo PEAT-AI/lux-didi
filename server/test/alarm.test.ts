@@ -352,7 +352,7 @@ test('#107 the owner phrasing that must reach the alarm block', () => {
       assert.doesNotMatch(clocked.confirmation.replace(/^Alarm set for /, ''), /\d{1,2}:\d{2}.*\d{1,2}:\d{2}/, ask);
     }
   }
-  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz);
+  const standaloneBrief = parseAlarmTime('brief me at 7', now_, tz, modelAt(Date.parse('2026-10-28T07:00:00+08:00'), tz, now_));
   assert.equal(standaloneBrief.status, 'ready');
   if (standaloneBrief.status === 'ready') assert.match(standaloneBrief.confirmation, /^Alarm set for /);
 });

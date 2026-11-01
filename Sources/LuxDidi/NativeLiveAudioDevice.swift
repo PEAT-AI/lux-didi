@@ -1890,8 +1890,12 @@ struct NativeLiveInterruptionSample: Sendable {
         // C-AUDIO 2: the engine and player handles stay alive for the settle interval, and the
         // configuration observer stays installed with them, so a change that lands inside CoreAudio's
         // own teardown is seen and waited for. Reset and release happen in `settleRelease`.
-        settledEngine = engine; settledPlayer = player
-        engine = nil; player = nil
+        // A second release inside the settle must never overwrite the parked handle with nil: the
+        // settle that is already running still owns it (STAGE3-3).
+        if engine != nil {
+            settledEngine = engine; settledPlayer = player
+            engine = nil; player = nil
+        }
         // Only a settle holds the handles, and only a settle needs the observer. A release with nothing
         // to hold removes it here so it can never outlive the engine it watched.
         if settledEngine != nil { beginSettle() } else { removeConfigurationObserver() }
@@ -1906,6 +1910,9 @@ struct NativeLiveInterruptionSample: Sendable {
     /// C-AUDIO 2: keeps the released handles alive for the settle interval. Every release-then-build
     /// path awaits `awaitSettle()` first, so two engines are never alive at once.
     private func beginSettle() {
+        // One settle owns the parked handle. A release that lands inside it leaves that settle to
+        // finish, rather than racing a second one over the same engine (STAGE3-3).
+        guard !settling else { return }
         settling = true
         configurationChangePending = false
         settleDeviceIDs = (inputDevice().id, outputDevice().id)
@@ -1923,6 +1930,8 @@ struct NativeLiveInterruptionSample: Sendable {
     func settleForTesting() async { await awaitSettle() }
     /// Whether a release settle is holding the engine handles right now.
     var isSettling: Bool { settling }
+    /// Whether a released engine and player are still parked for the settle that owns them.
+    var holdsSettledHandle: Bool { settledEngine != nil }
     private func settleRelease() async {
         guard settledEngine != nil else { settling = false; settleTask = nil; return }
         // C-AUDIO 2: start at 250 ms, then wait out an in-flight configuration change or a default

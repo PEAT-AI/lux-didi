@@ -1409,6 +1409,7 @@ enum AudioGraphLifecycleTests {
         try await checkWatchdogRestartWaitsForTheSettle()
         try await checkReleaseWaitsForAPendingConfigurationChange()
         try await checkStartWaitsForTheSettle()
+        try await checkSecondReleaseKeepsTheSettledHandle()
         print("PASS audio lifecycle: one graph build per start, unmute, the mic watchdog and a start wait the release "
               + "settle, a pending configuration change is waited for and bounded")
     }
@@ -1560,6 +1561,32 @@ enum AudioGraphLifecycleTests {
                          "the previous handle was settled and dropped, the new engine is up")
         device.stop()
         await device.settleForTesting()
+    }
+
+    /// (#1101 f) A second release inside the settle must not drop the parked handle (STAGE3-3): the
+    /// reachable trigger is the route-recovery release landing on a mute release.
+    private static func checkSecondReleaseKeepsTheSettledHandle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+
+        device.releaseForTesting()
+        try audioRequire(device.isSettling && device.holdsSettledHandle,
+                         "control: the first release parks the handle for its settle")
+        device.releaseForTesting()
+        try audioRequire(device.holdsSettledHandle,
+                         "a second release inside the settle keeps the parked handle alive")
+
+        await device.settleForTesting()
+        try audioRequire(!device.holdsSettledHandle && !device.isSettling,
+                         "the settle that owns the handle drops it at the end")
+        try audioRequire(device.settledReleaseCount == 1 && device.engineResetCount == 1,
+                         "one settle reset the handle once, got settled \(device.settledReleaseCount) and "
+                         + "\(device.engineResetCount) resets")
+        let settled = journal.events.filter { $0.name == "audio_release_settled" }
+        try audioRequire(settled.count == 1, "one audio_release_settled for the pair, got \(settled.count)")
     }
 
     private static func checkReleaseWaitsForAPendingConfigurationChange() async throws {

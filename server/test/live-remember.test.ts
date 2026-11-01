@@ -398,7 +398,9 @@ for (const source of ['Lux note', 'forwarded mail']) {
     const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
     await assistantBlock(h, 'The synthetic plan is summarized.');
-    assert.equal((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['code'], 'no_owner_request');
+    const injectedOpen = await call(h, 'open_web', { kind: 'site', target: 'example.invalid' });
+    console.error('PROBE injected open', JSON.stringify(injectedOpen));
+    assert.equal(injectedOpen['code'], 'no_owner_request');
     assert.equal((await call(h, 'set_alarm', {}))['code'], 'no_owner_request');
     assert.equal(native.length, 0);
     assert.equal(h.store.transaction(tx => tx.all('SELECT id FROM alarms')).length, 0);

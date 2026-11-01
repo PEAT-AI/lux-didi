@@ -890,7 +890,9 @@ test('C-LABELS 2: a Stop naming a lost session logs session_lost, never user_sto
   const h = await harness(t, {});
   const { attachment } = await attached(h);
   attachment.close('session_lost');
-  await attachment.done;
+  // C-LABELS 2, F-1: the terminal code is the fact the audit reads, so it names the lost session too. A
+  // `session_end` that says session_lost over a `live_terminal` that says user_stop is two labels for one end.
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'session_lost' });
   assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'session_lost', msAfterStop: 0 }]);
 });
 

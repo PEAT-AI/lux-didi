@@ -94,6 +94,13 @@ raised `Format mismatch: input hw 1 ch 48000 Hz, client format 1 ch 16000 Hz` an
 The capture buffer takes its converter from the first buffer it actually receives, so nothing
 downstream depends on the format read before the tap.
 
+A call start writes `logs/call-start.json` before presence starts, with the pid, the wall time and
+the output transport, and clears it once a capture frame and one model chunk have both arrived or
+the call ends cleanly. A launch that finds a marker younger than two minutes from another pid logs
+`launch_after_failed_start` in native-live.log and does not auto connect: on 2026-11-01 three
+crashes in 35 s each launched straight back into the same fault. The app stays open and a key press
+still starts a call, and the orb visuals are unchanged.
+
 The input node sits behind one seam (`NativeLiveInputSeam`). A routine check injects
 `NativeFakeInputSeam` through `engineFactoryForTesting`, so no check, gate or agent enables voice
 processing, constructs a real input node, pins a device or stops and resets a real engine: measured

@@ -785,6 +785,27 @@ struct NativeLiveInterruptionSample: Sendable {
     var inputSeamForTesting: (any NativeLiveInputSeam)?
     /// The fake path installs no tap, so a test drives the guarded tap failure through this seam.
     var installTapForTesting: (() -> Void)?
+    /// F6: fires once per call, after one capture frame arrived and one model chunk played, so the
+    /// crash-loop marker can be cleared. A call that dies before both leaves the marker behind.
+    var onCallProvedBothWays: (() -> Void)?
+    /// F6: one direction of a call has proved itself.
+    private enum CallDirection { case capture, modelAudio }
+    private var captureProved = false
+    private var modelAudioProved = false
+    private func noteCallDirection(_ direction: CallDirection) {
+        switch direction {
+        case .capture:
+            if captureProved { return }
+            captureProved = true
+        case .modelAudio:
+            if modelAudioProved { return }
+            modelAudioProved = true
+        }
+        guard captureProved, modelAudioProved else { return }
+        onCallProvedBothWays?()
+    }
+    /// F6: the output route in the one word the journal uses, for the call start marker.
+    static var currentOutputTransport: String { routeClassification(input: false) }
     /// The seam that owns the live engine's lifecycle, kept past `releaseAudio` for the settle.
     private var settledSeam: (any NativeLiveInputSeam)?
     private var tapInstalled = false
@@ -1404,6 +1425,8 @@ struct NativeLiveInterruptionSample: Sendable {
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
         voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil; stallRestarted = false; inputStallFailed = false
+        // F6: both directions are proved again for every call, never inherited from the last one.
+        captureProved = false; modelAudioProved = false
         // C-AUDIO 4: engine starts are counted per call, so a rebuilt graph inside one call shows up.
         engineStartCount = 0; configChangesDuringStart = 0
         do { try build(send: send); recovery.begin() }
@@ -1714,6 +1737,7 @@ struct NativeLiveInterruptionSample: Sendable {
                         guard let frame else { break }
                         if let bands = self.inputOrb.analyze(frame).last { self.inputBands = bands; self.inputBandsAtMs = self.nowMs() }
                         self.drainFrames += 1
+                        self.noteCallDirection(.capture)
                         let epoch = self.captureEpoch
                         do { try Task.checkCancellation(); try await send(frame, epoch) }
                         catch {
@@ -1990,6 +2014,7 @@ struct NativeLiveInterruptionSample: Sendable {
         else { throw LiveClientError.unavailable }
         if newSegment { emitReceipt(.enqueued, segment: playbackSegment) }
         if arrival.start {
+            noteCallDirection(.modelAudio)
             if let driver = playbackDriverForTesting { driver.play() } else { try guardedNativeCall("play") { player?.play() } }
             emitReceipt(.started, segment: playbackSegment)
         }

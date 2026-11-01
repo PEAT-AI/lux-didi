@@ -462,6 +462,11 @@ import WebKit
         }
         liveJournal.append(record)
     }
+    /// F6: the call start marker sits beside audio.log and native-live.log, and holds no content.
+    var callStartMarkerURL: URL? { liveLogsDirectory.map { CallStartMarker.url(in: $0) } }
+    /// F6: one content free native-live.log record, so the launch that refused a call is on record.
+    func appendNativeRecord(_ record: [String: Any]) { liveJournal.append(record) }
+
     /// SOUND-R1: a dropped call the host is rebuilding rings the reconnect while presence stays live.
     func ringRebuildStarted() { connectingRing.rebuildStarted() }
     /// SOUND-R1: the rebuilt call is live again, so a reconnect ring ends with the arrival chime.
@@ -1101,8 +1106,17 @@ struct RootView: View {
     /// final for the launch: the orb shows its error look and nothing retries.
     private func autoConnectIfReady() {
         let pageHostable = coordinator.miniShown || miniShell?.state == .ready
+        // F6: a start marker left inside two minutes by another pid means that call never proved
+        // itself, so this launch does not repeat it. The app stays open and a press still calls.
+        let died = model.callStartMarkerURL.flatMap { CallStartMarker.previousStartDied($0, now: Date()) }
+        if let died {
+            model.appendNativeRecord(["event": "launch_after_failed_start", "kind": launchKind.rawValue,
+                                "ageMs": Int(Date().timeIntervalSince(died.startedAt) * 1000),
+                                "transport": died.transport])
+        }
         switch OrbFirstAutoConnect.decide(kind: launchKind, serviceReady: model.shell != nil,
-                                          pageHostable: pageHostable, attempted: autoConnectAttempted) {
+                                          pageHostable: pageHostable, attempted: autoConnectAttempted,
+                                          previousStartDied: died != nil) {
         case .connect:
             autoConnectAttempted = true
             Task { [weak self] in
@@ -1439,14 +1453,35 @@ struct RootView: View {
         coordinator.allowPresenceReveal()
         if model.live == nil { presence.sessionEnded(presence.generation) }
         presencePickupJobID = pickupJobID
+        // F6: written synchronously before the presence start, on the automatic and the key press
+        // path alike, so a launch after a start that never proved itself knows not to repeat it.
+        writeCallStartMarker()
         presence.start(.app)
+    }
+
+    private func writeCallStartMarker() {
+        guard let url = model.callStartMarkerURL else { return }
+        let record = CallStartMarker.Record(pid: Int32(ProcessInfo.processInfo.processIdentifier),
+                                            startedAt: Date(),
+                                            transport: NativeLiveAudioDevice.currentOutputTransport)
+        if !CallStartMarker.write(record, to: url) {
+            model.appendNativeRecord(["event": "call_start_marker_failed"])
+        }
+    }
+
+    private func clearCallStartMarker() {
+        guard let url = model.callStartMarkerURL else { return }
+        CallStartMarker.clear(url)
     }
 
     private func openPresenceSession(_ generation: UInt64) {
         let job = presencePickupJobID
         presencePickupJobID = nil
         liveGeneration = generation
-        if !model.startLive(pickupJobID: job) { presence.fail(generation) }
+        if !model.startLive(pickupJobID: job) { presence.fail(generation) } else {
+            // F6: both directions proved means this start is not one to refuse on the next launch.
+            model.live?.device.onCallProvedBothWays = { [weak self] in self?.clearCallStartMarker() }
+        }
     }
 
     private func presenceTransitioned(_ state: NativeLiveConversation.State, generation: UInt64) {
@@ -1461,6 +1496,8 @@ struct RootView: View {
         case .ready: presence.ready(generation)
         case .failed: presence.fail(generation)
         case .ended:
+            // F6: a call that ended cleanly is not a start that died.
+            clearCallStartMarker()
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true,

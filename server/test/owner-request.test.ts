@@ -442,7 +442,7 @@ test('C-PERMTIER (g): a provider retry of the same set_alarm creates one alarm',
 
 test('C-PERMTIER: a guarded delete keeps its own selector and its refusal carries its cause', () => {
   const requests = new OwnerRequests(() => 1_000);
-  requests.observe('s', 'j1', 'cancel my standup meeting', 1_000);
+  requests.observe('s', 'j2', 'cancel my standup meeting', 1_000);
   assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'allowed');
   const other = new OwnerRequests(() => 1_000);
   other.observe('s', 'j1', 'good morning', 1_000);
@@ -538,7 +538,7 @@ test('P-R1 a turn without write words still admits a free write and still refuse
   requests.observe('s', 'j1', 'thursday is busy', 0);
   assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
   assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'no_owner_request');
-  requests.observe('s', 'j1', 'cancel my standup meeting', 1_000);
+  requests.observe('s', 'j2', 'cancel my standup meeting', 1_000);
   assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'allowed');
 });
 

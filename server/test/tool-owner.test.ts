@@ -777,11 +777,13 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
   const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
-  const refused = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
-  assert.match(String(refused.result_json), /rule_mismatch/);
-  assert.match(String(refused.result_json), /call set_alarm once more[^"]*kind and weekdays omitted/, String(refused.result_json));
-  assert.match(String(refused.result_json), /not-for-speech|fixNotForSpeech/, 'the retry instruction is for the model alone');
-  assert.match(String(refused.result_json), /fixNotForSpeech/);
+  // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
+  // so the one call he made still sets the alarm he did ask for.
+  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily' }), { kind: 'daily' }, 1);
+  assert.equal(dropped.status, 'completed');
+  assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
+  assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
+  assert.doesNotMatch(String(dropped.result_json), /series_id/);
   const set = await liveExecute(f, alarmCall('run:1:1', {}), {}, 2);
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
 });
@@ -1022,10 +1024,13 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
   f.owner.ownerRequests.answered?.('run');
   f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
+  // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
+  // still never posts, and the result says so.
   const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
-  assert.equal(port.log.length, 2, 'saying send it writes nothing new');
+  assert.equal(port.log.length, 3, 'each ask drafts once and nothing is posted');
+  assert.equal(port.log.filter(entry => entry.startsWith('mattermost_save_draft')).length, 3);
   assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
-  assert.match(String(sent.result_json), /no_owner_request|his click|reply box/);
+  assert.match(String(sent.result_json), /his click|reply box/);
 });
 
 test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
@@ -1099,7 +1104,7 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
 });
 
-test('W1030 replay after a rebuild writes nothing, and a turn without write intent is refused', async t => {
+test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient writes nothing', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
@@ -1111,7 +1116,9 @@ test('W1030 replay after a rebuild writes nothing, and a turn without write inte
   const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
   assert.equal(refused.status, 'completed');
   assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  assert.match(String(refused.result_json), /no_owner_request/);
+  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at the
+  // recipient the harness roster does not hold: it still writes nothing.
+  assert.match(String(refused.result_json), /recipient_unknown|external_text_only|no_owner_request/);
 });
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {

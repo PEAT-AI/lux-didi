@@ -13,7 +13,7 @@ import { toolsMigrations } from '../tools/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { activeAlarms } from '../domain/write-claims.js';
-import { armedAlarmsNote, guardSeededSummaries } from '../live/index.js';
+import { armedAlarmsNote, guardSeededLoops, guardSeededSummaries } from '../live/index.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
 import { createSummarizer, type SummarizerLogEvent } from '../services/summarize.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
@@ -208,5 +208,19 @@ test('a stored summary keeps a write claim its own receipts settle and loses one
     assert.match(guarded[1]!.summary, /created the event/, 'the paired settled case keeps it');
     assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-seeded-refused')), null,
       'the stored row is not rewritten by the guard');
+  } finally { h.cleanup(); }
+});
+
+test('a stored open loop that denies an armed alarm never reaches the greeting', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-open-loop');
+    insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    const guarded = h.store.transaction(tx => guardSeededLoops(tx, [
+      { text: 'Naya could not set the alarm.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
+      { text: 'The owner still has to pick the venue.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
+    ], activeAlarms(tx)));
+    assert.deepEqual(guarded.map(loop => loop.text), ['The owner still has to pick the venue.'],
+      'the denial is gone and the supported loop stays');
   } finally { h.cleanup(); }
 });

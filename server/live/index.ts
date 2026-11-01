@@ -212,21 +212,32 @@ export function staleRefusedNoteSessions(tx: Transaction, ownerId: string): Read
 
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
-export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number }[] {
+export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number; sessionId: string }[] {
   const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
     ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
-  const loops: { text: string; lastSeenAt: number }[] = [];
+  const loops: { text: string; lastSeenAt: number; sessionId: string }[] = [];
   for (const row of rows) {
     // W5 (Q-06): a call whose note was refused is never offered as an open loop again.
     if (refused.has(String(row['id']))) continue;
     const source = historySessionEvidence(tx, String(row['id']), eligibility);
     if (!source || !allowedClasses.includes(source.dataClass)) continue;
-    loops.push({ text: String(row['loop']), lastSeenAt: Number(row['seen_at']) });
+    loops.push({ text: String(row['loop']), lastSeenAt: Number(row['seen_at']), sessionId: String(row['id']) });
     if (loops.length === OPEN_LOOP_SOURCES) break;
   }
   return loops;
+}
+
+/** C-MEMORYTRUTH: a stored open loop reaches the greeting only with the claims its own call's receipts and this
+ *  start's alarms table support, so a refused write is never offered as something still to do the wrong way. */
+export function guardSeededLoops<T extends { readonly text: string; readonly sessionId: string }>(
+  tx: Transaction, loops: readonly T[], alarms: readonly ActiveAlarm[] | null,
+): readonly T[] {
+  return loops.map(loop => {
+    const guarded = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId), alarms));
+    return guarded.dropped === 0 ? loop : { ...loop, text: guarded.text };
+  }).filter(loop => loop.text !== '');
 }
 
 /** C-MEMORYTRUTH: one entry per armed alarm, read from the alarms table at this start, so the seed names its
@@ -1782,9 +1793,10 @@ export class LiveSessionOwner {
       // W5-R2: a start inside the cooldown offers no open-loop option at all, because a summary that re-words
       // the loop would otherwise walk past the exact-topic rule. The other opener kinds are unaffected.
       const openLoopCooling = offered.openedAt !== undefined && now - offered.openedAt <= OPEN_LOOP_OPENER_COOLDOWN_MS;
-      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
+      const openerPlan = buildOpeningOptions({ candidates: seededSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: openLoopCooling ? [] : storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
+        openLoops: openLoopCooling ? [] : guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now,
+          staleRefusedNoteSessions(tx, assistantId)), armedAlarms),
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),

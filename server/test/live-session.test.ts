@@ -7245,7 +7245,7 @@ test('#656: the ladder waits out each call on that call\'s own ceiling, a resear
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
   // #660: the rung offers the unspoken result first, so the rebuild follows a delivery that got no answer.
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
-  console.error('DEBUG656', JSON.stringify(receipts.map(r => `${String(r['event'])}/${String(r['phase'] ?? r['reason'] ?? ''}/${String(r['trigger'] ?? '')}`)));
+  console.error('DEBUG656', JSON.stringify(receipts.map(r => [String(r['event']), String(r['phase'] ?? r['reason'] ?? ''), String(r['trigger'] ?? '')])));
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its ceiling the ladder recovers the silence');
   release();
 });test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {

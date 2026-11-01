@@ -1225,6 +1225,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
     return { event: 'turn_failed', reason: value.reason };
   }
+  if (value.event === 'live_late_note_ledger') {
+    // C-REBUILD B: a held late finding whose response was torn down stays in the research ledger. Named, counted,
+    // and never a send.
+    if (!closedKeys(value, ['event', 'reason', 'generation'])) return;
+    if (!isSafeMember(value.reason, ['generation_torn_down'])) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_late_note_ledger', reason: value.reason, generation: value.generation };
+  }
   if (value.event === 'live_watchdog_hold') {
     // C-REBUILD: a watchdog deadline held back, with the reason it was held. Counts and enums only.
     if (!closedKeys(value, ['event', 'reason', 'generation', 'delayMs'])) return;

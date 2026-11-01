@@ -2688,6 +2688,9 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
     if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
+    // C-REBUILD: the same one owner from the other side. A sliding watchdog still armed for this silence is
+    // cancelled here, so the debt door's rebuild is the turn's last word on it.
+    if (handle.watchdogTimer !== undefined) { handle.watchdogTimer.cancel(); handle.watchdogTimer = undefined; }
     // #660: the recovery hands the unspoken result to the session it opens, as the one input a fresh session
     // accepts. The retired call ids are never re-sent to a session that never delegated them.
     const opened = await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
@@ -3092,6 +3095,9 @@ export class LiveSessionOwner {
         turnAgeMs, removedCount: handle.rebuildRemoved });
       return;
     }
+    // C-REBUILD: one owed turn has one rebuild owner. The debt clock armed for this same silence is cancelled
+    // before this door opens, so the turn cannot be rebuilt a second time by the clock it never cancelled.
+    if (handle.debtTimer !== undefined) { handle.debtTimer.cancel(); handle.debtTimer = undefined; }
     // `recovered` only once the provider says the new session is live.
     hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation, sinceTool: waitedAfterTool });
     if (await this.#recoverFromDrop(handle, undefined, true, 'model_mute')) {
@@ -4795,7 +4801,12 @@ export class LiveSessionOwner {
     const held = handle.lateHeld ?? [];
     handle.lateHeld = [];
     for (const entry of held) {
-      if (entry.generation !== handle.generation) continue;
+      if (entry.generation !== handle.generation) {
+        // C-REBUILD B (finding 8): the response that held this note was torn down, so the note is not sent at all
+        // and stays in the research ledger. The disposition is named here instead of being an absence.
+        hostLogEvent({ event: 'live_late_note_ledger', reason: 'generation_torn_down', generation: entry.generation });
+        continue;
+      }
       this.#lateFindings(handle, handle.generation, entry.event);
     }
   }

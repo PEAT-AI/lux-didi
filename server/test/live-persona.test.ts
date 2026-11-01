@@ -371,10 +371,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a980824b472e0807263e1ced8977be6c1dd68289853958bf0820f442ae102db6');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), 'a940a3ab4d097e461f48b0145f47a24dd798a206ab522d726b950be0a01d9d2f');
+  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -707,7 +707,7 @@ const WRAPPER_3O_CHARS = 6603;
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
 // W3-R2 set this 14_559 ceiling; TRAIN9-R2 preserves every rule within it through equivalent wording.
 // W1030: the four write abilities re-pin the measure to 14_778, since TR-R5 re-pins and never trims.
-const WRAPPER_W5_CHARS = 14_924; // C-TIME: +55 for the alarm sentence's current-ask time and read-back, re-pinned to the measure.
+const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -740,9 +740,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
   // PT-1101: the write paragraph names the delete cases, the absent RSVP, the refusal cause and the exposure fence
   // (+91 chars, 8_266 measured); the bound carries it as TR-R5 re-pins a house budget, no reviewed rule trimmed.
-  // C-TIME: the alarm sentence names the current ask's time and the spoken read-back (+55 chars, 8_321
-  // measured); the bound carries it the same way, and no reviewed rule is trimmed for it.
-  const cap = 8_400;
+  // C-TIME: the alarm sentence was substituted at the same length, so the bound does not move.
+  const cap = 8_300;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.

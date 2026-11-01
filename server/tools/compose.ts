@@ -188,6 +188,11 @@ function hourMinute(text: string): { hour: number; minute: number } | undefined 
 /**
  * C-TIME shape 7: only a real invitee argument names a person. Nothing is guessed from the sentence,
  * so "and it is" never becomes someone, and an owner-only block describes nobody it invented.
+ *
+ * Position on review finding 6: `create_event` has no invitee argument, by the owner-only event
+ * design, so the production call passes `undefined` and this returns empty every time. The seam is
+ * kept, and named here, because it is the one place a roster match or an invitee argument would land
+ * if that design ever changes; deleting it would hide the fact that no such argument exists.
  */
 export function namedOthers(invitee: string | undefined, ownerName?: string): string[] {
   const name = invitee?.trim();

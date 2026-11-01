@@ -22,7 +22,14 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   const authorization = owner.authorize('synthetic', kind, JSON.stringify(row.call));
   let code: string = authorization.code;
   if (code === 'allowed' && kind === 'set_alarm') {
-    const parsed = parseAlarmTime(authorization.words ?? '', ('observedAt' in authorization ? Number(authorization.observedAt) : row.now ?? now), 'UTC', row.call.fire_at_utc as number | undefined ?? undefined);
+    // C-TIME: the fixture's model epoch is the model's structured time, read as a UTC wall clock.
+    const modelEpoch = (row.call.fire_at_utc as number | undefined) ?? row.fire_at_utc ?? undefined;
+    // C-TIME: the model states the wall clock and the zone he named, never a UTC epoch.
+    const zone = /singapore/i.test(authorization.words ?? '') ? 'Asia/Singapore' : 'UTC';
+    const wall = modelEpoch === undefined ? undefined : new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(modelEpoch);
+    const partOf = (type: string) => wall?.find(part => part.type === type)?.value ?? '';
+    const modelTime = wall === undefined ? undefined : { mode: 'wall' as const, date: { kind: 'iso' as const, value: `${partOf('year')}-${partOf('month')}-${partOf('day')}` }, local_time: `${partOf('hour')}:${partOf('minute')}`, timezone: zone };
+    const parsed = parseAlarmTime(authorization.words ?? '', ('observedAt' in authorization ? Number(authorization.observedAt) : row.now ?? now), 'UTC', modelTime);
     code = parsed.status === 'ready' ? 'ready' : parsed.reason;
     if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, row.fire_at_utc);
   } else if (code === 'allowed' && kind === 'open') {

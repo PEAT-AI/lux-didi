@@ -371,10 +371,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '54bce101dcc476fa155a9ac3395c56b3f2a88d616740f6228658a88188a0026d');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '3b1ce0a43707afa9220046832c4e541762b9990692e0f326404f521693595a5e');
+  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -740,6 +740,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
   // PT-1101: the write paragraph names the delete cases, the absent RSVP, the refusal cause and the exposure fence
   // (+91 chars, 8_266 measured); the bound carries it as TR-R5 re-pins a house budget, no reviewed rule trimmed.
+  // C-TIME: the alarm sentence was substituted at the same length, so the bound does not move.
   const cap = 8_300;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);

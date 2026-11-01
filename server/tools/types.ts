@@ -74,6 +74,8 @@ export type NamedEventOutcome =
 
 export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
+  /** The zone the host resolves wall times in; the process zone when unset. */
+  timezone?: string;
   log?: (event: ToolFailureEvent) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;

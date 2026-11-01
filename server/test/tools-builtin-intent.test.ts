@@ -101,7 +101,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     }, `${definition.name} must accept its stored intent`);
   }
   await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
-    const args = { fire_at_utc: alarmNow + 1000 };
+    // C-TIME: the model states a span; the host adds it to its own clock, and the canary floor holds.
+    const args = { time: { mode: 'relative', amount: 1, unit: 'minutes' } };
     owner.ownerRequests.answered!(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
     const definition = live.find(tool => tool.name === 'set_alarm')!;
@@ -259,9 +260,21 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       }
       alarmNow += row.toolDelayMs ?? 0;
       t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return row.nativeCode ?? 'opened'; });
-      const { tool, ...raw } = row.call;
+      const { tool, fire_at_utc: modelEpoch, ...raw } = row.call as Record<string, unknown> & { tool: string; fire_at_utc?: number | null };
       const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
       if (tool === 'open_source') args.handle = handle;
+      if (tool === 'set_alarm') {
+        // C-TIME T-R1: the model states the wall clock and the zone he named. The row's own instant, or
+        // its recorded model epoch when that row is a model-disagreement case, is translated, never
+        // passed as a UTC epoch, and no expected instant changes.
+        const epoch = modelEpoch ?? row.fire_at_utc ?? undefined;
+        const zone = /singapore|sgt/i.test(row.finals.join(' ')) ? 'Asia/Singapore' : 'UTC';
+        if (epoch !== undefined) {
+          const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(epoch);
+          const get = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+          args.time = { mode: 'wall', date: { kind: 'iso', value: `${get('year')}-${get('month')}-${get('day')}` }, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
+        }
+      }
       const definition = definitions.find(entry => entry.name === tool)!;
       const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: tool,
         argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),

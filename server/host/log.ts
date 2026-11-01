@@ -205,6 +205,7 @@ const SPEECH_END_REASONS = ['quiet', 'hesitation'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
+const isSafeWord = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
@@ -223,6 +224,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'alarm_model_time_ignored') {
     if (!closedKeys(value, ['event', 'skewMs']) || !Number.isSafeInteger(value.skewMs)) return;
     return { event: 'alarm_model_time_ignored', skewMs: value.skewMs };
+  }
+  if (value.event === 'alarm_time_corrected') {
+    // C-TIME: which source settled the instant, as closed words only, never a time or a label.
+    if (!closedKeys(value, ['event', 'corrected', 'source']) || !isSafeWord(value.corrected) || !isSafeWord(value.source)) return;
+    return { event: 'alarm_time_corrected', corrected: value.corrected, source: value.source };
   }
   if (value.event === 'alarm_scheduler_started') {
     // #751: a count only. A label or a time here would be the owner's schedule in the diagnostic log.

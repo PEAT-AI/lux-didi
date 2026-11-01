@@ -240,7 +240,8 @@ test('SA-R2: split finalized alarm ask retains timezone and is admitted once', (
   requests.observe('s', 'alarm-timezone', 'a.m. Singapore time');
   const ask = requests.authorize('s', 'set_alarm', 'seven-sg');
   assert.equal(ask.code, 'allowed');
-  const parsed = parseAlarmTime(ask.words ?? '', ask.observedAt ?? now, 'UTC');
+  // C-TIME: the zone is the model's field, so the split ask carries it in the time object.
+  const parsed = parseAlarmTime(ask.words ?? '', ask.observedAt ?? now, 'UTC', { mode: 'wall', date: { kind: 'today' }, local_time: '07:00', timezone: 'Asia/Singapore' });
   assert.equal(parsed.status, 'ready');
   if (parsed.status !== 'ready') return;
   assert.equal(parsed.tz, 'Asia/Singapore');
@@ -329,12 +330,15 @@ test('W1030 event result: naming a colleague stays an owner-only block that invi
   const window = eventWindow('block an hour with Zara on saturday 9', now, 'Asia/Singapore');
   assert.equal(window.status, 'ready');
   if (window.status !== 'ready') return;
-  assert.deepEqual(window.names, ['Zara']);
-  assert.deepEqual(namedOthers('block an hour with Zara'), ['Zara']);
+  // C-TIME shape 7: the sentence never names a person, so the block describes nobody.
+  assert.deepEqual(window.names, []);
+  assert.deepEqual(namedOthers('Zara'), ['Zara'], 'a real invitee argument still names him');
+  assert.deepEqual(namedOthers(undefined), []);
   const result = createdEventResult({ eventId: 'e1', window });
   assert.equal(result['attendees'], 0);
   assert.equal(result['invitations'], 'none');
-  assert.match(String(result['say']), /invited nobody/);
+  // C-TIME shape 7: no invented person, so the sentence says only that nothing was sent.
+  assert.doesNotMatch(String(result['say']), /I wrote/);
   assert.match(String(result['say']), /No invitations were sent/);
   const clash = createdEventResult({ eventId: 'e2', window, clash: 'your 9 o clock standup' });
   assert.equal(clash['clash'], 'your 9 o clock standup');
@@ -647,7 +651,8 @@ test('P-R3 an alarm with no time in his words executes from the model time argum
   requests.observe('s', 'j1', 'set an alarm please', now);
   const ask = requests.authorize('s', 'set_alarm', 'alarm-1');
   assert.equal(ask.code, 'allowed');
-  const parsed = parseAlarmTime(ask.code === 'allowed' ? ask.words : '', now, 'UTC', now + 3_600_000);
+  // C-TIME: the model states a wall clock and the host resolves it, so no epoch is passed any more.
+  const parsed = parseAlarmTime(ask.code === 'allowed' ? ask.words : '', now, 'UTC', { mode: 'relative', amount: 1, unit: 'hours' });
   assert.equal(parsed.status, 'ready');
   assert.equal(parsed.status === 'ready' ? parsed.fireAtUtc : 0, now + 3_600_000);
 });

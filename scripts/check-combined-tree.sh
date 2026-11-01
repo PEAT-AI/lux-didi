@@ -531,7 +531,11 @@ run_checks() {
     seconds=$(( $(date +%s) - start ))
     last="$(grep -aoE 'not ok [0-9]+ - .*|✖ .*|^FAIL [^ ].*' "$last_file" | tail -1 | cut -c1-120)"
     [[ -z "$last" ]] && last='-'
-    [[ $rc -ne 0 ]] && failed=$((failed + 1))
+    if [[ $rc -ne 0 ]]; then
+      failed=$((failed + 1))
+      printf 'COMBINED failure output: %s\n' "$check"
+      tail -n 60 "$last_file"
+    fi
     table+="| \`$check\` | $rc | ${seconds}s | $last |"$'\n'
     printf 'COMBINED %s rc=%s %ss\n' "$check" "$rc" "$seconds"
   done

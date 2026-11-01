@@ -5,7 +5,19 @@ const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s
 /** Every free write whose authority is the open owner call itself, never a phrase of his. */
 /** A clause he negated commands nothing: "do not open the deck" is not an ask to open it. */
 const NEGATED_CLAUSE = /\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)\s+([^.!?]*)/gi;
-const NEGATED_ACTION = /\b(?:open|show|launch|set|put|make|create|add|save|remember|note|write|draft|send|e-?mail|mail|message|reply|schedule|block|book|cancel|stop|delete|remove|snooze|wake|remind|list)\b/i;
+/** What a negated clause has to name to void this kind, and only this kind. */
+const NEGATED_ACTION: Record<string, RegExp> = {
+  open: /\b(?:open|show|launch)\b/i,
+  set_alarm: /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b|\balarm/i,
+  cancel_alarm: /\b(?:cancel|stop)\b/i,
+  snooze_alarm: /\bsnooze\b/i,
+  list_alarms: /\b(?:list|show)\b.*\balarm/i,
+  lux_note: /\b(?:save|remember|note|write|put)\b/i,
+  draft_email: /\b(?:draft|write|send|e-?mail|mail|message|reply)\b/i,
+  draft_chat: /\b(?:draft|write|send|message|reply|post)\b/i,
+  create_event: /\b(?:schedule|block|add|put|book|calendar|event)\b/i,
+  delete_event: /\b(?:cancel|delete|remove)\b/i,
+};
 const isFreeKind = (kind: ActionKind): boolean =>
   kind === 'open' || kind === 'lux_note' || tierOf(kind) === 'free';
 const FREE_ACTION_KINDS: readonly ActionKind[] = ['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm',
@@ -87,7 +99,7 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
-    if (this.negated(request.words)) return { ...common, code: 'no_owner_request' };
+    if (this.negated(request.words, kind)) return { ...common, code: 'no_owner_request' };
     return this.settle(request, kind, target, common);
   }
   /**
@@ -100,12 +112,14 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
-    if (this.negated(request.words)) return { ...common, code: 'no_owner_request' };
+    if (this.negated(request.words, kind)) return { ...common, code: 'no_owner_request' };
     if (this.fenced(session)) return { ...common, code: 'external_text_only' };
     return this.settle(request, kind, target, common);
   }
-  private negated(words: string): boolean {
-    for (const match of words.matchAll(NEGATED_CLAUSE)) if (NEGATED_ACTION.test(match[1]!)) return true;
+  private negated(words: string, kind: ActionKind): boolean {
+    const governed = NEGATED_ACTION[kind];
+    if (governed === undefined) return false;
+    for (const match of words.matchAll(NEGATED_CLAUSE)) if (governed.test(match[1]!)) return true;
     return false;
   }
   private settle(request: Request, kind: ActionKind, target: string,

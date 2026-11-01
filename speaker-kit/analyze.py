@@ -127,6 +127,30 @@ def align_offset(rec, ref, fs, search_lo=0, search_hi=None, max_lag_s=8.0):
     return lo + best
 
 
+def alignment_landmarks(rec, ref, fs, onset):
+    """Short-reference correlations expose capture dropouts inside a sweep.
+
+    A single whole-file peak cannot establish that its interior has the same
+    timebase. Only compare landmarks with adequate correlation.
+    """
+    points = []
+    for t in np.arange(1.0, len(ref) / fs - 0.3, 0.5):
+        offset = int(t * fs)
+        part = ref[offset:offset + int(0.08 * fs)]
+        expected = onset + offset
+        try:
+            lag = align_offset(rec, part, fs, max(0, expected-int(0.8*fs)),
+                               min(len(rec), expected+len(part)+int(0.8*fs)))
+        except ValueError:
+            continue
+        seg = rec[lag:lag+len(part)]
+        score = abs(float(np.dot(seg, part))) / max(float(np.linalg.norm(seg)*np.linalg.norm(part)), 1e-30)
+        if score >= 0.2:
+            points.append({"reference_s": round(t, 3), "offset_s": round((lag-offset)/fs, 5),
+                           "correlation": round(score, 3)})
+    return points
+
+
 def _frames(seg, fs, f1, f2, dur):
     """Matched-demodulate the harmonic orders and the between-harmonic floor."""
     k_log = math.log(f2 / f1)
@@ -307,7 +331,139 @@ def _slope(points):
     return float(np.sum(xs * (ys - ys.mean())) / denom)
 
 
-def analyse_segments(entries, segments, fs, meta=None):
+def relative_diagnostics(report):
+    """Describe differential evidence, never infer failure from a harmonic ratio.
+
+    Apple virtual bass, crossfeed and compression are not flat-speaker defects.
+    Even a significant asymmetry is a candidate, not proof of a faulty driver:
+    speaker-to-mic paths differ and room interference does not cancel.
+    """
+    report["comparison"] = []
+    for ch, data in report["channels"].items():
+        data["calibration_verdict"] = data["verdict"]
+        data["verdict"] = "INCONCLUSIVE"
+        data["reasons"] = ["No flat-speaker fault thresholds applied; DSP and room path are unknown."]
+        levels = sorted(data["sweep"], key=float)
+        if len(levels) < 2:
+            continue
+        low = levels[0]
+        for band in BAND_NAMES:
+            ref = data["sweep"][low][band]
+            if not ref.get("valid"):
+                continue
+            for lv in levels[1:]:
+                top = data["sweep"][lv][band]
+                if not top.get("valid"):
+                    continue
+                gain = top["fund_dbfs"] - ref["fund_dbfs"] - (float(lv)-float(low))
+                item = {"kind": "level", "channel": ch, "band": band,
+                        "reference_dbfs": float(low), "level_dbfs": float(lv),
+                        "gain_change_db": round(gain, 2)}
+                report["comparison"].append(item)
+                if abs(gain) > 3:
+                    data["reasons"].append("%s: gain changes %+.1f dB at %s vs %s dBFS (DSP or measurement, not a fault verdict)" %
+                                           (band, gain, lv, low))
+    left = report["channels"].get("L", {}).get("sweep", {})
+    right = report["channels"].get("R", {}).get("sweep", {})
+    common = sorted(set(left) & set(right), key=float)
+    for lv in common:
+        for band in BAND_NAMES:
+            a, b = left[lv][band], right[lv][band]
+            if not (a.get("valid") and b.get("valid")):
+                continue
+            item = {"kind": "left-right", "level_dbfs": float(lv), "band": band,
+                    "fund_L_minus_R_db": round(a["fund_dbfs"]-b["fund_dbfs"], 2)}
+            if a.get("hi_ratio_db") is not None and b.get("hi_ratio_db") is not None:
+                item["hi_L_minus_R_db"] = round(a["hi_ratio_db"]-b["hi_ratio_db"], 2)
+                # Require a change in asymmetry from the same run's quiet
+                # reference, not just unequal acoustic paths or virtual bass.
+                low = common[0]
+                ar, br = left[low][band], right[low][band]
+                if (lv != low and ar.get("valid") and br.get("valid")
+                        and ar.get("hi_ratio_db") is not None and br.get("hi_ratio_db") is not None):
+                    delta = item["hi_L_minus_R_db"] - (ar["hi_ratio_db"]-br["hi_ratio_db"])
+                    item["asymmetry_growth_db"] = round(delta, 2)
+                    # Noise-like excess, supported by both level and channel
+                    # controls. Coherent synthetic harmonics alone cannot pass.
+                    for ch, sign, v, r in (("L", 1, a, ar), ("R", -1, b, br)):
+                        if (sign*delta > 10 and v["hi_ratio_db"]-r["hi_ratio_db"] > 10
+                                and v.get("coherent_db") is not None and v["coherent_db"] < 5
+                                and v["hi_ratio_db"] > -35 and v.get("hi_crest", 0) > 1.8):
+                            data = report["channels"][ch]
+                            data["verdict"] = "ASYMMETRIC RATTLE CANDIDATE"
+                            data["reasons"].append("%s at %s dBFS: noise-like excess grows %.1f dB relative to other channel and quiet reference" %
+                                                   (band, lv, sign*delta))
+            report["comparison"].append(item)
+    report["limitations"] = [
+        "INCONCLUSIVE is not a clean-speaker certificate. No sustained bass in the sweep mode.",
+        "Left/right means separate input routing, not isolated acoustic drivers: crossfeed is expected.",
+        "Mic gain is unknown; headroom does not establish calibration, AGC absence or room SNR.",
+        "Harmonics below 300 Hz can be intentional virtual bass; a weak fundamental makes ratios unstable.",
+        "Matched harmonic windows are descriptive, not Farina impulse-response separation or proof of rattle.",
+    ]
+
+
+def spectral_amplitudes(x, fs, frequencies):
+    """Windowed sinusoidal projection, independent of a constant acoustic delay."""
+    t = np.arange(len(x)) / fs
+    w = np.hanning(len(x))
+    return np.array([2*abs(np.dot(x*w, np.exp(-2j*np.pi*f*t)))/max(w.sum(), 1e-20)
+                     for f in frequencies])
+
+
+def bass_metrics(entries, segments, fs):
+    result = {"tones": [], "voice": {}, "verdict": "INCONCLUSIVE"}
+    voice = {}
+    for e in entries:
+        x = segments.get(e["file"])
+        if x is None or e["kind"] not in ("bass-tone", "bass-voice", "voice", "bass-kick"):
+            continue
+        if e["kind"] == "bass-tone":
+            f = e["tone_hz"]
+            # 200 ms frames, integer cycles at every specified frequency.
+            frames = [x[int(t*fs):int((t+.2)*fs)] for t in np.arange(.1, 1.71, .2)]
+            amp = np.array([spectral_amplitudes(z, fs, [f])[0] for z in frames])
+            ladder = spectral_amplitudes(x[int(.1*fs):int(1.9*fs)], fs, [f*k for k in range(1, 9)])
+            floor = spectral_amplitudes(x[int(.1*fs):int(1.9*fs)], fs, [f*k+13 for k in range(1, 9)])
+            snr = db(ladder[0]/max(float(np.median(floor)), 1e-20))
+            result["tones"].append({"frequency_hz": f, "level_dbfs": e["level_db_peak"],
+                "fund_dbfs": round(db(ladder[0]), 2), "snr_db": round(snr, 2),
+                "harmonics_db": [round(db(v/max(ladder[0], 1e-20)), 2) for v in ladder[1:]],
+                "frame_level_dbfs": [round(db(v), 2) for v in amp],
+                "pumping_db": round(db(float(np.mean(amp[-3:]))/max(float(np.mean(amp[:3])), 1e-20)), 2),
+                "valid": snr >= 15})
+        elif e["kind"] in ("voice", "bass-voice"):
+            freqs = e["tones_hz"]
+            z = x[int(.1*fs):int(3.9*fs)]
+            amps = spectral_amplitudes(z, fs, freqs)
+            # Bass modulation appears at +/-100 Hz. Keep the tone grid apart
+            # from those windows; a noise control uses offset +/-137 Hz.
+            side = spectral_amplitudes(z, fs, [f+d for f in freqs for d in (-100, 100)])
+            noise = spectral_amplitudes(z, fs, [f+d for f in freqs for d in (-137, 137)])
+            voice[e["kind"]] = {"tone_rms_dbfs": round(db(np.linalg.norm(amps)/np.sqrt(2)), 2),
+                "sideband_rms_dbfs": round(db(np.linalg.norm(side)/np.sqrt(2)), 2),
+                "noise_rms_dbfs": round(db(np.linalg.norm(noise)/np.sqrt(2)), 2)}
+        else:
+            result["kick"] = {"peak_dbfs": round(db(np.max(np.abs(x))), 2),
+                              "rms_dbfs": round(db(np.sqrt(np.mean(x*x))), 2)}
+    for f in sorted({v["frequency_hz"] for v in result["tones"]}):
+        group = sorted([v for v in result["tones"] if v["frequency_hz"] == f], key=lambda v: v["level_dbfs"])
+        ref = group[0]
+        for item in group:
+            item["gain_change_db"] = round(item["fund_dbfs"]-ref["fund_dbfs"]-(item["level_dbfs"]-ref["level_dbfs"]), 2)
+            item["reference_dbfs"] = ref["level_dbfs"]
+            if item["valid"] and ref["valid"] and (item["gain_change_db"] < -3 or item["pumping_db"] < -3):
+                result["verdict"] = "LOW-FREQUENCY LEVEL DEPENDENCE (limiter candidate, not proof of damage)"
+    if "voice" in voice and "bass-voice" in voice:
+        a, b = voice["voice"], voice["bass-voice"]
+        result["voice"] = {"alone": a, "with_bass": b,
+            "gain_change_db": round(b["tone_rms_dbfs"]-a["tone_rms_dbfs"], 2),
+            "sideband_change_db": round(b["sideband_rms_dbfs"]-a["sideband_rms_dbfs"], 2),
+            "sidebands_above_noise_db": round(b["sideband_rms_dbfs"]-b["noise_rms_dbfs"], 2)}
+    return result
+
+
+def analyse_segments(entries, segments, fs, meta=None, calibrated=False):
     """Analyse in-memory segments; the CLI and the selftest share this path.
 
     entries  ordered list of {file,kind,channel,level_db_peak,...}
@@ -315,6 +471,7 @@ def analyse_segments(entries, segments, fs, meta=None):
     """
     report = {
         "fs": fs,
+        "measurement_version": 2,
         "signals": [
             {k: v for k, v in e.items() if k in ("file", "kind", "channel", "level_db_peak")}
             for e in entries
@@ -388,6 +545,9 @@ def analyse_segments(entries, segments, fs, meta=None):
     report["multitone"] = {str(k): v for k, v in multitone.items()}
     report["twintone"] = twintone
     _assign_verdicts(report)
+    if not calibrated:
+        relative_diagnostics(report)
+    report["bass"] = bass_metrics(entries, segments, fs)
     return report
 
 
@@ -519,6 +679,44 @@ def _assign_verdicts(report):
 
 
 def format_table(report):
+    if "comparison" in report:
+        lines = ["COMPARATIVE MEASUREMENTS (dB; no flat-speaker fault verdicts)",
+                 "kind         ch/band             level/ref       difference"]
+        for item in report["comparison"]:
+            if item["kind"] == "level":
+                lines.append("level        %-2s %-9s %5g/%5g     gain %+.2f" %
+                             (item["channel"], item["band"], item["level_dbfs"], item["reference_dbfs"], item["gain_change_db"]))
+            else:
+                lines.append("left-right      %-9s %5g           fundamental %+.2f%s" %
+                             (item["band"], item["level_dbfs"], item["fund_L_minus_R_db"],
+                              " hi ratio %+.2f" % item["hi_L_minus_R_db"] if "hi_L_minus_R_db" in item else ""))
+        if not report["comparison"]:
+            lines.append("INCONCLUSIVE: no valid aligned sweep comparisons.")
+        for ch, data in report["channels"].items():
+            lines.append(ch + ": " + data["verdict"])
+            lines.extend("  " + r for r in data["reasons"])
+        for lv, m in sorted(report["multitone"].items(), key=lambda p: float(p[0])):
+            lines.append("multitone %s dBFS: tone %.2f dBFS, residual %.2f dB (descriptive only)" %
+                         (lv, m["tone_rms_dbfs"], m["residual_db"]))
+        lines.append("mic peak %.2f dBFS; input gain UNKNOWN; clipped=%s" %
+                     (report.get("capture_peak_dbfs", report["mic"]["peak_dbfs"]), report["mic"]["clipped"]))
+        if "noise_bands_dbfs" in report:
+            lines.append("quiet-window band RMS dBFS: " + str(report["noise_bands_dbfs"]))
+        if report.get("alignment_quality"):
+            lines.append("file                     expected_s measured_s corr    valid landmark_spread_ms")
+            for name, q in report["alignment_quality"].items():
+                lines.append("%-24s %9.5f %10.5f %.4f %-5s %s" %
+                             (name, q["expected_s"], q["measured_s"], q["correlation"],
+                              q["valid"], q.get("landmark_spread_ms", "n/a")))
+        bass = report.get("bass", {})
+        if bass.get("tones"):
+            lines.append("bass Hz input ref fundamental SNR gain_change pumping harmonics H2..H8 (dB)")
+            for v in bass["tones"]:
+                lines.append("%(frequency_hz)3g %(level_dbfs)5g %(reference_dbfs)5g %(fund_dbfs)7.2f %(snr_db)6.1f %(gain_change_db)+7.2f %(pumping_db)+7.2f %(harmonics_db)s" % v)
+            lines.append("bass: " + bass["verdict"])
+            lines.append("voice with/without bass: " + str(bass["voice"]))
+        lines.extend(report.get("limitations", []))
+        return "\n".join(lines)
     lines = []
     chans = sorted(report["channels"])
     levels = sorted({lv for c in chans for lv in
@@ -582,6 +780,12 @@ def run(run_dir, out_path=None):
     if fs != manifest.get("fs", FS):
         raise SystemExit("recording is %d Hz, manifest says %s Hz" % (fs, manifest.get("fs")))
     capture_peak = db(float(np.max(np.abs(rec))))
+    blocks = rec[:len(rec)//(fs//5)*(fs//5)].reshape(-1, fs//5)
+    quiet = blocks[np.argsort(np.mean(blocks*blocks, axis=1))[:max(1, len(blocks)//10)]]
+    spec = np.mean(np.abs(np.fft.rfft(quiet, axis=1))**2, axis=0)
+    freq = np.fft.rfftfreq(quiet.shape[1], 1/fs)
+    noise = {name: round(db(np.sqrt(2*np.sum(spec[(freq>=lo)&(freq<hi)]))/quiet.shape[1]), 2)
+             for name, (lo, hi) in zip(BAND_NAMES, BANDS)}
     padding = 5 * fs
     rec = np.pad(rec, (padding, 0))
     entries = manifest["files"]
@@ -612,9 +816,24 @@ def run(run_dir, out_path=None):
             "correlation": round(corr, 5),
             "rms_dbfs": round(db(float(np.sqrt(np.mean(segment * segment)))), 2),
         }
+        if entry["kind"] != "sweep" and corr < 0.2:
+            invalid.append(entry["file"] + ": weak whole-file reference correlation %.3f" % corr)
+            alignment_quality[entry["file"]]["valid"] = False
+        if entry["kind"] == "sweep":
+            landmarks = alignment_landmarks(rec, ref, fs, lag)
+            alignment_quality[entry["file"]]["landmarks"] = [
+                dict(p, offset_s=round(p["offset_s"]-padding/fs, 5)) for p in landmarks]
+            spread = np.ptp([p["offset_s"] for p in landmarks]) if len(landmarks) >= 3 else None
+            alignment_quality[entry["file"]]["landmark_spread_ms"] = None if spread is None else round(spread*1000, 2)
+            if spread is None or spread > 0.02:
+                invalid.append(entry["file"] + ": reference timing inconsistent within file (landmark spread %s ms)" %
+                               alignment_quality[entry["file"]]["landmark_spread_ms"])
+                alignment_quality[entry["file"]]["valid"] = False
+        if not alignment_quality[entry["file"]]["valid"]:
+            segments.pop(entry["file"], None)
         if lag < padding:
             invalid.append(entry["file"] + ": recording starts %.3fs after stimulus onset" % ((padding-lag)/fs))
-            del segments[entry["file"]]
+            segments.pop(entry["file"], None)
         alignment[entry["file"]] = lag - padding
         residuals[entry["file"]] = round((lag - position) / fs, 4)
         position = lag + len(ref) + gap_samples
@@ -622,6 +841,7 @@ def run(run_dir, out_path=None):
         "alignment_quality": alignment_quality,
         "invalid_measurements": invalid,
         "capture_peak_dbfs": round(capture_peak, 2),
+        "noise_bands_dbfs": noise,
         "run_dir": os.path.abspath(run_dir),
         "label": manifest.get("label"),
         "slider": manifest.get("slider"),
@@ -629,7 +849,12 @@ def run(run_dir, out_path=None):
         "alignment": alignment,
         "alignment_residual_s": residuals,
     }
-    report = analyse_segments(entries, segments, fs, meta)
+    report = analyse_segments(entries, segments, fs, meta, calibrated=manifest.get("calibrated_fixture", False))
+    report["mic"]["clipped"] = capture_peak >= db(MIC_CLIP_LEVEL)
+    if report["mic"]["clipped"]:
+        for data in report["channels"].values():
+            data["verdict"] = "INCONCLUSIVE"
+            data["reasons"] = ["Capture clipping invalidates speaker inference."]
     report["recording"] = manifest["recording"]["file"]
     if out_path is None:
         out_path = os.path.join(run_dir, "analysis.json")

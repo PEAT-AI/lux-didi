@@ -4,6 +4,7 @@
 #
 #   bash run_kit.sh LABEL            print the plan and the seconds, play nothing
 #   bash run_kit.sh LABEL --go       record one run
+#   bash run_kit.sh LABEL --bass     print the 48 second bass plan
 #
 # --go refuses unless the default output is the built-in speaker, the slider
 # reading works, a built-in microphone is present by name, and the operator has
@@ -33,10 +34,12 @@ usage() {
 
 label=""
 go=0
+bass=0
 confirm_flag=0
 for arg in "$@"; do
     case "$arg" in
         --go) go=1 ;;
+        --bass) bass=1 ;;
         --confirm-no-call) confirm_flag=1 ;;
         -h|--help) usage 0 ;;
         --*) echo "unknown option: $arg" >&2; usage 2 ;;
@@ -48,7 +51,31 @@ case "$label" in
     *[!A-Za-z0-9._-]*) echo "label may only hold letters, digits, dot, underscore, hyphen" >&2; exit 2 ;;
 esac
 
+signal_args=()
+if [ "$bass" -eq 1 ]; then
+    signal_args=(--bass)
+    SIGNALS_DIR=${SPEAKERKIT_SIGNALS:-$RUNS_ROOT/signals-bass}
+    N_FILES=21
+    AUDIO_S=48
+    GAPS_S=20
+    TOTAL_S=69
+fi
+
 print_plan() {
+    if [ "$bass" -eq 1 ]; then
+        cat <<EOF
+speaker-kit bass plan for label "$label"
+  sustained stereo: 60, 80, 100, 150, 200, 300 Hz; 2 s each at -12, -6, -3 dBFS
+  kicks: decaying 100 to 60 Hz, -1 dBFS peak, 4/s for 4 s
+  voice alone and 100 Hz bass (-6) plus voice (-18): 4 s each
+  all fades: 20 ms; no sustained -1 dBFS sine
+  audio ${AUDIO_S}s + gaps ${GAPS_S}s + pre-roll ${PRE_ROLL_S}s = ${TOTAL_S}s
+  signals: $SIGNALS_DIR
+  Without --go: no playback, mic, device query or file creation.
+  With --go: identical speaker, microphone, slider and no-live-call safeguards.
+EOF
+        return
+    fi
     local total_json=""
     if [ -f "$SIGNALS_DIR/signals.json" ]; then
         total_json=$(sed -n 's/.*"total_s": *\([0-9.]*\).*/\1/p' "$SIGNALS_DIR/signals.json" | head -1)
@@ -169,7 +196,7 @@ fi
 mkdir -p "$SIGNALS_DIR"
 if [ ! -f "$SIGNALS_DIR/signals.json" ]; then
     log "generating the stimulus set in $SIGNALS_DIR"
-    "$PY" "$KIT_DIR/make_signals.py" --out "$SIGNALS_DIR" --quiet
+    "$PY" "$KIT_DIR/make_signals.py" --out "$SIGNALS_DIR" "${signal_args[@]}" --quiet
 fi
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)

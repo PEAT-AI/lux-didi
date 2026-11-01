@@ -157,7 +157,36 @@ def signals():
     return entries
 
 
-def build(out_dir):
+def bass_signals():
+    """48 seconds of stereo audio, excluding gaps; no sustained -1 dBFS sine."""
+    entries = []
+    def add(name, kind, x, level, **extra):
+        entries.append(dict(file=name + ".wav", kind=kind, channel="both", mono=x,
+                            level_db_peak=float(level), duration_s=len(x)/FS,
+                            sample_rate=FS, bits=24, **extra))
+    t = np.arange(2*FS)/FS
+    for f in (60, 80, 100, 150, 200, 300):
+        for lv in (-12, -6, -3):
+            add("bass_%d_m%d" % (f, -lv), "bass-tone", _fade(np.sin(2*np.pi*f*t)), lv, tone_hz=f)
+    bt = np.arange(FS//4)/FS
+    # Instantaneous frequency decays from 100 towards 60 Hz, four kicks/s.
+    phase = 2*np.pi*(60*bt + 40*.04*(1-np.exp(-bt/.04)))
+    burst = _fade(np.sin(phase)*np.exp(-bt/.07))
+    burst /= np.max(np.abs(burst))
+    add("bass_kicks", "bass-kick", np.tile(burst, 16), -1)
+    t = np.arange(4*FS)/FS
+    freqs = [317., 509., 773., 1181., 1831., 2791.]
+    v = sum(np.sin(2*np.pi*f*t+i*i) for i, f in enumerate(freqs))
+    v /= np.max(np.abs(v))
+    add("voice_alone", "voice", _fade(v), -18, tones_hz=freqs)
+    x = 10**(-6/20)*np.sin(2*np.pi*100*t) + 10**(-18/20)*v
+    peak = np.max(np.abs(x))
+    add("bass_voice", "bass-voice", _fade(x/peak), 20*np.log10(peak), tones_hz=freqs,
+        bass_level_dbfs=-6, voice_level_dbfs=-18)
+    return entries
+
+
+def build(out_dir, bass=False):
     os.makedirs(out_dir, exist_ok=True)
     files = []
 
@@ -182,7 +211,7 @@ def build(out_dir):
             entry.update(extra)
         files.append(entry)
 
-    for entry in signals():
+    for entry in (bass_signals() if bass else signals()):
         extra = {k: v for k, v in entry.items()
                  if k not in ("file", "kind", "channel", "level_db_peak",
                               "duration_s", "sample_rate", "bits", "mono")}
@@ -227,9 +256,10 @@ def verify(out_dir, manifest):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=DEFAULT_OUT, help="output directory (default %(default)s)")
+    ap.add_argument("--bass", action="store_true", help="48 seconds of sustained bass and voice controls")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
-    manifest, path = build(args.out)
+    manifest, path = build(args.out, bass=args.bass)
     bad = verify(args.out, manifest)
     if not args.quiet:
         for entry in manifest["files"]:

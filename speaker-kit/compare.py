@@ -32,7 +32,9 @@ def load(run_dir):
     path = os.path.join(run_dir, "analysis.json")
     if os.path.exists(path):
         with open(path) as fh:
-            return json.load(fh)
+            report = json.load(fh)
+        if report.get("measurement_version") == 2:
+            return report
     report, _ = analyze.run(run_dir)
     return report
 
@@ -44,8 +46,13 @@ def _delta(a, b):
 
 
 def compare(a, b):
+    if a.get("invalid_measurements") or b.get("invalid_measurements"):
+        return [{"what": "INCONCLUSIVE: invalid alignment or capture; no slider inference permitted"}], []
+
     changes = []
     noise = []
+    # These are descriptive tolerances, not a measured repeatability model.
+    # Capture position, mic gain, chain and room must be unchanged by the owner.
     for ch in sorted(set(a["channels"]) | set(b["channels"])):
         ca = a["channels"].get(ch)
         cb = b["channels"].get(ch)
@@ -143,6 +150,7 @@ def main(argv=None):
     print("B: %s  %s  slider %s  %s" % (args.run_b, b.get("label"),
                                         b.get("slider"), b.get("created")))
     print("")
+    print("Assumes unchanged mic gain, position, room and DSP. Tolerances are NOT measured noise bounds.")
     print(format_changes(changes, noise))
     if args.out:
         with open(args.out, "w") as fh:

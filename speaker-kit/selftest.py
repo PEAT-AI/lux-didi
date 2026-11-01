@@ -104,6 +104,70 @@ def _lowpass(x, fs, fc, taps_ms=5.0):
     return np.convolve(x, kernel, mode="same")
 
 
+def _split_bass(x, fs):
+    spectrum = np.fft.rfft(x, axis=0)
+    spectrum[np.fft.rfftfreq(len(x), 1/fs) >= 300] = 0
+    return np.fft.irfft(spectrum, n=len(x), axis=0)
+
+
+def model_chain(x, fs, rng):
+    """A deliberately non-flat, crossfed DSP chain, not an Apple graph replica."""
+    low = _split_bass(x, fs)
+    scale = max(float(np.max(np.abs(low))), 1e-12)
+    synthetic = .6*(low*low/scale - np.mean(low*low/scale, axis=0)) + .3*low**3/scale**2
+    y = x + synthetic
+    y = y - .97*_split_bass(y, fs)  # poor fundamental radiation below 300 Hz
+    y = y + .22*y[:, ::-1]  # left-only input radiates from both sides
+    env = np.maximum(_block_env(y[:, 0], fs), _block_env(y[:, 1], fs))
+    # Mild broadband compressor and fixed normalization, not speaker damage.
+    gain = np.minimum(1., (.2/np.maximum(env, 1e-12))**.15)
+    return .8*y*gain[:, None]
+
+
+def model_chain_rattle(x, fs, rng):
+    return model_chain(model_rattle(x, fs, rng), fs, rng)
+
+
+def model_excursion(x, fs, rng):
+    low = _split_bass(x, fs)
+    limited = .12*np.tanh(low/.12)
+    return model_chain(x-low+limited, fs, rng)
+
+
+def check_physical_chain(entries):
+    failures = []
+    for name, model in (("healthy DSP chain", model_chain), ("one-sided rattle with DSP", model_chain_rattle)):
+        report = analyze.analyse_segments(entries, record(entries, model), FS)
+        verdicts = {c: v["verdict"] for c, v in report["channels"].items()}
+        print(name + ": " + str(verdicts))
+        if name.startswith("healthy") and any("RATTLE" in v or "CLIPPING" in v for v in verdicts.values()):
+            failures.append("healthy chain false fault verdict")
+        if name.startswith("one-sided") and "RATTLE" not in verdicts.get("L", ""):
+            failures.append("chain hides one-sided rattle")
+    bass = ms.bass_signals()
+    if sum(e["duration_s"] for e in bass) != 48 or len(bass) != 21:
+        failures.append("bass stimulus duration or file count")
+    for e in bass:
+        if e["kind"] == "bass-tone" and e["level_db_peak"] > -3:
+            failures.append("unsafe sustained tone level")
+    for name, model in (("healthy", model_chain), ("excursion", model_excursion)):
+        report = analyze.analyse_segments(bass, record(bass, model), FS)
+        verdict = report["bass"]["verdict"]
+        print("bass " + name + ": " + verdict)
+        if (name == "healthy" and "LEVEL DEPENDENCE" in verdict) or (name == "excursion" and "LEVEL DEPENDENCE" not in verdict):
+            failures.append("bass limiter discrimination: " + name)
+        if len(report["bass"]["tones"]) != 18 or not report["bass"]["voice"]:
+            failures.append("bass tone or voice comparisons missing")
+    # A missing file must not produce a plausible timing or healthy verdict.
+    try:
+        analyze.align_offset(np.zeros(FS), np.ones(FS//4), FS)
+    except ValueError:
+        pass
+    else:
+        failures.append("silence accepted as a reference")
+    return failures
+
+
 MODELS = {
     "clean": (model_clean, {"L": "CLEAN", "R": "CLEAN"}),
     "hard clip at -6 dBFS": (model_hardclip, {"L": "HARD CLIPPING", "R": "HARD CLIPPING"}),
@@ -190,6 +254,7 @@ def check_run_dir(signals_dir, work_dir):
     sf.write(os.path.join(work_dir, rec_name), recording, FS, subtype="PCM_16")
     manifest = {
         "label": "selftest-run-dir",
+        "calibrated_fixture": True,
         "slider": 0,
         "created": "synthetic",
         "fs": FS,
@@ -264,7 +329,7 @@ def main(argv=None):
         if opts.get("gain"):
             for key, seg in segments.items():
                 segments[key] = np.clip(seg, -1.0, 1.0)
-        report = analyze.analyse_segments(entries, segments, FS, {"label": name})
+        report = analyze.analyse_segments(entries, segments, FS, {"label": name}, calibrated=True)
         table = analyze.format_table(report)
         print("\n=== %s" % name)
         print(table)
@@ -273,6 +338,7 @@ def main(argv=None):
             if got != want:
                 failures.append("%s: channel %s expected %s, got %s"
                                 % (name, ch, want, got))
+    failures.extend(check_physical_chain(entries))
     print("\n=== result")
     if problems or failures:
         for f in problems + failures:

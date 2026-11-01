@@ -54,4 +54,18 @@ if [ -e "$tmp/runs" ]; then
 fi
 sed -n '1,14p' "$tmp/plan.txt"
 
+# Bass planning must be just as side-effect-free as the original mode.
+SPEAKERKIT_RUNS="$tmp/bass-runs" SPEAKERKIT_SIGNALS="$tmp/bass-signals" \
+    bash "$KIT_DIR/run_kit.sh" check --bass > "$tmp/bass-plan.txt"
+grep -q "audio 48s + gaps 20s + pre-roll 1s = 69s" "$tmp/bass-plan.txt"
+[ ! -e "$tmp/bass-runs" ] && [ ! -e "$tmp/bass-signals" ]
+"$PY" "$KIT_DIR/make_signals.py" --bass --out "$tmp/bass-signals" --quiet
+"$PY" - "$tmp/bass-signals/signals.json" <<'PYBASS'
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert m["audio_s"] == 48 and len(m["files"]) == 21
+assert all(e["level_db_peak"] <= -3 for e in m["files"] if e["kind"] == "bass-tone")
+print("BASS SPEC: 21 stereo files, 48 seconds audio, sustained peak <= -3 dBFS")
+PYBASS
+cat "$tmp/bass-plan.txt"
 echo "SELFTEST SH: PASS"

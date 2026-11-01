@@ -1,5 +1,5 @@
 import { createLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveSocketFactory, LiveVoiceEvent, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { TurnPlan, TurnProvider } from './scripted.js';
 import type { EvalCase } from './types.js';
@@ -109,6 +109,12 @@ export interface LivePortInput {
   readonly keyReference: string;
   readonly resolveKey: () => Promise<string>;
   readonly route: { provider: 'gemini'; modelId: string; dataClasses: readonly DataClass[] };
+  /** C-POSTTOOL switch a, probe only. */
+  readonly firstResponseAudio?: boolean;
+  /** C-POSTTOOL switch b, probe only. */
+  readonly backendBrevityTight?: boolean;
+  /** The probe's counting tap; absent, the adapter opens its own socket. */
+  readonly socketFactory?: LiveSocketFactory;
 }
 
 /** Builds the adapter the owner's own live configuration selected; the caller resolves the key slot. */
@@ -119,6 +125,11 @@ export function livePort(input: LivePortInput): LiveVoicePort {
     keyReference: input.keyReference,
     credentials: { resolve: input.resolveKey },
     route: input.route as unknown as Parameters<typeof createLiveVoiceAdapter>[0]['route'],
+    // C-POSTTOOL: the probe's switches and its counting wire tap. The ordinary eval run passes neither, so the
+    // adapter stays on its documented defaults.
+    ...(input.firstResponseAudio === undefined ? {} : { firstResponseAudio: input.firstResponseAudio }),
+    ...(input.backendBrevityTight === undefined ? {} : { backendBrevityTight: input.backendBrevityTight }),
+    ...(input.socketFactory === undefined ? {} : { socketFactory: input.socketFactory }),
   });
 }
 

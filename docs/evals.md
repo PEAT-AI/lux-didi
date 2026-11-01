@@ -247,6 +247,35 @@ the provider's spoken frames while dropping them. It opens no audio device and p
 
 The default utterance is generated in code (a short tone at 24 kHz), so the probe needs no voice and no fixture.
 
+## The post-tool response probe (10.8)
+
+`scripts/probe-post-tool.sh` measures one question: does the first response after a tool result speak, instead of
+writing silent backend text and leaving the answer to a second `response.create`? It runs the real adapter over
+synthetic asks against the fake world, in four variants: `baseline` (both switches off), `a`
+(`firstResponseAudio`), `b` (`backendBrevityTight`), `ab` (both).
+
+```bash
+bash scripts/probe-post-tool.sh            # the estimate and the ask count, no session opened
+bash scripts/probe-post-tool.sh --go       # the real model, 12 asks per variant
+```
+
+- It prints the model-call count and the estimated cost first and refuses without `--go`.
+- One ask is one session, so the create count is exact. For each ask it records whether the first post-tool
+  response became audible, tool output to first audible delta, whether the silent rescue fired, how many audible
+  responses the owner would have heard, and the backend text size in tokens.
+- Audio is written as counts only: no audio is stored or played, no microphone or output device is opened, and
+  no transcript is written.
+- A variant stops on duplicate speech (a second create that also speaks), a tool error, or a protocol rejection.
+
+How to read it: a text probe proves acceptance only. It cannot judge whether the answer was worth hearing,
+whether the first response repeated the tool output, or whether a fact was lost when the backend stopped
+writing an essay. The shipping decision is a real listen on an owner call, not this table.
+
+Acceptance, on that listen: the first response after a tool answer speaks on most tool turns, the owner hears
+one audible answer, no content is repeated between the two, and the review finds no lost facts. `baseline` is
+the control: if it already speaks, the switches are not needed and stay off. A variant that loses facts or
+answers twice is rejected even when it is faster.
+
 ## Tier 3: the post-call auto-review
 
 `scripts/didi-postcall-review` and `server/trace/postcall.ts` review one finished call from metadata only:

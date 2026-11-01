@@ -918,8 +918,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         async execute(args, context) {
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           await ownerRequests.waitForFinal(runId, context.signal);
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
           const anyKinds = openTool.name === 'open_source' ? anyOpenKinds(words) : [];
           const top = anyKinds.length ? ownerRequests.topShown(runId, anyKinds) : undefined;
@@ -927,6 +925,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const requestTarget = JSON.stringify(effectiveArgs);
           let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
+          // P-R8/REQUIRED 6: his authority is judged before the result gate, so a refusal names its real cause
+          // (no_owner_request, external_text_only) instead of a bare failed the model cannot explain.
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (eligible && (gate.state !== 'allowed' || context.signal.aborted)) return { status: 'failed' as const };
+          if (context.signal.aborted) return { status: 'failed' as const };
           const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
           const refused = 'target' in resolved ? undefined : resolved.code;
           let dispatched = 'target' in resolved ? resolved.target : undefined;

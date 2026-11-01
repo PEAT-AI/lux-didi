@@ -10,7 +10,7 @@ import Foundation
 // showed, so the control case proves the rest of the body already passes every other check.
 
 /// The two host replies, built in the host's wire shape and decoded back through JSON.
-private enum HostBody {
+private enum AlarmSpeechWireHostBody {
     static func snapshot(echoing key: String, intent: LiveBeginIntent) throws -> LiveSnapshot {
         let body = LiveSnapshot(liveSessionId: "6d1a2f70-8f4b-4c39-9c1e-2a5f0d6b7c81",
             assistantId: intent.assistantID, authorityEpoch: intent.authorityEpoch, idempotencyKey: key,
@@ -33,7 +33,7 @@ private enum AlarmSpeechWireProbe {
     static func check(_ condition: Bool, _ detail: String) throws { if !condition { throw Failure(description: detail) } }
 }
 
-private struct AlarmHTTP: LiveOperatorHTTP {
+private struct AlarmSpeechWireAlarmHTTP: LiveOperatorHTTP {
     let answer: @Sendable (LiveBeginIntent, String) throws -> LiveSnapshot
     func status(for intent: LiveBeginIntent) async throws -> LiveOperatorStatus {
         LiveOperatorStatus(origin: intent.origin, assistantID: intent.assistantID, authorityEpoch: intent.authorityEpoch,
@@ -48,7 +48,7 @@ private struct AlarmHTTP: LiveOperatorHTTP {
     func revoke(sessionID: String, for intent: LiveBeginIntent) async throws {}
 }
 
-private actor ProbeSocket: LiveSocket {
+private actor AlarmSpeechWireProbeSocket: LiveSocket {
     private(set) var cancelled = false
     func receive() async throws -> LiveFrame { try await Task.sleep(for: .seconds(30)); throw LiveClientError.transport }
     func sendPCM(_ data: Data) async throws {}
@@ -57,20 +57,20 @@ private actor ProbeSocket: LiveSocket {
     func cancel() async { cancelled = true }
 }
 
-private final class SentKeys: @unchecked Sendable {
+private final class AlarmSpeechWireSentKeys: @unchecked Sendable {
     private let lock = NSLock()
     private var seen: [String] = []
     func record(_ key: String) { lock.lock(); seen.append(key); lock.unlock() }
     var keys: [String] { lock.lock(); defer { lock.unlock() }; return seen }
 }
 
-private actor Sockets: LiveSocketConnecting {
+private actor AlarmSpeechWireSockets: LiveSocketConnecting {
     private(set) var connects = 0
-    let socket = ProbeSocket()
+    let socket = AlarmSpeechWireProbeSocket()
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { connects += 1; return socket }
 }
 
-private actor Sink: LiveAudioSink {
+private actor AlarmSpeechWireSink: LiveAudioSink {
     func write(_ pcm: Data) async throws {}
     func flush() async throws {}
 }
@@ -87,10 +87,10 @@ private actor Sink: LiveAudioSink {
             profileIdentity: "synthetic-profile", inputClass: "ordinary")
 
         // The released host named the alarm session itself, so its answer never carried the caller's key.
-        let stale = Sockets()
+        let stale = AlarmSpeechWireSockets()
         let staleCoordinator = LiveSessionCoordinator(
-            http: AlarmHTTP { intent, _ in try HostBody.snapshot(echoing: "alarm:synthetic-alarm-a", intent: intent) },
-            sockets: stale, sink: Sink())
+            http: AlarmSpeechWireAlarmHTTP { intent, _ in try AlarmSpeechWireHostBody.snapshot(echoing: "alarm:synthetic-alarm-a", intent: intent) },
+            sockets: stale, sink: AlarmSpeechWireSink())
         await staleCoordinator.begin(intent)
         let staleState = await staleCoordinator.state
         try AlarmSpeechWireProbe.check(staleState == .outcomeUnknown(.grantMismatch), "a host key that is not the caller's must be refused, got \(staleState)")
@@ -101,11 +101,11 @@ private actor Sink: LiveAudioSink {
 
         // F-B: an alarm passes its occurrence key, so a retry of the same alarm presents the same key and the
         // host can replay the session it already opened rather than refusing a second one.
-        let retrySockets = Sockets()
-        let sent = SentKeys()
+        let retrySockets = AlarmSpeechWireSockets()
+        let sent = AlarmSpeechWireSentKeys()
         let retryCoordinator = LiveSessionCoordinator(
-            http: AlarmHTTP { intent, key in sent.record(key); return try HostBody.snapshot(echoing: key, intent: intent) },
-            sockets: retrySockets, sink: Sink())
+            http: AlarmSpeechWireAlarmHTTP { intent, key in sent.record(key); return try AlarmSpeechWireHostBody.snapshot(echoing: key, intent: intent) },
+            sockets: retrySockets, sink: AlarmSpeechWireSink())
         await retryCoordinator.begin(intent, key: "alarm:synthetic-alarm-a")
         let retryState = await retryCoordinator.state
         try AlarmSpeechWireProbe.check(retryState == .attaching, "an alarm occurrence key reaches attaching, got \(retryState)")
@@ -113,10 +113,10 @@ private actor Sink: LiveAudioSink {
         try AlarmSpeechWireProbe.check(retryKeys == ["alarm:synthetic-alarm-a"], "the alarm create carries its occurrence key, got \(retryKeys)")
 
         // A host that echoes the caller key reaches attach on the same body.
-        let live = Sockets()
+        let live = AlarmSpeechWireSockets()
         let coordinator = LiveSessionCoordinator(
-            http: AlarmHTTP { intent, key in try HostBody.snapshot(echoing: key, intent: intent) },
-            sockets: live, sink: Sink())
+            http: AlarmSpeechWireAlarmHTTP { intent, key in try AlarmSpeechWireHostBody.snapshot(echoing: key, intent: intent) },
+            sockets: live, sink: AlarmSpeechWireSink())
         await coordinator.begin(intent)
         let state = await coordinator.state
         try AlarmSpeechWireProbe.check(state == .attaching, "an echoed key must reach attaching, got \(state)")

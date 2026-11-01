@@ -34,7 +34,9 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   const parsed = parseAlarmTime(joined.words!, wall, 'Asia/Singapore');
   assert.equal(parsed.status, 'ready');
   gate.commit('s', 'set_alarm', 'alarm', { status: 'set' });
-  assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'grant_spent');
+  // P-R10: a second alarm is a different write, not a spent grant; only the exact same alarm replays.
+  assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'allowed');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'idempotent');
   mono = 120001;
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired');
 });

@@ -7,7 +7,7 @@ import test from 'node:test';
 import type { LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../../adapters/live-voice/types.js';
 import {
   formatProbeCost, formatVariant, probeCost, probeEstimate, PROBE_ASKS, PROBE_VARIANTS, runPostToolProbe,
-  selectProbeCases, type ProbeVariant,
+  selectProbeCases, type ProbeVariant, type ProbeVariantResult,
 } from '../../eval/post-tool-probe.js';
 import type { EvalCase } from '../../eval/types.js';
 
@@ -65,7 +65,7 @@ const portFactory = (plan: readonly ('create' | 'speak')[]) =>
     open: () => stubSession(stepsOf(plan, tap)),
   } as unknown as LiveVoicePort);
 
-const depsFor = (dir: string, plan: readonly ('create' | 'speak')[], extra: { asks?: number; log?: (line: string) => void } = {}) => ({
+const depsFor = (dir: string, plan: readonly ('create' | 'speak')[], extra: { asks?: number; log?: (line: string) => void; variants?: readonly ProbeVariant[] } = {}) => ({
   casesDir: dir,
   toolMapPath,
   system: { text: 'Synthetic persona', dataClass: 'ordinary' as const },
@@ -140,7 +140,9 @@ test('the probe stops a variant on duplicate speech', async t => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'probe.jsonl'), `${JSON.stringify(syntheticCase('probe-01'))}\n${JSON.stringify(syntheticCase('probe-02'))}\n`);
   const lines: string[] = [];
-  const results = await runPostToolProbe(depsFor(dir, ['create', 'speak', 'create', 'speak'], { asks: 2, log: line => lines.push(line) }));
+  const results: ProbeVariantResult[] = await runPostToolProbe(depsFor(dir, ['create', 'speak', 'create', 'speak'], {
+    asks: 2, log: line => lines.push(line), variants: [PROBE_VARIANTS[0]!],
+  }));
   const variant = results[0]!;
   assert.equal(variant.stopped, 'probe-01: duplicate_speech');
   assert.equal(variant.asks.length, 1, 'the variant stops on the first ask that speaks twice');

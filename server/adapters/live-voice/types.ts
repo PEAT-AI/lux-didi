@@ -79,17 +79,37 @@ export type LiveToolSendOutcome = 'sent' | 'deferred' | 'failed';
 export const TURN_FAILED_REASONS = ['provider_error', 'delegation_stalled', 'send_failed', 'recreate_failed'] as const;
 export type TurnFailedReason = (typeof TURN_FAILED_REASONS)[number];
 export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
+/** The closed host-event kinds a live session may carry. Anything else is sent as unknown metadata. */
+export const HOST_EVENT_KINDS = Object.freeze([
+  'connection_recovered', 'model_muted', 'line_dropped', 'pending_result_ready', 'muted_result_arrived',
+] as const);
+export type HostEventKind = (typeof HOST_EVENT_KINDS)[number];
+/**
+ * One application-origin host fact. `origin` is the application origin and is deliberately separate from any
+ * provider wire role: Gemini requires a user-role envelope, which never makes this an owner statement.
+ */
+export interface HostEvent {
+  readonly origin: 'host';
+  readonly kind: HostEventKind | 'unknown';
+  readonly id: string;
+}
+/** The one wire payload for a host event: structured host metadata, never prose and never owner words. */
+export function hostEventPayload(event: HostEvent): string {
+  const known = (HOST_EVENT_KINDS as readonly string[]).includes(event.kind);
+  return JSON.stringify({ host_event: { origin: 'host', kind: known ? event.kind : 'unknown', id: event.id } });
+}
+
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
   /**
-   * The opening input used instead of the fresh-call greeting: a fresh setup with no handle sends it as the
-   * owner's first words (after any history), so a seeded recovery continues instead of greeting. Generated
-   * host text only, never owner content, and carried to the wire only.
+   * The host event that opened this session instead of the fresh-call greeting, so a seeded recovery continues
+   * instead of greeting. Typed host data: it is never owner speech, it never starts or refreshes an owner turn,
+   * and it carries no sentence for the model to repeat. A kind this host does not close is sent as metadata.
    */
-  openingText?: string;
+  hostEvent?: HostEvent;
   system: { text: string; dataClass: DataClass };
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
@@ -166,6 +186,9 @@ export interface LiveVoiceSession {
   sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
   sendText(input: { text: string }): void;
+  /** One host-origin fact, carried on the provider's host surface. It never becomes an owner turn, an owner
+   *  typed final, an owner quotation or a memory input. */
+  sendHostEvent(input: { event: HostEvent }): void;
   /** Speakable progress under Responses delegation, paraphrased by the voice model (GPT-Live only). An adapter
    *  that cannot carry progress speech leaves it out and the host keeps its own continuation nudge. Returns
    *  `false` when the adapter refused the append; a host that hears `false` must not claim the line was spoken. */

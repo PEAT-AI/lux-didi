@@ -4,8 +4,8 @@ import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall, LiveToolSendOutcome } from './types.js';
-import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
+import type { DataClass, HostEvent, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall, LiveToolSendOutcome } from './types.js';
+import { LiveVoiceError, hostEventPayload, liveVoiceTimerDefaults } from './types.js';
 import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
 import { FRESH_OPENING } from './openai.js';
@@ -191,8 +191,10 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
     const initial = request.resumptionHandle ? undefined
-      : request.openingText !== undefined
-        ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
+      : request.hostEvent !== undefined
+        // C-HOSTFACTS: this provider needs a user-role envelope, so the turn keeps its explicit application host
+        // origin and structured host tag. The host tag is what marks it as host data, never the owner's words.
+        ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: hostEventPayload(request.hostEvent) }] }], turnComplete: opening === 'model_first' } })
       : opening === 'model_first'
         ? JSON.stringify({ clientContent: {
           turns: [...history, { role: 'user', parts: [{ text: request.system.text.includes(ALARM_MODE_MARKER)
@@ -704,6 +706,17 @@ class Session implements LiveVoiceSession {
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
     // Same frame as the model-first greeting text: a text turn the model answers by voice.
     if (!this.write(JSON.stringify({ realtimeInput: { text: input.text } }))) fail(this.terminal!.code);
+  }
+  /** C-HOSTFACTS: one host fact. This provider needs a user-role envelope, so the application host origin and the
+   *  host tag travel inside it; the host never records it as an owner turn or as owner speech. */
+  sendHostEvent(input: { event: HostEvent }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || !object(input.event) || input.event.origin !== 'host' || typeof input.event.id !== 'string'
+      || !input.event.id.length || input.event.id.length > 96) fail('invalid_request');
+    const text = hostEventPayload(input.event);
+    if (!this.write(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true } }))) fail(this.terminal!.code);
   }
   endAudioStream(): void {
     if (this.draining) return;

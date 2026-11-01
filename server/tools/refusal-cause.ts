@@ -1,21 +1,72 @@
 /**
- * C-TOOLTRUTH (10.8): the one plain cause sentence per closed refusal code, plus what will or will not happen
- * next. F7: a refusal that names no cause left her to invent one, so every code she is handed now carries the
- * cause the host actually holds. F6: no line here reads as work in progress; the running state comes from the
- * host's own record through `runningStateLine`, so a rebuilt session cannot tell her something is happening
- * when nothing is. A code whose honest cause the host does not hold says exactly that and never guesses.
+ * C-TOOLTRUTH / C-HOSTFACTS (10.8): the closed refusal facts per code, never a sentence for her to recite.
+ * F7: a refusal that names no cause left her to invent one, so every code the host closes carries the cause
+ * it actually holds, as typed fields. F6: no entry here reads as work in progress; what ran comes from the
+ * host's own record through `runningState`, so a rebuilt session cannot be told anything is happening when
+ * nothing is. A code the host cannot explain is reported as unknown and grants nothing: not success, not
+ * failure, not a retry.
  */
 import type { AdmissionBlockReason, ResearchRefusalReason } from './research.js';
 
-export interface RefusalCause {
-  /** One plain statement of why this call was refused, repeatable by the model as it stands. */
-  readonly cause: string;
-  /** What will or will not happen next, so no refusal can be read as successful or as still running. */
-  readonly next: string;
-}
+/** What actually ran for the refused call, as the host holds it. */
+export type RefusalExecution = 'nothing_ran' | 'nothing_new_ran' | 'unknown';
 
-/** The one sentence a code with no honest cause on record gets, in the brief's own words. */
-export const CAUSE_NOT_KNOWN = 'the reason is not known';
+/** Why the call was refused, in the host's own closed categories. */
+export type RefusalCauseKind = 'admission' | 'argument_shape' | 'conflict' | 'replay' | 'unknown';
+
+/** The one action the host supports after this refusal; a refusal never authorizes a retry. */
+export type RefusalNextAction =
+  | 'nothing_until_owner_speaks'
+  | 'read_delivered_result'
+  | 'resend_corrected_arguments'
+  | 'report_nothing_ran'
+  | 'report_unknown_code';
+
+/** The unmet prerequisite, as the host holds it. */
+export type RefusalPrerequisite =
+  | 'owner_turn'
+  | 'new_owner_turn'
+  | 'one_object_arguments'
+  | 'known_fields_only'
+  | 'action_start_continue_stop'
+  | 'string_field'
+  | 'non_empty_field'
+  | 'field_within_host_limit'
+  | 'topic_keeps_question_names'
+  | 'research_id_from_this_session'
+  | 'list_field'
+  | 'cursor_from_this_session'
+  | 'cursor_with_continue'
+  | 'no_cursor_with_lookups'
+  | 'no_cursor_with_page_cursor'
+  | 'lookups_within_host_limit'
+  | 'no_lookups_on_stop'
+  | 'lookup_entry_object'
+  | 'lookup_known_fields_only'
+  | 'lookup_source_known'
+  | 'lookup_query_text'
+  | 'lookup_query_within_host_limit'
+  | 'history_lookup_reads_memory_alone'
+  | 'mail_lookup_reads_mail_alone'
+  | 'call_id_recorded_for_one_tool'
+  | 'recorded_result_in_this_session';
+
+export interface RefusalCause {
+  /** The closed code the host refused with. Metadata, never prose. */
+  readonly code: string;
+  /** What ran for this call. */
+  readonly executed: RefusalExecution;
+  /** The host's closed cause category. */
+  readonly cause: RefusalCauseKind;
+  /** The argument or record the cause is about, or nothing when it is the turn itself. */
+  readonly field: string | null;
+  /** What the call did not satisfy, or nothing when the host holds no prerequisite. */
+  readonly prerequisite: RefusalPrerequisite | null;
+  /** The one supported next step. */
+  readonly nextAction: RefusalNextAction;
+  /** A refusal never permits a retry of the same call. */
+  readonly retryPermitted: false;
+}
 
 /**
  * The live layer's own replay refusals. The host holds the cause for both, so neither may fall to the unknown.
@@ -24,81 +75,179 @@ export const CAUSE_NOT_KNOWN = 'the reason is not known';
 export const HOST_REFUSAL_CODES = ['replay_identity_mismatch', 'recorded_result_unavailable'] as const;
 export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
 
-const NOTHING_SEARCHED = 'Nothing was searched.';
+const NOTHING_RAN: RefusalExecution = 'nothing_ran';
 
 export const REFUSAL_CAUSES: Readonly<Record<AdmissionBlockReason | ResearchRefusalReason | HostRefusalCode, RefusalCause>> = Object.freeze({
   // The admission blocks (C-RESEARCH-CONTRACT T-03 codes, unchanged): one research operation per owner turn.
   no_owner_turn: {
-    cause: 'No owner turn has started in this session, so there is no owner question to research.',
-    next: 'Nothing starts until the owner speaks.',
+    code: 'no_owner_turn', executed: NOTHING_RAN, cause: 'admission', field: null,
+    prerequisite: 'owner_turn', nextAction: 'nothing_until_owner_speaks', retryPermitted: false,
   },
   turn_spent: {
-    cause: 'This owner turn already spent its one research operation on a result delivered earlier in the turn.',
-    next: 'Nothing further runs this turn: a new research needs the owner to speak again.',
+    code: 'turn_spent', executed: 'nothing_new_ran', cause: 'admission', field: null,
+    prerequisite: 'new_owner_turn', nextAction: 'nothing_until_owner_speaks', retryPermitted: false,
   },
   no_turn_since_result: {
-    cause: 'That result was already delivered and the owner has not spoken since.',
-    next: 'Nothing new starts, and the delivered result is what this turn answers from.',
+    code: 'no_turn_since_result', executed: NOTHING_RAN, cause: 'admission', field: null,
+    prerequisite: 'new_owner_turn', nextAction: 'read_delivered_result', retryPermitted: false,
   },
   answer_already_given: {
-    cause: 'This owner turn has already been answered in this session.',
-    next: 'Nothing new starts until the owner speaks again.',
+    code: 'answer_already_given', executed: NOTHING_RAN, cause: 'admission', field: null,
+    prerequisite: 'new_owner_turn', nextAction: 'nothing_until_owner_speaks', retryPermitted: false,
   },
   // The argument-shape refusals: the call never reached a source, so the cause is the shape itself.
-  root_type: { cause: 'The arguments were not one object, so no argument could be read.', next: NOTHING_SEARCHED },
-  unknown_fields: { cause: 'The call named fields this tool does not have, so it was refused before any read.', next: NOTHING_SEARCHED },
-  action_missing: { cause: 'The call named no action, and every research call names start, continue or stop.', next: NOTHING_SEARCHED },
-  action_invalid: { cause: 'The action was not one of start, continue or stop.', next: NOTHING_SEARCHED },
-  question_type: { cause: 'The question was not sent as one string.', next: NOTHING_SEARCHED },
-  question_required: { cause: 'The call carried a question field with no question in it.', next: NOTHING_SEARCHED },
-  question_length: { cause: 'The question was longer than the host reads in one call.', next: NOTHING_SEARCHED },
-  topic_type: { cause: 'The topic was not sent as one string of names and nouns.', next: NOTHING_SEARCHED },
-  topic_required: { cause: 'A start needs the topic, the names and nouns to search for, and none was sent.', next: NOTHING_SEARCHED },
-  topic_length: { cause: 'The topic was longer than the host reads in one call.', next: NOTHING_SEARCHED },
-  entity_rewrite: { cause: 'The topic replaced a name the question is about with a different name.', next: NOTHING_SEARCHED },
-  research_id_type: { cause: 'The researchId was not sent as a string.', next: NOTHING_SEARCHED },
-  research_id_required: { cause: 'This action needs the researchId of a run this session returned, and none was sent.', next: NOTHING_SEARCHED },
-  sources_type: { cause: 'The sources were not sent as a list.', next: NOTHING_SEARCHED },
-  direction_type: { cause: 'The direction was not sent as a string.', next: NOTHING_SEARCHED },
-  cursor_type: { cause: 'The cursor was not sent in the shape the host pages with.', next: NOTHING_SEARCHED },
-  cursor_action: { cause: 'A cursor pages the run this session already returned, so only a continue reads one.', next: NOTHING_SEARCHED },
-  cursor_lookups_conflict: { cause: 'A cursor pages a run that was already read, so it cannot carry new lookups.', next: NOTHING_SEARCHED },
-  cursor_page_conflict: { cause: 'A pageCursor is itself the page pointer, so a cursor cannot travel with it.', next: NOTHING_SEARCHED },
-  lookups_type: { cause: 'The lookups were not sent as a list.', next: NOTHING_SEARCHED },
-  lookups_count: { cause: 'The call carried more lookups than one call reads.', next: NOTHING_SEARCHED },
-  lookups_stop: { cause: 'Lookups are read on a start, or as history lookups that page an answered continue.', next: NOTHING_SEARCHED },
-  lookup_type: { cause: 'A lookup entry was not sent as an object.', next: NOTHING_SEARCHED },
-  lookup_unknown_fields: { cause: 'A lookup entry named fields this tool does not have.', next: NOTHING_SEARCHED },
-  lookup_source: { cause: 'A lookup named no source, or a source this host does not have.', next: NOTHING_SEARCHED },
-  lookup_query_required: { cause: 'A lookup needs its query and none was sent.', next: NOTHING_SEARCHED },
-  lookup_query_length: { cause: 'A lookup query was longer than the host sends to one source.', next: NOTHING_SEARCHED },
-  lookup_history: { cause: 'A history lookup must read memory alone, with no query and no mail, and this one did not.', next: NOTHING_SEARCHED },
-  lookup_mail: { cause: 'A mail lookup must read mail alone, with no query, and this one did not.', next: NOTHING_SEARCHED },
-  no_owner_input: { cause: 'No owner turn is open in this session, so there is nothing to research against.', next: 'Nothing starts until the owner speaks.' },
+  root_type: {
+    code: 'root_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'arguments',
+    prerequisite: 'one_object_arguments', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  unknown_fields: {
+    code: 'unknown_fields', executed: NOTHING_RAN, cause: 'argument_shape', field: 'arguments',
+    prerequisite: 'known_fields_only', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  action_missing: {
+    code: 'action_missing', executed: NOTHING_RAN, cause: 'argument_shape', field: 'action',
+    prerequisite: 'action_start_continue_stop', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  action_invalid: {
+    code: 'action_invalid', executed: NOTHING_RAN, cause: 'argument_shape', field: 'action',
+    prerequisite: 'action_start_continue_stop', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  question_type: {
+    code: 'question_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'question',
+    prerequisite: 'string_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  question_required: {
+    code: 'question_required', executed: NOTHING_RAN, cause: 'argument_shape', field: 'question',
+    prerequisite: 'non_empty_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  question_length: {
+    code: 'question_length', executed: NOTHING_RAN, cause: 'argument_shape', field: 'question',
+    prerequisite: 'field_within_host_limit', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  topic_type: {
+    code: 'topic_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'topic',
+    prerequisite: 'string_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  topic_required: {
+    code: 'topic_required', executed: NOTHING_RAN, cause: 'argument_shape', field: 'topic',
+    prerequisite: 'non_empty_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  topic_length: {
+    code: 'topic_length', executed: NOTHING_RAN, cause: 'argument_shape', field: 'topic',
+    prerequisite: 'field_within_host_limit', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  entity_rewrite: {
+    code: 'entity_rewrite', executed: NOTHING_RAN, cause: 'conflict', field: 'topic',
+    prerequisite: 'topic_keeps_question_names', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  research_id_type: {
+    code: 'research_id_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'researchId',
+    prerequisite: 'string_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  research_id_required: {
+    code: 'research_id_required', executed: NOTHING_RAN, cause: 'argument_shape', field: 'researchId',
+    prerequisite: 'research_id_from_this_session', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  sources_type: {
+    code: 'sources_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'sources',
+    prerequisite: 'list_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  direction_type: {
+    code: 'direction_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'direction',
+    prerequisite: 'string_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  cursor_type: {
+    code: 'cursor_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'cursor',
+    prerequisite: 'cursor_from_this_session', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  cursor_action: {
+    code: 'cursor_action', executed: NOTHING_RAN, cause: 'conflict', field: 'cursor',
+    prerequisite: 'cursor_with_continue', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  cursor_lookups_conflict: {
+    code: 'cursor_lookups_conflict', executed: NOTHING_RAN, cause: 'conflict', field: 'cursor',
+    prerequisite: 'no_cursor_with_lookups', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  cursor_page_conflict: {
+    code: 'cursor_page_conflict', executed: NOTHING_RAN, cause: 'conflict', field: 'cursor',
+    prerequisite: 'no_cursor_with_page_cursor', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookups_type: {
+    code: 'lookups_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'list_field', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookups_count: {
+    code: 'lookups_count', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookups_within_host_limit', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookups_stop: {
+    code: 'lookups_stop', executed: NOTHING_RAN, cause: 'conflict', field: 'lookups',
+    prerequisite: 'no_lookups_on_stop', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_type: {
+    code: 'lookup_type', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookup_entry_object', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_unknown_fields: {
+    code: 'lookup_unknown_fields', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookup_known_fields_only', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_source: {
+    code: 'lookup_source', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookup_source_known', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_query_required: {
+    code: 'lookup_query_required', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookup_query_text', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_query_length: {
+    code: 'lookup_query_length', executed: NOTHING_RAN, cause: 'argument_shape', field: 'lookups',
+    prerequisite: 'lookup_query_within_host_limit', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_history: {
+    code: 'lookup_history', executed: NOTHING_RAN, cause: 'conflict', field: 'lookups',
+    prerequisite: 'history_lookup_reads_memory_alone', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  lookup_mail: {
+    code: 'lookup_mail', executed: NOTHING_RAN, cause: 'conflict', field: 'lookups',
+    prerequisite: 'mail_lookup_reads_mail_alone', nextAction: 'resend_corrected_arguments', retryPermitted: false,
+  },
+  no_owner_input: {
+    code: 'no_owner_input', executed: NOTHING_RAN, cause: 'admission', field: null,
+    prerequisite: 'owner_turn', nextAction: 'nothing_until_owner_speaks', retryPermitted: false,
+  },
   // The host's own replay refusals, so a result replayed into a rebuilt session never hides its cause.
   replay_identity_mismatch: {
-    cause: 'This call id was already recorded for a different tool, so this call was refused rather than replayed.',
-    next: 'Nothing ran for this call.',
+    code: 'replay_identity_mismatch', executed: NOTHING_RAN, cause: 'replay', field: 'callId',
+    prerequisite: 'call_id_recorded_for_one_tool', nextAction: 'report_nothing_ran', retryPermitted: false,
   },
   recorded_result_unavailable: {
-    cause: 'The result this call id was recorded with is not available to this session any more.',
-    next: 'Nothing ran for this call.',
+    code: 'recorded_result_unavailable', executed: NOTHING_RAN, cause: 'replay', field: 'callId',
+    prerequisite: 'recorded_result_in_this_session', nextAction: 'report_nothing_ran', retryPermitted: false,
   },
 });
 
-/** The cause and the next line for a closed code, or the honest unknown for a code this host cannot explain. */
+/** The unknown-code fact: the host holds no cause, so it grants nothing, not even that nothing ran. */
+export const UNKNOWN_REFUSAL: RefusalCause = Object.freeze({
+  code: 'unnamed_code', executed: 'unknown', cause: 'unknown', field: null,
+  prerequisite: null, nextAction: 'report_unknown_code', retryPermitted: false,
+});
+
+/** The closed facts for a known code, or the honest unknown for a code this host cannot explain. */
 export function refusalCauseOf(code: string): RefusalCause {
   const known = (REFUSAL_CAUSES as Readonly<Record<string, RefusalCause | undefined>>)[code];
   if (known !== undefined) return known;
   // The code is metadata, never arbitrary prose: only a closed-shape token is repeated to the model.
-  const named = /^[A-Za-z0-9_]{1,96}$/u.test(code) ? code : 'an unnamed code';
-  return { cause: CAUSE_NOT_KNOWN, next: `Nothing ran for this call: the host refused it with ${named} and holds no plain cause for it.` };
+  const named = /^[A-Za-z0-9_]{1,96}$/u.test(code) ? code : UNKNOWN_REFUSAL.code;
+  return { ...UNKNOWN_REFUSAL, code: named };
 }
 
-/**
- * C-TOOLTRUTH: what the host's own record says is running, so a refusal never implies work that does not exist.
- * An empty record is the sentence she can repeat verbatim after a rebuild.
- */
-export function runningStateLine(running: readonly string[]): string {
-  return running.length === 0 ? 'Nothing is running now.' : `Running now: ${running.join(', ')}.`;
+/** What the host's own record says is running, so a refusal never implies work that does not exist. */
+export interface RunningState {
+  readonly anyRunning: boolean;
+  readonly running: readonly string[];
+}
+
+export function runningState(running: readonly string[]): RunningState {
+  return { anyRunning: running.length > 0, running };
 }

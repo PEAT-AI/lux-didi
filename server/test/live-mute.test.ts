@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
+import type { HostEvent } from '../adapters/live-voice/types.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, liveMigrations, MUTE_WARM_MS, MUTED_OFFER_SILENCE_MS, validateLiveProfile,
   type LiveContext, type LiveAttachment, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
@@ -42,13 +43,13 @@ class DeadlineClock {
 
 interface Live {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; liveSessionId: string;
-  attachment: LiveAttachment; uplinkBytes: () => number; texts: string[]; output: LiveOutputChunk[];
+  attachment: LiveAttachment; uplinkBytes: () => number; texts: string[]; hostEvents: HostEvent[]; output: LiveOutputChunk[];
   failTexts: (count: number) => void;
   emit(event: FakeLiveVoiceEvent): Promise<void>; advance(ms: number): Promise<void>;
 }
 
 /** The fake's own sendAudio/sendText are no-ops, so the test wraps the session it hands out. */
-function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts: string[]; failTexts: number }): LiveVoicePort {
+function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts: string[]; hostEvents: HostEvent[]; failTexts: number }): LiveVoicePort {
   return {
     capabilities: fake.port.capabilities,
     open: (liveRequest: Parameters<LiveVoicePort['open']>[0], liveControl: Parameters<LiveVoicePort['open']>[1]) => {
@@ -56,6 +57,12 @@ function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts
       return {
         ...opened,
         sendAudio: (input: { pcm: Uint8Array; dataClass?: string }) => { record.uplinkBytes += input.pcm.byteLength; },
+        // C-HOSTFACTS: the host event is recorded apart from any owner text, so a test can prove which one
+        // moved. A refused send covers both doors, because the host may offer the held answer on either.
+        sendHostEvent: (input: { event: HostEvent }) => {
+          if (record.failTexts > 0) { record.failTexts -= 1; throw new Error('not_ready'); }
+          record.hostEvents.push(input.event); opened.sendHostEvent(input);
+        },
         sendText: (input: { text: string }) => {
           if (record.failTexts > 0) { record.failTexts -= 1; throw new Error('transport gone'); }
           record.texts.push(input.text);
@@ -71,7 +78,7 @@ async function openLive(t: TestContext, limits: Record<string, number> = {}): Pr
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
   const scheduler = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const record = { uplinkBytes: 0, texts: [] as string[], failTexts: 0 };
+  const record = { uplinkBytes: 0, texts: [] as string[], hostEvents: [] as HostEvent[], failTexts: 0 };
   const profile = validateLiveProfile({
     provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
@@ -93,7 +100,8 @@ async function openLive(t: TestContext, limits: Record<string, number> = {}): Pr
   void (async () => { for await (const chunk of attachment.output) output.push(chunk); })();
   return {
     owner, fake, receipts, liveSessionId: session.liveSessionId, attachment, output,
-    uplinkBytes: () => record.uplinkBytes, texts: record.texts, failTexts: count => { record.failTexts = count; },
+    uplinkBytes: () => record.uplinkBytes, texts: record.texts, hostEvents: record.hostEvents,
+    failTexts: count => { record.failTexts = count; },
     emit: async event => { fake.emit(event); await flush(); },
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
   };
@@ -217,9 +225,18 @@ test('an answer that arrives while muted is held, never played, and offered once
   await flush();
   await live.advance(MUTED_OFFER_SILENCE_MS - 500);
   assert.deepEqual(live.texts, [], 'the offer waits out the two seconds of owner silence');
+  assert.equal(live.hostEvents.length, 0, 'and no host event is sent early either');
   await live.advance(1_000);
-  assert.equal(live.texts.length, 1, 'the owner stayed silent, so one short item says an answer arrived');
-  assert.match(live.texts[0] ?? '', /muted/, 'the item says the answer arrived while muted');
+  // C-HOSTFACTS: the offer is one typed host event, never an owner-voice text turn.
+  assert.deepEqual(live.texts, [], 'no owner text turn asks for the held answer');
+  assert.deepEqual(live.hostEvents.map(event => event.kind), ['muted_result_arrived'],
+    'the owner stayed silent, so one host event says an answer arrived while muted');
+  assert.equal(live.hostEvents[0]?.origin, 'host', 'and it carries the application host origin');
+  // C-HOSTFACTS BUILD-05: nothing downstream can mine it as an owner statement, so no journal turn carries it
+  // and a later memory extraction has no owner words here to read.
+  const journalled = live.owner.listFragments({ liveSessionId: live.liveSessionId }).fragments
+    .filter(fragment => fragment.kind === 'inputTranscription').map(fragment => fragment.text ?? '').join(' ');
+  assert.equal(/muted/i.test(journalled), false, 'no owner turn in the journal says anything about the mute');
 });
 
 test('an owner who speaks within two seconds of the unmute is never interrupted by an offer', async t => {
@@ -282,7 +299,7 @@ test('an offer skipped because the owner spoke is kept, receipted, and offered o
   assert.equal(skipped.length, 1, 'the skip is a receipt, never a silent drop');
   assert.deepEqual([skipped[0]?.['offer'], skipped[0]?.['reason']], ['offer_skipped', 'owner_spoke']);
   await live.advance(MUTED_OFFER_SILENCE_MS);
-  assert.equal(live.texts.length, 1, 'the answer was kept, not dropped, and arrives once he is quiet');
+  assert.equal(live.hostEvents.length, 1, 'the answer was kept, not dropped, and arrives once he is quiet');
 });
 
 test('an offer the transport refuses is kept, receipted, and retried in the next window', async t => {
@@ -300,7 +317,7 @@ test('an offer the transport refuses is kept, receipted, and retried in the next
   assert.equal(refused.length, 1, 'the refusal is receipted');
   assert.deepEqual([refused[0]?.['offer'], refused[0]?.['reason']], ['offer_skipped', 'send_failed']);
   await live.advance(MUTED_OFFER_SILENCE_MS);
-  assert.equal(live.texts.length, 1, 'the held answer survived the failed send and goes out on the retry');
+  assert.equal(live.hostEvents.length, 1, 'the held answer survived the failed send and goes out on the retry');
 });
 
 test('a response whose first audio arrived while muted plays no later frame after the unmute', async t => {

@@ -100,7 +100,7 @@ function drivenPort() {
       };
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
-        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(): void {}, sendHostEvent(): void {}, endAudioStream(): void {},
         sendToolResponse(input): 'sent' { toolResponses.push([...input.responses]); return 'sent'; },
         close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
       };

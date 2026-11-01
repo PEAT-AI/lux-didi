@@ -22,7 +22,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
-import { refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
+import { refusalCauseOf, runningState } from '../tools/refusal-cause.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -45,7 +45,8 @@ import { VoiceProfileMeter } from './voice-profile.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
-import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
+import { hostEventPayload, type HostEvent } from '../adapters/live-voice/types.js';
+import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
@@ -59,7 +60,24 @@ import {
   type LiveTerminalOutcome,
 } from './types.js';
 
-const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
+/** C-HOSTFACTS BUILD-01: the pending result a pickup resumes is a host fact on the system side. It names no
+ *  owner turn, quotes no owner words and carries no sentence to recite; what ran and whether it failed comes
+ *  from the host's own record. */
+const PENDING_RESULT_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'pending_result_ready', id: 'live-pending-result' });
+const pickupInstruction = hostEventPayload(PENDING_RESULT_EVENT);
+/**
+ * C-HOSTFACTS F1: a provider that echoes a host event payload back as transcription is quoting host data, not
+ * the owner. This is an exact match against the closed set of payloads this host can send, at the intake that
+ * would otherwise open an owner turn, never a pattern over speech.
+ */
+let hostEventPayloads: ReadonlySet<string> | undefined;
+const isHostEventEcho = (text: string): boolean => {
+  hostEventPayloads ??= new Set([
+    pickupInstruction, hostEventPayload(MUTED_RESULT_EVENT), hostEventPayload(LIVE_RECOVERY_EVENT),
+    hostEventPayload(LIVE_MUTE_EVENT), hostEventPayload(LIVE_DROPPED_LINE_EVENT),
+  ]);
+  return hostEventPayloads.has(text.trim());
+};
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
 export const OPENER_CONTEXT_CHARS = 450;
 
@@ -86,9 +104,20 @@ import { ALARM_MODE_MARKER } from './types.js';
 import type { SeriesAlarmSetup } from './types.js';
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
-  const overview = reminder && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
+  const overview = reminder && /\bbrief|overview|rundown|what['\u2019]?s on|check[- ]?in/i.test(reminder);
   const series = input.series?.trim();
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder first, in your own words, as the first thing you say: ${JSON.stringify(reminder)}. One sentence that names ${JSON.stringify(input.ownerDisplayName)}, states ${JSON.stringify(input.scheduledTime)} and gives the reminder in your own voice, like "${input.ownerDisplayName}, it is ${input.scheduledTime}: ${reminder}".` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  // C-HOSTFACTS BUILD-03: the wake carries facts, not a script. The owner's name, the scheduled time, the zone,
+  // the reminder, the series and the alarm id are data; no opening sentence, specimen or word count is dictated,
+  // and the repeat behaviour stays a fact about this one alarm.
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. `
+    // The time arrives already formatted in the alarm's own zone by the scheduler, which is the zone fact this
+    // setup carries; the zone's name is not on this type and is filed rather than invented here.
+    + `This call is the wake for ${JSON.stringify(input.ownerDisplayName)} at ${JSON.stringify(input.scheduledTime)}.`
+    + (reminder ? ` The reminder set for this alarm is ${JSON.stringify(reminder)}; it is data for this wake, not owner words.` : '')
+    + (series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : '')
+    + (overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : '')
+    + (input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : '')
+    + ' A wake repeat is a repeat of this same alarm, never a new plan. Only explicit awake or confirmation speech, or a snooze or cancel request, acknowledges this alarm; once acknowledged continue as a normal call. Alarm tools require the owner\'s own finalized speech. Never claim a sleeping Mac or closed lid will ring.';
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -289,8 +318,13 @@ const RESUMPTION_TOOL_CALL_LIMIT = 5;
 const DEAD_LINE_WINDOW_MS = 10 * 60 * 1000;
 /** L19: the codes that mean the previous call was lost, not ended by the owner. */
 const DEAD_LINE_CODES: ReadonlySet<string> = new Set(['resume_failed', 'transport_error', 'provider_closed', 'network']);
-/** L19: what the seed hears after a dead call's last answer, so the new call never repeats it. */
-export const LIVE_DROPPED_LINE_MARK = 'The line dropped before that answer reached me, and I am back. Do not repeat that answer: say in one short sentence that the line dropped, then offer to continue.';
+/** L19 / C-HOSTFACTS BUILD-01: the seed hears that a line dropped as a typed host event, so the new call
+ *  continues instead of repeating the lost answer, and nothing here is written in the owner's voice. */
+export const LIVE_DROPPED_LINE_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'line_dropped', id: 'live-dropped-line' });
+/** C-HOSTFACTS BUILD-01: the two seeded session facts that used to be first-person pickup lines. A seeded
+ *  recovery and a model mute name themselves; neither is an owner request and neither is his words. */
+export const LIVE_RECOVERY_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'connection_recovered', id: 'live-recovery-pickup' });
+export const LIVE_MUTE_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'model_muted', id: 'live-mute-pickup' });
 // Release 3g-c recovery policy (R1-R1), time-budgeted (L18): stalls come in episodes, so the bound is the
 // episode's age, not a count: the call keeps reopening until RECOVERY_BUDGET_MS has passed since the
 // episode's first drop, and a session that stayed healthy for RECOVERY_HEALTHY_MS starts a fresh episode.
@@ -396,7 +430,9 @@ export const MUTE_WARM_MS = 180_000;
 export const MUTED_OFFER_SILENCE_MS = 2_000;
 /** How many silence windows a held answer is offered in: one, plus one retry after a skip. */
 const MUTED_OFFER_ATTEMPTS = 2;
-const MUTED_OFFER_TEXT = 'An answer to my earlier question arrived while I was muted. Tell me in one sentence.';
+/** C-HOSTFACTS BUILD-01: an answer that arrived while muted is a host fact about a result, not the owner
+ *  asking for one sentence. */
+const MUTED_RESULT_EVENT: HostEvent = Object.freeze({ origin: 'host', kind: 'muted_result_arrived', id: 'live-muted-result' });
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
 /** D6: an open model turn holds SPEAKING across the adapter's between-sentence silence for this long. */
@@ -410,7 +446,9 @@ const CONSUMER_GONE_MS = 5_000;
 const CONSUMER_CLOSED_MS = 1_000;
 /** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
  *  invents a reason the provider did not give. */
-export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
+/** C-HOSTFACTS BUILD-03: a failed turn is an application state with its closed reason, never a line she is
+ *  told to recite. The attachment carries it as a continuity marker, so a client can show it and she is told
+ *  nothing to say. */
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
 const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
 const UNSPOKEN_REPLY_LIMIT = 1_200;
@@ -1602,7 +1640,8 @@ export class LiveSessionOwner {
     alarms.get(setup.alarmId)?.timer?.cancel();
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
-    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    // C-HOSTFACTS BUILD-03: the alarm is a fact (its time, zone and reminder). No spoken slot is imposed.
+    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup)) });
     hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
@@ -1630,7 +1669,9 @@ export class LiveSessionOwner {
         if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
           alarm.lastPromptAt = this.#now();
           if (handle.ready) {
-            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
+            // C-HOSTFACTS BUILD-03: a repeat is a fact about the alarm and its label. No wake line is dictated
+            // and no follow-up question is invented.
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats} for ${JSON.stringify(alarm.setup.label || 'the alarm')}. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
           }
         }
         this.#armAlarm(handle);
@@ -2244,7 +2285,7 @@ export class LiveSessionOwner {
     const silentStart = deadLine && !this.#ownerSpoke(liveSessionId);
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
-      ...(silentStart ? { openingText: LIVE_DROPPED_LINE_MARK } : {}),
+      ...(silentStart || seed.droppedLine ? { hostEvent: LIVE_DROPPED_LINE_EVENT } : {}),
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
     const alarmIdleMs = Math.max(this.#profile.limits.idleMs, ...[...(this.#alarmSessions.get(liveSessionId)?.values() ?? [])].map(alarm => (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now()));
@@ -2506,7 +2547,7 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || handle.muted || !handle.heldAnswer) return;
       const ownerSpoke = handle.inputAt !== undefined && handle.inputAt >= since;
       if (ownerSpoke) { this.#mutedOfferSkipped(handle, 'owner_spoke'); return; }
-      try { handle.session.sendText({ text: MUTED_OFFER_TEXT }); handle.heldAnswer = false; }
+      try { handle.session.sendHostEvent({ event: MUTED_RESULT_EVENT }); handle.heldAnswer = false; }
       catch { this.#mutedOfferSkipped(handle, 'send_failed'); }
     }, MUTED_OFFER_SILENCE_MS);
     handle.mutedOfferTimer.unref?.();
@@ -2823,9 +2864,8 @@ export class LiveSessionOwner {
     this.#resetClaimCheck(handle);
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
-    if (typeof handle.session.sendCommentary === 'function') {
-      try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
-    }
+    // C-HOSTFACTS BUILD-03: the failure is an application state, not a line for her to recite. The host log
+    // above and the session's own terminal state carry it; nothing is said aloud on her behalf.
     this.#armIdle(handle, this.#profile.limits.idleMs, 'turn_failed');
     this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
@@ -3445,7 +3485,7 @@ export class LiveSessionOwner {
     return false;
   }
 
-  #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
+  #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; droppedLine: boolean } {
     const conversationId = this.#conversationOf(liveSessionId);
     // F2 widening: the seed reads the owner's own sessions only. A canary or eval session that once shared this
     // conversation id still never lends a turn to an owner call.
@@ -3474,9 +3514,11 @@ export class LiveSessionOwner {
       previous.text = `${previous.text} ${run.text}`;
     }
     const turns = merged.map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
-    // L19: the dead call's last answer was never heard, so the seed closes it as heard instead of leaving it open.
-    if (deadLine && turns.length > 0 && turns[turns.length - 1]!.role === 'model') turns.push({ role: 'user', text: LIVE_DROPPED_LINE_MARK, dataClass: inputClass });
-    return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0) };
+    // L19 / C-HOSTFACTS BUILD-01: the dead call's last answer was never heard, and that is a host fact about
+    // this session, not an owner line. It travels as the typed dropped-line host event, so no seeded turn here
+    // puts words in the owner's mouth.
+    const droppedLine = deadLine && turns.length > 0 && turns[turns.length - 1]!.role === 'model';
+    return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), droppedLine };
   }
 
   /**
@@ -3488,7 +3530,7 @@ export class LiveSessionOwner {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
     transcriptChars: number; ledgerChars: number; condensed: boolean } {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
-      ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
+      ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0, droppedLine: false };
     const body = typeof ledger === 'string' ? ledger.trim() : '';
     const text = body === '' ? undefined : `${HOST_LEDGER_HEADER}\n${body}`;
     const appended = text === undefined ? [] : [{ role: 'user' as const, text, dataClass: inputClass }];
@@ -3667,23 +3709,23 @@ export class LiveSessionOwner {
     // the session that spoke it, so a stale one is never sent again as new output; the request is rebuilt from a
     // base that carries no line of its own.
     const base = structuredClone(handle.request);
-    delete base.openingText;
+    delete base.hostEvent;
     const request = path === 'fresh_seeded'
       ? { ...base, history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
         : handle.quietRebuild ? { opening: 'user_first' as const }
-          : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
+          : { hostEvent: muteRebuild ? LIVE_MUTE_EVENT : LIVE_RECOVERY_EVENT }) }
       : { ...base, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
-    if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
+    if (handle.quietRebuild && !unspokenOpening) delete request.hostEvent;
     // C-PICKUP: the recovery line names the pickup this request really opens with, never the one its reason
     // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
     handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
       : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
     // G3: this session opens on the host's own line, so its first speech is the opener and never the answer to
     // the owner's ask. The flag falls when the owner's own words arrive, which is the turn the ask really opens.
-    handle.openingTurn = request.openingText !== undefined || request.opening === 'model_first';
+    handle.openingTurn = request.hostEvent !== undefined || request.opening === 'model_first';
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
@@ -4372,6 +4414,12 @@ export class LiveSessionOwner {
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
           if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
         }
+        if (event.type === 'inputTranscription' && isHostEventEcho(event.text)) {
+          // F1: the provider read the host tag back. It becomes no owner turn, no journal turn and no memory
+          // input, and it is receipted as what it is.
+          hostLogEvent({ event: 'host_event_echo_dropped', liveSessionId: handle.liveSessionId });
+          continue;
+        }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
@@ -4778,7 +4826,7 @@ export class LiveSessionOwner {
             error: error instanceof Error ? error.message : 'research_failed',
             cause: 'The research run itself failed before it could answer.',
             next: 'Nothing is running now, and this turn holds no research result from it.',
-            state: runningStateLine([]),
+            state: runningState([]),
           };
         }
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution

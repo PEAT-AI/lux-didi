@@ -1,5 +1,5 @@
 import type {
-  LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort,
+  HostEvent, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort,
   LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome,
 } from '../../adapters/live-voice/index.js';
 
@@ -18,6 +18,8 @@ export interface FakeLiveVoice {
   readonly toolResponses: LiveToolResponse[][];
   /** Every text input the host pushed, so a test can see the dead-air nudge itself (#538). */
   readonly texts: string[];
+  /** Every host event the host pushed, so a test can see what stayed host data (#HostFacts). */
+  readonly hostEvents: HostEvent[];
   /** How many provider sessions the host closed, so a test can tell a nudge from a recreate (#538). */
   readonly closes: number;
   /** Push one event into the open session (a no-op before the first open). */
@@ -43,6 +45,7 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
   const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   const texts: string[] = [];
+  const hostEvents: HostEvent[] = [];
   let closes = 0;
   let sessionsOpened = 0;
   let emit: (event: FakeLiveVoiceEvent) => void = () => {};
@@ -79,11 +82,12 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
         events,
         done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return 'sent'; },
-        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); },
+        sendHostEvent(input: { event: HostEvent }): void { hostEvents.push(input.event); }, endAudioStream(): void {},
         close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, requests, toolResponses, texts, emit: event => emit(event),
+  return { port, requests, toolResponses, texts, hostEvents, emit: event => emit(event),
     get sessionsOpened() { return sessionsOpened; }, get closes() { return closes; } };
 }

@@ -4,8 +4,8 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { JsonObject } from '../model/types.js';
-import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
-import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
+import type { DataClass, HostEvent, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
+import { LiveVoiceError, hostEventPayload, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
 import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 import { redactSecrets } from '../../tools/redact.js';
@@ -356,7 +356,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       return { role: turn.role, text: turn.text };
     });
     if (request.languageCode !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(request.languageCode)) fail('invalid_request');
-    if (request.openingText !== undefined && (typeof request.openingText !== 'string' || !request.openingText.length || request.openingText.length > 4000)) fail('invalid_request');
+    if (request.hostEvent !== undefined && (request.hostEvent.origin !== 'host' || typeof request.hostEvent.id !== 'string'
+      || !request.hostEvent.id.length || request.hostEvent.id.length > 96)) fail('invalid_request');
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128
       || request.tools.some(tool => !object(tool) || typeof tool.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(tool.name) || typeof tool.description !== 'string' || !object(tool.parameters)))) fail('invalid_request');
     const instructions = openAiInstructions(request.system.text);
@@ -389,7 +390,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     // session asks for that response once it is live. A normal connect seeds no pickup and asks for nothing.
     // Contract 1023 N3: a fresh model-first call owns no seeded line, so the start asks for the opener itself.
     return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs,
-      request.openingText !== undefined, request.openingText === undefined && request.opening === 'model_first');
+      request.hostEvent !== undefined, request.hostEvent === undefined && request.opening === 'model_first');
   }
 
   /**
@@ -400,10 +401,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private seed(history: readonly { role: 'user' | 'model'; text: string }[], request: LiveVoiceRequest): { items: JsonObject[]; characters: number } {
     const items: JsonObject[] = [];
     let characters = 0;
-    const freshOpening = request.openingText === undefined && request.opening === 'model_first' && !request.system.text.includes(ALARM_MODE_MARKER);
+    const freshOpening = request.hostEvent === undefined && request.opening === 'model_first' && !request.system.text.includes(ALARM_MODE_MARKER);
     // C-RECOVERY (a): the seed plus every line appended after it stays inside both provider ceilings. The oldest
     // turns go first and the newest turn is condensed, so a 300-fragment call opens instead of being refused.
-    const appendedChars = request.openingText !== undefined ? request.openingText.length : freshOpening ? FRESH_OPENING.length : 0;
+    const appendedChars = request.hostEvent !== undefined ? hostEventPayload(request.hostEvent).length : freshOpening ? FRESH_OPENING.length : 0;
     // C-RECONNECT #1072: a seeded open carries the framing item first, so it costs one of the documented 128 slots.
     const framed = history.length > 0;
     const room = Math.max(1, SEED_MESSAGE_LIMIT - (appendedChars > 0 ? 1 : 0) - (framed ? 1 : 0));
@@ -428,9 +429,11 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       items.push({ type: 'message', role: turn.role === 'model' ? 'assistant' : 'user',
         content: [{ type: turn.role === 'model' ? 'output_text' : 'input_text', text: turn.text }] });
     }
-    if (request.openingText !== undefined) {
-      characters += request.openingText.length;
-      items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: request.openingText }] });
+    if (request.hostEvent !== undefined) {
+      // C-HOSTFACTS: the seed is host data on the developer surface, never the owner's first words.
+      const payload = hostEventPayload(request.hostEvent);
+      characters += payload.length;
+      items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: payload }] });
     } else if (freshOpening) {
       characters += FRESH_OPENING.length;
       items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
@@ -2068,6 +2071,24 @@ class Session implements LiveVoiceSession {
         this.openResponseTiming();
       }
     });
+  }
+
+  /** C-HOSTFACTS: one host fact on the developer surface. It is never an owner typed final, never an owner turn
+   *  and never journalled as owner speech, so nothing downstream can quote it back as his words. */
+  sendHostEvent(input: { event: HostEvent }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || !object(input.event) || input.event.origin !== 'host' || typeof input.event.id !== 'string'
+      || !input.event.id.length || input.event.id.length > 96) fail('invalid_request');
+    const text = hostEventPayload(input.event);
+    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'),
+      item: { type: 'message', role: 'developer', content: [{ type: 'input_text', text }] } }))) return;
+    if (this.pendingCalls.length > 0 || this.delegatedOutstanding) { this.continuationOwed = true; return; }
+    if (this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
+      this.delegatedOutstanding = true;
+      this.openResponseTiming();
+    }
   }
 
   private writeTypedFinals(): boolean {

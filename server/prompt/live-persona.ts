@@ -910,6 +910,9 @@ export function composeLiveSessionInstruction(input: {
     const openingOptions: Entry[] = input.openingOptions?.length ? [{ id: 'opening-options', text: input.openingOptions }] : [];
     if (!native) return [
       { id: 'base', text: input.text },
+      // C-MEMORYTRUTH: an armed alarm is a fact of the store, not a warm digest, so a start without a frozen
+      // accepted prompt still carries it.
+      ...(calendar !== undefined ? [{ id: 'calendar' as const, text: calendar }] : []),
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),

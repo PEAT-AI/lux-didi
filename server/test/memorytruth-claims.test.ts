@@ -14,7 +14,7 @@ import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { activeAlarms } from '../domain/write-claims.js';
 import { armedAlarmsNote, guardSeededSummaries } from '../live/index.js';
-import { composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
 import { createSummarizer, type SummarizerLogEvent } from '../services/summarize.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 
@@ -176,8 +176,15 @@ test('an armed alarm reaches the next seed from the alarms table though the summ
       assert.ok(note, 'the table holds one armed alarm');
       const guarded = guardSeededSummaries(tx, [{ id: 'sum-1', liveSessionId: 's-alarm-seed', endedAt: SUMMARY_NOW,
         summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }], alarms);
-      return composeLiveSessionInstruction({ text: 'Synthetic base instruction.', tools: [], records: [], trustedChars: 4_000,
+      // The real start composes over a frozen accepted prompt, which carries the public base and a separator.
+      const frozen = `${NAYA_LIVE_BASE}\n\n`;
+      const native = composeLiveSessionInstruction({ text: frozen, tools: [], records: [], trustedChars: 60_000,
         alarms: note, earlierConversations: guarded[0]!.summary });
+      const bare = composeLiveSessionInstruction({ text: 'Synthetic base instruction.', tools: [], records: [], trustedChars: 4_000,
+        alarms: note });
+      assert.match(bare.text, /Armed alarms: \d\d:\d\d wake up for the standup/,
+        'a start without a frozen prompt still names the armed alarm');
+      return native;
     });
     assert.match(seed.text, /wake up for the standup/, 'the seed names the label');
     assert.match(seed.text, /alarm 4f2c9a1b/, 'the seed names the id');
@@ -199,7 +206,7 @@ test('a stored summary keeps a write claim its own receipts settle and loses one
     ], activeAlarms(tx)));
     assert.doesNotMatch(guarded[0]!.summary, /created/i, 'the seed drops the unsupported claim');
     assert.match(guarded[1]!.summary, /created the event/, 'the paired settled case keeps it');
-    assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-seeded-refused')), undefined,
+    assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-seeded-refused')), null,
       'the stored row is not rewritten by the guard');
   } finally { h.cleanup(); }
 });

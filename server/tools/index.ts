@@ -834,7 +834,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id, now])
               : undefined;
             if (name === 'snooze_alarm' && !snoozeRow) return finish({ status: 'refused', reason: 'alarm_not_active' });
-            const hostZone = String(options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+            const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '',
               ask.observedAt ?? now, snoozeRow ? String(snoozeRow.tz) : hostZone, input.time);
             // Five is enough to say what still stands, and it keeps the receipt small.
@@ -847,7 +847,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               ownerRequests.clarify(runId, name, parsed.reason);
               return finish({ ...parsed, ...(armed.length ? { armed } : {}) });
             }
-            if (parsed.corrected) hostLogEvent({ event: 'alarm_time_corrected', corrected: parsed.corrected, source: parsed.source });
             const label = (input.label ?? '').slice(0, 80);
             // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
             const spec = parseSeriesRule(ask.words ?? '');

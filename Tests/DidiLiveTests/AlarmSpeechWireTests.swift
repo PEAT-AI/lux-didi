@@ -6,7 +6,7 @@ import Foundation
 // pair stayed green while a spoken alarm never attached. This test crosses the wire: the host body is
 // encoded and decoded as JSON in the host's own field names, then handed to LiveSessionCoordinator.
 // The released host answered an alarm create with `alarm:<id>`; a host that honours the caller key
-// answers with the caller's own UUID. The only field that differs is the key, as ALARM.md's Probe A
+// answers with the caller's own UUID. The only field that differs is the key, as ALARM.md's AlarmSpeechWireProbe A
 // showed, so the control case proves the rest of the body already passes every other check.
 
 /// The two host replies, built in the host's wire shape and decoded back through JSON.
@@ -22,13 +22,13 @@ private enum HostBody {
         let fields = try JSONSerialization.jsonObject(with: wire) as? [String: Any] ?? [:]
         for name in ["liveSessionId", "assistantId", "authorityEpoch", "idempotencyKey", "profileIdentity",
                      "grant", "lifecycle", "dispatchIntent", "consumerState"] {
-            guard fields[name] != nil else { throw Probe.Failure(description: "host body missing \(name)") }
+            guard fields[name] != nil else { throw AlarmSpeechWireProbe.Failure(description: "host body missing \(name)") }
         }
         return try JSONDecoder().decode(LiveSnapshot.self, from: wire)
     }
 }
 
-private enum Probe {
+private enum AlarmSpeechWireProbe {
     struct Failure: Error, CustomStringConvertible { let description: String }
     static func check(_ condition: Bool, _ detail: String) throws { if !condition { throw Failure(description: detail) } }
 }
@@ -93,11 +93,11 @@ private actor Sink: LiveAudioSink {
             sockets: stale, sink: Sink())
         await staleCoordinator.begin(intent)
         let staleState = await staleCoordinator.state
-        try Probe.check(staleState == .outcomeUnknown(.grantMismatch), "a host key that is not the caller's must be refused, got \(staleState)")
+        try AlarmSpeechWireProbe.check(staleState == .outcomeUnknown(.grantMismatch), "a host key that is not the caller's must be refused, got \(staleState)")
         let staleSession = await staleCoordinator.sessionID
-        try Probe.check(staleSession == nil, "a refused snapshot must leave no session behind")
+        try AlarmSpeechWireProbe.check(staleSession == nil, "a refused snapshot must leave no session behind")
         let staleConnects = await stale.connects
-        try Probe.check(staleConnects == 0, "a refused snapshot must never open a socket, got \(staleConnects)")
+        try AlarmSpeechWireProbe.check(staleConnects == 0, "a refused snapshot must never open a socket, got \(staleConnects)")
 
         // F-B: an alarm passes its occurrence key, so a retry of the same alarm presents the same key and the
         // host can replay the session it already opened rather than refusing a second one.
@@ -108,9 +108,9 @@ private actor Sink: LiveAudioSink {
             sockets: retrySockets, sink: Sink())
         await retryCoordinator.begin(intent, key: "alarm:synthetic-alarm-a")
         let retryState = await retryCoordinator.state
-        try Probe.check(retryState == .attaching, "an alarm occurrence key reaches attaching, got \(retryState)")
+        try AlarmSpeechWireProbe.check(retryState == .attaching, "an alarm occurrence key reaches attaching, got \(retryState)")
         let retryKeys = sent.keys
-        try Probe.check(retryKeys == ["alarm:synthetic-alarm-a"], "the alarm create carries its occurrence key, got \(retryKeys)")
+        try AlarmSpeechWireProbe.check(retryKeys == ["alarm:synthetic-alarm-a"], "the alarm create carries its occurrence key, got \(retryKeys)")
 
         // A host that echoes the caller key reaches attach on the same body.
         let live = Sockets()
@@ -119,10 +119,10 @@ private actor Sink: LiveAudioSink {
             sockets: live, sink: Sink())
         await coordinator.begin(intent)
         let state = await coordinator.state
-        try Probe.check(state == .attaching, "an echoed key must reach attaching, got \(state)")
+        try AlarmSpeechWireProbe.check(state == .attaching, "an echoed key must reach attaching, got \(state)")
         let session = await coordinator.sessionID
-        try Probe.check(session == "6d1a2f70-8f4b-4c39-9c1e-2a5f0d6b7c81", "the snapshot's own session is the one attached")
+        try AlarmSpeechWireProbe.check(session == "6d1a2f70-8f4b-4c39-9c1e-2a5f0d6b7c81", "the snapshot's own session is the one attached")
         let connects = await live.connects
-        try Probe.check(connects == 1, "an attached alarm call opens exactly one socket, got \(connects)")
+        try AlarmSpeechWireProbe.check(connects == 1, "an attached alarm call opens exactly one socket, got \(connects)")
     }
 }

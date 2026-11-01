@@ -5,7 +5,7 @@ import DidiOwner
 #endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
-enum State: String, CaseIterable {
+    enum State: String, CaseIterable {
     case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, pausedForInput, rebuilding
     var sentence: String {
         switch self {

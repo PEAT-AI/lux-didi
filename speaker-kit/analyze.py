@@ -411,6 +411,7 @@ def relative_diagnostics(report):
         "INCONCLUSIVE is not a clean-speaker certificate. No sustained bass in the sweep mode.",
         "Left/right means separate input routing, not isolated acoustic drivers: crossfeed is expected.",
         "Mic gain is unknown; headroom does not establish calibration, AGC absence or room SNR.",
+        "Quiet-window noise uses the lowest-energy 10 percent of capture windows, a lower bound, not noise during each stimulus.",
         "Harmonics below 300 Hz can be intentional virtual bass; a weak fundamental makes ratios unstable.",
         "Matched harmonic windows are descriptive, not Farina impulse-response separation or proof of rattle.",
     ]
@@ -731,10 +732,11 @@ def format_table(report):
         if "noise_bands_dbfs" in report:
             lines.append("quiet-window band RMS dBFS: " + str(report["noise_bands_dbfs"]))
         if report.get("alignment_quality"):
-            lines.append("file                     expected_s measured_s corr    valid landmark_spread_ms")
+            lines.append("Onsets below are correlation candidates, NOT verified true onsets when valid=False.")
+            lines.append("file                     planned_s predicted_s candidate_s corr    valid landmark_spread_ms")
             for name, q in report["alignment_quality"].items():
-                lines.append("%-24s %9.5f %10.5f %.4f %-5s %s" %
-                             (name, q["expected_s"], q["measured_s"], q["correlation"],
+                lines.append("%-24s %9.5f %11.5f %11.5f %.4f %-5s %s" %
+                             (name, q["expected_s"], q["predicted_s"], q["measured_s"], q["correlation"],
                               q["valid"], q.get("landmark_spread_ms", "n/a")))
         bass = report.get("bass", {})
         if bass.get("tones"):
@@ -824,6 +826,7 @@ def run(run_dir, out_path=None):
     position = padding + int(float(manifest.get("pre_roll_s", 1.0)) * fs)
     search = int(2.0 * fs)
     alignment_quality = {}
+    nominal = float(manifest.get("pre_roll_s", 1.0))
     invalid = []
     for index, entry in enumerate(entries):
         ref, rfs = load_signal(entry["path"])
@@ -848,7 +851,8 @@ def run(run_dir, out_path=None):
         if db(float(np.sqrt(np.mean(segment * segment)))) < -85:
             raise ValueError("alignment: implausibly quiet file " + entry["file"])
         alignment_quality[entry["file"]] = {
-            "expected_s": round((position - padding) / fs, 5), "measured_s": round((lag - padding) / fs, 5),
+            "expected_s": round(nominal, 5), "predicted_s": round((position - padding) / fs, 5),
+            "measured_s": round((lag - padding) / fs, 5),
             "valid": lag >= padding,
             "correlation": round(corr, 5), "reference_component": component,
             "rms_dbfs": round(db(float(np.sqrt(np.mean(segment * segment)))), 2),
@@ -874,6 +878,7 @@ def run(run_dir, out_path=None):
         alignment[entry["file"]] = lag - padding
         residuals[entry["file"]] = round((lag - position) / fs, 4)
         position = lag + len(ref) + gap_samples
+        nominal += len(ref)/fs + gap_samples/fs
     meta = {
         "alignment_quality": alignment_quality,
         "invalid_measurements": invalid,

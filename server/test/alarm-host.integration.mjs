@@ -155,6 +155,12 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.equal(alarmRetry.body.data.liveSessionId, alarmCreated.body.data.liveSessionId);
   const alarmSecondKey = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID());
   assert.equal(alarmSecondKey.status, 409, JSON.stringify(alarmSecondKey.body));
+  // C-ALARMSPEECH: the shell reports the failure with one closed reason, so she is never silent again.
+  const reported = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'snapshot_mismatch' });
+  assert.equal(reported.status, 200, JSON.stringify(reported.body));
+  const openReason = await post('/api/v1/alarms/speech-failed', { id: String(next.id), reason: 'refused' });
+  assert.equal(openReason.status, 400, JSON.stringify(openReason.body));
+  assert.deepEqual(Object.keys(reported.body.data), ['status'], 'the failure report returns no alarm content');
   sessionId = alarmCreated.body.data.liveSessionId;
   const setupStart = f.frames.length;
   peer = await attach(sessionId);

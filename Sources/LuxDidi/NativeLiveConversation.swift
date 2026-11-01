@@ -47,6 +47,9 @@ enum State: String, CaseIterable {
     let device: NativeLiveAudioDevice
     private let coordinator: LiveSessionCoordinator
     private let alarmSession: Bool
+    /// C-ALARMSPEECH: an alarm call that never became audible reports one closed reason, so the shell can
+    /// stop ringing out a chime over a silence nobody explained.
+    var onSpeechFailed: ((String) -> Void)?
     private let http: NativeLiveOperatorHTTP
     private let dictationIsCapturing: () -> Bool
     private var observer: Task<Void, Never>?
@@ -250,6 +253,7 @@ enum State: String, CaseIterable {
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.latch.ownerStopped()
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
+                    self.reportSpeechFailure(Self.speechFailureReason(.transport), beforeCreate: beforeCreate)
                 case .outcomeUnknown(let reason):
                     // 3o: a refused frame is never a silent throw; the sequence, the one it had to exceed and the
                     // kind land in native-live.log before the presentation moves to outcomeUnknown.
@@ -260,6 +264,7 @@ enum State: String, CaseIterable {
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     if case .socketClosed(let code, let closeReason) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.hostClosed, detail: NativeLiveEndDetail.hostClosed(closeCode: code, reason: closeReason)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
+                    self.reportSpeechFailure(Self.speechFailureReason(reason), beforeCreate: beforeCreate)
                 default: break
                 }
             }
@@ -373,6 +378,30 @@ enum State: String, CaseIterable {
         if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
         appendLocalDiagnostic(fields)
         return diagnostic
+    }
+    /// C-ALARMSPEECH: the closed reason set the host log understands, so native-live.log and the host
+    /// line name the same failure instead of leaving a released call unexplained.
+    nonisolated static func speechFailureReason(_ error: LiveClientError) -> String {
+        switch error {
+        case .grantMismatch, .statusMismatch, .invalidIntent, .invalidDestination, .forbiddenHeader:
+            return "snapshot_mismatch"
+        case .conflict:
+            return "create_refused"
+        case .invalidFrame, .invalidAudio, .queueOverflow:
+            return "audio_failed"
+        case .socketClosed:
+            return "socket_lost"
+        case .http(let status, _):
+            return status == 409 ? "create_refused" : "create_unknown"
+        case .unavailable, .staleOperation, .transport:
+            return "create_unknown"
+        }
+    }
+    /// One line for the release that used to be silent, and one report the shell can act on.
+    private func reportSpeechFailure(_ reason: String, beforeCreate: Bool) {
+        appendLocalDiagnostic(["event": "live_outcome_unknown", "reason": reason, "beforeCreate": beforeCreate])
+        guard alarmSession else { return }
+        onSpeechFailed?(reason)
     }
     private func appendLocalDiagnostic(_ fields: [String: Any]) {
         journal.append(fields)

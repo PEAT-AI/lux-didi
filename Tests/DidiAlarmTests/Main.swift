@@ -85,6 +85,17 @@ final class RefusedEvents {
         let after = NativeAlarmShell.shellReport(assertion: true, notificationsAllowed: false, state: .denied)
         precondition(after["notificationState"] as? String == "denied")
 
+        // C-ALARMSPEECH: a failed alarm is loud. The notification names the failure, never the label,
+        // carries its own identifier so a ringing alarm cannot sweep it away, and asks for sound.
+        let failed = NativeAlarmShell.speechFailedContent()
+        precondition(failed.body == "Naya could not start. Your alarm is still ringing.",
+                     "the failure notification says what happened")
+        precondition(failed.sound != nil, "the failure notification is audible")
+        precondition(NativeAlarmShell.speechFailedIdentifier("synthetic-7") == "alarm-failed:synthetic-7",
+                     "the failure notification outlives the alarm's own identifier")
+        precondition(NativeAlarmShell.notificationAuthorizationOptions.contains(.sound),
+                     "alarm notifications are authorized with sound")
+
         // 3. One LaunchAgent for the next due alarm, rewritten on mutation, removed when empty,
         // and driven through an injected runner inside a temp domain.
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())

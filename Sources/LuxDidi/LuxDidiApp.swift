@@ -96,7 +96,7 @@ import WebKit
         // call arrives as the alarm-mode host note instead of a chime and a second conversation.
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
             sessionState: { [weak self] in self?.live?.state ?? .idle },
-            onDue: { [weak self] id in _ = self?.startLive(alarmID: id) },
+            onDue: { [weak self] id in self?.alarmDue(id) },
             onCaption: { [weak self] caption in self?.alarmCaption = caption })
         shell.onAlarms = { [weak self] rows in
             guard let self else { return }
@@ -431,6 +431,17 @@ import WebKit
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
         orbLevels?.start()
         return true
+    }
+    /// C-ALARMSPEECH: an alarm start that cannot open is reported, never discarded. A call that is already
+    /// live takes the alarm as a host note, so only a genuinely refused start is a failure.
+    private func alarmDue(_ alarmID: String) {
+        guard startLive(alarmID: alarmID) else {
+            if live == nil || !NativeAlarmShell.sessionIsLive(live?.state ?? .idle) {
+                alarmShell?.speechFailed(alarmID, reason: "start_refused")
+            }
+            return
+        }
+        live?.onSpeechFailed = { [weak self] reason in self?.alarmShell?.speechFailed(alarmID, reason: reason) }
     }
     /// D12-5: the Stop receipt names what pressed it. A stop the app makes itself stays `other`.
     /// The status menu's item travels through the web state machine and comes back as a bridge

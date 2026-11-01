@@ -1,4 +1,4 @@
-import { HostLog } from '../host/log.js';
+import { ALARM_SPEECH_FAILED_REASONS, HostLog } from '../host/log.js';
 import { AlarmSessionCoordinator, type AlarmScheduler, type AlarmShellBridge, type AlarmRecheck } from '../host/alarm-scheduler.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
@@ -223,6 +223,15 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
             }
             send(res, 200, success(health)); return;
+          }
+          if (url.pathname === '/api/v1/alarms/speech-failed' && typeof body.id === 'string') {
+            // C-ALARMSPEECH: a spoken alarm that never opened is reported by the shell, with one closed
+            // reason, so the host log can never be silent about it.
+            if (!ALARM_SPEECH_FAILED_REASONS.some(reason => reason === body.reason)) {
+              send(res, 400, { error: { code: 'UNKNOWN_REASON', message: 'A closed speech failure reason is required.' } }); return;
+            }
+            diagnosticLog.event({ event: 'alarm_speech_failed', alarmId: body.id, reason: body.reason });
+            send(res, 200, success({ status: 'ok' })); return;
           }
           const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
           if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {

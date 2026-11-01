@@ -103,7 +103,7 @@ import UserNotifications
                 report()
                 Task { [weak self] in
                     guard let self else { return }
-                    let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
+                    let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: Self.notificationAuthorizationOptions)) == true
                     guard !self.stopped else { return }
                     self.notificationsAllowed = allowed; self.notificationState = Self.permissionState(authorized: allowed)
                     // Re-register pending rows after permission resolves, never more than one request per id.
@@ -154,12 +154,33 @@ import UserNotifications
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Task { _ = try? await session.data(for: request) }
     }
+    /// C-ALARMSPEECH: the one path a failed alarm takes. The chime keeps ringing, the host log names the
+    /// closed reason, and one immediate notification says so.
+    func speechFailed(_ alarmID: String, reason: String) {
+        post("speech-failed", body: ["id": alarmID, "reason": reason])
+        guard notificationsAllowed else { return }
+        let request = UNNotificationRequest(identifier: Self.speechFailedIdentifier(alarmID),
+                                            content: Self.speechFailedContent(), trigger: nil)
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
     /// #107: the conversation is live in every state but idle, ended and failed, so an alarm that
     /// arrives while she is thinking or speaking stays inside that call.
     static func sessionIsLive(_ state: NativeLiveConversation.State) -> Bool {
         state != .idle && state != .ended && state != .failed
     }
     static func permissionState(authorized: Bool) -> NotificationPermission { authorized ? .allowed : .denied }
+    /// C-ALARMSPEECH: a sound is part of the alarm's authorization, so a notification that says she could
+    /// not start is not silent even when the chime has already been dismissed.
+    nonisolated static let notificationAuthorizationOptions: UNAuthorizationOptions = [.alert, .sound]
+    /// C-ALARMSPEECH: she could not open. The line never carries the alarm label and never carries the
+    /// private note text, and its own identifier is what keeps the ringing sweep from removing it.
+    nonisolated static func speechFailedContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Alarm"; content.body = "Naya could not start. Your alarm is still ringing."
+        content.sound = .default
+        return content
+    }
+    nonisolated static func speechFailedIdentifier(_ alarmID: String) -> String { "alarm-failed:" + alarmID }
     static func notificationContent() -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = "Alarm"; content.body = "Your alarm is due."

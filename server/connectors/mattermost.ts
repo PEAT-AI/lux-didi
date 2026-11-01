@@ -1240,6 +1240,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (target === undefined || target.id === undefined) {
         // A successful discovery with no match is an empty read the model can speak, not a failed handler.
         if (rows.length === 0) {
+          // #669 F1: a child that ranks its own list answers with no rows, so the miss reads the channel index
+          // once and ranks it, instead of voicing the refusal with no names at all.
+          if (closest.length === 0) {
+            const known = await loadChannels(signal, capture);
+            if (Array.isArray(known)) closest = closestChannelLabels(spoken, known);
+          }
           const hint = closest.length === 0 ? '' : ` The closest names I have are ${spokenList(closest, 'and')}.`;
           return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I do not know a channel called ${spoken}.${hint} Which channel did you mean?` });
         }

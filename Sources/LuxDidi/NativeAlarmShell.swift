@@ -150,13 +150,14 @@ import UserNotifications
     /// #108: an ask that arrived inside a call waits for the call to end, in bounded ten second steps, so
     /// the prompt has one reachable moment and never interrupts a call. Thirty minutes, then the next frame.
     private func awaitIdleForNotificationPermission() {
-        guard permissionWait == nil, !permissionRequested, !alarms.isEmpty,
+        guard permissionWait == nil, !permissionRequested,
               AlarmShellPolicy.asksNotificationPermission(alarms: alarms, permissionRequested: false, sessionLive: true)
         else { return }
         permissionWait = Task { [weak self] in
             for _ in 0..<180 {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !self.stopped else { return }
+                guard AlarmShellPolicy.hasActive(self.alarms) else { self.permissionWait = nil; return }
                 if AlarmShellPolicy.asksNotificationPermission(alarms: self.alarms,
                         permissionRequested: self.permissionRequested, sessionLive: Self.sessionIsLive(self.sessionState())) {
                     self.permissionWait = nil
@@ -168,18 +169,19 @@ import UserNotifications
         }
     }
     /// #108: one transient IOKit refusal is reported and then retried once, five seconds on, so an armed
-    /// alarm is not left without its idle sleep assertion for the whole window.
+    /// alarm is not left without its idle sleep assertion for the whole window. The guard is an actually
+    /// active row, never a non-empty table: the host sends every row it ever stored, and a finished alarm
+    /// must not keep a retry alive (review F1).
     private func retryIdleSleepAssertion() {
-        guard assertionWait == nil, !alarms.isEmpty, !policy.assertionHeld else { return }
+        guard assertionWait == nil, AlarmShellPolicy.hasActive(alarms), !policy.assertionHeld else { return }
         assertionWait = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
             guard let self, !self.stopped else { return }
             self.assertionWait = nil
-            guard !self.alarms.isEmpty else { return }
+            guard AlarmShellPolicy.hasActive(self.alarms), !self.policy.assertionHeld else { return }
             self.policy.apply(self.alarms, notificationsAllowed: self.notificationsAllowed)
             self.onCaption(self.policy.caption)
             self.report()
-            if !self.policy.assertionHeld { self.retryIdleSleepAssertion() }
         }
     }
     /// #107: the report carries the permission the shell observed, never one it assumed.
@@ -190,7 +192,10 @@ import UserNotifications
          "assertionCode": Int(assertionCode)]
     }
     private func report() {
-        post("shell", body: Self.shellReport(assertion: alarms.isEmpty || policy.assertionHeld,
+        // #108 (review F1): the assertion is answered only for an actually active alarm, so a table of
+        // finished rows never reports a false `assertion_failed`.
+        let active = AlarmShellPolicy.hasActive(alarms)
+        post("shell", body: Self.shellReport(assertion: !active || policy.assertionHeld,
                                              notificationsAllowed: notificationsAllowed, state: notificationState,
                                              assertionCode: policy.assertionHeld ? 0 : assertionStatus))
     }

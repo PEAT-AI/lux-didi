@@ -778,11 +778,16 @@ struct RootView: View {
         }
     }
     /// #108: the screen notification can arrive once per animation frame; the status receipt is one
-    /// trailing call per 250 ms, gated the way orb_screen_parameters is.
+    /// trailing call per 250 ms and is written only when what it says changed, the way the orb's own
+    /// orb_screen_parameters receipt is (review F2).
+    private var statusReceipt: StatusSurfaceReceipt?
     private lazy var statusScreenSignal = TrailingSignal { [weak self] in
         MainActor.assumeIsolated {
             guard let self else { return }
-            self.appendSurface(StatusItemPresentation.state(button: self.statusItem.button))
+            let receipt = StatusItemPresentation.state(button: self.statusItem.button)
+            guard receipt != self.statusReceipt else { return }
+            self.statusReceipt = receipt
+            self.appendSurface(receipt)
         }
     }
     private var menuTracking = StatusMenuTracking()
@@ -889,6 +894,7 @@ struct RootView: View {
             symbol: NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya"))
         statusItem.button?.image = symbol.image
         statusItem.button?.title = symbol.title
+        statusReceipt = StatusItemPresentation.state(button: statusItem.button)
         appendSurface(StatusItemPresentation.state(button: statusItem.button))
         statusScreenMonitor = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in

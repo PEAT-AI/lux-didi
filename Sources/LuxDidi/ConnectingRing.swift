@@ -558,7 +558,13 @@ struct ShellAlarm: Codable, Equatable, Sendable {
     static func asksNotificationPermission(alarms: [ShellAlarm], permissionRequested: Bool,
                                           sessionLive: Bool) -> Bool {
         guard !permissionRequested, !sessionLive else { return false }
-        return alarms.contains { $0.state == "pending" || $0.state == "ringing" }
+        return hasActive(alarms)
+    }
+
+    /// #108 (review F1): the assertion, the ask and their retries are for an actually active alarm.
+    /// The host sends every row it ever stored, and a finished row keeps its place in the table.
+    static func hasActive(_ alarms: [ShellAlarm]) -> Bool {
+        alarms.contains { $0.state == "pending" || $0.state == "ringing" }
     }
     static func menuTitle(alarmCaption: String?, pendingCall: Bool) -> String {
         alarmCaption ?? (pendingCall ? "•" : "")

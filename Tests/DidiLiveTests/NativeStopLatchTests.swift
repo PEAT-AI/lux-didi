@@ -176,6 +176,14 @@ import Foundation
         let ringing = [ShellAlarm(id: "b", fireAtUtc: 1_800_000_000_000, tz: "UTC", state: "ringing", ringDeadlineUtc: nil)]
         try require(!AlarmShellPolicy.asksNotificationPermission(alarms: ringing, permissionRequested: false, sessionLive: true),
             "a ringing alarm during a call still never interrupts with a system prompt")
+        // #108 (review F1): the host sends every row it ever stored, so a finished row is not active and
+        // never keeps the assertion retry or the ask alive.
+        let finished = [ShellAlarm(id: "c", fireAtUtc: 1_700_000_000_000, tz: "UTC", state: "done", ringDeadlineUtc: nil),
+                        ShellAlarm(id: "d", fireAtUtc: 1_700_000_000_000, tz: "UTC", state: "cancelled", ringDeadlineUtc: nil)]
+        try require(!AlarmShellPolicy.hasActive(finished), "a table of finished alarms has nothing active")
+        try require(!AlarmShellPolicy.asksNotificationPermission(alarms: finished, permissionRequested: false, sessionLive: false),
+            "a finished alarm asks nothing")
+        try require(AlarmShellPolicy.hasActive(finished + armed), "one pending row is active among finished rows")
     }
 
     /// Acceptance 4: a goodbye the device refuses is recorded, and the mic release is not delayed.

@@ -1778,15 +1778,17 @@ export class LiveSessionOwner {
       catch { throw new LiveError('memory_unavailable'); }
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         // #108: the basis already holds the summary reserve back, so the budget below is the room that
-        // exists after the notes yielded, not the leftovers of a stale target.
-        const basis = composeSession(undefined, this.#calendar, EARLIER_CONVERSATIONS_RESERVE_CHARS);
+        // exists after the notes yielded, not the leftovers of a stale target. With nothing stored to
+        // put in the reserve the notes keep their room (review F4).
+        const reserve = storedSummaries.length === 0 ? undefined : EARLIER_CONVERSATIONS_RESERVE_CHARS;
+        const basis = composeSession(undefined, this.#calendar, reserve);
         earlier = buildEarlierConversationsSection(storedSummaries,
           { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
           summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
         this.#warm.adopt(this.#sections);
-        return earlier.section ? composeSession(earlier.section, this.#calendar, EARLIER_CONVERSATIONS_RESERVE_CHARS) : basis;
+        return earlier.section ? composeSession(earlier.section, this.#calendar, reserve) : basis;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }

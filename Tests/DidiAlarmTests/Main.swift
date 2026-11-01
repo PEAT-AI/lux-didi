@@ -167,6 +167,14 @@ final class RefusedEvents {
         precondition(written.contains("<string>--args</string>") && written.contains("--alarm-relaunch"),
                      "the launch carries the alarm argument")
         precondition(written.contains("StartCalendarInterval"), "the agent is timed")
+        // C-ALARMSPEECH: the agent's own reopen is logged as the alarm relaunch, once, and a Dock click
+        // at any other time stays a Dock click. The launch kind never shows extra UI at launch.
+        precondition(writer.takeOwnStart(nowMs: writer.armedStartMs!), "the agent's own fire is recognised")
+        precondition(!writer.takeOwnStart(nowMs: writer.armedStartMs ?? firstDue - 60_000),
+                     "the agent's own fire is consumed once")
+        precondition(!writer.takeOwnStart(nowMs: 0), "a reopen with no armed agent is a Dock click")
+        precondition(!LaunchKind.alarmRelaunch.presentsOrbAtLaunch && !LaunchKind.alarmRelaunch.presentsWindowAtLaunch,
+                     "the relaunch shows nothing extra until the alarm is due")
         // The interval is launchd's own: Minute, Hour, Day and Month, and no key launchd rejects.
         precondition(!written.contains("<key>Year</key>"), "launchd has no Year key")
         var utc = Calendar(identifier: .gregorian)

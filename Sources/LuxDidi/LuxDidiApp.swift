@@ -574,6 +574,8 @@ import WebKit
     var onPresenceMute: ((Bool) -> Void)?
     var onPresenceStart: ((String?) -> Void)?
     var onPresenceStop: (() -> Void)?
+    /// C-ALARMSPEECH: whether a reopen right now is the relaunch agent's own fire, not a Dock click.
+    func takeAlarmRelaunch(nowMs: Int) -> Bool { alarmRelaunch.takeOwnStart(nowMs: nowMs) }
     /// C-ALARMSPEECH: the shell owns the loud failure path, and it is reachable from the delegate.
     func alarmSpeechFailed(_ alarmID: String, reason: String) { alarmShell?.speechFailed(alarmID, reason: reason) }
     /// C-ALARMSPEECH: a due alarm starts through presence, which the delegate owns.
@@ -1666,6 +1668,13 @@ struct RootView: View {
     /// created, nothing becomes key and the app never activates; the menu item, the hotkey and an
     /// install relaunch still open the full window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // C-ALARMSPEECH: the relaunch agent's own reopen is not a Dock click. It logs its own kind and
+        // shows nothing extra; the alarm speaks when it is due.
+        if model.takeAlarmRelaunch(nowMs: Int(Date().timeIntervalSince1970 * 1000)) {
+            model.appendPresenceReceipt(LaunchKind.alarmRelaunch.launchRecord)
+            model.forwardLaunchReceipt(LaunchKind.alarmRelaunch)
+            return false
+        }
         model.appendPresenceReceipt(LaunchKind.reopen.launchRecord)
         model.forwardLaunchReceipt(LaunchKind.reopen)
         _ = coordinator.presentOrbFromDock()

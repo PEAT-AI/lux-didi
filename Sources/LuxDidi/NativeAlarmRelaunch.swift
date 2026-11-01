@@ -36,6 +36,15 @@ final class LaunchctlRelaunchRunner: AlarmRelaunchRunning {
 
     /// The write receipt of the last arm, or nil when nothing was pending.
     private(set) var armedStartMs: Int?
+    /// C-ALARMSPEECH: `open` cannot pass an argument to an app that is already running, so the arming
+    /// instant is the only evidence a reopen has of who asked for it. One agent fire, one window.
+    nonisolated static let relaunchWindowMs = 90_000
+    /// Consume this agent's own fire: true once, for a reopen inside the window it was armed for.
+    func takeOwnStart(nowMs: Int) -> Bool {
+        guard let armed = armedStartMs, abs(nowMs - armed) <= Self.relaunchWindowMs else { return false }
+        armedStartMs = nil
+        return true
+    }
     var onEvent: ((AlarmRelaunchEvent) -> Void)?
 
     private let directory: URL

@@ -552,6 +552,14 @@ struct ShellAlarm: Codable, Equatable, Sendable {
 
 /// Pure ownership policy; native effects are injected so local tests never touch power or notifications.
 @MainActor final class AlarmShellPolicy {
+    /// #108: the one moment the system notification ask may appear: an alarm is armed, the permission is
+    /// still undetermined, and no call is live. The old gate asked only at ring time, which is too late for
+    /// the notification, and could land inside a call, which is never acceptable.
+    static func asksNotificationPermission(alarms: [ShellAlarm], permissionRequested: Bool,
+                                          sessionLive: Bool) -> Bool {
+        guard !permissionRequested, !sessionLive else { return false }
+        return alarms.contains { $0.state == "pending" || $0.state == "ringing" }
+    }
     static func menuTitle(alarmCaption: String?, pendingCall: Bool) -> String {
         alarmCaption ?? (pendingCall ? "•" : "")
     }

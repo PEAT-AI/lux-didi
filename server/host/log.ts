@@ -229,7 +229,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || typeof value.scheduledMs !== 'number' || !Number.isFinite(value.scheduledMs)
       || typeof value.actualMs !== 'number' || !Number.isFinite(value.actualMs)
       || !ALARM_LOG_REASONS.some(reason => reason === value.reason)) return;
-    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason };
+    // #108: a refused idle sleep assertion carries the IOKit status, a count and never a label.
+    const assertionCode = value.event === 'alarm_degraded' && value.reason === 'assertion_failed'
+      && typeof value.assertionCode === 'number' && Number.isInteger(value.assertionCode) ? value.assertionCode : undefined;
+    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason,
+      ...(assertionCode === undefined ? {} : { assertionCode }) };
 
   }
   if (value.event === 'alarm_announced') {

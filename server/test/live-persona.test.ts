@@ -812,8 +812,8 @@ test('#108: the earlier-conversations section keeps its own reserve beside a 17k
   const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
     summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
   // The private owner style is not in this repository. Release 10.7.3 carried 16,625 characters of it,
-  // which is what pushed the rest of the instruction past the target; this synthetic one is that size.
-  const style = 'Synthetic style line: she answers the way the owner does and stops when done. '.repeat(267);
+  // which is what pushed the rest of the instruction past the target; this synthetic one is 17,000.
+  const style = 'Synthetic style line: she answers the way the owner does and stops when done. '.repeat(220).slice(0, 17_000);
   const profile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'synthetic-17k',
     displayName: 'Synthetic Owner', style: { text: style, dataClass: 'private' },
     lore: { text: 'Synthetic lore line about the house, the boat and the Friday delivery. '.repeat(155), dataClass: 'sensitive' } };

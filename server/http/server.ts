@@ -202,9 +202,12 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const notificationState = body.notificationState === 'allowed' || body.notificationState === 'denied' || body.notificationState === 'not_asked'
               ? body.notificationState : undefined;
             shell.report({ assertion: body.assertion, notifications: body.notifications, ...(notificationState ? { notificationState } : {}) });
+            // #108: the shell now names the IOKit status behind a refused idle sleep assertion, so an
+            // alarm_degraded row for the assertion carries a code instead of a bare false.
+            const assertionCode = typeof body.assertionCode === 'number' ? body.assertionCode : undefined;
             const health = shell.health();
             if (health.degraded) for (const alarm of scheduler.list().filter(row => row.state === 'pending' || row.state === 'ringing')) {
-              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason, ...(reason === 'assertion_failed' && assertionCode !== undefined ? { assertionCode } : {}) });
             }
             send(res, 200, success(health)); return;
           }

@@ -15,7 +15,8 @@ test('direct102 authority: finals alone grant compound effects, consumed once wi
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'idempotent');
   assert.equal(requests.authorize('s', 'open', 'other').code, 'allowed');
   requests.commit('s', 'set_alarm', 'seven', { code: 'set' });
-  assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'grant_spent');
+  // P-R10: a different alarm is a new write; only the exact same alarm is spent.
+  assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'allowed');
   assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'idempotent');
   now += 120001;
   assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'request_expired');
@@ -211,7 +212,8 @@ test('SA-R2: split finalized alarm ask retains timezone and is admitted once', (
   assert.equal(parsed.tz, 'Asia/Singapore');
   assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
   requests.commit('s', 'set_alarm', 'seven-sg', { status: 'set' }, ask.id);
-  assert.equal(requests.authorize('s', 'set_alarm', 'another').code, 'grant_spent');
+  // P-R10: a different alarm target is a new write under the same ask.
+  assert.equal(requests.authorize('s', 'set_alarm', 'another').code, 'allowed');
 });
 // W1030: the write tools carry their own intent per target, and a split ask must still admit them.
 const COMPOSE_ASK = 'draft an email to Priya about the invoice';
@@ -352,7 +354,8 @@ test('#795 a calendar ask answered with a question keeps its grant for his reply
   assert.equal(requests.audit('s', 'create_event').ownerFinals, 2);
   requests.commit('s', 'create_event', 'cardio', { status: 'event_created' }, ask.id);
   assert.equal(requests.authorize('s', 'create_event', 'cardio').code, 'idempotent', 'a replay reuses the receipt');
-  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'grant_spent', 'the grant is consumed once');
+  // P-R10: a different event is a new write under the same ask, not a spent grant.
+  assert.equal(requests.authorize('s', 'create_event', 'gym').code, 'allowed');
 });
 
 // #796: a repeat the owner never said is not authority, and a one-time ask retried without it is.

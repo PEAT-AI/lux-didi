@@ -534,6 +534,7 @@ run_checks() {
     if [[ $rc -ne 0 ]]; then
       failed=$((failed + 1))
       printf 'COMBINED failure output: %s\n' "$check"
+      grep -aE 'not ok [0-9]+|✖ |error:|error TS|FAIL ' "$last_file" | tail -n 40 || true
       tail -n 60 "$last_file"
     fi
     table+="| \`$check\` | $rc | ${seconds}s | $last |"$'\n'

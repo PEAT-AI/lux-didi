@@ -73,10 +73,26 @@ require_proof_identifier() {
   printf 'MACOS-INSTALL: proof bundle identifier %s is distinct from the owner identifier %s\n' "$identifier" "$owner_bundle_id"
 }
 
+# The bundle identifier also names the per-identifier state, so the guard checks the derived root too: a proof
+# support root that resolves inside the owner's would put a proof run on the owner's state, credential or log.
+require_proof_state_root() {
+  local home="$1" identifier="$2" owner_root proof_root
+  owner_root="$home/Library/Application Support/$owner_bundle_id"
+  proof_root="$home/Library/Application Support/$identifier"
+  case "$proof_root" in
+    "$owner_root"|"$owner_root"/*)
+      echo "MACOS-INSTALL FAIL: proof support root $proof_root resolves inside the owner's $owner_root; refusing to launch" >&2
+      exit 1;;
+  esac
+  printf 'MACOS-INSTALL: proof support root %s is outside the owner root %s\n' "$proof_root" "$owner_root"
+}
+
 if [ "${1:-}" = "--leased-run" ]; then
   work="$2"; proof="$3"; node="$4"; app="$5"; fixture="$6"; payload_sha="$7"
   require_proof_identifier "$app"
+  require_proof_state_root "$real_home" "$proof_bundle_id"
   [ ! -d "$fixture" ] || require_proof_identifier "$fixture"
+  [ ! -d "$fixture" ] || require_proof_state_root "$real_home" "$proof_fixture_bundle_id"
   export LUX_VERIFICATION_DRIVER="$work/observer"
   export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
   real_home="$HOME"
@@ -571,6 +587,7 @@ printf 'MACOS-INSTALL: second bundle build into one output path replaced the she
 app="$work/Lux Didi.app"
 bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)" --bundle-id "$proof_bundle_id" 2>&1 | tee "$work/build-macos-app.log"
 require_proof_identifier "$app"
+require_proof_state_root "$HOME" "$proof_bundle_id"
 
 # Stable signing (#382): the designated requirement is what macOS keys the
 # Accessibility grant to, so the build either carries a certificate-backed one or
@@ -680,6 +697,7 @@ cp -R "$assets/Resources/web/dist" "$assets2/Resources/web/dist"
 { cat "$assets/Resources/web/dist/index.html"; printf '%s\n' "$marker"; } > "$assets2/Resources/web/dist/index.html"
 bash scripts/build-macos-app.sh "$app" --assets "$assets2" --release-commit "$(git rev-parse HEAD)" --bundle-id "$proof_bundle_id"
 require_proof_identifier "$app"
+require_proof_state_root "$HOME" "$proof_bundle_id"
 second_sha="$(shasum -a 256 "$app/Contents/Resources/web/dist/index.html" | cut -d' ' -f1)"
 [ "$second_sha" != "$first_sha" ] || { echo 'MACOS-INSTALL FAIL: the second build did not replace the served index.html' >&2; exit 1; }
 [ ! -e "$app/Contents/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second build nested the web shell under web/dist/dist' >&2; exit 1; }
@@ -706,6 +724,8 @@ ditto "$app" "$fixture"
 # The fixture is launched by its own cases, so it gets its own identifier rather than the app's: two
 # proof bundles sharing one identifier would be ambiguous to LaunchServices.
 /usr/bin/plutil -replace CFBundleIdentifier -string "$proof_fixture_bundle_id" "$fixture/Contents/Info.plist"
+require_proof_identifier "$fixture"
+require_proof_state_root "$HOME" "$proof_fixture_bundle_id"
 payload_sha="$(shasum -a 256 "$fixture/Contents/MacOS/LuxDidi" | awk '{print $1}')"
 host_dir="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist/host"
 cp "$host_dir/index.js" "$host_dir/canonical.js"

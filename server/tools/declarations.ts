@@ -230,8 +230,6 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           record.status = outcome.status;
           const code = outcome.status === 'completed' ? undefined : outcome.code;
           record.reason = code && isToolFailureCode(code) ? code : 'handler_outcome';
-          // #669: the connector's closest channel names ride on the record, so the caller can voice them.
-          if (outcome.status !== 'completed' && outcome.closestNames !== undefined && outcome.closestNames.length > 0) record.closestNames = [...outcome.closestNames];
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';

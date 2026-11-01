@@ -3898,12 +3898,6 @@ export function channelClosestNames(code: string | undefined): string[] {
   if (detail === undefined) return [];
   return detail.split(',').map(name => name.trim()).filter(name => name !== '' && !/^none$/iu.test(name)).slice(0, 3);
 }
-
-/** #669: the names a failed sub-call carries, from the tool record when it has them, else from its code. */
-function closestNamesOf(result: { readonly closestNames?: readonly string[]; readonly code?: string } | undefined): string[] {
-  const carried = result?.closestNames;
-  return carried !== undefined && carried.length > 0 ? carried.slice(0, 3) : channelClosestNames(result?.code);
-}
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
@@ -5542,7 +5536,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     if (channelMiss !== undefined) {
       run.unavailableReasons.set(plan.read.source, channelMiss);
       // #663: the refusal names the channels closest to the one the ask meant, voiced by the reply.
-      run.chatChannelClosest = closestNamesOf(own.find(result => !result.ok));
+      run.chatChannelClosest = channelClosestNames(own.find(result => !result.ok)?.code);
       const words = channelWordsOf(plan.read.subs);
       if (words !== undefined) run.chatChannel ??= words;
     }
@@ -6929,7 +6923,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               if (missCode !== undefined) {
                 run.unavailableReasons.set('chat', missCode);
                 // #663: the refusal names the channels closest to the one the ask meant, voiced by the reply.
-                run.chatChannelClosest = closestNamesOf(part.results.find(result => !result.ok));
+                run.chatChannelClosest = channelClosestNames(part.results.find(result => !result.ok)?.code);
                 const words = channelWordsOf(served);
                 if (words !== undefined) run.chatChannel ??= words;
               }

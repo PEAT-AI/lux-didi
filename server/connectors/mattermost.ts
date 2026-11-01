@@ -293,16 +293,6 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
 }
 
-/**
- * #669: the names the refusal above carries, read back by the tool layer so a caller can voice them.
- * The format is written here and parsed here, at most three, and `none` means no name to voice.
- */
-export function closestChannelNames(refusal: string): string[] {
-  const detail = /closest names:\s*([^;]*)/iu.exec(refusal)?.[1];
-  if (detail === undefined) return [];
-  return detail.split(',').map(name => name.trim()).filter(name => name !== '' && !/^none$/iu.test(name)).slice(0, 3);
-}
-
 /** The text a completed child read carries inside its MCP content envelope. */
 function contentText(decoded: unknown): string | undefined {
   const result = isRecord(decoded) && isRecord(decoded['result']) ? decoded['result'] : decoded;

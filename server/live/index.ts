@@ -4472,7 +4472,6 @@ export class LiveSessionOwner {
           : record ? String(record.status) : 'refused');
         if (ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId ?? '');
         return { key: call.id, name: call.name, ok, text,
-          ...(!ok && record?.closestNames !== undefined && record.closestNames.length > 0 ? { closestNames: record.closestNames } : {}),
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
           ...(ok && call.name === 'gmail_search_messages' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),

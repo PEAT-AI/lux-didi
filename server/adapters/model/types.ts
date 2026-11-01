@@ -83,9 +83,7 @@ export function isMcpFailureStage(value: string): value is McpFailureStage {
 export function isToolFailureCode(value: string): value is ToolFailureCode {
   return (TOOL_FAILURE_CODES as readonly string[]).includes(value);
 }
-/** #669: a failed call may carry the up-to-three closest names the connector refused with, so a caller voices them. */
-export type ToolOutcome = { status: 'completed'; result: ToolResultRef }
-  | { status: 'failed' | 'unknown'; code?: ToolFailureCode; closestNames?: readonly string[] };
+export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
 export interface ToolCallJournal {
   intent(call: ToolCallIntent, validatedArguments?: unknown): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;
@@ -116,8 +114,6 @@ export interface Authority { isCurrent(host: HostContext, tool: ToolDefinition, 
 export interface ToolRecord {
   callId?: string; name: string; executionId: string;
   status: 'completed' | 'failed' | 'unknown' | 'refused'; reason: string;
-  /** #669: the connector's closest channel names, so the research reply can voice them. */
-  closestNames?: readonly string[];
 }
 export interface LoopResult {
   status: ModelStatus | 'limit' | 'uncertain'; text: string; tools: ToolRecord[];

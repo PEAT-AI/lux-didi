@@ -14,6 +14,9 @@ import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
+import { activeAlarms } from '../domain/write-claims.js';
+import { armedAlarmsNote, guardSeededLoops, guardSeededSummaries } from '../live/index.js';
+import { composeLiveSessionInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
 import {
   SUMMARY_BOOT_REQUEUE_DELAY_MS, SUMMARY_HOST_START_LIMIT, SUMMARY_MAX_RETRIES, SUMMARY_RETRY_BACKOFF_MS,
   SUMMARY_RETRY_MAX_AGE_MS, createSummarizer, type SummarizerLogEvent,
@@ -526,5 +529,150 @@ test('C-START10: quit grace expires with a durable retry marker that a new host 
     assert.equal(await worker(h.store, recovered, []).recoverAtStart(), 'done');
     assert.equal(recovered.calls, 1);
     assert.equal(storedRow(h.store, 's-quit-interrupted')!.status, 'complete');
+  } finally { h.cleanup(); }
+});
+
+// C-MEMORYTRUTH (10.8): a call summary never remembers a refused write as done, and the next call seed names
+// the alarms the table actually holds. Every case drives the real distiller or the real composer with a fake
+// provider port, so no case reaches a provider.
+const CLAIMED_MEETING = "The owner asked for a lunch meeting. Naya created the event on the owner's calendar.";
+
+function insertAlarm(store: Store, id: string, fireAtUtc: number, label: string): void {
+  store.transaction(tx => tx.run(`INSERT INTO alarms (id, fire_at_utc, tz, label, state, created_journal_id)
+    VALUES (?,?,?,?, 'pending', ?)`, [id, fireAtUtc, 'UTC', label, 'journal-1']));
+}
+
+test('a calendar write refused twice leaves no success fact when the summary claims it worked', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-refused-write');
+    // The observed shape: the write was refused twice in the call and nothing exists on the calendar.
+    insertToolCall(h.store, 's-refused-write', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
+    insertToolCall(h.store, 's-refused-write', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 1);
+    const events: SummarizerLogEvent[] = [];
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: CLAIMED_MEETING }))]);
+    await worker(h.store, model, [], event => events.push(event)).distill('s-refused-write');
+    const row = storedRow(h.store, 's-refused-write')!;
+    assert.equal(row.status, 'complete');
+    assert.doesNotMatch(row.summary!, /created/i, 'no refused write is remembered as done');
+    assert.match(row.summary!, /asked for a lunch meeting/, 'the sentence the transcript supports is kept');
+    const dropped = events.find(event => event.event === 'conversation_summary_claims_dropped');
+    assert.ok(dropped, 'the correction is logged');
+    assert.equal(dropped['dropped'], 1, 'the log carries counts only');
+    assert.equal(JSON.stringify(dropped).includes('lunch'), false, 'never the owner words');
+  } finally { h.cleanup(); }
+});
+
+test('one failed then one succeeded write keeps exactly one supported success fact (event_created settles)', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-mixed-write');
+    insertToolCall(h.store, 's-mixed-write', 'create_event', 'failed', { status: 'failed', reason: 'upstream_error' }, 0);
+    // The connector's own settled code for a created event; the settled list in tools/tool-outcome.ts is another
+    // wagon's file, so this guard accepts it here by the sealed completed record and its code.
+    insertToolCall(h.store, 's-mixed-write', 'create_event', 'completed', { code: 'event_created' }, 1);
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: CLAIMED_MEETING }))]);
+    await worker(h.store, model, []).distill('s-mixed-write');
+    const row = storedRow(h.store, 's-mixed-write')!;
+    assert.equal(row.status, 'complete');
+    assert.match(row.summary!, /created the event/, 'the receipt settles the claim');
+    assert.equal((row.summary!.match(/created/gi) ?? []).length, 1, 'one success fact, not two');
+  } finally { h.cleanup(); }
+});
+
+test('an unknown receipt is not a success fact', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-unknown-write');
+    insertToolCall(h.store, 's-unknown-write', 'create_event', 'unknown', { status: 'unknown' }, 0);
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: CLAIMED_MEETING }))]);
+    await worker(h.store, model, []).distill('s-unknown-write');
+    const row = storedRow(h.store, 's-unknown-write')!;
+    assert.doesNotMatch(row.summary!, /created/i, 'an unsettled receipt can only be recorded as not done');
+  } finally { h.cleanup(); }
+});
+
+test('a summary with no write claim is stored byte for byte', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-no-write');
+    const plain = 'The owner talked about the mint window and the weather. Naya read the calendar aloud for him.';
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: plain }))]);
+    await worker(h.store, model, []).distill('s-no-write');
+    assert.equal(storedRow(h.store, 's-no-write')!.summary, plain, 'length and format are untouched without a write');
+  } finally { h.cleanup(); }
+});
+
+test('a summary cannot deny an alarm the alarms table holds as armed', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-alarm-denied');
+    insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    const denial = 'The owner asked for a wake up call. Naya could not set the alarm.';
+    const model = new ScriptedModel([modelResult('complete', JSON.stringify({ skip: false, summary: denial }))]);
+    await worker(h.store, model, []).distill('s-alarm-denied');
+    const row = storedRow(h.store, 's-alarm-denied')!;
+    assert.doesNotMatch(row.summary!, /could not set the alarm/, 'the table outranks the spoken denial');
+    assert.match(row.summary!, /asked for a wake up call/);
+  } finally { h.cleanup(); }
+});
+
+test('an armed alarm reaches the next seed from the alarms table though the summary denied it', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-alarm-seed');
+    insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    const seed = h.store.transaction(tx => {
+      const alarms = activeAlarms(tx);
+      const note = armedAlarmsNote(alarms);
+      assert.ok(note, 'the table holds one armed alarm');
+      const guarded = guardSeededSummaries(tx, [{ id: 'sum-1', liveSessionId: 's-alarm-seed', endedAt: SUMMARY_NOW,
+        summary: 'The owner asked for a wake up call. Naya could not set the alarm.' }], alarms);
+      // The real start composes over a frozen accepted prompt, which carries the public base and a separator.
+      const frozen = `${NAYA_LIVE_BASE}\n\n`;
+      const native = composeLiveSessionInstruction({ text: frozen, tools: [], records: [], trustedChars: 60_000,
+        alarms: note, earlierConversations: guarded[0]!.summary });
+      const bare = composeLiveSessionInstruction({ text: 'Synthetic base instruction.', tools: [], records: [], trustedChars: 4_000,
+        alarms: note });
+      assert.match(bare.text, /Armed alarms: \d\d:\d\d wake up for the standup/,
+        'a start without a frozen prompt still names the armed alarm');
+      return native;
+    });
+    assert.match(seed.text, /wake up for the standup/, 'the seed names the label');
+    assert.match(seed.text, /alarm 4f2c9a1b/, 'the seed names the id');
+    assert.match(seed.text, /Armed alarms: \d\d:\d\d wake up for the standup/, 'the seed names the time');
+    assert.doesNotMatch(seed.text, /could not set the alarm/, 'no stored denial contradicts the table');
+  } finally { h.cleanup(); }
+});
+
+test('a stored summary keeps a write claim its own receipts settle and loses one they do not', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-seeded-refused');
+    seedConversation(h.store, 's-seeded-created');
+    insertToolCall(h.store, 's-seeded-refused', 'create_event', 'refused', { status: 'refused', reason: 'authorization_missing' }, 0);
+    insertToolCall(h.store, 's-seeded-created', 'create_event', 'completed', { code: 'event_created' }, 2);
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [
+      { id: 'sum-refused', liveSessionId: 's-seeded-refused', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },
+      { id: 'sum-created', liveSessionId: 's-seeded-created', endedAt: SUMMARY_NOW, summary: CLAIMED_MEETING },
+    ], activeAlarms(tx)));
+    assert.doesNotMatch(guarded[0]!.summary, /created/i, 'the seed drops the unsupported claim');
+    assert.match(guarded[1]!.summary, /created the event/, 'the paired settled case keeps it');
+    assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-seeded-refused')), null,
+      'the stored row is not rewritten by the guard');
+  } finally { h.cleanup(); }
+});
+
+test('a stored open loop that denies an armed alarm never reaches the greeting', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-open-loop');
+    insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
+    const guarded = h.store.transaction(tx => guardSeededLoops(tx, [
+      { text: 'Naya could not set the alarm.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
+      { text: 'The owner still has to pick the venue.', lastSeenAt: SUMMARY_NOW, sessionId: 's-open-loop' },
+    ], activeAlarms(tx)));
+    assert.deepEqual(guarded.map(loop => loop.text), ['The owner still has to pick the venue.'],
+      'the denial is gone and the supported loop stays');
   } finally { h.cleanup(); }
 });

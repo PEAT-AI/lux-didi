@@ -4798,11 +4798,12 @@ test('#472: a late source result reaches the model while the session is live', a
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
-  // The response is announced before the late source lands at 4.5 s, so the note arrives inside it.
-  fake.emit({ type: 'modelTurnStarted' });
-  await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  // The tool response submission clears the in-flight flag by design, so the response the note lands inside is the
+  // one announced after it, and the late source is released only then.
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
   release();

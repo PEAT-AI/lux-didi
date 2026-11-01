@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { analyse, expectCommands, play, trace as describe } from './voice-replay/driver.js';
+import { analyse, expectCommands, loadTrace, play, playTrace, trace as describe } from './voice-replay/driver.js';
 import type { Command } from './voice-replay/driver.js';
 import type { Played } from './voice-replay/driver.js';
 import { sanitize } from './voice-replay/sanitize.js';
@@ -140,6 +140,15 @@ test('scenario 7: a missing terminal event never withholds the continuation', as
   assert.equal(continuations(played), 1, `no response.done arrived, so the continuation was withheld: ${describe(replay)}`);
   invariants(played);
   await replay.release();
+});
+
+test('scenario 7 strict: no later provider lifecycle rescues the owed answer', async t => {
+  const source = loadTrace('scenario-07-missing-terminal-event');
+  const trace = { ...source, steps: source.steps.filter(step => step.at_ms < 8_000) };
+  const played = await playTrace(t, trace, { tools: true, scripts: [{ latencyMs: 1_500 }] });
+  assert.equal(continuations(played), 1, `a provider that stops sending must not withhold the answer: ${describe(played.replay)}`);
+  invariants(played);
+  await played.replay.release();
 });
 
 test('scenario 8: a rejected command retries at most once and an async settings failure is typed', async t => {

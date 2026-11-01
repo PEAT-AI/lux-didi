@@ -478,7 +478,10 @@ export interface Played {
  * and watchdog run out to the scenario's own deadline.
  */
 export async function play(t: TestContext, name: string, options: ReplayOptions = {}): Promise<Played> {
-  const trace = loadTrace(name);
+  return playTrace(t, loadTrace(name), options);
+}
+
+export async function playTrace(t: TestContext, trace: Trace, options: ReplayOptions = {}): Promise<Played> {
   const r = await replay(t, options);
   r.recoverySteps(trace.recovery ?? []);
   await r.ready();

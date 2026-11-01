@@ -39,7 +39,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   // C-PERMTIER: there is no alarm cue to judge. A finalized owner turn is the authority, so the row's
   // own expectation is the whole assertion.
   assert.equal(code, row.resolve_code ?? row.code, `${row.id}: ${row.finals.join(' / ')}`);
-  if (row.expectedSay !== undefined && !noAlarmIntent) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
+  if (row.expectedSay !== undefined) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
     assert.match(refused.say, /no current owner request/i);

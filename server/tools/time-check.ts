@@ -110,6 +110,13 @@ function collect(text: string): Candidate[] {
     if (hour === undefined || hour > 12 || minute === undefined || minute > 59) continue;
     push(match, settle(hour, match[3]!), minute, true);
   }
+  // "eleven ten in the morning", "seven oh five in the morning": the hour, its minutes and the period.
+  for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s+(?:oh\\s+)?(${NUMBER})\\s+(?:in\\s+the\\s+)?(morning|afternoon|evening|night|tonight)\\b`, 'g')) as Iterable<RegExpExecArray>) {
+    const hour = valueOf(match[1]!); const minute = valueOf(match[2]!);
+    if (hour === undefined || hour > 12 || minute === undefined || minute > 59) continue;
+    const period = match[3] === 'morning' ? 'am' : 'pm';
+    push(match, settle(hour, period), minute, true);
+  }
   // "11 pm 40": the minutes follow the meridian, as spoken.
   for (const match of text.matchAll(new RegExp(`\\b(${NUMBER})\\s*([ap])m\\s+(\\d{1,2})\\b`, 'g')) as Iterable<RegExpExecArray>) {
     const hour = valueOf(match[1]!);

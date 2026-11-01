@@ -37,7 +37,7 @@
 {"id": "one-time-word", "words": "set a one-time alarm", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"status": "clarify", "reason": "missing_time"}}
 {"id": "subject-clock-only", "words": "remind me to call at the 3 pm meeting", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {"time": {"mode": "wall", "date": {"kind": "today"}, "local_time": "15:00"}}, "expects": {"local_time": "15:00", "date": "2026-03-05"}}
 {"id": "subject-clock-and-ask-clock", "words": "remind me to call at the 3 pm meeting, at 6 pm", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"local_time": "18:00", "date": "2026-03-05"}}
-{"id": "ambiguous-hour-clarifies", "words": "wake me at 6", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"status": "clarify", "reason": "ambiguous_time"}}
+{"id": "ambiguous-hour-clarifies", "words": "set an alarm at 6", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"status": "clarify", "reason": "ambiguous_time"}}
 {"id": "in-ten-minutes", "words": "wake me in ten minutes", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"relative_ms": 600000}}
 {"id": "in-an-hour", "words": "wake me in an hour", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"relative_ms": 3600000}}
 {"id": "in-20-minutes", "words": "wake me in 20 minutes", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"relative_ms": 1200000}}
@@ -62,4 +62,5 @@
 {"id": "minute-past-clarify", "words": "wake me at 6 pm today", "now": "2026-03-05T17:05:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"status": "clarify", "reason": "past_time"}}
 {"id": "today-past-paired-valid", "words": "at 6 pm today", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"local_time": "18:00", "date": "2026-03-05"}}
 {"id": "one-time-word-paired-valid", "words": "set a one-time alarm for 6 pm", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"local_time": "18:00", "date": "2026-03-05"}}
-{"id": "ambiguous-hour-paired-valid", "words": "wake me at 6", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {"time": {"mode": "wall", "date": {"kind": "today"}, "local_time": "18:00"}}, "expects": {"local_time": "18:00", "date": "2026-03-05"}}
+{"id": "ambiguous-hour-paired-valid", "words": "set an alarm at 6", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {"time": {"mode": "wall", "date": {"kind": "today"}, "local_time": "18:00"}}, "expects": {"local_time": "18:00", "date": "2026-03-05"}}
+{"id": "wake-me-hour-default", "words": "wake me at 6", "now": "2026-03-05T09:30:00Z", "tz": "Europe/Berlin", "args": {}, "expects": {"local_time": "06:00", "date": "2026-03-06"}}

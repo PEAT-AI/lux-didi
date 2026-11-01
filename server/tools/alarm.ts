@@ -133,11 +133,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
   // The owner constrained part of it: combine, and override only the fields they constrained.
   if (checked.status === 'partial') {
     if (checked.hour !== undefined) {
-      // "at six" fixes the hour but not half of the day, so a model time must settle the meridian.
-      if (!clock) return { status: 'clarify', reason: 'ambiguous_time' };
+      // "at six" fixes the hour but not half of the day: a model time settles the meridian, and
+      // "wake me" permits the morning default the owner's words carry. A bare set asks.
+      if (!clock && !/\bwake me\b/i.test(words)) return { status: 'clarify', reason: 'ambiguous_time' };
       let hour = checked.hour;
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
-      const minute = checked.minutesStated === true ? checked.minute ?? 0 : clock.minute ?? 0;
+      else if (!clock) hour = hour === 12 ? 0 : hour;
+      const minute = checked.minutesStated === true ? checked.minute ?? 0 : clock?.minute ?? 0;
       const day = checked.day ?? (time?.mode === 'wall' ? time.date : { kind: 'today' as const });
       const statedToday = checked.day?.kind === 'today';
       const instant = commitWall(day, hour, minute, now, zone, statedToday);

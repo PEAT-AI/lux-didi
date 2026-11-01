@@ -462,14 +462,17 @@ const sameHandle = (author: string, owner: string): boolean => author.toLowerCas
 export function withoutOwner(text: string, owner: string, display = ''): string {
   const handle = owner.trim().replace(/^@/u, '');
   const local = handle.includes('@') ? handle.slice(0, handle.indexOf('@')) : handle;
+  const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const words = new Set<string>();
   const take = (value: string): void => {
-    for (const word of value.split(/[^\p{L}\p{N}]+/u)) if (word.length > 1) words.add(word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
+    for (const word of value.split(/[^\p{L}\p{N}]+/u)) if (word.length > 1) words.add(escape(word.toLowerCase()));
   };
   take(local);
   take(display);
   if (words.size === 0) return text;
-  const strip = new RegExp(String.raw`(?<![\p{L}\p{N}])@?(?:${[...words].join('|')})(?![\p{L}\p{N}])`, 'giu');
+  // a handle its owner spells with a separator goes whole first, so `owner-chat` never leaves the `-` of a per-word strip
+  const joined = [handle, local].filter((value, at, all) => /[^\p{L}\p{N}]/u.test(value) && all.indexOf(value) === at).map(escape);
+  const strip = new RegExp(String.raw`(?<![\p{L}\p{N}])@?(?:${[...joined, ...words].join('|')})(?![\p{L}\p{N}])`, 'giu');
   return text.replace(strip, ' ').replace(/\s+/gu, ' ').trim();
 }
 

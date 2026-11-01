@@ -184,6 +184,133 @@ import Foundation
         check(afterSilence.count == 2 && afterSilence.last?.fields["peakDb"] == "-120.0",
               "a window of digital silence reports the floor, got \(String(describing: afterSilence.last?.fields))")
         device.stop()
+
+        // C-AUDIOMARK 0b, 2 and 3: one readout names the device, its transport and every volume
+        // control the device publishes, never one assumed master.
+        let snapshot = NativeOutputVolumeSnapshot(uid: "synthetic-output", transport: "built-in",
+            controls: [NativeVolumeControl(element: 0, scalar: 0.42),
+                       NativeVolumeControl(element: 1, scalar: 0.21),
+                       NativeVolumeControl(element: 2, scalar: nil)])
+        check(snapshot.fields["outputUid"] == "synthetic-output",
+              "the readout names the device, got \(String(describing: snapshot.fields["outputUid"]))")
+        check(snapshot.fields["outputTransport"] == "built-in",
+              "the readout names the transport, got \(String(describing: snapshot.fields["outputTransport"]))")
+        check(snapshot.fields["outputVolume"] == "0=0.420,1=0.210",
+              "every control it has is reported, an unreadable one skipped, got \(String(describing: snapshot.fields["outputVolume"]))")
+        check(snapshot.fields["outputVolumeControls"] == "2",
+              "the readout counts the readable controls, got \(String(describing: snapshot.fields["outputVolumeControls"]))")
+        let noControls = NativeOutputVolumeSnapshot(uid: "synthetic-output", transport: "Bluetooth", controls: [])
+        check(noControls.fields["outputVolume"] == "unknown",
+              "a device with no readable control says unknown, never a zero, got \(String(describing: noControls.fields["outputVolume"]))")
+
+        let markJournal = NativeAudioJournal(fileURL: nil)
+        let markOwner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("a1-mark-\(UUID().uuidString)"))
+        let volumeDevice = NativeLiveAudioDevice(captureInput: format,
+                                                defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                                owner: markOwner, journal: markJournal, deviceState: { _ in false },
+                                                isBuiltInOutput: { true },
+                                                outputVolumeSnapshot: { snapshot })
+        volumeDevice.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        volumeDevice.startForTesting = { _ in }
+        volumeDevice.playbackDriverForTesting = FakeDriver()
+        do { try await volumeDevice.startFenced { _, _ in } } catch {
+            check(false, "the fake start threw \(error)"); exit(1)
+        }
+        let volumes = markJournal.events.filter { $0.name == "output_volume" }
+        check(volumes.map { $0.fields["reason"] ?? "" } == ["before_prepare", "after_route_selection"],
+              "one volume record before preparation and one after route selection, got \(volumes.map { $0.fields["reason"] ?? "" })")
+        check(volumes.first?.fields["outputUid"] == "synthetic-output" &&
+              volumes.first?.fields["outputVolume"] == "0=0.420,1=0.210",
+              "a volume record carries the device, transport and volumes together, got \(String(describing: volumes.first?.fields))")
+        check(volumes.last?.fields["voiceProcessing"] == "true" && volumes.last?.fields["voiceProcessingBypass"] == "none",
+              "the post-route record says the voice stage is on, got \(String(describing: volumes.last?.fields))")
+
+        // C-AUDIOMARK 3: the overload listener counts per call and the count reaches the journal.
+        volumeDevice.noteProcessorOverloadForTesting()
+        volumeDevice.noteProcessorOverloadForTesting()
+        check(markJournal.events.filter { $0.name == "processor_overload" }.last?.fields["count"] == "2",
+              "two overload notifications count to two, got \(String(describing: markJournal.events.filter { $0.name == "processor_overload" }.last?.fields))")
+
+        // C-AUDIOMARK 4: the played window now reports the volume, the voice flag, the samples at or
+        // over -3 dBFS and the flat-top runs, on the decoded provider PCM.
+        let loud: [Int16] = [23200, 23200, 23200, 0, 0, 0, 0, 0]
+        var loudPCM = Data()
+        for sample in loud { withUnsafeBytes(of: sample.littleEndian) { loudPCM.append(contentsOf: $0) } }
+        do { try await volumeDevice.write(loudPCM) } catch { check(false, "the fake write threw \(error)"); exit(1) }
+        volumeDevice.flushPlaybackLevelForTesting()
+        let widened = markJournal.events.filter { $0.name == "playback_level" }.last?.fields
+        check(widened?["overSamples"] == "3",
+              "three samples at or over -3 dBFS are counted, got \(String(describing: widened?["overSamples"]))")
+        check(widened?["flatTopRuns"] == "1",
+              "one run of identical loud samples is one flat top, got \(String(describing: widened?["flatTopRuns"]))")
+        check(widened?["outputVolume"] == "0=0.420,1=0.210",
+              "the level carries the output volume, got \(String(describing: widened?["outputVolume"]))")
+        check(widened?["voiceProcessing"] == "true",
+              "the level carries the voice stage flag, got \(String(describing: widened?["voiceProcessing"]))")
+
+        volumeDevice.stop()
+        let afterStop = markJournal.events.filter { $0.name == "output_volume" }
+        check(afterStop.last?.fields["reason"] == "after_teardown",
+              "a teardown leaves a volume record, got \(String(describing: afterStop.last?.fields["reason"]))")
+        check(afterStop.last?.fields["processorOverloads"] == "2",
+              "the teardown record carries the call's overload count, got \(String(describing: afterStop.last?.fields["processorOverloads"]))")
+
+        // C-AUDIOMARK 1: the mark is metadata only, and it names every fact a reader needs.
+        let mark = NativeDistortionMark(output: snapshot, voiceProcessing: true, bypassReason: "none",
+                                        engineGeneration: 3, lastChange: "route_change",
+                                        duckingRequested: "advanced=0,level=min",
+                                        duckingReadBack: "advanced=0,level=min",
+                                        peakDb: "-3.1", rmsDb: "-12.4", overSamples: 12, flatTopRuns: 2,
+                                        processorOverloads: 1, loadAverage: (1.5, 1.25, 1.0))
+        let markRecord = mark.record
+        check(markRecord["event"] as? String == "audio_distortion_mark",
+              "the mark names its own event, got \(String(describing: markRecord["event"]))")
+        check(markRecord["outputUid"] as? String == "synthetic-output" &&
+              markRecord["outputVolume"] as? String == "0=0.420,1=0.210",
+              "the mark carries the device and volumes, got \(markRecord)")
+        check(markRecord["voiceProcessing"] as? Bool == true && markRecord["voiceProcessingBypass"] as? String == "none",
+              "the mark carries the voice stage and its bypass reason")
+        check(markRecord["engineGeneration"] as? Int == 3 && markRecord["lastChange"] as? String == "route_change",
+              "the mark carries the engine generation and the last change")
+        check(markRecord["duckingReadBack"] as? String == "advanced=0,level=min",
+              "the mark carries the read-back ducking")
+        check(markRecord["overSamples"] as? Int == 12 && markRecord["processorOverloads"] as? Int == 1,
+              "the mark carries the overload counters")
+        check(markRecord["loadAverage"] as? String == "1.50,1.25,1.00",
+              "the mark carries the load average, got \(String(describing: markRecord["loadAverage"]))")
+
+        // The same record on native-live.log: one line, the launch identity, both clocks, and the
+        // call id exactly when a call is running.
+        let liveJournal = NativeLiveJournal(fileURL: nil)
+        liveJournal.append(markRecord)
+        let noCall = liveJournal.events.last
+        check(noCall?["liveSessionId"] == nil, "a mark with no call carries no call id, got \(String(describing: noCall?["liveSessionId"]))")
+        check(noCall?["mono_ms"] != nil && noCall?["timestamp"] != nil,
+              "a mark always carries the wall clock and the monotonic clock")
+        liveJournal.sessionID = "synthetic-call"
+        liveJournal.append(markRecord)
+        check(liveJournal.events.last?["liveSessionId"] as? String == "synthetic-call",
+              "a mark inside a call carries the call id, got \(String(describing: liveJournal.events.last?["liveSessionId"]))")
+
+        // C-AUDIOMARK 2: the read-only listener records a volume change and a default-device change,
+        // and a notification never claims who wrote the value.
+        let monitorJournal = NativeLiveJournal(fileURL: nil)
+        let monitor = NativeOutputVolumeMonitor(journal: monitorJournal, read: { snapshot })
+        monitor.noteVolumeChangedForTesting()
+        let changed = monitorJournal.events.last
+        check(changed?["event"] as? String == "output_volume_changed",
+              "a volume notification writes output_volume_changed, got \(String(describing: changed?["event"]))")
+        check(changed?["outputVolume"] as? String == "0=0.420,1=0.210" && changed?["outputUid"] as? String == "synthetic-output",
+              "the change record carries the device and volumes, got \(changed ?? [:])")
+        check(changed?["changedBy"] == nil, "a notification never claims who changed the volume")
+        monitor.noteDefaultOutputChangedForTesting()
+        let moved = monitorJournal.events.last
+        check(moved?["event"] as? String == "output_volume" && moved?["reason"] as? String == "default_device_changed",
+              "a default-device change writes a volume record with its reason, got \(moved ?? [:])")
+        check(moved?["outputUid"] as? String == "synthetic-output",
+              "the default-device record names the device it rebound to")
+
         return failures
     }
 

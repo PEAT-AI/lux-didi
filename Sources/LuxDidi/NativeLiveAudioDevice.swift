@@ -1737,7 +1737,12 @@ struct NativeLiveInterruptionSample: Sendable {
         let now = nowMs()
         let input = !muted && now - inputBandsAtMs <= 200 ? inputBands : .silent
         let renderTime = player?.lastRenderTime
-        let clock = renderTime.flatMap { player?.playerTime(forNodeTime: $0) }
+        // A render time that is neither sample-time nor host-time valid is what a Bluetooth route
+        // handed this on 2026-11-01: playerTime(forNodeTime:) raises an Objective-C exception for it
+        // on the main actor. A nil clock flows through, so the orb just goes quiet.
+        let clock = renderTime.flatMap {
+            $0.isSampleTimeValid || $0.isHostTimeValid ? player?.playerTime(forNodeTime: $0) : nil
+        }
         return (input, outputOrb.sample(renderedSample: clock?.sampleTime, sampleRate: clock?.sampleRate ?? Double(NativePlaybackQueue.frameRate)))
     }
     /// E1: append one already-computed meter level to a small bounded ring. Stores the number only.

@@ -29,7 +29,7 @@ import Foundation
         let presence = NativePresence(effects: PresenceEffects(
             openSession: { generation in record.opened.append(generation); record.calls.append("open") },
             cancelConnecting: { record.calls.append("cancelConnecting") },
-            closeSession: { record.calls.append("close") },
+            closeSession: { _ in record.calls.append("close") },
             setCaptureMuted: { muted in record.calls.append("fence"); record.muted.append(muted) },
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },

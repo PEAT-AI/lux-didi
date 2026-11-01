@@ -37,7 +37,7 @@ import Foundation
         lazy var presence: NativePresence = NativePresence(effects: PresenceEffects(
             openSession: { [unowned self] generation in self.opened(generation) },
             cancelConnecting: { [unowned self] in self.closedSession() },
-            closeSession: { [unowned self] in self.closedSession() },
+            closeSession: { [unowned self] _ in self.closedSession() },
             setCaptureMuted: { [unowned self] muted in self.fences.append(muted) },
             cancelPlayback: {},
             providerInputMute: { [unowned self] muted in self.inputs.append(muted) },

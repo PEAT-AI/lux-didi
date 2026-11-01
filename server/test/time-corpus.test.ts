@@ -60,7 +60,7 @@ async function alarmHarness(t: TestContext) {
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
 
   const dispatch = async (name: string, args: Record<string, unknown>, words: string) => {
-    owner.ownerRequests.answered(session.liveSessionId);
+    owner.ownerRequests.answered?.(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, clock.now);
     const definition = live.find(entry => entry.name === name);
     assert.ok(definition, `${name} is declared to the live model`);
@@ -181,7 +181,7 @@ test('C-TIME snooze: the wall time is resolved in the alarm zone', async t => {
   assert.equal(fresh.reply.status, 'refused', 'a snooze needs the alarm it moves');
 });
 
-test('C-TIME shape 6 and 7: the event time and the person a description may name', async t => {
+test('C-TIME shape 6 and 7: the event time and the person a description may name', () => {
   const now = Date.parse('2026-03-05T09:30:00Z');
   const words = "Okay, that doesn't sound so bad. At 6 PM today I need to call Sam, and could you also put a block on my calendar at 6 PM";
   const window = eventWindow(words, now, 'Europe/Berlin', undefined, { mode: 'wall', date: { kind: 'today' }, local_time: '18:00' });

@@ -16,6 +16,8 @@ didi-timeline <session|latest> [options]
   call <session|latest> one call's ordered story: the store's turns and tool calls merged with
                         host.log (and its rotated files), native-live.log and audio.log
   sessions              the same audit aggregates across every session with a turn or a call since a date
+  marks                 every "Mark distortion" press in the day's logs, with the volume, the voice
+                        stage and the counters the app recorded at that moment, call or no call
   doctor                log health: files, bytes, lines, torn lines, top events, oldest and newest
                         day, and the lines no session or call can be attributed to
   list                  one row per session the logs name: start, duration, tools, max silence, terminal
@@ -33,7 +35,7 @@ didi-timeline <session|latest> [options]
   --data-dir <path>     the host data directory holding state.sqlite and logs/
 `;
 
-const COMMANDS = new Set(['call', 'doctor', 'list', 'sessions']);
+const COMMANDS = new Set(['call', 'doctor', 'list', 'marks', 'sessions']);
 const argv = process.argv.slice(2);
 const options = { command: undefined, session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined, audit: false, auditSummary: false, since: undefined };
 for (let index = 0; index < argv.length; index += 1) {
@@ -135,9 +137,9 @@ function ensureBuilt() {
 // such as a shipped artifact, a restored copy, or an emit that skipped a file. The view then dies on a
 // TypeError naming an internal symbol ("traceCallCarriesRefusalCode is not a function") instead of reading.
 // The module's own surface is the honest freshness test: rebuild once when a view's export is missing.
-const TIMELINE_EXPORTS = ['buildAuditSummary', 'buildCallAudit', 'buildCallStory', 'buildTimeline', 'listCalls',
-  'logHealth', 'renderAuditSummary', 'renderCallAudit', 'renderCallList', 'renderCallStory', 'renderLogHealth',
-  'resolveSession', 'scanLogs', 'traceCallCarriesRefusalCode'];
+const TIMELINE_EXPORTS = ['buildAuditSummary', 'buildCallAudit', 'buildCallStory', 'buildDistortionMarks', 'buildTimeline',
+  'listCalls', 'logHealth', 'renderAuditSummary', 'renderCallAudit', 'renderCallList', 'renderCallStory',
+  'renderDistortionMarks', 'renderLogHealth', 'resolveSession', 'scanLogs', 'traceCallCarriesRefusalCode'];
 
 async function traceModule() {
   ensureBuilt();
@@ -216,6 +218,12 @@ async function callView() {
   }
 }
 
+async function marksView() {
+  const { buildDistortionMarks, renderDistortionMarks, scanLogs } = await traceModule();
+  const marks = buildDistortionMarks(scanLogs(logInputs()));
+  process.stdout.write(options.json ? `${JSON.stringify(marks, null, 2)}\n` : renderDistortionMarks(marks));
+}
+
 async function doctorView() {
   const { logHealth, renderLogHealth, scanLogs } = await traceModule();
   const health = logHealth(scanLogs(logInputs()));
@@ -254,6 +262,7 @@ function timelineOptions(read) {
 }
 
 async function main() {
+  if (options.command === 'marks') return marksView();
   if (options.command === 'doctor') return doctorView();
   if (options.command === 'list') return listView();
   if (options.command === 'call') return callView();

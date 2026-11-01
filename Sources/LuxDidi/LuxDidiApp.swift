@@ -685,6 +685,9 @@ struct RootView: View {
         super.init()
     }
     let hotkey = GlobalHotkey()
+    /// C-AUDIOMARK 0b and 2: the read-only output volume journal, alive from launch on the same
+    /// native-live.log sink the status item writes. A mark must work with no call running.
+    private lazy var volumeMonitor = NativeOutputVolumeMonitor(journal: model.surfaceReceiptLog)
     let liveShortcuts = NativeShortcuts()
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
@@ -845,6 +848,8 @@ struct RootView: View {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // C-AUDIOMARK 0b and 2: the output volume journal runs from launch, with or without a call.
+        volumeMonitor.start()
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
@@ -893,6 +898,9 @@ struct RootView: View {
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Open Naya app", action: #selector(showFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Settings", action: #selector(openSettingsFromMenu), keyEquivalent: "")
+        // C-AUDIOMARK 1: one press records the moment the owner hears the distortion. Deliberately no
+        // key equivalent: a new global key could clash with a key he already uses.
+        menu.addItem(withTitle: "Mark distortion", action: #selector(markDistortion), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
         // #3p: the one line that says why a silent key is silent, in the status menu the
@@ -1390,6 +1398,26 @@ struct RootView: View {
     /// when nothing runs, exactly as before; the status menu's item is the presentation-only path.
     @objc func toggleMiniOrb() {
         if coordinator.fullShown { coordinator.closeFull() } else { coordinator.presentFull(activating: true) }
+    }
+    /// C-AUDIOMARK 1: one press records the moment the owner heard the distortion. Metadata only: the
+    /// device and its volumes, the voice stage and its bypass reason, the engine generation and the
+    /// last graph change, the ducking requested and read back, the recent playback counters and the
+    /// load average. It works with no call running, and the journal adds the call id when there is one.
+    @objc func markDistortion() {
+        let load = NativeDistortionMark.currentLoadAverage()
+        let mark = model.live?.device.distortionMark(loadAverage: load) ?? Self.markWithoutCall(load: load)
+        // F1: the conversation adopts the session id on the audio journal, never on the app's own
+        // native-live journal, so the call id is read here and passed in with the mark.
+        let callID = AudioOwner.shared.journal?.sessionID
+        model.surfaceReceiptLog.append(NativeDistortionMark.record(for: mark, callID: callID))
+    }
+    /// A mark taken with no call: no engine, no voice stage, so nothing about either is claimed.
+    private static func markWithoutCall(load: (Double, Double, Double)) -> NativeDistortionMark {
+        NativeDistortionMark(output: NativeLiveAudioDevice.outputVolumeSnapshot(), voiceProcessing: false,
+                             bypassReason: "no_call", engineGeneration: 0, lastChange: "none",
+                             duckingRequested: "none", duckingReadBack: "none",
+                             peakDb: "unknown", rmsDb: "unknown", overSamples: 0, flatTopRuns: 0,
+                             processorOverloads: 0, loadAverage: load)
     }
     /// MINI2: the single key on or off. Turning it on asks for the grant again,
     /// because the owner just said yes to the key.

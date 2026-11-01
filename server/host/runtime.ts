@@ -3,7 +3,7 @@ import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { clearLogContext, clockSync } from './events.js';
-import { supervisionRequested } from './supervision.js';
+import { supervisionEndReason, supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { installPeople, loadPeople } from '../people/index.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
@@ -750,7 +750,9 @@ export async function startHost(config: HostConfig) {
           // the summary. Wait for that summary here, bounded, while the store it writes to is still open;
           // a forced kill skips this and the next host start finishes the work instead.
           alarms.stop();
-          await live.shutdown();
+          // C-LABELS 1: the shell's own end reason reaches the live session, so a crash is never recorded
+          // as the owner's Quit. Unsupervised starts and signals name nothing and stay app_quit.
+          await live.shutdown(supervisionEndReason());
           await mcp.close();
           await summarizer.settleOnExit().catch(() => undefined);
         } finally { logExit('ready', 'close'); store.close(); stopDiagnostics(); }

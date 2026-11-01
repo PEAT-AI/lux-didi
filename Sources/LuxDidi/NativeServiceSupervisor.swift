@@ -91,6 +91,13 @@ enum NativeProbeFailure: String, Error {
         }
     }
     func writeStart(_ data: Data) throws { try input.fileHandleForWriting.write(contentsOf: data) }
+    /// C-LABELS 1: the clean stop says on the wire why the host is being stopped, before stdin closes. A shell
+    /// that dies writes nothing at all, so the host reads EOF with no stop frame as `shell_lost` and never as
+    /// the owner quitting. The reason is the app's own closed `live_end` word, never free text.
+    func writeStop(_ reason: NativeLiveEndReason) {
+        let frame = Data("{\"type\":\"stop\",\"schemaVersion\":1,\"reason\":\"\(reason.rawValue)\"}\n".utf8)
+        try? input.fileHandleForWriting.write(contentsOf: frame)
+    }
     func closeInput() { try? input.fileHandleForWriting.close() }
     private func received(_ data: Data) {
         guard failure == nil else { return }
@@ -131,8 +138,10 @@ enum NativeProbeFailure: String, Error {
         defer { deadline.cancel() }
         return try await withCheckedThrowingContinuation { frameWaiter = $0 }
     }
-    func stop(graceNanoseconds: UInt64 = 500_000_000) async {
-        stopping = true; closeInput()
+    func stop(graceNanoseconds: UInt64 = 500_000_000, reason: NativeLiveEndReason? = nil) async {
+        stopping = true
+        if let reason { writeStop(reason) }
+        closeInput()
         let escalation = Task { [weak self] in
             try? await NativeServiceStop.escalate(
                 graceNanoseconds: graceNanoseconds,
@@ -487,7 +496,7 @@ struct OwnedServiceConnection {
         #if COMPANION_TEST
         if let proofGrace = shutdownGraceForProof { grace = proofGrace }
         #endif
-        if let child { await child.stop(graceNanoseconds: grace); observeStop(child); self.child = nil }
+        if let child { await child.stop(graceNanoseconds: grace, reason: reason); observeStop(child); self.child = nil }
     }
 }
 

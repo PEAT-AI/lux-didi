@@ -18,6 +18,9 @@ enum NativeLiveEndReason: String, CaseIterable {
     case hostClosed = "host_closed"
     case audioInterruption = "audio_interruption"
     case routeChange = "route_change"
+    /// C-LABELS 2: the socket closed with no terminal frame, so nothing was pressed and nothing was asked.
+    /// Never `user_stop`: the owner did not stop this call, the session stopped existing.
+    case sessionLost = "session_lost"
 }
 
 /// Closed, privacy-safe detail for one end record: byte counts and OS status only, never content,

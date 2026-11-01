@@ -865,11 +865,6 @@ test('a Quit ends the live session as app_quit, never as the Stop button', async
   assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
 });
 
-/** C-LABELS 1: the shutdown reason the owner will name; the cast only bridges the red stage's older signature. */
-function shutdownWith(owner: { shutdown: () => Promise<void> }, reason: string): Promise<void> {
-  return (owner as unknown as { shutdown(named: string): Promise<void> }).shutdown(reason);
-}
-
 // C-LABELS 1: the app names its end on the wire before stdin closes; a shell that vanished names nothing, and
 // EOF with no stop frame is the shell's loss rather than the owner's Quit.
 test('C-LABELS 1: a shell that vanished ends the live session as shell_lost, never as app_quit', async t => {
@@ -880,7 +875,7 @@ test('C-LABELS 1: a shell that vanished ends the live session as shell_lost, nev
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session, attachment } = await attached(h, 'shell-lost');
   await drain(h, session.liveSessionId, 2);
-  await shutdownWith(h.owner, 'shell_lost');
+  await h.owner.shutdown('shell_lost');
   assert.deepEqual(receipts.filter(record => record.event === 'session_end'), [{ event: 'session_end', reason: 'shell_lost', msAfterStop: 0 }]);
   assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'shell_lost' }, 'the terminal names the shell, not the owner');
 });

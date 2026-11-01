@@ -60,7 +60,13 @@ export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_afte
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */
 export const NATIVE_END_REASONS = ['invalid_output', 'child_exit', 'logout', 'shutdown', 'user_stop', 'app_quit',
-  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change'] as const;
+  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change',
+  // C-LABELS 1: the supervised shell ended the host instead of the app asking. A crash closes stdin with
+  // no stop frame, so the app never sent a word for it and the host names the loss itself.
+  'shell_lost',
+  // C-LABELS 2: the app held a call whose socket closed with no terminal frame. Nothing was pressed, so
+  // neither the owner's Stop nor the app's Quit describes it.
+  'session_lost'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
 /** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */

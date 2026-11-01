@@ -2060,17 +2060,20 @@ export class LiveSessionOwner {
     handle.abort.abort();
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(reason: string = 'app_quit'): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#expiryTimer?.cancel();
     this.#expiryTimer = undefined;
+    // C-LABELS 1: the code names who ended the call. `shell_lost` is the supervised shell disappearing with
+    // the call still live; every reason the app itself names is still the app asking, so it stays app_quit.
+    const code = reason === 'shell_lost' ? 'shell_lost' : 'app_quit';
     const handles = [...this.#active.values()];
     for (const handle of handles) {
       // The app quit with the call still live: the session ends here, named apart from the Stop button.
       if (!this.#settled(handle)) {
-        this.#settle(handle, { state: 'closed', code: 'app_quit' }, true, 'ended', null);
-        hostLogEvent({ event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+        this.#settle(handle, { state: 'closed', code }, true, 'ended', null);
+        hostLogEvent({ event: 'session_end', reason: code, msAfterStop: 0 });
       }
       handle.consumer?.discard();
       handle.session.close();

@@ -904,8 +904,6 @@ function supervisionPipe(): { input: ReadStream; write: (frame: unknown) => void
   return { input: raw as unknown as ReadStream, write: frame => { raw.write(`${JSON.stringify(frame)}\n`); }, end: () => { raw.end(); } };
 }
 const START_FRAME = (nonce: string): Record<string, unknown> => ({ type: 'start', schemaVersion: 1, nonce });
-/** The reason a supervision pipe named at its end, before `endReason` was part of the returned handle. */
-function endReasonOf(supervision: object): string | undefined { return (supervision as { endReason?: string }).endReason; }
 
 test('C-LABELS 1: a supervised pipe that ends with no stop frame names its end shell_lost', async () => {
   const pipe = supervisionPipe();
@@ -914,10 +912,10 @@ test('C-LABELS 1: a supervised pipe that ends with no stop frame names its end s
   const closed = new Promise<Error | undefined>(resolve => supervision.watch(error => resolve(error)));
   pipe.write(START_FRAME(nonce));
   assert.equal(await supervision.nonce, nonce);
-  assert.equal(endReasonOf(supervision), undefined, 'a running host has named no end yet');
+  assert.equal(supervision.endReason, undefined, 'a running host has named no end yet');
   pipe.end();
   assert.equal(await closed, undefined, 'the shell going quiet is not a supervision failure');
-  assert.equal(endReasonOf(supervision), 'shell_lost', 'EOF with no stop frame is the shell that was lost');
+  assert.equal(supervision.endReason, 'shell_lost', 'EOF with no stop frame is the shell that was lost');
 });
 
 test('C-LABELS 1: the one stop frame names the end the app chose, and stdin still closes behind it', async () => {
@@ -929,7 +927,7 @@ test('C-LABELS 1: the one stop frame names the end the app chose, and stdin stil
   pipe.write({ type: 'stop', schemaVersion: 1, reason: 'app_quit' });
   pipe.end();
   assert.equal(await closed, undefined);
-  assert.equal(endReasonOf(supervision), 'app_quit', 'the app said why, so the host never has to guess');
+  assert.equal(supervision.endReason, 'app_quit', 'the app said why, so the host never has to guess');
 });
 
 test('C-LABELS 1: any other post-start frame is still a supervision failure', async () => {
@@ -951,7 +949,7 @@ test('C-LABELS 1: any other post-start frame is still a supervision failure', as
     const error = await closed;
     assert.ok(error instanceof Error, `still refused: ${JSON.stringify(frame)}`);
     assert.match(error.message, /supervision/i);
-    assert.equal(endReasonOf(supervision), undefined, 'a refused frame never names an end reason');
+    assert.equal(supervision.endReason, undefined, 'a refused frame never names an end reason');
   }
 });
 

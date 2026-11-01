@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime, parseSeriesRule, verifyAlarmRule } from '../tools/alarm.js';
-import { OwnerRequests } from '../tools/owner-request.js';
+import { OwnerRequests, requestRefusal } from '../tools/owner-request.js';
 import { COMPOSE_NAMES, COMPOSE_TOOLS, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
 
 test('direct102 authority: finals alone grant compound effects, consumed once with idempotent retries', () => {
@@ -632,4 +632,77 @@ test('#796 a refused recurrence spends nothing, so the retry he asked for is aut
   requests.failed('s', 'set_alarm', 'alarm', first.id);
   now = 5_000;
   assert.equal(requests.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
+});
+
+// C-PERMTIER (10.7.2): a direct ask executes. The tier table decides, not a phrase grammar: 13
+// set_alarm calls and 3 create_event calls were refused at base with no_owner_request or
+// grant_not_permitted while the owner was talking to her, and the refusal text named no cause.
+test('C-PERMTIER (a): an ask split across two finals executes', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set two alarms', 1_000);
+  requests.observe('s', 'j2', 'seven and seven thirty', 2_000);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('C-PERMTIER (b): "alarms" plural executes', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'alarms', 1_000);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('C-PERMTIER (c): a set_alarm with no matching owner words during an open call executes', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'good morning', 1_000);
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
+  assert.equal(requests.authorize('s', 'draft_email', 'draft-1').code, 'allowed');
+});
+
+test('C-PERMTIER (e/g): the exposure fence holds a free write until his own next final', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'check my mail', 1_000);
+  // The live session calls source() the moment a completed read's text reaches the model.
+  requests.source('s', 'mail');
+  const refused = requests.authorize('s', 'create_event', 'block-1');
+  assert.equal(refused.code, 'external_text_only');
+  assert.equal(requestRefusal('external_text_only').say, 'Outside text arrived after your last words; say it again and I will do it.');
+  // Refused writes are never auto-flushed: a fresh owner final is what opens the next one.
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'external_text_only');
+  requests.observe('s', 'j2', 'check my calendar and put cardio in a free slot', 2_000);
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
+});
+
+test('C-PERMTIER: reading his own calendar, notes, vault or trello is not an exposure', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'check my calendar and put cardio in a free slot', 1_000);
+  for (const source of ['calendar', 'memory', 'trello', 'alarms', 'vault']) requests.source('s', source);
+  assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'allowed');
+});
+
+test('C-PERMTIER: assistant speech and retries never move the owner position', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set an alarm for seven', 1_000);
+  requests.answered('s', 'Alarm set for 07:00.');
+  assert.equal(requests.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
+});
+
+test('C-PERMTIER (g): a provider retry of the same set_alarm creates one alarm', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'set an alarm for seven', 1_000);
+  const requestId = requests.currentId('s')!;
+  assert.equal(requests.claim('s', 'set_alarm', 'alarm-1', requestId).code, 'allowed');
+  requests.commit('s', 'set_alarm', 'alarm-1', { status: 'set', id: 'alarm-1' }, requestId);
+  const retry = requests.claim('s', 'set_alarm', 'alarm-1', requestId);
+  assert.equal(retry.code, 'idempotent');
+  assert.deepEqual(retry.receipt, { status: 'set', id: 'alarm-1' });
+});
+
+test('C-PERMTIER: a guarded delete keeps its own selector and its refusal carries its cause', () => {
+  const requests = new OwnerRequests(() => 1_000);
+  requests.observe('s', 'j1', 'cancel my standup meeting', 1_000);
+  assert.equal(requests.authorize('s', 'delete_event', 'event-1').code, 'allowed');
+  const other = new OwnerRequests(() => 1_000);
+  other.observe('s', 'j1', 'good morning', 1_000);
+  assert.equal(other.authorize('s', 'delete_event', 'event-1').code, 'no_owner_request');
+  assert.equal(requestRefusal('no_owner_request').say.length > 0, true);
 });

@@ -873,7 +873,7 @@ def run(run_dir, out_path=None):
         if not alignment_quality[entry["file"]]["valid"]:
             segments.pop(entry["file"], None)
         if lag < padding:
-            invalid.append(entry["file"] + ": recording starts %.3fs after stimulus onset" % ((padding-lag)/fs))
+            invalid.append(entry["file"] + ": reference candidate precedes capture by %.3fs; incomplete file or invalid timing" % ((padding-lag)/fs))
             segments.pop(entry["file"], None)
         alignment[entry["file"]] = lag - padding
         residuals[entry["file"]] = round((lag - position) / fs, 4)

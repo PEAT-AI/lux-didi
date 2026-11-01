@@ -702,7 +702,9 @@ const LIVE_STEPS_MAX = 8;
 /** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
 const STEP_SOURCES: Record<string, string> = {
   gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
-  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web', research: 'knowledge',
+  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web',
+  // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence.
+  research: 'research',
 };
 
 function stepSourceOf(name: string): string {

@@ -1408,8 +1408,9 @@ enum AudioGraphLifecycleTests {
         try await checkUnmuteWaitsForTheSettle()
         try await checkWatchdogRestartWaitsForTheSettle()
         try await checkReleaseWaitsForAPendingConfigurationChange()
-        print("PASS audio lifecycle: one graph build per start, unmute and the mic watchdog wait the release settle, "
-              + "a pending configuration change is waited for and bounded")
+        try await checkStartWaitsForTheSettle()
+        print("PASS audio lifecycle: one graph build per start, unmute, the mic watchdog and a start wait the release "
+              + "settle, a pending configuration change is waited for and bounded")
     }
 
     private final class Trace {
@@ -1538,6 +1539,29 @@ enum AudioGraphLifecycleTests {
 
     /// (#1101 d) A release with a configuration change in flight waits for it and stops at the bound:
     /// the reset, the dropped handles and the settled record all come after the wait.
+    /// (#1101 e) A start is a release-then-build path too: it waits the settle a release left running,
+    /// so the next engine is never built while the previous one is still held (STAGE3-2).
+    private static func checkStartWaitsForTheSettle() async throws {
+        let journal = NativeAudioJournal(fileURL: nil)
+        let trace = Trace()
+        let device = try makeDevice(journal, trace)
+        device.startForTesting = { _ in trace.order.append("build") }
+        try await device.start { _ in }
+        // Release, then start inside the settle the release left running. Nothing is awaited between
+        // the two, so the settle's first wait can only happen inside the start.
+        device.releaseForTesting()
+        try audioRequire(device.isSettling,
+                         "control: the release left a settle running")
+        try await device.start { _ in }
+
+        try audioRequire(trace.order == ["build", "settle", "build"],
+                         "the start waited the release settle before it built, got \(trace.order)")
+        try audioRequire(device.settledReleaseCount == 1 && device.hasEngine,
+                         "the previous handle was settled and dropped, the new engine is up")
+        device.stop()
+        await device.settleForTesting()
+    }
+
     private static func checkReleaseWaitsForAPendingConfigurationChange() async throws {
         let journal = NativeAudioJournal(fileURL: nil)
         let trace = Trace()

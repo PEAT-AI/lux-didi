@@ -1253,6 +1253,11 @@ struct NativeLiveInterruptionSample: Sendable {
         try await startFenced { data, _ in try await send(data) }
     }
     func startFenced(send: @escaping @Sendable (Data, UInt64) async throws -> Void) async throws {
+        // C-AUDIO 2: a start is a release-then-build path too. It waits out any settle a release left
+        // running, so the next engine never opens while the previous one is still held and still in
+        // CoreAudio teardown (STAGE3-2).
+        await awaitSettle()
+        try Task.checkCancellation()
         guard engine == nil, !isCapturing else { throw LiveClientError.unavailable }
         if captureInput == nil {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -1916,6 +1921,8 @@ struct NativeLiveInterruptionSample: Sendable {
         }
     }
     func settleForTesting() async { await awaitSettle() }
+    /// Whether a release settle is holding the engine handles right now.
+    var isSettling: Bool { settling }
     private func settleRelease() async {
         guard settledEngine != nil else { settling = false; settleTask = nil; return }
         // C-AUDIO 2: start at 250 ms, then wait out an in-flight configuration change or a default

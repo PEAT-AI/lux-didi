@@ -55,6 +55,20 @@ test('C-HOSTFACTS BUILD-07 the migrated surfaces carry no untriaged recitable li
   }
 });
 
+test('C-HOSTFACTS BUILD-07 the held fresh opening is recorded as debt, not silently exempted', () => {
+  // HF-R3 / A1: the fresh-call opening slot stays until the held character unit. It is named here with its
+  // ruling and its obligation, so the debt is visible and cannot be mistaken for compliance.
+  const held = (JSON.parse(readFileSync(baselineFile, 'utf8')) as {
+    held?: { id: string; ruling: string; destination: string; obligation: string; surfaces: { file: string; what: string }[] }[];
+  }).held ?? [];
+  const opening = held.find(row => row.id === 'held-fresh-opening-slot');
+  assert.equal(opening?.ruling, 'HF-R3');
+  assert.equal(opening?.destination, 'HELD');
+  assert.equal(opening?.surfaces.some(surface => surface.file.endsWith('openai.ts')), true);
+  assert.equal(opening?.surfaces.some(surface => surface.file.endsWith('gemini.ts')), true);
+  assert.equal((opening?.obligation.length ?? 0) > 0, true);
+});
+
 test('C-HOSTFACTS BUILD-07 a host event payload is host metadata, never a speech specimen', () => {
   for (const event of HOST_EVENTS) {
     assert.deepEqual(lintSpeech(hostEventPayload(event)), [], `${event.id} carries no recitable shape`);

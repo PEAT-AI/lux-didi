@@ -1,6 +1,6 @@
 {
   "$comment": "C-HOSTFACTS BUILD-07 migration baseline. Each entry names one known finding by rule and span fingerprint on one source, with the obligation that ends it. This is temporary migration debt, not an exactness exemption: changed content invalidates the fingerprint and fails as untriaged.",
-  "revision": 1,
+  "revision": 2,
   "entries": [
     {
       "id": "baseline-01-naya-tools-delivery_slot",
@@ -262,6 +262,26 @@
       "count": 1,
       "destination": "HELD",
       "obligation": "the character unit, after owner listening and the HELD persona rewrite"
+    }
+  ],
+  "held": [
+    {
+      "id": "held-fresh-opening-slot",
+      "ruling": "HF-R3",
+      "decision": "A1 ruled: keep FRESH_OPENING unchanged tonight",
+      "surfaces": [
+        {
+          "file": "server/adapters/live-voice/openai.ts",
+          "what": "FRESH_OPENING seeded as a developer item on a fresh model-first call"
+        },
+        {
+          "file": "server/adapters/live-voice/gemini.ts",
+          "what": "the fresh model-first opening turn and the alarm host note inside it"
+        }
+      ],
+      "destination": "HELD",
+      "obligation": "the held character unit, after owner listening, together with the compulsory spoken slot and its seeding",
+      "why": "it changes how she opens on the path the train is repairing, so it is not this night's diff"
     }
   ]
 }

@@ -42,7 +42,7 @@ async function alarmHarness(t: TestContext) {
   const clock = { now: Date.parse('2026-03-05T09:30:00Z') };
   const options = {
     alarms: { now: () => clock.now, recheck() {}, health: () => ({ degraded: false, reasons: [] }) },
-    grantMode: 'owner-trusted-reads' as const, store, ownerId: store.assistantId, registry, port,
+    timezone: 'Europe/Berlin', grantMode: 'owner-trusted-reads' as const, store, ownerId: store.assistantId, registry, port,
     lookupAuthority: async (runId: string, signal: AbortSignal) => lookup ? lookup(runId, signal) : null,
   };
   const owner = createToolsOwner(options);
@@ -60,11 +60,6 @@ async function alarmHarness(t: TestContext) {
   assert.ok(authority);
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
 
-  const withZone = (args: Record<string, unknown>, zone: string): Record<string, unknown> => {
-    const time = args['time'] as Record<string, unknown> | undefined;
-    if (!time || time['mode'] !== 'wall' || time['timezone'] !== undefined) return args;
-    return { ...args, time: { ...time, timezone: zone } };
-  };
   const dispatch = async (name: string, args: Record<string, unknown>, words: string) => {
     owner.ownerRequests.answered?.(session.liveSessionId);
     owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, clock.now);
@@ -85,7 +80,7 @@ async function alarmHarness(t: TestContext) {
     const row = store.transaction(tx => tx.get('SELECT fire_at_utc,tz,label,state FROM alarms WHERE id=?', [intent.executionId]));
     return { intent, reply, row };
   };
-  return { clock, options, owner, session, store, live, dispatch, authority, zone: withZone };
+  return { clock, options, owner, session, store, live, dispatch, authority };
 }
 
 test('C-TIME corpus: the owner time wins through the real alarm handler', { timeout: 120000 }, async t => {
@@ -95,11 +90,12 @@ test('C-TIME corpus: the owner time wins through the real alarm handler', { time
     await t.test(row.id, async rowT => {
       const h = await alarmHarness(rowT);
       h.clock.now = Date.parse(row.now);
+      h.options.timezone = row.tz;
       if (row.words2 !== undefined) {
-        const first = await h.dispatch('set_alarm', h.zone(row.args, row.tz), row.words);
+        const first = await h.dispatch('set_alarm', row.args, row.words);
         assert.notEqual(first.reply.status, 'set', `${row.id}: the first ask must not commit an alarm`);
       }
-      const { intent, reply, row: committed } = await h.dispatch('set_alarm', h.zone(row.words2 !== undefined ? (row.args2 ?? {}) : row.args, row.tz),
+      const { intent, reply, row: committed } = await h.dispatch('set_alarm', row.words2 !== undefined ? (row.args2 ?? {}) : row.args,
         row.words2 ?? row.words);
       if (row.expects.status !== undefined) {
         assert.equal(reply.status, row.expects.status, `${row.id}: ${JSON.stringify(reply)}`);
@@ -129,6 +125,7 @@ test('C-TIME corpus: the owner time wins through the real alarm handler', { time
 
 test('C-TIME shape 8: cancel settles the one alarm that is armed and lists several', async t => {
   const h = await alarmHarness(t);
+  h.options.timezone = 'Europe/Berlin';
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
   // A paired valid case first: two alarms are armed with different times.
   const first = await h.dispatch('set_alarm', {}, 'wake me at 6 pm');
@@ -161,6 +158,7 @@ test('C-TIME shape 8: cancel settles the one alarm that is armed and lists sever
 
 test('C-TIME shape 8: a set_alarm clarify names the alarm still armed', async t => {
   const h = await alarmHarness(t);
+  h.options.timezone = 'Europe/Berlin';
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
   const set = await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
   assert.equal(set.reply.status, 'set');
@@ -176,9 +174,9 @@ test('C-TIME shape 8: a set_alarm clarify names the alarm still armed', async t 
 
 test('C-TIME snooze: the wall time is resolved in the alarm zone', async t => {
   const h = await alarmHarness(t);
+  h.options.timezone = 'Europe/Berlin';
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
-  const berlin = { mode: 'wall', date: { kind: 'today' }, local_time: '18:00', timezone: 'Europe/Berlin' } as const;
-  const set = await h.dispatch('set_alarm', { time: berlin }, 'wake me at 6 pm');
+  const set = await h.dispatch('set_alarm', {}, 'wake me at 6 pm');
   const id = String(set.reply.id);
   const snooze = await h.dispatch('snooze_alarm', { id, time: { mode: 'relative', amount: 10, unit: 'minutes' } }, 'snooze for ten minutes');
   assert.equal(snooze.reply.status, 'set', JSON.stringify(snooze.reply));

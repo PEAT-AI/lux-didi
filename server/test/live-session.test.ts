@@ -56,7 +56,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -8612,4 +8612,28 @@ test('C-REBUILD B: a held note with no terminal before teardown stays ledger onl
   assert.equal(ledger[0]!['reason'], 'generation_torn_down');
   assert.deepEqual(fake.texts.filter(text => text.startsWith('[host note, not the owner] Late findings')), [],
     'and nothing is spoken into a session that is gone');
+});
+
+// --- OP-R3: the thirty-minute opening memory reaches past the newest three calls ---------------------
+
+test('C-OPENER: a used opener stays remembered after three calls that opened plainly', async t => {
+  const h = await harness(t);
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-recent-loop', 'The owner said the deposit is still to be paid.',
+    NOW - 3_600_000, h.store.assistantId, NOW, 'The owner said the deposit is still to be paid.'));
+  const snapshotOf = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const spoke = (liveSessionId: string, text: string): void => { h.store.transaction(tx => tx.run(
+    'INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES(?,?,?,0,?)',
+    [liveSessionId, 'outputTranscription', text, NOW])); };
+  const used = h.owner.create({ idempotencyKey: 'recent-used-1', inputClass: 'ordinary' }, h.ctx);
+  const loop = /^- open loop: (.+)$/mu.exec(snapshotOf(used.liveSessionId))?.[1];
+  assert.ok(loop !== undefined, 'the first call opens on the stored loop');
+  spoke(used.liveSessionId, `You mentioned ${loop}`);
+  const plainly = [1, 2, 3].map(index => h.owner.create({ idempotencyKey: `recent-plain-${index}`, inputClass: 'ordinary' }, h.ctx));
+  for (const session of plainly) spoke(session.liveSessionId, 'Morning.');
+  const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary'], NOW - 30 * 60 * 1000));
+  assert.equal(history.previous.length, 3, 'the note still carries the three newest openers');
+  assert.equal(history.recent.length, 1, 'and the opening used four calls ago is still inside the window');
 });

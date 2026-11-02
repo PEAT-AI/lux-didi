@@ -129,6 +129,9 @@ export function missedAlarmFacts(tx: Transaction): readonly MissedAlarmFact[] {
   }));
 }
 
+/** The start's own clock, so a claim naming a day can be held against the day the row fired. */
+export interface ClaimClock { readonly now: number; readonly timeZone: string }
+
 /** A sentence that speaks of a missed alarm, reminder or wake up call, whichever word it chose for the miss. */
 const MISSED_CLAIM = /\bmissed\b[^.]*\b(?:alarms?|reminders?|wake[- ]?up)\b/iu;
 
@@ -136,7 +139,7 @@ const MISSED_CLAIM = /\bmissed\b[^.]*\b(?:alarms?|reminders?|wake[- ]?up)\b/iu;
  * Drop every sentence that names a missed alarm or reminder the alarms table does not hold as missed. A text
  * with no such sentence is returned byte-identical, so an ordinary recap never changes.
  */
-export function guardMissedClaims(text: string, facts: readonly MissedAlarmFact[]): GuardedClaims {
+export function guardMissedClaims(text: string, facts: readonly MissedAlarmFact[], _at?: ClaimClock): GuardedClaims {
   const all = sentences(text);
   const backed = (sentence: string): boolean => facts.some(fact => {
     const words = fact.label.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4);

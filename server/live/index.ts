@@ -8,7 +8,7 @@ import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } f
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
-import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm } from '../domain/write-claims.js';
+import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -175,9 +175,17 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }[] {
+/** One earlier call's opening utterance and the plan its start offered. */
+export interface PreviousOpener { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }
+/** An opening an earlier call used, as a kind and a subject key, so the next plan prefers something else. */
+export interface UsedOpening { readonly kind: OpeningOptionKind; readonly topic: string; readonly at: number }
+/** The three newest earlier openers for the note, and every opening used inside the window. */
+export interface OpenerHistory { readonly previous: readonly PreviousOpener[]; readonly recent: readonly UsedOpening[] }
+
+export function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], _recentSince?: number): OpenerHistory {
   const sessions = tx.all(`SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
-  const previous: ReturnType<typeof previousOpeners> = [];
+  const previous: PreviousOpener[] = [];
+  const recent: UsedOpening[] = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   for (const row of sessions) {
     const source = historySessionEvidence(tx, String(row.live_session_id), eligibility);
@@ -197,7 +205,7 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
       ...(used === undefined ? {} : { topic: used.topic, used }) });
     if (previous.length === 3) break;
   }
-  return previous;
+  return { previous, recent };
 }
 /** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
 const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
@@ -235,12 +243,12 @@ export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataCl
 /** C-MEMORYTRUTH: a stored open loop reaches the greeting only with the claims its own call's receipts and this
  *  start's alarms table support, so a refused write is never offered as something still to do the wrong way. */
 export function guardSeededLoops<T extends { readonly text: string; readonly sessionId: string }>(
-  tx: Transaction, loops: readonly T[],
+  tx: Transaction, loops: readonly T[], at?: ClaimClock,
 ): readonly T[] {
   const missed = missedAlarmFacts(tx);
   return loops.map(loop => {
     const writes = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
-    const claims = guardMissedClaims(writes.text, missed);
+    const claims = guardMissedClaims(writes.text, missed, at);
     return writes.dropped + claims.dropped === 0 ? loop : { ...loop, text: claims.text };
   }).filter(loop => loop.text !== '');
 }
@@ -256,14 +264,14 @@ export function armedAlarmsNote(alarms: readonly ActiveAlarm[] | null): string |
 /** C-MEMORYTRUTH: an earlier call's summary reaches the seed only with the claims that call's own receipts and
  *  this start's alarms table support. The stored row is left as it is. */
 export function guardSeededSummaries<T extends { readonly liveSessionId?: string; readonly summary: string }>(
-  tx: Transaction, candidates: readonly T[],
+  tx: Transaction, candidates: readonly T[], at?: ClaimClock,
 ): readonly T[] {
   const missed = missedAlarmFacts(tx);
   return candidates.map(candidate => {
     if (candidate.liveSessionId === undefined) return candidate;
     const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
     const writes = guardWriteClaims(candidate.summary, facts);
-    const claims = guardMissedClaims(writes.text, missed);
+    const claims = guardMissedClaims(writes.text, missed, at);
     return writes.dropped + claims.dropped === 0 ? candidate : { ...candidate, summary: claims.text };
     // A summary whose every claim was unsupported offers nothing, so it leaves the candidate list instead of
     // rendering an earlier-conversations header with no body behind it.
@@ -1851,7 +1859,8 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
+      const openerHistory = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
+      const earlierOpeners = openerHistory.previous;
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between

@@ -818,3 +818,79 @@ test('C-OPENER: an open loop that names a missed reminder with no missed row dro
     assert.match(loops[0]!.text, /deposit/, 'the rest of the loop is untouched');
   } finally { h.cleanup(); }
 });
+
+// --- OP-R3: a claim is backed by the row it names, never by a shared clock or a label fragment -----
+
+test('C-OPENER: a missed row with another label does not back the clock time it shares', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-other-label');
+    missedRow(h.store, '9a1c4d2e77cd', TEN_THIRTY_UTC, 'submit tax return');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-other-label', liveSessionId: 's-missed-other-label',
+      endedAt: SUMMARY_NOW,
+      summary: 'The owner missed the 10:30 reminder to collect the parcel. The tax form is still to be filed.' }]));
+    assert.doesNotMatch(guarded[0]!.summary, /parcel/u, 'a shared clock time is not the item the row holds');
+    assert.match(guarded[0]!.summary, /tax form/u, 'the sentence beside it is untouched');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a label fragment shared with another missed item does not back the claim', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-fragment');
+    missedRow(h.store, '9a1c4d2e77ce', TEN_THIRTY_UTC, 'submit tax return');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-fragment', liveSessionId: 's-missed-fragment',
+      endedAt: SUMMARY_NOW,
+      summary: 'The owner missed the reminder to return the parcel. The tax form is still to be filed.' }]));
+    assert.doesNotMatch(guarded[0]!.summary, /parcel/u, 'one shared word is not the item the row holds');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a missed row from another day does not back a claim about today', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-other-day');
+    missedRow(h.store, '9a1c4d2e77cf', TEN_THIRTY_UTC - 86_400_000, 'standup');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-other-day', liveSessionId: 's-missed-other-day',
+      endedAt: SUMMARY_NOW, summary: "The owner missed today's 10:30 standup reminder. The tax form is still to be filed." }],
+    { now: SUMMARY_NOW, timeZone: 'UTC' }));
+    assert.doesNotMatch(guarded[0]!.summary, /standup/u, 'the same clock time on another day is another item');
+    assert.match(guarded[0]!.summary, /tax form/u, 'the sentence beside it is untouched');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a missed row from today backs the same claim about today', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-today');
+    missedRow(h.store, '9a1c4d2e77d0', TEN_THIRTY_UTC, 'standup');
+    const text = "The owner missed today's 10:30 standup reminder. The tax form is still to be filed.";
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-today', liveSessionId: 's-missed-today',
+      endedAt: SUMMARY_NOW, summary: text }], { now: SUMMARY_NOW, timeZone: 'UTC' }));
+    assert.equal(guarded[0]!.summary, text, 'the row the claim names is kept byte for byte');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: the noun first, unbacked, drops through the real seed guard', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-reverse');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-reverse', liveSessionId: 's-missed-reverse',
+      endedAt: SUMMARY_NOW,
+      summary: 'The 10:30 reminder was missed. The tax form is still to be filed.' }]));
+    assert.doesNotMatch(guarded[0]!.summary, /was missed/u, 'the same claim in the other word order is not exempt');
+    assert.match(guarded[0]!.summary, /tax form/u, 'the sentence beside it is untouched');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: the noun first, backed by its row, stays through the real seed guard', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-reverse-backed');
+    missedRow(h.store, '9a1c4d2e77d1', TEN_THIRTY_UTC, 'standup');
+    const text = 'The 10:30 standup reminder was missed. The tax form is still to be filed.';
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-reverse-backed', liveSessionId: 's-missed-reverse-backed',
+      endedAt: SUMMARY_NOW, summary: text }]));
+    assert.equal(guarded[0]!.summary, text, 'a backed claim in the other word order is kept byte for byte');
+  } finally { h.cleanup(); }
+});

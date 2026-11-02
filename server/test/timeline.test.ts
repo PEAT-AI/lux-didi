@@ -776,8 +776,8 @@ test('C-DIAG109: a final with no provider audio is a fragment only inside the fo
     ], 'a split sentence is a fragment, an unheard ask and the call-ending final are unanswered');
     assert.deepEqual(audit.aggregates.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });
     const text = renderCallAudit(audit);
-    assert.match(text, /f1 \S+ missing \S+ \S+ no_provider_audio fragment/u);
-    assert.match(text, /f5 \S+ missing \S+ \S+ no_provider_audio unanswered/u);
+    assert.match(text, /f1 \S+ missing missing missing missing no_provider_audio fragment/u);
+    assert.match(text, /f5 \S+ missing missing missing missing no_provider_audio unanswered/u);
   });
 });
 

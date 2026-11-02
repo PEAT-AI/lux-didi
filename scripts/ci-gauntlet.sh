@@ -2,26 +2,44 @@
 # The release gate, run in one place so CI and a local run execute the same checks in the same
 # order (docs/checks.md, "The release gate").
 #
-# Usage: bash scripts/ci-gauntlet.sh [--ci]
+# Usage: bash scripts/ci-gauntlet.sh [--ci] [--group <name>]
+#        bash scripts/ci-gauntlet.sh --ci --list-groups
 #
 # No flag runs all thirteen: the twelve gate checks of docs/checks.md in the order it lists
 # them, then check-package, one at a time. --ci runs the ten that need no macOS, which is
 # exactly what .github/workflows/ci.yml runs on ubuntu; the other three need the Swift toolchain
 # or the managed-host browser lease and stay local (the reason per check is in docs/checks.md).
 #
+# --group <name> runs only the checks of one of the three parallel CI groups (docs/checks.md,
+# "Check inventory"). The three groups partition the ten --ci checks: every one runs in exactly
+# one group, so a full CI run still runs each check exactly once.
+#
+# A group run continues past a red and reports every failure in that group, so one CI run shows
+# all of them; it exits non-zero if any check failed or was blocked. A run with no --group keeps
+# the release-gate behaviour: the gate is read at one head, so the first red stops the run.
+#
 # The scripts keep their own boundaries: each one installs and compiles what it asserts, so
 # there is no shared compile to hoist (PEAT-AI/lux-didi#678). What is shared here is the
-# dependency install, done once up front, so the ten checks find server/node_modules and
-# web/node_modules already in place instead of each paying for a fresh install. A failing check
-# stops the run: the gate is read at one head, not summed up.
+# dependency install, done once up front, so the checks find server/node_modules and
+# web/node_modules already in place instead of each paying for a fresh install.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-mode="${1:-}"
-case "$mode" in
-  ''|--ci) ;;
-  *) echo 'usage: bash scripts/ci-gauntlet.sh [--ci]' >&2; exit 2 ;;
-esac
+mode=''
+group=''
+list_groups=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    ''|--ci) mode="$1" ;;
+    --group) group="${2:-}"; shift ;;
+    --list-groups) list_groups=1 ;;
+    *) echo 'usage: bash scripts/ci-gauntlet.sh [--ci] [--group <name>|--list-groups]' >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ -n "$group" ] && [ "$list_groups" = 1 ]; then
+  echo 'usage: bash scripts/ci-gauntlet.sh [--ci] [--group <name>|--list-groups]' >&2; exit 2
+fi
 
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
@@ -43,6 +61,19 @@ gate=(
   check-package
 )
 
+# The three parallel CI groups. Every --ci check is in exactly one of them (--list-groups prints
+# the partition, and server/test/ci-gate-groups.mjs proves it covers the ten and only the ten).
+# The split puts the three live checks on two machines and everything else on a third, because
+# the live checks are the four longest steps of the gate.
+group_of() {
+  case "$1" in
+    check-live-gateway) printf 'gateway\n' ;;
+    check-live-session|check-live-voice) printf 'session\n' ;;
+    check-prompt|check-tool-owner|check-google-connector|check-company-connectors|check-web-unit|check-install-smoke|check-package) printf 'other\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 script_path() {
   case "$1" in
     Tests/*) printf '%s\n' "$1" ;;
@@ -50,12 +81,16 @@ script_path() {
   esac
 }
 
-echo "== install: server and web, once for the whole gate"
-bash scripts/npm-ci-offline.sh server
-bash scripts/npm-ci-offline.sh web
+if [ -n "$list_groups" ]; then
+  for entry in "${gate[@]}"; do
+    check="${entry%:local}"
+    [ "$check" = "$entry" ] || continue
+    printf '%s\t%s\n' "$(group_of "$check")" "$check"
+  done
+  exit 0
+fi
 
-ran=0
-started=$SECONDS
+selected=()
 for entry in "${gate[@]}"; do
   placement=ci
   check="${entry%:local}"
@@ -64,17 +99,72 @@ for entry in "${gate[@]}"; do
     echo "== skip: $check (needs macOS, see docs/checks.md)"
     continue
   fi
+  if [ -n "$group" ]; then
+    entry_group="$(group_of "$check" || true)"
+    [ "$entry_group" = "$group" ] || continue
+  fi
+  selected+=("$check")
+done
+
+if [ -n "$group" ] && [ ${#selected[@]} -eq 0 ]; then
+  echo "== no such group: $group (groups: gateway, session, other)" >&2
+  exit 2
+fi
+
+echo "== install: server and web, once for the whole gate"
+bash scripts/npm-ci-offline.sh server
+bash scripts/npm-ci-offline.sh web
+
+ran=0
+failed=0
+blocked=0
+started=$SECONDS
+timing="${DIDI_TIMING_FILE:-}"
+logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-gauntlet.XXXXXX")"
+trap 'rm -rf "$logdir"' EXIT
+record() {
+  printf 'GATE_CHECK\t%s\t%s\t%s\n' "$1" "$2" "$3" >> "$timing"
+}
+for check in "${selected[@]}"; do
   path="$(script_path "$check")"
   echo "== run: $check"
   check_started=$SECONDS
-  if bash "$path"; then
-    echo "== pass: $check ($((SECONDS - check_started))s)"
+  log="$logdir/$(printf '%s' "$check" | tr '/.' '__').log"
+  status=0
+  bash "$path" > "$log" 2>&1 || status=$?
+  elapsed=$((SECONDS - check_started))
+  cat "$log"
+  verdict=pass
+  if [ "$status" -eq 0 ]; then
+    echo "== pass: $check (${elapsed}s)"
+  elif grep -q 'CHECK BLOCKED' "$log"; then
+    verdict=blocked
+    blocked=$((blocked + 1))
+    echo "== blocked: $check (exit $status, ${elapsed}s)" >&2
+    if [ -z "$group" ]; then
+      echo "== gate blocked: $check" >&2
+      exit "$status"
+    fi
   else
-    status=$?
-    echo "== FAIL: $check (exit $status, $((SECONDS - check_started))s)" >&2
-    exit "$status"
+    verdict=failed
+    failed=$((failed + 1))
+    echo "== FAIL: $check (exit $status, ${elapsed}s)" >&2
+    if [ -z "$group" ]; then
+      exit "$status"
+    fi
   fi
+  if [ -n "$timing" ]; then record "$check" "$verdict" "$elapsed"; fi
   ran=$((ran + 1))
 done
 
-echo "== gate passed: $ran checks in $((SECONDS - started))s${mode:+ (--ci)}"
+if [ -n "$timing" ]; then
+  printf 'GATE_TOTAL\tall\t%s\n' "$((SECONDS - started))" >> "$timing"
+fi
+
+if [ "$failed" -ne 0 ] || [ "$blocked" -ne 0 ]; then
+  printf '== gate FAILED: %d ran, %d failed, %d blocked in %ss%s\n' \
+    "$ran" "$failed" "$blocked" "$((SECONDS - started))" "${group:+ (group $group)}" >&2
+  exit 1
+fi
+
+echo "== gate passed: $ran checks in $((SECONDS - started))s${mode:+ (--ci)}${group:+ (group $group)}"

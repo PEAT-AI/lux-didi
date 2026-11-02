@@ -2,7 +2,7 @@
 
 Every check is a script in this repository, and you run the ones that cover your change locally, one at a time (they share one machine and several take the single browser slot). Each script exits non-zero on failure and prints what it ran. Read the header comments of a script for its exact boundary.
 
-CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) runs the Linux part of the release gate on every pull request into main, through `scripts/ci-gauntlet.sh --ci`. [What CI runs and what stays local](#what-ci-runs-and-what-stays-local) says which check is which, and why.
+CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) runs the Linux part of the release gate on every pull request into main, through `scripts/ci-gauntlet.sh --ci --group <name>` in three parallel jobs. [What CI runs and what stays local](#what-ci-runs-and-what-stays-local) says which check is which, and why, and [Check inventory](#check-inventory) says which group each one runs in.
 
 Rules that apply to all of them:
 
@@ -37,6 +37,25 @@ Nine of the twelve need nothing macOS: they install from the npm cache, compile 
 `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-web-unit`, `check-install-smoke`.
 
 `check-package` is the tenth check CI runs. It packs the service from a clean `git archive`, installs the tarball offline into an empty cache and runs the package tests, so it needs `git`, `npm`, `tar` and `node` and no macOS tool. It is not one of the twelve above, and the gauntlet runs it last because it builds and reinstalls the whole service.
+
+### Check inventory
+
+Those ten run in three parallel jobs, one per group below. Each group is its own runner, so ports and artifact directories cannot collide, and the matrix runs with `fail-fast: false`, so one CI run reports a red in every group instead of only the first. A group runs every check it owns before it reports, so a second red in the same group is never hidden either. `--group <name>` is how the workflow asks for one group; running the script with no group still walks the whole gate in release order and stops at the first red. `server/test/ci-gate-groups.mjs` asserts that the ten checks are exactly the union of the three groups, so a check can neither drop out of CI nor be counted twice.
+
+| Check | Group | What it proves |
+| --- | --- | --- |
+| `check-live-gateway` | gateway | the real Live socket admits one owner, forwards audio frames and survives a reconnect |
+| `check-live-session` | session | a real Live session round trip: connect, greet, answer, close |
+| `check-live-voice` | session | voice capture and playback against the synthetic device, with no real hardware |
+| `check-prompt` | other | the prompt builder's context, budget and owner-data boundaries |
+| `check-tool-owner` | other | the owner's own tools dispatch through the real registry |
+| `check-google-connector` | other | the Google connector's synthetic fixture round trip |
+| `check-company-connectors` | other | the company connectors' synthetic fixture round trip |
+| `check-web-unit` | other | the web unit suite |
+| `check-install-smoke` | other | the assembled install serves and answers after install |
+| `check-package` | other | the packed service installs offline from a clean `git archive` and passes its tests |
+
+`ci-success` is the one status a branch protection can require: it needs the gate job and passes only when its result is `success`, so a failed, cancelled or blocked leg fails `ci-success`.
 
 The three that stay local, and the reason from the script itself:
 
@@ -171,7 +190,7 @@ imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source
 - `scripts/probe-gpt-live.mjs`: manual probe of the OpenAI Live socket with a private config path. Uses a real provider; do not run it in a check.
 - `scripts/backlog_validate.py`: validates the historical planning backlog in `planning/`. It does not test the product.
 - `scripts/warm-npm-cache.sh`, `scripts/npm-ci-offline.sh`: fill and use the offline npm cache that several checks need.
-- `scripts/ci-gauntlet.sh [--ci]`: the release gate in one command, in the order listed above, stopping at the first failure. `--ci` is the nine that need no macOS, which is what CI runs.
+- `scripts/ci-gauntlet.sh [--ci] [--group <name>]`: the release gate in one command, in the order listed above, stopping at the first failure. `--ci` is the nine that need no macOS, which is what CI runs. `--group <name>` runs only that group's checks and keeps going after a red, exiting non-zero at the end if any check failed or was blocked; the three groups partition the ten CI checks (see [Check inventory](#check-inventory)).
 
 ## Installed alarm smoke
 

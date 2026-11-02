@@ -316,7 +316,7 @@ test('C-ARGS tool_arguments_rejected carries path and keyword per violation and 
   const typed = { ...line(['limit:range']), argumentFields: ['limit:number', 'time:object', 'time.date:string', 'time.amount:null', 'label:empty'] };
   assert.deepEqual(safeEvent(typed), typed, 'a closed key name and value type per observed field');
   assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:someday'] }), undefined, 'a value is never admitted in the type place');
-  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:string '] }), undefined, 'a control character never rides the token');
+  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:string\u0000'] }), undefined, 'a control character never rides the token');
   assert.equal(safeEvent({ ...typed, argumentFields: Array.from({ length: 33 }, () => 'limit:number') }), undefined, 'the list is bounded');
 });
 test('C-ARGS tool_arguments_normalized carries the dropped keys and a closed reason, never a value', () => {

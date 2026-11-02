@@ -1671,7 +1671,7 @@ test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accept
   try {
     await mkdir(configDir, { recursive: true, mode: 0o700 });
     await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
-      modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'synthetic-unused', dataClasses: ['ordinary'],
+      modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', dataClasses: ['ordinary'],
       preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } }), { mode: 0o600 });
     const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
     if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');

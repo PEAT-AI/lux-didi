@@ -272,7 +272,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
         if (epoch !== undefined) {
           const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(epoch);
           const get = (type: string) => parts.find(part => part.type === type)?.value ?? '';
-          args.time = { mode: 'wall', date: { kind: 'iso', value: `${get('year')}-${get('month')}-${get('day')}` }, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
+          // C-ALARM: the model states the day as the flat string the declaration offers.
+          args.time = { mode: 'wall', date: `${get('year')}-${get('month')}-${get('day')}`, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
         }
       }
       const definition = definitions.find(entry => entry.name === tool)!;

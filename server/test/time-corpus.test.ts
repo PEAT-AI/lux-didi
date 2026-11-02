@@ -60,9 +60,9 @@ async function alarmHarness(t: TestContext) {
   assert.ok(authority);
   const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
 
-  const dispatch = async (name: string, args: Record<string, unknown>, words: string) => {
+  const dispatch = async (name: string, args: Record<string, unknown>, words: string, observedAt = clock.now) => {
     owner.ownerRequests.answered?.(session.liveSessionId);
-    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, clock.now);
+    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, observedAt);
     const definition = live.find(entry => entry.name === name);
     assert.ok(definition, `${name} is declared to the live model`);
     const intent: ToolCallIntent = {
@@ -240,4 +240,20 @@ test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {
   assert.equal(reading.unique + reading.partial + reading.inconclusive, corpus.length);
   // Pinned counts: a change here is a checker change and must be deliberate, not a drift.
   assert.deepEqual(reading, { unique: 49, partial: 7, inconclusive: 10 }, JSON.stringify(reading));
+});
+
+// C-DIAG109 review F1: the read-back clock and the minutes away come from the clock the tool runs on, not
+// from the stamp of the ask. The owner asks at 12:00, research holds the call until 12:03, and the alarm
+// still resolves from his words at 12:05, so the read-back must say 12:03 and 2 minutes, never 12:00 and 5.
+test('C-DIAG109: the set-alarm read-back is the execution clock, not the ask stamp', async t => {
+  const h = await alarmHarness(t);
+  const askAt = Date.parse('2026-03-05T11:00:00Z');
+  h.options.timezone = 'Europe/Berlin';
+  h.clock.now = askAt + 3 * 60_000;
+  const { reply } = await h.dispatch('set_alarm', {}, 'set an alarm in five minutes', askAt);
+  assert.equal(reply.status, 'set', JSON.stringify(reply));
+  assert.equal(reply.fire_at_utc, askAt + 5 * 60_000, 'the ask-time reading still resolves the alarm');
+  assert.equal(reply.now_local_time, '12:03', `the read-back clock is the execution clock: ${JSON.stringify(reply)}`);
+  assert.equal(reply.minutes_away, 2, `the distance is counted from now: ${JSON.stringify(reply)}`);
+  assert.doesNotMatch(String(reply.say), /minutes/u, `the confirmation states no computed minutes: ${String(reply.say)}`);
 });

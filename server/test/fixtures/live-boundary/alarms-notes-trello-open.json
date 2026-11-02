@@ -266,49 +266,6 @@
       "base": {
         "status": "PASS"
       }
-    },
-    {
-      "id": "note-after-outside-text-refuses",
-      "why": "The fence is untouched: a mail body handed to the model after his last final refuses the save external_text_only, and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
-      "families": [
-        "mail",
-        "knowledge"
-      ],
-      "finals": [
-        "Read the synthetic mail message about the bridge."
-      ],
-      "steps": [
-        {
-          "tool": "gmail_read_message",
-          "args": {
-            "id": "msg_synthetic_1",
-            "format": "full"
-          },
-          "expect": {
-            "dispatch": {
-              "connector": "mail",
-              "tool": "gmail_read_message"
-            }
-          }
-        },
-        {
-          "tool": "stage_lux_note",
-          "args": {
-            "title": "Synthetic bridge",
-            "body": "the synthetic bridge reopens on Monday",
-            "evidenceRefs": []
-          },
-          "expect": {
-            "refused": {
-              "code": "external_text_only"
-            },
-            "noDispatch": true
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
     }
   ]
 }

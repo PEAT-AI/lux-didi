@@ -57,10 +57,11 @@ const fixtures = join(root, 'test/fixtures/live-boundary');
 const releaseGate = process.argv.includes('--release-gate');
 
 /** A refusal is one of these closed codes; 'failed' or 'degraded' is a result the host reports, not a refusal. */
-// C-NOTEGATE NG-R2 (#109): `missing_time` is the closed reason of an event window that could not be
-// built, and compose.ts:393 returns it before `port.createEvent` is ever reached, so it is a refusal
-// and never a written call. The pairing that keeps this honest is safetyRowProbe below.
-const REFUSAL_CODES = ['invalid_arguments', 'unknown_tool', 'grant_not_permitted', 'opener_not_fetched', 'no_owner_input', 'no_response', 'refused', 'missing_time'];
+// C-NOTEGATE NG-R2/NG-R3 (#109): `missing_time` and `unsupported_time_expression` are the closed reasons
+// of an event window that could not be built, and compose.ts:393 returns either one before
+// `port.createEvent` is ever reached, so both are refusals and never a written call. The pairing that
+// keeps this honest is safetyRowProbe below.
+const REFUSAL_CODES = ['invalid_arguments', 'unknown_tool', 'grant_not_permitted', 'opener_not_fetched', 'no_owner_input', 'no_response', 'refused', 'missing_time', 'unsupported_time_expression'];
 /** #107 CG-R2: the host answers a refusal with `status: 'refused'` plus its own closed family code. */
 const isRefusal = (response: JsonObject | undefined): boolean => {
   if (response === undefined) return true;

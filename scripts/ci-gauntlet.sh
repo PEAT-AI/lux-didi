@@ -122,7 +122,13 @@ started=$SECONDS
 # Per-check and per-run seconds, printable and machine readable: the release timing record
 # (docs/checks.md, "Timing"). CI points DIDI_TIMING_FILE at the runner's temp directory so the
 # log step keeps it; a local run gets one in the temp directory and prints the path.
-timing="${DIDI_TIMING_FILE:-$(mktemp "${TMPDIR:-/tmp}/didi-gate-timing.XXXXXX.tsv")}"
+timing_file() {
+  # BSD mktemp wants the X run last, so the record keeps a .tsv name through a directory instead.
+  local dir
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/didi-gate-timing.XXXXXX")" || return 1
+  printf '%s/gate.tsv' "$dir"
+}
+timing="${DIDI_TIMING_FILE:-$(timing_file)}"
 logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-gauntlet.XXXXXX")"
 trap 'rm -rf "$logdir"' EXIT
 record() {

@@ -1657,3 +1657,39 @@ test('connector admission keeps waiting during an in-flight recovery and aggrega
   assert.equal(groups[0]?.missingEndpoints, 2);
   assert.equal(groups[0]?.missingTools, 2 * result[0]!.missingTools);
 });
+
+test('host admission capability fact survives in the actual accepted live prompt without a provider call', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-connwait-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'synthetic-config');
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  let owner: ReturnType<typeof createLiveSessionOwner> | undefined;
+  let now = 0;
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+      modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'synthetic-unused', dataClasses: ['ordinary'],
+      preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } }), { mode: 0o600 });
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge', state: 'error', retrying: true }];
+    owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+      now: () => now, timeZone: 'UTC', tools: { owner: runtime.owner, connectionIds: () => [], status: () => ({ endpoints: endpoints() }) } });
+    await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
+    assert.equal(now, 25_000);
+    const session = owner.create({ inputClass: 'ordinary', idempotencyKey: 'synthetic-connwait' },
+      { clientId: 'synthetic-client', auditId: randomUUID(), authorityEpoch: store.authorityEpoch });
+    const prompt = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['accepted_prompt_snapshot'])));
+    assert.match(prompt.system, /Host capability fact/);
+    assert.match(prompt.system, /"connector":"lux-knowledge"/);
+    assert.match(prompt.system, /"reason":"deadline"/);
+    assert.match(prompt.system, /Tools are fixed at call open/);
+    assert.doesNotMatch(prompt.system, /fixture/);
+  } finally {
+    await owner?.shutdown();
+    await runtime?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

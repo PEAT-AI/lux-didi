@@ -88,9 +88,42 @@ function recordInvalidAttempt(scope: object, key: string): number {
   if (counts === undefined) { counts = new Map(); invalidAttempts.set(scope, counts); }
   const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count;
 }
-function logArgumentsRejected(name: string, violations: readonly string[], reason: string): void {
+const ARGUMENT_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
+/** The one closed type name of a value: a null, an empty string, a list, an object, else the primitive. */
+function argumentType(value: unknown): string | undefined {
+  if (value === null) return 'null';
+  if (value === '') return 'empty';
+  if (Array.isArray(value)) return 'array';
+  const type = typeof value;
+  return type === 'object' || type === 'string' || type === 'number' || type === 'boolean' ? type : undefined;
+}
+/**
+ * C-ALARM: the key names and value types of a refused call, one level deep, so a guess the model made
+ * is visible later. A path is never a value: his own words can live in any of them.
+ */
+function argumentFields(args: unknown): string[] {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return [];
+  const fields: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    if (fields.length >= 32) break;
+    if (!ARGUMENT_KEY.test(key)) continue;
+    const type = argumentType(value);
+    if (type === undefined) continue;
+    fields.push(`${key}:${type}`);
+    if (type !== 'object') continue;
+    for (const [inner, innerValue] of Object.entries(value as Record<string, unknown>)) {
+      if (fields.length >= 32) break;
+      if (!ARGUMENT_KEY.test(inner)) continue;
+      const innerType = argumentType(innerValue);
+      if (innerType !== undefined) fields.push(`${key}.${inner}:${innerType}`);
+    }
+  }
+  return fields;
+}
+function logArgumentsRejected(name: string, violations: readonly string[], reason: string, args: unknown): void {
   // C-ARGS: one `path:keyword` token per violation, always together, never a value.
-  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, violations: violations.slice(0, 24), reason });
+  const fields = argumentFields(args);
+  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, violations: violations.slice(0, 24), reason, ...(fields.length > 0 ? { fields } : {}) });
 }
 /** The rejection cache of one task scope, so a repeat arrives without a second validation. */
 function rejectedCalls(scope: object): Map<string, string> {
@@ -204,7 +237,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
             const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, violations);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
             rejections.set(callKey, record.reason);
-            logArgumentsRejected(call.name, violations, shape ? 'arguments_not_object' : 'schema_validation_failed');
+            logArgumentsRejected(call.name, violations, shape ? 'arguments_not_object' : 'schema_validation_failed', call.args);
             return;
           }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {

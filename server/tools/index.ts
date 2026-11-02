@@ -30,7 +30,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, alarmReadBack, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule, type AlarmArguments } from './alarm.js';
+import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
 import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
@@ -47,10 +47,10 @@ function dispatchedFailureCode(reason: string): ToolFailureCode {
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const TIME_PARAMETER = {
   type: 'object',
-  description: 'The time he stated in this ask, never an earlier one. mode wall: his local clock and the day he named, in his zone. mode relative: a span he said.',
+  description: 'The time he stated in this ask, never an earlier one. A wall time is his clock and the day he named, in his zone. A relative time is a span he said.',
   properties: {
-    mode: { type: 'string', enum: ['wall', 'relative'] },
-    date: { type: 'object', description: 'wall only: today, tomorrow, next_weekday with weekday 0 Sunday to 6 Saturday, or iso YYYY-MM-DD.' },
+    mode: { type: 'string', enum: ['wall', 'relative'], description: 'wall for a clock time on a day, relative for a span. Omit it when the other fields make it clear.' },
+    date: { type: 'string', description: 'wall only: today, tomorrow, a weekday name, or YYYY-MM-DD. Omit it for today.' },
     local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never a UTC conversion.' },
     timezone: { type: 'string', description: 'Only when he named a zone; an IANA name such as Europe/Berlin.' },
     amount: { type: 'number', description: 'relative only: a positive count. unit: minutes or hours.' },
@@ -740,10 +740,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           additionalProperties: false,
         },
         validate: validateAlarmArguments,
+        // C-ALARM: a refused time names the rule it breaks, so the model's retry can land.
+        rejection: alarmRejection,
+        guidance: ALARM_ARGUMENT_GUIDANCE,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
           await ownerRequests.waitForFinal(runId, context.signal);
-          const input = args as AlarmArguments;
+          const input = alarmArguments(args);
+          if (input === undefined) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           if (name === 'set_alarm') {

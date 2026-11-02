@@ -864,20 +864,30 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'tool_arguments_rejected') {
     // C-ARGS: closed shape. One `path:keyword` token per violation, together, and never a value: the
     // keyword is a rule name the tool's own predicate declares, the path is the argument key it names.
-    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'violations', 'reason'].sort().join(',')) return;
+    const shapeKeys = Object.keys(value).sort().join(',');
+    const plainKeys = ['event', 'tool', 'violations', 'reason'].sort().join(',');
+    const fieldKeys = ['event', 'tool', 'violations', 'reason', 'fields'].sort().join(',');
+    if (shapeKeys !== plainKeys && shapeKeys !== fieldKeys) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const violationPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:[a-z][a-z0-9_]{0,47}$/u;
     /** The closed keyword set: the rule names the live tools' own rejection predicates declare. A new rule
      *  name belongs here, so an unknown word can never carry a value into the line. */
     const VIOLATION_KEYWORDS: ReadonlySet<string> = new Set(['unknown_key', 'unknown', 'not_object', 'type', 'empty', 'long',
       'placeholder', 'min2', 'format', 'range', 'required', 'not_for_person', 'not_for_channel', 'not_for_intent',
-      'needs_conversation', 'one_conversation']);
+      'needs_conversation', 'one_conversation', 'undeclared', 'date_unreadable', 'clock_format', 'amount_range',
+      'unit_value', 'timezone_value', 'mode_unknown', 'mode_ambiguous']);
     const named = (violation: string): boolean => violationPattern.test(violation)
       && VIOLATION_KEYWORDS.has(violation.slice(violation.indexOf(':') + 1));
     if (!token(value.tool)) return;
     if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !named(violation))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
-    return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason };
+    // C-ALARM: the key names and value types of the refused arguments, closed to a `path:type` token,
+    // so a later audit sees which field the model guessed and never what his own words were.
+    const argumentsField = (v: unknown): v is string => typeof v === 'string'
+      && /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}\.)?[A-Za-z_][A-Za-z0-9_]{0,63}:(?:string|number|boolean|object|array|null|empty)$/u.test(v);
+    if (value.fields !== undefined && (!Array.isArray(value.fields) || value.fields.length > 32 || value.fields.some(field => !argumentsField(field)))) return;
+    return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason,
+      ...(value.fields !== undefined ? { fields: value.fields } : {}) };
   }
   if (value.event === 'tool_arguments_normalized') {
     // C-ARGS: the dropped-key telemetry, a closed event of its own: `path:reason`, the reason from the

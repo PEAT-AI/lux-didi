@@ -1247,7 +1247,7 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
     const rejected = events.find(line => line.event === 'tool_arguments_rejected');
     assert.ok(rejected, 'the refusal reaches the log');
     assert.deepEqual(rejected.violations, ['time:date_unreadable'], 'the violation is never empty on a schema rejection');
-    assert.deepEqual(rejected.fields, ['time:object', 'time.date:string', 'time.local_time:string', 'time.mode:string'], 'the closed fields name keys and types, never values');
+    assert.deepEqual([...rejected.fields ?? []].sort(), ['time.date:string', 'time.local_time:string', 'time.mode:string', 'time:object'], 'the closed fields name keys and types, never values');
     assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
     const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
     const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:1:1', retried), retried, 2);

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Documentation hygiene, including untracked docs and excluding historical records.
+# It also runs the gate inventory test: docs/checks.md must name every check the pull request
+# gate runs and the parallel group it runs in.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
@@ -30,4 +32,5 @@ check_tree() {
 check_file README.md
 check_file CLAUDE.md
 check_tree docs
+node --test server/test/ci-gate-groups.mjs || status=1
 exit "$status"

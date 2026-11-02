@@ -370,7 +370,13 @@ export function bindCalendarRecovery<G extends { readonly toolNames: readonly st
   };
 }
 
-export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
+/** Synthetic host verification only: retain the real owners and HTTP surface while substituting connector I/O and process time. */
+export interface ConnectorTesting {
+  compose?: typeof composeMcpRuntime;
+  processStartedAt?: number;
+  pause?: (ms: number) => Promise<void>;
+}
+export interface HostConfig { connectorTesting?: ConnectorTesting; dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
 
 /**
  * R7: mail and calendar are both `connector: google`, so the first google endpoint is not necessarily the
@@ -644,7 +650,7 @@ export async function startHost(config: HostConfig) {
     // L2: the same for the first connect of a run, whose start read raced the connector.
     let refreshCalendarFirstConnect = (_endpointId: string): void => { /* bound once the composition exists */ };
     const hostStartedAt = (config.now ?? Date.now)();
-    const processStartedAt = hostStartedAt - process.uptime() * 1000;
+    const processStartedAt = config.connectorTesting?.processStartedAt ?? hostStartedAt - process.uptime() * 1000;
     const alarmShell = new AlarmShellBridge();
     const alarms = new AlarmScheduler({ store, clock: {
       now: config.now ?? Date.now,
@@ -652,7 +658,7 @@ export async function startHost(config: HostConfig) {
       clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
     }, emit: alarm => alarmShell.publish(alarm), changed: rows => alarmShell.state(rows), log: event => log.event(event) });
     const trello = createTrelloBoard({ configDir: providerConfigDir, log: event => log.event(event) });
-    const mcp = await composeMcpRuntime({ alarms: { now: config.now ?? Date.now, recheck: () => alarms.recheck('mutation'), health: () => alarmShell.health() }, store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
+    const mcp = await (config.connectorTesting?.compose ?? composeMcpRuntime)({ alarms: { now: config.now ?? Date.now, recheck: () => alarms.recheck('mutation'), health: () => alarmShell.health() }, store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestNow = config.now ?? Date.now;
@@ -733,7 +739,7 @@ export async function startHost(config: HostConfig) {
         trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
       }).catch(() => { /* the row stays file based when the probe cannot answer */ });
     }
-    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), beforeLiveCreate: async () => { await waitForStartupConnectors({ startedAt: processStartedAt, now: config.now ?? Date.now, endpoints: () => mcp.status().endpoints }); }, mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), beforeLiveCreate: async () => { await waitForStartupConnectors({ startedAt: processStartedAt, now: config.now ?? Date.now, endpoints: () => mcp.status().endpoints, ...(config.connectorTesting?.pause ? { pause: config.connectorTesting.pause } : {}) }); }, mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       alarms.recheck('start');
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };

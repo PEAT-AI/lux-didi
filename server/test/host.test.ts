@@ -1786,7 +1786,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       assert.ok(tools.some(tool => tool.name === 'search_knowledge'));
       const read = tools.find(tool => tool.name === 'get_insight');
       assert.equal(Boolean(read), recoveredAt !== Infinity, 'session receives the recovered endpoint declaration');
-      if (read) assert.deepEqual(read.inputSchema['properties'], { ids: { type: 'array', items: { type: 'integer' } } });
+      if (read) assert.deepEqual(read.parameters['properties'], { ids: { type: 'array', items: { type: 'integer' } } });
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       const incomplete = events.filter(event => event.event === 'live_tools_incomplete');

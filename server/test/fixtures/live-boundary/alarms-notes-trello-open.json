@@ -178,6 +178,140 @@
         "status": "EXPECTED_RED",
         "reason": "the base refuses the declared open_web argument shape (kind/target) for every ask: no per-intent normalizer names the field it reads (D5). C-ARGS fixes this."
       }
+    },
+{
+      "id": "note-dictation-negated-verb-saves",
+      "why": "C-NOTEGATE (#874): a long dictation that denies a verb is content, not a withdrawal of the open owner call. The save the corpus asks for at the end must commit on the model's first stage_lux_note call, so the vault receives the note.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "The survey came back and I don't want to put the damp course in there without his note.",
+        "Never mind the boiler quote, the invoice is the thing that matters.",
+        "No need to mention the driveway either.",
+        "Save a note: the synthetic bridge reopens on Monday."
+      ],
+      "steps": [
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "vault",
+              "tool": "save_insight",
+              "argsContains": "the synthetic bridge reopens on Monday"
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+{
+      "id": "note-direct-save-commits",
+      "why": "A direct save ask with no negation anywhere still commits on the first call, so the #874 fix widens nothing.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "Save a note: the synthetic bridge reopens on Monday."
+      ],
+      "steps": [
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "vault",
+              "tool": "save_insight",
+              "argsContains": "the synthetic bridge reopens on Monday"
+            }
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+{
+      "id": "note-without-owner-final-refuses",
+      "why": "P-R6: with no owner final in the session the one-owner-final rule still refuses no_owner_request and nothing reaches the vault.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [],
+      "steps": [
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "refused": {
+              "code": "no_owner_request"
+            },
+            "noDispatch": true
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
+    },
+{
+      "id": "note-after-outside-text-refuses",
+      "why": "The fence is untouched: third-party text handed to the model after his last final refuses the save external_text_only and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
+      "families": [
+        "knowledge"
+      ],
+      "finals": [
+        "Have a look at my synthetic data about the bridge."
+      ],
+      "steps": [
+        {
+          "tool": "research",
+          "args": {
+            "action": "start",
+            "question": "synthetic bridge",
+            "topic": "synthetic bridge",
+            "sources": "knowledge"
+          },
+          "expect": {
+            "dispatch": {
+              "connector": "knowledge",
+              "tool": "search_knowledge"
+            }
+          }
+        },
+        {
+          "tool": "stage_lux_note",
+          "args": {
+            "title": "Synthetic bridge",
+            "body": "the synthetic bridge reopens on Monday",
+            "evidenceRefs": []
+          },
+          "expect": {
+            "refused": {
+              "code": "external_text_only"
+            },
+            "noDispatch": true
+          }
+        }
+      ],
+      "base": {
+        "status": "PASS"
+      }
     }
   ]
 }

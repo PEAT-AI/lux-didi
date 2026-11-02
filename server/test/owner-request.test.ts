@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAlarmTime, parseSeriesRule, verifyAlarmRule } from '../tools/alarm.js';
 import { OwnerRequests, requestRefusal } from '../tools/owner-request.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { tierOf } from '../tools/tiers.js';
 import { COMPOSE_NAMES, COMPOSE_TOOLS, DRAFT_GUIDANCE, clientRequestId, composeGrantKinds, createdEventResult, draftChatResult, draftEmailResult, eventWindow, namedOthers, notAuthorizedResult, resolveRecipient, validateCreateEvent, validateDeleteEvent, validateDraftChat, validateDraftEmail, type RecipientCandidate } from '../tools/compose.js';
 
@@ -111,11 +112,12 @@ for (const words of [
   "don't open the deck",
   'never mind, no alarm',
 ]) {
+  // C-NOTEGATE (#874): his words are authority for every free kind whatever clause they carry, so a
+  // negator in his own sentence neither grants nor withholds one.
   test(`hear104 conditional owner wording does not veto cues: ${words}`, () => {
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'j', words);
-    assert.equal(requests.authorize('s', 'open', 'target').code,
-      words === "don't open the deck" ? 'no_owner_request' : 'allowed');
+    assert.equal(requests.authorize('s', 'open', 'target').code, 'allowed');
     if (words.includes('set an alarm')) assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
   });
 }
@@ -131,19 +133,21 @@ for (const [words, kind] of [
   });
 }
 
+// C-NOTEGATE (#874): the free tier reads no clause of his speech, so a negation anywhere in the merged
+// turn voids nothing. The merge rule, the fence and the one-owner-final rule are the whole free gate.
 for (const words of [
   "don't open the deck", 'never mind, no alarm', 'do not save this',
   ...["don't", 'do not', 'dont', 'never', 'not', 'never mind', 'no need to', 'forget it']
     .map(negation => `open the deck and ${negation} save this into Lux`),
 ]) {
-  test(`hear104 negation voids only its governed cue: ${words}`, () => {
+  test(`C-NOTEGATE #874 a negated clause in his turn voids no free kind: ${words}`, () => {
     const requests = new OwnerRequests(() => 0);
     requests.observe('s', 'old', 'open the deck and set an alarm for seven');
     requests.observe('s', 'new', words);
-    assert.equal(requests.authorize('s', 'open', 'deck').code, words === "don't open the deck" ? 'no_owner_request' : 'allowed');
+    assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
     // C-PERMTIER: the alarm ask in his first final still stands; a later final never takes it back.
     assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
-    assert.equal(requests.authorize('s', 'lux_note', 'note').code, /save/.test(words) ? 'no_owner_request' : 'allowed');
+    assert.equal(requests.authorize('s', 'lux_note', 'note').code, 'allowed');
   });
 }
 
@@ -160,17 +164,66 @@ for (const [words, kind] of [
   });
 }
 
-for (const [words, kind] of [
-  ["don't set an alarm", 'set_alarm'],
-  ['never mind the alarm', 'set_alarm'],
-  ['no need to add it to the calendar', 'create_event'],
-] as const) {
-  test(`C-NEGATION a real negation still voids its action: ${words}`, () => {
+// C-NOTEGATE (#874): only the guarded delete still reads a negated clause, through the compose grant
+// selector and the one entry left in NEGATED_ACTION. Every free kind above commits regardless.
+test('C-NOTEGATE #874 the guarded delete still reads a negated clause', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j', 'forget it, delete the synthetic meeting');
+  assert.equal(requests.authorize('s', 'delete_event', 'that'), 'no_owner_request');
+});
+
+// C-NOTEGATE (#874): a dictation is content, not a command. A negated verb inside several finals is a
+// sentence he said about the material, never a withdrawal of the open owner call.
+test('C-NOTEGATE #874 a dictation over several finals that denies a verb still commits the save ask', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', "The survey came back and I don't want to put the damp course in there without his note.");
+  requests.observe('s', 'j2', 'Never mind the boiler quote, the invoice is the thing that matters.');
+  requests.observe('s', 'j3', 'No need to mention the driveway either.');
+  requests.observe('s', 'j4', 'Save this into Lux.');
+  const ask = requests.authorize('s', 'lux_note', 'note');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /damp course/, 'the merged turn is still his own words');
+});
+
+test('C-NOTEGATE #874 a direct save ask still commits on the first call', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j', 'Save this into Lux.');
+  assert.equal(requests.authorize('s', 'lux_note', 'note').code, 'allowed');
+});
+
+test('C-NOTEGATE #874 a write with no owner final in the session still refuses no_owner_request', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j', '');
+  assert.equal(requests.authorize('s', 'lux_note', 'note').code, 'no_owner_request');
+});
+
+test('C-NOTEGATE #874 newer outside text still refuses external_text_only, the paired case', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j', "I don't want to put the boiler quote in there. Save this into Lux.");
+  requests.expose('s');
+  assert.equal(requests.authorize('s', 'lux_note', 'note').code, 'external_text_only');
+});
+
+// C-NOTEGATE (#828): the gate's answer is a log line of closed fields: the tool, the decision, the code,
+// the two fence positions and whether an owner final existed. Never a word of his.
+test('C-NOTEGATE #828 the free gate logs its decision as closed fields and never his words', () => {
+  const seen: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { seen.push(raw as Record<string, unknown>); } });
+  try {
     const requests = new OwnerRequests(() => 0);
-    requests.observe('s', 'j', words);
-    assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
-  });
-}
+    requests.observe('s', 'j', 'Save this into Lux, the synthetic invoice is paid');
+    requests.authorize('s', 'lux_note', 'note');
+    requests.expose('s');
+    requests.authorize('s', 'lux_note', 'note');
+  } finally { detach(); }
+  const decisions = seen.filter(event => event['event'] === 'gate_decision');
+  assert.equal(decisions.length, 2);
+  assert.deepEqual(Object.keys(decisions[0]!).sort(), ['code', 'decision', 'event', 'exposure', 'owner', 'ownerFinal', 'tool']);
+  assert.deepEqual(decisions.map(entry => [entry['decision'], entry['code']]), [['allowed', 'allowed'], ['refused', 'external_text_only']]);
+  assert.deepEqual(decisions.map(entry => [entry['tool'], entry['owner'], entry['exposure'], entry['ownerFinal']]),
+    [['lux_note', 1, 0, true], ['lux_note', 1, 1, true]]);
+  assert.equal(JSON.stringify(seen).includes('invoice'), false, 'no owner word reaches the log');
+});
 
 test('C-NEGATION a split ask keeps the first alarm when the second says not to forget', () => {
   const requests = new OwnerRequests(() => 0);
@@ -275,10 +328,12 @@ test('W1030 write intent: STT noise around the words he said still grants', () =
   assert.equal(requests.authorize('s', 'delete_event', 'that').code, 'allowed');
 });
 
-test('W1030 write intent: a negated write clause spends no grant', () => {
+// C-NOTEGATE (#874): the free tier reads no clause, so a negated write clause withholds nothing. The
+// irreversible send it names is not a didi tool at all.
+test('W1030 write intent: a negated write clause withholds no free draft', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'do not send an email to Priya, just tell me her address');
-  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'no_owner_request');
+  assert.equal(requests.authorize('s', 'draft_email', 'Priya').code, 'allowed');
 });
 
 test('W1030 no send and no invite: the surface names drafts and owner-only blocks only', () => {
@@ -449,7 +504,10 @@ test('C-PERMTIER (e/g): the exposure fence holds a free write until his own next
   requests.source('s', 'mail');
   const refused = requests.authorize('s', 'create_event', 'block-1');
   assert.equal(refused.code, 'external_text_only');
-  assert.equal(requestRefusal('external_text_only').say, 'Outside text arrived after your last words; say it again and I will do it.');
+  // C-NOTEGATE (#874): the refusal is a fact about what happened and what clears it, never an
+  // invitation to repeat a phrase.
+  assert.equal(requestRefusal('external_text_only').say,
+    'Outside text arrived after your last words, so that write was refused. It clears when you next speak.');
   // Refused writes are never auto-flushed: a fresh owner final is what opens the next one.
   assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'external_text_only');
   requests.observe('s', 'j2', 'check my calendar and put cardio in a free slot', 2_000);
@@ -633,13 +691,13 @@ test('P-R1 a quoted or relayed final is still his final (was: hear104 owner fram
   }
 });
 
-test('P-R1 a non-imperative final is admitted, and negation still voids only its kind (was: hear104 nonimperative)', () => {
+test('P-R1 a non-imperative final is admitted, and a negated free kind is still admitted (was: hear104 nonimperative)', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j', 'could you open the deck', 0);
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
   const negated = new OwnerRequests(() => 0);
   negated.observe('s', 'j', "don't open the deck", 0);
-  assert.equal(negated.authorize('s', 'open', 'deck').code, 'no_owner_request');
+  assert.equal(negated.authorize('s', 'open', 'deck').code, 'allowed');
   assert.equal(negated.authorize('s', 'set_alarm', 'alarm-1').code, 'allowed');
 });
 

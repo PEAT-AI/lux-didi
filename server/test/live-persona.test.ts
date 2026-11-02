@@ -372,7 +372,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
+  // C-DIAG109: the alarm sentence was replaced to name the read-back's clock and minutes away, so this block is re-pinned.
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1e5c3821b33a4789fc962489cd9fa9f770492772435fad8c1337230985a4ae65');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
   assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');

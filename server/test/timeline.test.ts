@@ -531,7 +531,7 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
       ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
         'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'noProviderAudioFinals', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
     assert.equal(json['version'], 3);
   });
 });

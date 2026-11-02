@@ -972,14 +972,14 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan, refusalsCo
 
 /**
  * C-DIAG109: classify a final with no provider audio. It is a fragment when the next owner final arrives
- * within FRAGMENT_FOLLOW_MS and that final was answered; every other silent final is unanswered, including
- * the last final of a call, which has no follow-up at all.
+ * within FRAGMENT_FOLLOW_MS and that final was answered (the provider spoke for it); every other silent
+ * final is unanswered, including the last final of a call, which has no follow-up at all.
  */
 function noAudioClassOf(turns: readonly AuditTurnRow[], index: number): AuditNoAudioClass | null {
   const turn = turns[index]!;
   if (turn.missingReason !== 'no_provider_audio') return null;
   const next = turns[index + 1];
-  if (next === undefined || next.missingReason !== null) return 'unanswered';
+  if (next === undefined || next.providerFirstAudioAt === null) return 'unanswered';
   if (turn.ownerFinalAt === null || next.ownerFinalAt === null) return 'unanswered';
   const gap = next.ownerFinalAt - turn.ownerFinalAt;
   return gap >= 0 && gap <= FRAGMENT_FOLLOW_MS ? 'fragment' : 'unanswered';

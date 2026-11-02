@@ -1428,6 +1428,7 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
     const { declarations } = declarationsFor(definitions);
     const nameless: string[] = [];
     const refused: string[] = [];
+    const tried: string[] = [];
     const unnamed: string[] = [];
     for (const declaration of declarations) namelessObjects(declaration.parameters as DeclaredSchema, declaration.name, nameless);
     assert.deepEqual(nameless, [], 'every object parameter names its properties');
@@ -1450,7 +1451,10 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
         if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
         if (lines.length === 0) { accepted = true; break; }
       }
-      if (!accepted) refused.push(`${declaration.name} ${refusedHere[0] ?? 'refused'}`);
+      if (!accepted) {
+        refused.push(`${declaration.name} ${refusedHere[0] ?? 'refused'}`);
+        tried.push(`${declaration.name}: ${JSON.stringify(declaredValues(declaration.parameters as DeclaredSchema))}`);
+      }
     }
     // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
     // every set_alarm call in release 10.8, and no declared value may reach it any more.
@@ -1460,6 +1464,6 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
     // refuses everything its declaration describes. Those five are raised as findings against the files
     // named above; the list is exact, so a sixth tool or a different rule on one of them fails right here.
     assert.deepEqual([...refused].sort(), [...REFUSED_DECLARATIONS].sort(),
-      'every declared tool accepts a value built only from its declaration');
+      `every declared tool accepts a value built only from its declaration: ${tried.join(' | ')}`);
   } finally { detach(); }
 });

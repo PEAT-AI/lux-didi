@@ -80,7 +80,7 @@ export interface IncompleteToolGroup {
   missingTools: number;
   reason: 'deadline' | 'failed';
 }
-type AdmissionEndpoint = { state: string; connector: string; retrying?: boolean };
+type AdmissionEndpoint = { id?: string; state: string; connector: string; retrying?: boolean; tools?: number; lastHandshakeAt?: string | null };
 export function incompleteConnectorTools(endpoints: readonly AdmissionEndpoint[]): IncompleteToolGroup[] {
   const groups = new Map<string, IncompleteToolGroup>();
   for (const endpoint of endpoints) {
@@ -712,7 +712,7 @@ export async function composeMcpRuntime(options: {
       const discovery = await port.discover(entry.id);
       if (stale()) return { retryable: false };
       if (discovery.state !== 'discovered') {
-        const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code, discovery.exception?.class);
+        const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
         reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code, discovery.exception?.class);
         // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
         // a missing record does, so the login reconnects it without a restart (R9).

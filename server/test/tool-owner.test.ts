@@ -1167,7 +1167,7 @@ test('W1030 persona: every ability the capability line names is a live definitio
 const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
 const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
 const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
-type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema> };
+type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown };
 const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
   const tool = declarations.find(candidate => candidate.name === name);
   assert.ok(tool, `the live table declares ${name}`);
@@ -1302,4 +1302,55 @@ test('#873 conformance: create_event commits from the declared shape and from th
       else assert.equal(Number(start) - ALARM_CLOCK, timeCase.fireAt - ALARM_CLOCK, `${where} starts the span he named`);
     }
   }
+});
+
+// AL-R1: the declaration is the whole contract the model can read, so every object it declares names
+// its properties and a value built only from it is never refused as a schema failure.
+const sampleOf = (schema: DeclaredSchema): unknown => {
+  const choices = schema.enum;
+  if (Array.isArray(choices) && choices.length > 0) return choices[0];
+  switch (String(schema.type ?? '').toUpperCase()) {
+    case 'STRING': return 'synthetic';
+    case 'INTEGER': case 'NUMBER': return 1;
+    case 'BOOLEAN': return true;
+    case 'ARRAY': return [sampleOf(schema.items ?? {})];
+    case 'OBJECT': return declaredValue(schema);
+    default: return 'synthetic';
+  }
+};
+/** The value the declaration alone describes: its required keys, else every key it names. */
+const declaredValue = (schema: DeclaredSchema): Record<string, unknown> => {
+  const properties = schema.properties ?? {};
+  const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : undefined;
+  return Object.fromEntries((required ?? Object.keys(properties)).map(key => [key, sampleOf(properties[key] ?? {})]));
+};
+/** Every object the declaration offers, so a property-less one is named rather than silently empty. */
+const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {
+  if (String(schema.type ?? '').toUpperCase() === 'OBJECT' && Object.keys(schema.properties ?? {}).length === 0) found.push(path);
+  for (const [key, child] of Object.entries(schema.properties ?? {})) namelessObjects(child, `${path}.${key}`, found);
+  if (schema.items !== undefined) namelessObjects(schema.items, `${path}[]`, found);
+};
+
+test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
+  const events: { event?: string; tool?: string; violations?: string[] }[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
+  try {
+    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock() });
+    const definitions = liveTools(f);
+    const { declarations } = declarationsFor(definitions);
+    const nameless: string[] = [];
+    for (const declaration of declarations) namelessObjects(declaration.parameters as DeclaredSchema, declaration.name, nameless);
+    assert.deepEqual(nameless, [], 'every object parameter names its properties');
+    let step = 0;
+    for (const declaration of declarations) {
+      const definition = definitions.find(candidate => candidate.name === declaration.name);
+      assert.ok(definition, `the live table defines ${declaration.name}`);
+      const args = declaredValue(declaration.parameters as DeclaredSchema);
+      step += 1;
+      await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
+      // A grant, a connector or a missing owner ask may refuse the call; its arguments never may.
+      assert.deepEqual(events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name),
+        [], `${declaration.name} is not refused for the arguments its declaration describes`);
+    }
+  } finally { detach(); }
 });

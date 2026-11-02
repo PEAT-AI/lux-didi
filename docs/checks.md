@@ -81,6 +81,8 @@ from the table above for the ten gate checks and `-` for a check CI does not run
 suites` counts test files this check names that another check also names, so a check marked `yes`
 runs work something else already runs. `Duration` is seconds measured by the gate's own record on
 this host (`GATE_CHECK` rows of `$DIDI_TIMING_FILE`), and `missing` where no measurement exists.
+These are one sample each, taken on a loaded shared Mac: the same ten checks took 318 seconds in one
+run and 886 in another on the same tree, so read a duration as a scale, never as a target.
 
 | Check | Group | Platform | Prerequisites | Repeats unit suites | Duration (s) |
 | --- | --- | --- | --- | --- | --- |

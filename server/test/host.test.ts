@@ -41,7 +41,8 @@ import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '
 import type { GoogleEvidence, GoogleResult } from '../connectors/google.js';
 import { listenService } from '../http/server.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
+import { liveProfileIdentity } from '../live/config.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -1707,4 +1708,109 @@ test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accept
 });
 
 }
+}
+
+// CONNWAIT-REV-1: exercise the production runtime gate and HTTP create, not a hand-joined helper.
+for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000, 10_000], [Infinity, 10_000], [Infinity, 30_000]]) {
+  test(`host HTTP admission receives recovered schemas at ${recoveredAt}, requested ${requestedAt}`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'didi-admission-http-'));
+    const configDir = join(dir, 'synthetic-config');
+    let now = requestedAt!;
+    let pauses = 0;
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    let address: URL | undefined;
+    try {
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+        modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', dataClasses: ['ordinary'],
+        preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } }), { mode: 0o600 });
+      host = await startHost({ dataDir: dir, configDir, webRoot, port: 0, now: () => now,
+        liveTesting: { credentials: { resolve: async () => { throw Error('provider must not be contacted'); } } },
+        connectorTesting: {
+          processStartedAt: 0,
+          pause: async ms => { pauses++; now += ms; },
+          compose: async options => {
+            const runtime = await composeMcpRuntime(options);
+            const loaded = loadLiveConfig({ configDir, ownerId: options.ownerId });
+            if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
+            const specs = [
+              { id: 'fixture-search', at: 0, name: 'search_knowledge', properties: { query: { type: 'string' } } },
+              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { ids: { type: 'array', items: { type: 'integer' } } } },
+            ];
+            const connected = new Set<string>();
+            const synchronize = () => {
+              for (const spec of specs) {
+                if (now < spec.at || connected.has(spec.id)) continue;
+                const endpoint = { id: spec.id, url: 'https://synthetic.invalid/mcp', account: 'synthetic', resource: spec.id };
+                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, inputSchema: { type: 'object', properties: spec.properties } }];
+                runtime.registry.register(endpoint);
+                runtime.registry.enable(spec.id); runtime.registry.allowEgress(spec.id);
+                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
+                runtime.owner.applyConnection({ schemaVersion: 1, ownerId: options.ownerId, connectionId: spec.id,
+                  generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null },
+                  toolNames: [spec.name], schemaDigest: canonicalToolDigest(schemas),
+                  sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+                  route: { identity: liveProfileIdentity(loaded.config.profile), allowedClasses: ['ordinary'] },
+                  bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+                connected.add(spec.id);
+              }
+            };
+            return { ...runtime,
+              connectionIds: () => { synchronize(); return [...connected]; },
+              status: () => { synchronize(); return { endpoints: specs.map(spec => ({ id: spec.id, connector: 'lux-knowledge',
+                state: connected.has(spec.id) ? 'connected' as const : 'error' as const,
+                tools: connected.has(spec.id) ? 1 : 0, retrying: !connected.has(spec.id), lastHandshakeAt: null,
+                // Deliberately private-looking fixture fields must not survive safeEvent.
+                error: 'synthetic-private-endpoint-detail' })) }; },
+            };
+          },
+        },
+      });
+      address = new URL(host.service.origin);
+      const pairing = await fetch(host.service.origin + '/api/v1/auth/pairing', { method: 'POST',
+        headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json' }, body: '{}' });
+      const { data: { pairingCode } } = await pairing.json();
+      const paired = await fetch(host.service.origin + '/api/v1/auth/pair', { method: 'POST',
+        headers: { Origin: host.service.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode }) });
+      assert.equal(paired.status, 200);
+      const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
+      const { data: { csrfToken } } = await paired.json();
+      const response = await fetch(host.service.origin + '/api/v1/live-sessions', { method: 'POST',
+        headers: { Cookie: cookie, Origin: host.service.origin, 'X-Didi-CSRF': csrfToken, 'Content-Type': 'application/json',
+          'Idempotency-Key': 'synthetic-http-admission' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+      assert.equal(response.status, 200, await response.clone().text());
+      const { data: session } = await response.json();
+      const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+      assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
+      const tools = host.tools.owner.definitions(session.liveSessionId);
+      assert.ok(tools.some(tool => tool.name === 'search_knowledge'));
+      const read = tools.find(tool => tool.name === 'get_insight');
+      assert.equal(Boolean(read), recoveredAt !== Infinity, 'session receives the recovered endpoint declaration');
+      if (read) assert.deepEqual(read.inputSchema['properties'], { ids: { type: 'array', items: { type: 'integer' } } });
+      const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
+      const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      const incomplete = events.filter(event => event.event === 'live_tools_incomplete');
+      if (recoveredAt === Infinity) {
+        assert.match(prompt.system, /Host capability fact/);
+        assert.match(prompt.system, /"connector":"lux-knowledge"/);
+        assert.match(prompt.system, /"reason":"deadline"/);
+        assert.equal(incomplete.length, 1);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 6, reason: 'deadline' }]);
+        assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
+        assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
+      } else {
+        assert.doesNotMatch(prompt.system, /Host capability fact/);
+        assert.deepEqual(incomplete, []);
+      }
+      if (requestedAt! > 25_000) assert.equal(pauses, 0, 'late owner call does not wait');
+    } finally {
+      await host?.close();
+      if (address) {
+        const probe = createServer();
+        await new Promise<void>((resolve, reject) => { probe.once('error', reject); probe.listen(Number(address!.port), address!.hostname, resolve); });
+        await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 }

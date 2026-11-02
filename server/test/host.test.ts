@@ -1658,13 +1658,16 @@ test('connector admission keeps waiting during an in-flight recovery and aggrega
   assert.equal(groups[0]?.missingTools, 2 * result[0]!.missingTools);
 });
 
-test('host admission capability fact survives in the actual accepted live prompt without a provider call', async () => {
+for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
+for (const admission of [false, true]) {
+test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accepted prompt without provider`, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-connwait-'));
   const store = new Store(dir, hostMigrations);
   const configDir = join(dir, 'synthetic-config');
   let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
   let owner: ReturnType<typeof createLiveSessionOwner> | undefined;
-  let now = 0;
+  // The synthetic interactive launch requests its call ten seconds after process start.
+  let now = 10_000;
   try {
     await mkdir(configDir, { recursive: true, mode: 0o700 });
     await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
@@ -1673,14 +1676,23 @@ test('host admission capability fact survives in the actual accepted live prompt
     const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
     if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-    const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge', state: 'error', retrying: true }];
+    const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge',
+      state: now >= recoveredAt ? 'connected' : 'error', retrying: now < recoveredAt }];
     owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
       now: () => now, timeZone: 'UTC', tools: { owner: runtime.owner, connectionIds: () => [], status: () => ({ endpoints: endpoints() }) } });
-    await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
-    assert.equal(now, 25_000);
+    // Before this change the host invoked create directly, without this barrier.
+    if (admission) await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
+    const expectedOpenAt = admission ? Math.max(10_000, Math.min(recoveredAt, 25_000)) : 10_000;
     const session = owner.create({ inputClass: 'ordinary', idempotencyKey: 'synthetic-connwait' },
       { clientId: 'synthetic-client', auditId: randomUUID(), authorityEpoch: store.authorityEpoch });
     const prompt = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['accepted_prompt_snapshot'])));
+    const openedAt = store.transaction(tx => Number(tx.get('SELECT created_at FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['created_at']));
+    assert.equal(openedAt, expectedOpenAt);
+    assert.equal(now, expectedOpenAt);
+    if (now >= recoveredAt) {
+      assert.doesNotMatch(prompt.system, /Host capability fact/);
+      return;
+    }
     assert.match(prompt.system, /Host capability fact/);
     assert.match(prompt.system, /"connector":"lux-knowledge"/);
     assert.match(prompt.system, /"reason":"deadline"/);
@@ -1693,3 +1705,6 @@ test('host admission capability fact survives in the actual accepted live prompt
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+}
+}

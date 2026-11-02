@@ -1326,7 +1326,8 @@ const declaredValue = (schema: DeclaredSchema): Record<string, unknown> => {
 };
 /** Every object the declaration offers, so a property-less one is named rather than silently empty. */
 const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {
-  if (String(schema.type ?? '').toUpperCase() === 'OBJECT' && Object.keys(schema.properties ?? {}).length === 0) found.push(path);
+  // An empty map is a tool that takes no argument; a missing map is a shape the model must guess.
+  if (String(schema.type ?? '').toUpperCase() === 'OBJECT' && schema.properties === undefined) found.push(path);
   for (const [key, child] of Object.entries(schema.properties ?? {})) namelessObjects(child, `${path}.${key}`, found);
   if (schema.items !== undefined) namelessObjects(schema.items, `${path}[]`, found);
 };

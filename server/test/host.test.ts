@@ -19,7 +19,7 @@ import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextp
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { ConfigError } from '../config/files.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
-import { composeMcpRuntime } from '../host/mcp.js';
+import { waitForStartupConnectors, incompleteConnectorTools, composeMcpRuntime } from '../host/mcp.js';
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
 import { createGoogleReader } from '../connectors/index.js';
 import { projectGoogleResult } from '../tools/google.js';
@@ -1584,4 +1584,50 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
       t.mock.timers.reset();
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// C-CONNWAIT: synthetic endpoints only; the host clock never waits in real time.
+for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
+  test(`startup connector admission waits for recovery at ${recoveredAt}`, async () => {
+    let now = 0;
+    const endpoints = () => [
+      { id: 'fixture-a', connector: 'gmail', state: 'connected' as const, tools: 3, retrying: false, lastHandshakeAt: null },
+      { id: 'fixture-b', connector: 'calendar', state: now >= recoveredAt ? 'connected' as const : 'error' as const,
+        tools: now >= recoveredAt ? 4 : 0, retrying: now < recoveredAt, lastHandshakeAt: null },
+    ];
+    const result = await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints,
+      pause: async ms => { now += ms; } });
+    assert.equal(now, Math.min(recoveredAt, 25_000));
+    assert.equal(result.length, recoveredAt === Infinity ? 1 : 0);
+    assert.equal(endpoints().reduce((sum, row) => sum + row.tools, 0), recoveredAt === Infinity ? 3 : 7);
+    if (recoveredAt === Infinity) {
+      assert.equal(result[0]?.reason, 'deadline');
+      assert.equal(result[0]?.missingEndpoints, 1);
+    }
+  });
+}
+
+test('startup connector admission does not delay a late owner call or a terminal refusal', async () => {
+  const endpoint = { id: 'fixture', connector: 'gmail', state: 'error' as const, tools: 0, retrying: true, lastHandshakeAt: null };
+  let pauses = 0;
+  const options = { startedAt: 0, now: () => 60_000, endpoints: () => [endpoint], pause: async () => { pauses++; } };
+  assert.equal((await waitForStartupConnectors(options))[0]?.reason, 'deadline');
+  assert.equal(pauses, 0);
+  assert.equal((await waitForStartupConnectors({ ...options, now: () => 200, endpoints: () => [{ ...endpoint, retrying: false }] }))[0]?.reason, 'failed');
+  assert.equal(pauses, 0);
+});
+
+test('incomplete tools host fact is closed and contains group counts', () => {
+  const groups = incompleteConnectorTools([{ id: 'fixture', connector: 'gmail', state: 'error', tools: 0, retrying: true, lastHandshakeAt: null }]);
+  const event = { event: 'live_tools_incomplete', groups };
+  assert.equal(groups.length, 1);
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, privateText: 'synthetic forbidden field' }), undefined);
+  assert.equal(safeEvent({ event: 'live_tools_incomplete', groups: [{ ...groups[0], connector: 'https://synthetic.invalid/private' }] }), undefined);
+});
+
+test('connector failure preserves only closed exception classes', () => {
+  const base = { event: 'connector_failure', connector: 'gmail', stage: 'handshake', reason: 'discovery-unavailable', exceptionCode: 'unknown' };
+  assert.deepEqual(safeEvent({ ...base, exceptionClass: 'transport' }), { ...base, exceptionClass: 'transport' });
+  assert.equal(safeEvent({ ...base, exceptionClass: 'synthetic private exception message' }), undefined);
 });

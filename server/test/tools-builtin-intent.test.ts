@@ -422,6 +422,53 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   }
 });
 
+// C-DIAG109 review F1: the read-back clock and the minutes away are the execution clock's, never the ask
+// stamp's. The owner asks at 12:00, the tool runs at 12:03, and his words still resolve the alarm at 12:05,
+// so the receipt must say 12:03 and 2 minutes, and the confirmation repeats no computed figure.
+test('C-DIAG109: the set-alarm read-back is the execution clock, not the ask stamp', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-alarm-readback-'));
+  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+  const f = await fixture(t);
+  const registry = new McpRegistry();
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
+  t.after(() => port.close());
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const askAt = Date.parse('2026-03-05T11:00:00Z');
+  const owner = createToolsOwner({ alarms: { now: () => askAt + 3 * 60_000, recheck() {}, health: () => ({ degraded: false, reasons: [] }) },
+    timezone: 'Europe/Berlin', grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
+    lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
+    route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
+  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
+    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
+  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
+  const session = service.create('ordinary', `readback:${randomUUID()}`, context);
+  const attachment = service.attach(session.liveSessionId, context);
+  await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
+  const signal = new AbortController().signal;
+  const authority = await lookup!(session.liveSessionId, signal);
+  assert.ok(authority);
+  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm in five minutes', askAt);
+  const tool = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' })).find(entry => entry.name === 'set_alarm');
+  assert.ok(tool, 'set_alarm is declared to the live model');
+  const args = {};
+  const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch,
+    revision: authority.revision, executionId: randomUUID(), toolName: tool.name,
+    argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+    accountId: tool.accountId, resourceId: tool.resourceId };
+  owner.journal.intent(intent);
+  const outcome = await tool.execute(args, { ...intent, signal });
+  assert.equal(outcome.status, 'completed', JSON.stringify(outcome));
+  const stored = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
+  const reply = (JSON.parse(String(stored?.result_json ?? '{}')) as { response?: Record<string, unknown> }).response ?? {};
+  assert.equal(reply.status, 'set', JSON.stringify(reply));
+  assert.equal(reply.fire_at_utc, askAt + 5 * 60_000, 'the ask-time reading still resolves the alarm');
+  assert.equal(reply.now_local_time, '12:03', `the read-back clock is the execution clock: ${JSON.stringify(reply)}`);
+  assert.equal(reply.minutes_away, 2, `the distance is counted from now: ${JSON.stringify(reply)}`);
+  assert.doesNotMatch(String(reply.say), /minutes/u, `the confirmation states no computed minutes: ${String(reply.say)}`);
+});
+
 /** #795/#797: settle the host's own async work without a timer, then ask. */
 const settled = async (until: () => boolean): Promise<boolean> => {
   for (let attempt = 0; attempt < 400 && !until(); attempt++) await new Promise<void>(resolve => setImmediate(resolve));

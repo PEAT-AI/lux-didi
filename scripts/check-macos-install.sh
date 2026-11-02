@@ -583,6 +583,19 @@ fi
 # served while the fresh bundles sit in Resources/web/dist/dist.
 bash scripts/build-asset-bundle.sh "$assets"
 [ ! -e "$assets/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second bundle build nested the shell under Resources/web/dist/dist' >&2; exit 1; }
+
+# The installed checks (scripts/run-installed-checks.sh, called by the installer) assert the
+# release that just landed on this machine, and they need the shipped runtime to do it: the
+# bundled Node and the packed host runtime inside the accepted bundle. A release worktree without
+# that runtime cannot prove anything about an install, so it says CHECK BLOCKED and never passes
+# (#841). A pass here would claim a proof the run never made.
+missing_runtime=''
+[ -x "$assets/Resources/node/bin/node" ] || missing_runtime="$missing_runtime Resources/node/bin/node"
+[ -f "$assets/server/node_modules/@lux-didi/service/dist/host/runtime.js" ] || missing_runtime="$missing_runtime server/node_modules/@lux-didi/service/dist/host/runtime.js"
+if [ -n "$missing_runtime" ]; then
+  echo "MACOS-INSTALL CHECK BLOCKED: the accepted asset bundle has no installed runtime, missing:$missing_runtime; nothing about an install was proven" >&2
+  exit 2
+fi
 bash scripts/build-macos-app.sh --check-web-shell "$assets/Resources/web/dist" || { echo 'MACOS-INSTALL FAIL: the rebuilt bundle shell does not match the assets beside it' >&2; exit 1; }
 printf 'MACOS-INSTALL: second bundle build into one output path replaced the shell without nesting\n'
 app="$work/Lux Didi.app"

@@ -36,6 +36,10 @@ Nine of the twelve need nothing macOS: they install from the npm cache, compile 
 
 `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-web-unit`, `check-install-smoke`.
 
+`scripts/check-combined-tree.sh --selftest` proves the release gate's own bookkeeping on three
+fixture checks: one passes, one fails, one prints `CHECK BLOCKED`, and the blocked one is counted
+apart from the failed one while both still fail the gate.
+
 `check-package` is the tenth check CI runs. It packs the service from a clean `git archive`, installs the tarball offline into an empty cache and runs the package tests, so it needs `git`, `npm`, `tar` and `node` and no macOS tool. It is not one of the twelve above, and the gauntlet runs it last because it builds and reinstalls the whole service.
 
 ### Check inventory
@@ -198,7 +202,7 @@ imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source
 | --- | --- |
 | `check-asset-bundle.sh` | The asset-only bundle: a planted bad bundle must be refused first (so green is never vacuous), then the real bundle is built and verified. |
 | `check-install-smoke.sh` | The install research smoke (`server/test/smoke/install-research-smoke.mjs`) against the repo build: a synthetic mail endpoint with every fetch intercepted, both research paths (the scheduler and a live tool call) started from arguments derived from the tool's declared input schema. The installer runs the same file against a bundle, so a newly required input field fails here instead of at install. |
-| `check-macos-install.sh` | Composes the real app, drives it through LaunchServices, and checks signatures, artifact hygiene, the configure matrix and install with rollback. Takes the slot. |
+| `check-macos-install.sh` | Composes the real app, drives it through LaunchServices, and checks signatures, artifact hygiene, the configure matrix and install with rollback. Takes the slot. When the accepted bundle carries no installed runtime (no bundled Node, or no packed host runtime), it prints `MACOS-INSTALL CHECK BLOCKED` and exits non-zero instead of passing, because an install was never proven. |
 | `test-npm-offline.sh` | The offline npm install helper fails loud on an empty cache and is a pure swap on a warm one. |
 
 ## Not checks, but useful

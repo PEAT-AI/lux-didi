@@ -528,7 +528,7 @@ run_checks() {
     start=$(date +%s)
     rc=0
     last_file="$logdir/$(printf '%s' "$check" | tr '/.' '__').log"
-    bash "$root/$check" >"$last_file" 2>&1 || rc=$?
+    bash "${checks_root:-$root}/$check" >"$last_file" 2>&1 || rc=$?
     seconds=$(( $(date +%s) - start ))
     last="$(grep -aoE 'not ok [0-9]+ - .*|✖ .*|^FAIL [^ ].*' "$last_file" | tail -1 | cut -c1-120)"
     [[ -z "$last" ]] && last='-'
@@ -580,8 +580,44 @@ run_checks() {
   [[ $failed -eq 0 && $blocked -eq 0 ]]
 }
 
+# The blocked/failed split is what keeps a check that cannot run from reading as a pass, so it is
+# proved on three fixture checks rather than trusted: one passes, one fails, one prints CHECK
+# BLOCKED. The blocked one must be counted apart from the failed one and must still fail the gate.
+selftest_checks() {
+  local fixture status summary timing
+  fixture="$(mktemp -d "${TMPDIR:-/tmp}/didi-combined-selftest.XXXXXX")"
+  printf '#!/bin/bash\necho PASSING\n' > "$fixture/pass.sh"
+  printf '#!/bin/bash\necho "not ok 1 - fixture failure"\nexit 1\n' > "$fixture/fail.sh"
+  printf '#!/bin/bash\necho "FIXTURE CHECK BLOCKED: no runtime" >&2\nexit 2\n' > "$fixture/blocked.sh"
+  summary="$fixture/summary.md"
+  timing="$fixture/timing.tsv"
+  status=0
+  checks_root="$fixture"
+  DIDI_CHECK_SUMMARY="$summary" DIDI_TIMING_FILE="$timing" \
+    run_checks fixture fixture "pass.sh fail.sh blocked.sh" "$fixture/static.log" \
+    > "$fixture/out.log" 2>&1 || status=$?
+  if [[ $status -eq 0 ]]; then
+    echo 'COMBINED SELFTEST FAIL: a blocked and a failed check still passed the gate' >&2
+    rm -rf "$fixture"; return 1
+  fi
+  grep -q '| `.*fail.sh` | failed |' "$summary" \
+    || { echo 'COMBINED SELFTEST FAIL: a failed check was not reported as failed' >&2; rm -rf "$fixture"; return 1; }
+  grep -q '| `.*blocked.sh` | blocked |' "$summary" \
+    || { echo 'COMBINED SELFTEST FAIL: a blocked check was not counted apart from a failed one' >&2; rm -rf "$fixture"; return 1; }
+  grep -q '| `.*pass.sh` | pass |' "$summary" \
+    || { echo 'COMBINED SELFTEST FAIL: a passing check was not reported as a pass' >&2; rm -rf "$fixture"; return 1; }
+  grep -Eq '^\| total \| \| [0-9]+s \| \|$' "$summary" \
+    || { echo 'COMBINED SELFTEST FAIL: the summary has no total duration row' >&2; rm -rf "$fixture"; return 1; }
+  grep -q '^COMBINED_TOTAL\tall\t[0-9]*$' "$timing" \
+    || { echo 'COMBINED SELFTEST FAIL: no machine readable total was recorded' >&2; rm -rf "$fixture"; return 1; }
+  grep -q '^COMBINED_CHECK\t.*blocked.sh\tblocked\t[0-9]*$' "$timing" \
+    || { echo 'COMBINED SELFTEST FAIL: the blocked check was not recorded' >&2; rm -rf "$fixture"; return 1; }
+  echo 'COMBINED SELFTEST PASS: pass, failed and blocked are counted apart'
+  rm -rf "$fixture"
+}
+
 case "${1:-}" in
-  --selftest) analysis selftest; exit $? ;;
+  --selftest) analysis selftest || exit $?; selftest_checks || exit $?; exit 0 ;;
   -h|--help|'')
     sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     exit 0

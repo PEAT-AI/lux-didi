@@ -1340,6 +1340,7 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
     const definitions = liveTools(f);
     const { declarations } = declarationsFor(definitions);
     const nameless: string[] = [];
+    const refused: string[] = [];
     for (const declaration of declarations) namelessObjects(declaration.parameters as DeclaredSchema, declaration.name, nameless);
     assert.deepEqual(nameless, [], 'every object parameter names its properties');
     let step = 0;
@@ -1350,8 +1351,8 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       step += 1;
       await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
       // A grant, a connector or a missing owner ask may refuse the call; its arguments never may.
-      assert.deepEqual(events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name),
-        [], `${declaration.name} is not refused for the arguments its declaration describes`);
+      if (events.some(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name)) refused.push(declaration.name);
     }
+    assert.deepEqual(refused, [], 'no tool is refused for the arguments its declaration describes');
   } finally { detach(); }
 });

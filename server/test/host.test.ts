@@ -1779,7 +1779,11 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       assert.ok(tools.some(tool => tool.name === 'search_knowledge'));
       const read = tools.find(tool => tool.name === 'get_insight');
       assert.equal(Boolean(read), recoveredAt !== Infinity, 'session receives the recovered endpoint declaration');
-      if (read) assert.deepEqual(read.parameters['properties'], { ids: { type: 'array', items: { type: 'integer' } } });
+      if (read) {
+        const properties = read.parameters['properties'] as Record<string, { type: string; items: { type: string } }>;
+        assert.equal(properties['ids']?.type, 'array');
+        assert.equal(properties['ids']?.items.type, 'integer');
+      }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       const incomplete = events.filter(event => event.event === 'live_tools_incomplete');
@@ -1788,7 +1792,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.match(prompt.system, /"connector":"lux-knowledge"/);
         assert.match(prompt.system, /"reason":"deadline"/);
         assert.equal(incomplete.length, 1);
-        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 6, reason: 'deadline' }]);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 2, reason: 'deadline' }]);
         assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
         assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
       } else {

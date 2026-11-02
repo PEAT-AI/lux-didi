@@ -1349,8 +1349,10 @@ const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
   const properties = schema.properties ?? {};
   const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : [];
   const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
-  const candidates = [build(Object.keys(properties))];
-  candidates.push(build(required.length > 0 ? required : Object.keys(properties).slice(0, 1)));
+  const keys = Object.keys(properties);
+  const candidates = [build(keys), build(required.length > 0 ? required : keys.slice(0, 1)), ...keys.map(key => build([key]))];
+  // A declaration may hold exclusive fields it cannot mark, so a pair of them is a value it also describes.
+  if (keys.length <= 4) for (const a of keys) for (const b of keys) if (a < b) candidates.push(build([a, b]));
   const seen = new Set<string>();
   return candidates.filter(candidate => { const key = JSON.stringify(candidate); if (seen.has(key)) return false; seen.add(key); return true; });
 };

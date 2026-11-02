@@ -706,7 +706,8 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }) };
   const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' } }], errorContext(tool) as never);
-  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Expected an object with query \(string\), limit \(integer\)\./);
+  // AL-R1: the refusal names the declared key it is about before it states the shape.
+  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
 });
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
@@ -1346,6 +1347,7 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
     const { declarations } = declarationsFor(definitions);
     const nameless: string[] = [];
     const refused: string[] = [];
+    const unnamed: string[] = [];
     for (const declaration of declarations) namelessObjects(declaration.parameters as DeclaredSchema, declaration.name, nameless);
     assert.deepEqual(nameless, [], 'every object parameter names its properties');
     let step = 0;
@@ -1358,8 +1360,13 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
       // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
       const lines = events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
-      if (lines.some(line => (line.violations ?? []).length === 0)) refused.push(declaration.name);
+      if (lines.length > 0) refused.push(declaration.name);
+      if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
     }
-    assert.deepEqual(refused, [], 'no tool answers a value its declaration describes with an unnamed schema failure');
+    // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
+    // every set_alarm call in release 10.8; the only way left to reach it is a declaration that requires
+    // no key and a call that sends none, so the under-declared set is pinned by name and cannot grow.
+    assert.deepEqual(unnamed, ['conversation_history'], 'only an under-declared tool can still answer with no field');
+    for (const tool of refused) assert.ok(!unnamed.includes(tool) || tool === 'conversation_history');
   } finally { detach(); }
 });

@@ -123,7 +123,7 @@ function argumentFields(args: unknown): string[] {
 function logArgumentsRejected(name: string, violations: readonly string[], reason: string, args: unknown): void {
   // C-ARGS: one `path:keyword` token per violation, always together, never a value.
   const fields = argumentFields(args);
-  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, violations: violations.slice(0, 24), reason, ...(fields.length > 0 ? { fields } : {}) });
+  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, violations: violations.slice(0, 24), reason, ...(fields.length > 0 ? { argumentFields: fields } : {}) });
 }
 /** The rejection cache of one task scope, so a repeat arrives without a second validation. */
 function rejectedCalls(scope: object): Map<string, string> {

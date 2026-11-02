@@ -312,6 +312,12 @@ test('C-ARGS tool_arguments_rejected carries path and keyword per violation and 
   assert.equal(safeEvent(line(['limit:1e400'])), undefined, 'a number is not a keyword');
   assert.equal(safeEvent(line(['summary:cardio with Zara'])), undefined, 'free text is refused');
   assert.equal(safeEvent({ ...line(['limit:range']), fields: ['limit:number'] }), undefined, 'the shape-only key list is gone');
+  // C-ALARM: the observed key names and their value types ride their own closed name, never a value.
+  const typed = { ...line(['limit:range']), argumentFields: ['limit:number', 'time:object', 'time.date:string', 'time.amount:null', 'label:empty'] };
+  assert.deepEqual(safeEvent(typed), typed, 'a closed key name and value type per observed field');
+  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:someday'] }), undefined, 'a value is never admitted in the type place');
+  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:string '] }), undefined, 'a control character never rides the token');
+  assert.equal(safeEvent({ ...typed, argumentFields: Array.from({ length: 33 }, () => 'limit:number') }), undefined, 'the list is bounded');
 });
 test('C-ARGS tool_arguments_normalized carries the dropped keys and a closed reason, never a value', () => {
   const line = { event: 'tool_arguments_normalized', tool: 'mattermost_chat', dropped: ['channel:not_read', 'post_id:absent', 'zzz:undeclared'] };

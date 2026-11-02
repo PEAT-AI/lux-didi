@@ -866,7 +866,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // keyword is a rule name the tool's own predicate declares, the path is the argument key it names.
     const shapeKeys = Object.keys(value).sort().join(',');
     const plainKeys = ['event', 'tool', 'violations', 'reason'].sort().join(',');
-    const fieldKeys = ['event', 'tool', 'violations', 'reason', 'fields'].sort().join(',');
+    const fieldKeys = ['event', 'tool', 'violations', 'reason', 'argumentFields'].sort().join(',');
     if (shapeKeys !== plainKeys && shapeKeys !== fieldKeys) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const violationPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:[a-z][a-z0-9_]{0,47}$/u;
@@ -882,12 +882,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !named(violation))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
     // C-ALARM: the key names and value types of the refused arguments, closed to a `path:type` token,
-    // so a later audit sees which field the model guessed and never what his own words were.
+    // so a later audit sees which field the model guessed and never what his own words were. It carries
+    // its own closed name: `fields` was the declared-shape list a past decision removed for good.
     const argumentsField = (v: unknown): v is string => typeof v === 'string'
       && /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}\.)?[A-Za-z_][A-Za-z0-9_]{0,63}:(?:string|number|boolean|object|array|null|empty)$/u.test(v);
-    if (value.fields !== undefined && (!Array.isArray(value.fields) || value.fields.length > 32 || value.fields.some(field => !argumentsField(field)))) return;
+    if (value.argumentFields !== undefined && (!Array.isArray(value.argumentFields) || value.argumentFields.length > 32 || value.argumentFields.some(field => !argumentsField(field)))) return;
     return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason,
-      ...(value.fields !== undefined ? { fields: value.fields } : {}) };
+      ...(value.argumentFields !== undefined ? { argumentFields: value.argumentFields } : {}) };
   }
   if (value.event === 'tool_arguments_normalized') {
     // C-ARGS: the dropped-key telemetry, a closed event of its own: `path:reason`, the reason from the

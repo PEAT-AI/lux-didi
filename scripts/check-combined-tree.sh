@@ -517,14 +517,28 @@ raise SystemExit(f'COMBINED FAILED: unknown analysis mode {mode!r}')
 PY
 }
 
+# The summary records the machine's load average at the start and end of the run, so a slow check
+# on the shared Mac can be told from a regression (docs/checks.md, "Timing").
+load_average() {
+  if [[ -r /proc/loadavg ]]; then
+    cut -d' ' -f1-3 /proc/loadavg
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1" "$2" "$3}'
+  else
+    uptime
+  fi
+}
+
 run_checks() {
   local base="$1" head="$2" checks="$3" static_log="$4"
-  local logdir summary table failed=0 blocked=0 total=0 check start rc seconds verdict last last_file
+  local logdir summary table failed=0 blocked=0 total=0 selected=0 check start rc seconds verdict last last_file load_start load_end
   logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-combined.XXXXXX")"
   summary="${DIDI_CHECK_SUMMARY:-${TMPDIR:-/tmp}/didi-combined-summary.md}"
   timing="${DIDI_TIMING_FILE:-}"
   table=''
+  load_start="$(load_average)"
   for check in $checks; do
+    selected=$((selected + 1))
     start=$(date +%s)
     rc=0
     last_file="$logdir/$(printf '%s' "$check" | tr '/.' '__').log"
@@ -553,19 +567,37 @@ run_checks() {
     table+="| \`$check\` | $verdict | ${seconds}s | $last |"$'\n'
     printf 'COMBINED %s %s %ss\n' "$check" "$verdict" "$seconds"
   done
+  load_end="$(load_average)"
   {
     printf '# Combined-tree gate: %s..%s\n\n' "$base" "$head"
+    printf '<!-- COMBINED head=%s base=%s selected=%s pass=%s fail=%s blocked=%s total=%ss load-start="%s" load-end="%s" -->\n\n' \
+      "$head" "$base" "$selected" "$((selected - failed - blocked))" "$failed" "$blocked" "$total" "$load_start" "$load_end"
     printf '## Static passes\n\n```\n'
     cat "$static_log"
     printf '```\n\n## Checks\n\n'
     if [[ -n "$table" ]]; then
       printf '| check | result | duration | last failing test |\n| --- | --- | --- | --- |\n'
       printf '%s' "$table"
+      printf '| counts | %s pass, %s failed, %s blocked | | |\n' "$((selected - failed - blocked))" "$failed" "$blocked"
       printf '| total | | %ss | |\n' "$total"
+      printf '\nSelected %s check(s); load average at start `%s`, at end `%s`.\n' "$selected" "$load_start" "$load_end"
     else
       printf 'No check ran.\n'
     fi
-    if [[ -n "$timing" ]]; then printf 'COMBINED_TOTAL\tall\t%s\n' "$total" >> "$timing"; fi
+    if [[ -n "$timing" ]]; then
+      {
+        printf 'COMBINED_HEAD\thead\t%s\n' "$head"
+        printf 'COMBINED_BASE\tbase\t%s\n' "$base"
+        printf 'COMBINED_SELECTED\tcount\t%s\n' "$selected"
+        printf 'COMBINED_SELECTED\tnames\t%s\n' "$(printf '%s ' $checks)"
+        printf 'COMBINED_COUNTS\tpass\t%s\n' "$((selected - failed - blocked))"
+        printf 'COMBINED_COUNTS\tfail\t%s\n' "$failed"
+        printf 'COMBINED_COUNTS\tblocked\t%s\n' "$blocked"
+        printf 'COMBINED_TOTAL\tall\t%s\n' "$total"
+        printf 'COMBINED_LOAD\tstart\t%s\n' "$load_start"
+        printf 'COMBINED_LOAD\tend\t%s\n' "$load_end"
+      } >> "$timing"
+    fi
     if [[ $failed -eq 0 && $blocked -eq 0 ]]; then
       printf '\nEvery check passed, in %ss.\n' "$total"
     elif [[ $blocked -ne 0 ]]; then
@@ -612,7 +644,18 @@ selftest_checks() {
     || { echo 'COMBINED SELFTEST FAIL: no machine readable total was recorded' >&2; rm -rf "$fixture"; return 1; }
   grep -q '^COMBINED_CHECK\t.*blocked.sh\tblocked\t[0-9]*$' "$timing" \
     || { echo 'COMBINED SELFTEST FAIL: the blocked check was not recorded' >&2; rm -rf "$fixture"; return 1; }
-  echo 'COMBINED SELFTEST PASS: pass, failed and blocked are counted apart'
+  # The timing record carries the head, the base, the selected checks, the three counts, the total
+  # and the machine's load average at both ends, so a slow check can be told from a loaded host.
+  for field in 'COMBINED_HEAD\thead\t.*' 'COMBINED_BASE\tbase\t.*' 'COMBINED_SELECTED\tcount\t3' \
+    'COMBINED_SELECTED\tnames\t.*pass.sh .*fail.sh .*blocked.sh *' 'COMBINED_COUNTS\tpass\t1' \
+    'COMBINED_COUNTS\tfail\t1' 'COMBINED_COUNTS\tblocked\t1' 'COMBINED_TOTAL\tall\t[0-9]*' \
+    'COMBINED_LOAD\tstart\t..*' 'COMBINED_LOAD\tend\t..*'; do
+    grep -q "^$field\$" "$timing" \
+      || { echo "COMBINED SELFTEST FAIL: the timing record is missing $field" >&2; rm -rf "$fixture"; return 1; }
+  done
+  grep -q '^<!-- COMBINED head=fixture base=fixture selected=3 pass=1 fail=1 blocked=1 total=[0-9]*s load-start=' "$summary" \
+    || { echo 'COMBINED SELFTEST FAIL: the summary does not name its head, base, counts and load' >&2; rm -rf "$fixture"; return 1; }
+  echo 'COMBINED SELFTEST PASS: pass, failed and blocked are counted apart, and the record names head, base, counts and load'
   rm -rf "$fixture"
 }
 

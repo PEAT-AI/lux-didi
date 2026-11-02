@@ -82,12 +82,19 @@ Release time is measured, not estimated, so the next release can say which step 
   verdict is `pass`, `failed` or `blocked`. The ten checks this records include `check-install-smoke`,
   so install and startup cost is in the same record as the rest.
 - `scripts/check-combined-tree.sh` writes the same shape to `$DIDI_TIMING_FILE` (`COMBINED_CHECK`,
-  `COMBINED_TOTAL`) and prints a per-check duration column plus a total row in its Markdown summary.
-- The three release producers print one `TIME <step> <n>s` line per step and a `TIME total <n>s`
-  line, through `scripts/lib/timing.sh`, and append the same steps to `$DIDI_TIMING_FILE` when it is
-  set: `scripts/build-asset-bundle.sh` (node runtime, service package, web shell, asset-only),
-  `scripts/build-macos-app.sh` (bundle skeleton, native compile, accepted assets, signing) and
-  `scripts/install-macos-app.sh` (stage copy, swap, installed checks).
+  `COMBINED_TOTAL`) and prints a per-check duration column, a counts row and a total row in its
+  Markdown summary. Its record also names what the run was: `COMBINED_HEAD`, `COMBINED_BASE`,
+  `COMBINED_SELECTED` (`count` and `names`), one `COMBINED_COUNTS` row each for `pass`, `fail` and
+  `blocked`, and `COMBINED_LOAD` `start` and `end`, the machine's one, five and fifteen minute load
+  averages. The same facts sit in an HTML comment at the top of the summary. Without the load
+  averages a slow check on the shared Mac cannot be told from a busy host.
+- The release producers print one `TIME <step> <n>s` line per step and a `TIME total <n>s` line,
+  through `scripts/lib/timing.sh`, and append the same steps to `$DIDI_TIMING_FILE` when it is set:
+  `scripts/build-asset-bundle.sh` (node runtime, service package, web shell, asset-only),
+  `scripts/build-macos-app.sh` (bundle skeleton, native compile, accepted assets, signing),
+  `scripts/install-macos-app.sh` (stage copy, swap, installed checks) and `scripts/smoke.sh`
+  (dist check, plan, probes). Elapsed seconds come from the shell's `SECONDS`, which is monotonic and
+  unaffected by a clock or timezone change.
 
 `check-mcp` needs no macOS tool either, so it could run on ubuntu, but it is not a gate check and CI does not run it: it covers the MCP connector surface and belongs to a change that touches that connector.
 

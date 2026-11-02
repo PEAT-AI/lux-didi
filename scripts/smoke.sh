@@ -19,17 +19,24 @@
 set -uo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+# Per-step elapsed seconds from the shell's monotonic clock, so a slow smoke run names its expensive
+# step instead of one opaque total (docs/checks.md, "Timing").
+. scripts/lib/timing.sh
+smoke_started=$SECONDS
 # Prove server/dist matches the checked-out source before any probe runs: a stale dist makes every probe
 # judge old code (#258). Build when the entry is missing, older than the newest source file under server/, or
 # older than the newest commit that touched server/ (R4-R2: a build from before a merged server change refused
 # a valid voice and looked like a product failure).
 dist_entry="server/dist/host/index.js"
+step_started=$SECONDS
 if [[ ! -f "$dist_entry" ]] || [[ -n "$(find server \( -path server/dist -o -name node_modules \) -prune -o -type f -newer "$dist_entry" -print -quit)" ]]; then
   if ! npm --prefix server run build; then
     echo 'FAIL probe0-build server/dist is missing or stale and npm --prefix server run build failed'
     exit 1
   fi
 fi
+timing_step dist-check "$((SECONDS - step_started))"
+step_started=$SECONDS
 node_bin="${NODE:-$(command -v node)}"
 if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then echo 'FAIL probe0-runtime node executable not found' >&2; exit 1; fi
 # The commit-based freshness guard, shared with probes.mjs so both surfaces name the same fact. Builds are not a
@@ -58,6 +65,7 @@ if ! "$node_bin" --input-type=module -e "const m = await import('file://$(pwd)/s
   echo 'FAIL probe0-plan smoke plan import printed no budget' >&2
   exit 1
 fi
+timing_step plan "$((SECONDS - step_started))"
 smoke_budget_ms="$(head -1 "$smoke_plan")"
 case "$smoke_budget_ms" in
   ''|*[!0-9]*) echo 'FAIL probe0-plan smoke plan import printed no budget' >&2; exit 1 ;;
@@ -97,8 +105,11 @@ fi
 # The config-copy step: the probes copy the installed provider config into a private temp dir, hand the host
 # that copy and remove it on exit, so this run never makes a host write into the installed app's own folder.
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/didi-smoke.XXXXXX")"
+step_started=$SECONDS
 run_probes --data-dir "$smoke_dir" "$@"
 status=$?
+timing_step probes "$((SECONDS - step_started))"
+timing_total "$((SECONDS - smoke_started))" smoke
 if [ "$status" -ne 0 ]; then
   echo "KEEP $smoke_dir"
 else

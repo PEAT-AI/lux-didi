@@ -1591,12 +1591,12 @@ for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
   test(`startup connector admission waits for recovery at ${recoveredAt}`, async () => {
     let now = 0;
     const endpoints = () => [
-      { id: 'fixture-a', connector: 'gmail', state: 'connected' as const, tools: 3, retrying: false, lastHandshakeAt: null },
-      { id: 'fixture-b', connector: 'calendar', state: now >= recoveredAt ? 'connected' as const : 'error' as const,
+      { id: 'fixture-a', connector: 'google', state: 'connected' as const, tools: 3, retrying: false, lastHandshakeAt: null },
+      { id: 'fixture-b', connector: 'lux-knowledge', state: now >= recoveredAt ? 'connected' as const : 'error' as const,
         tools: now >= recoveredAt ? 4 : 0, retrying: now < recoveredAt, lastHandshakeAt: null },
     ];
     const result = await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints,
-      pause: async ms => { now += ms; } });
+      pause: async (ms: number) => { now += ms; } });
     assert.equal(now, Math.min(recoveredAt, 25_000));
     assert.equal(result.length, recoveredAt === Infinity ? 1 : 0);
     assert.equal(endpoints().reduce((sum, row) => sum + row.tools, 0), recoveredAt === Infinity ? 3 : 7);
@@ -1608,7 +1608,7 @@ for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
 }
 
 test('startup connector admission does not delay a late owner call or a terminal refusal', async () => {
-  const endpoint = { id: 'fixture', connector: 'gmail', state: 'error' as const, tools: 0, retrying: true, lastHandshakeAt: null };
+  const endpoint = { id: 'fixture', connector: 'google', state: 'error' as const, tools: 0, retrying: true, lastHandshakeAt: null };
   let pauses = 0;
   const options = { startedAt: 0, now: () => 60_000, endpoints: () => [endpoint], pause: async () => { pauses++; } };
   assert.equal((await waitForStartupConnectors(options))[0]?.reason, 'deadline');
@@ -1618,7 +1618,7 @@ test('startup connector admission does not delay a late owner call or a terminal
 });
 
 test('incomplete tools host fact is closed and contains group counts', () => {
-  const groups = incompleteConnectorTools([{ id: 'fixture', connector: 'gmail', state: 'error', tools: 0, retrying: true, lastHandshakeAt: null }]);
+  const groups = incompleteConnectorTools([{ id: 'fixture', connector: 'google', state: 'error', tools: 0, retrying: true, lastHandshakeAt: null }]);
   const event = { event: 'live_tools_incomplete', groups };
   assert.equal(groups.length, 1);
   assert.deepEqual(safeEvent(event), event);
@@ -1627,7 +1627,7 @@ test('incomplete tools host fact is closed and contains group counts', () => {
 });
 
 test('connector failure preserves only closed exception classes', () => {
-  const base = { event: 'connector_failure', connector: 'gmail', stage: 'handshake', reason: 'discovery-unavailable', exceptionCode: 'unknown' };
+  const base = { event: 'connector_failure', connector: 'google', stage: 'handshake', reason: 'discovery-unavailable', exceptionCode: 'unknown' };
   assert.deepEqual(safeEvent({ ...base, exceptionClass: 'transport' }), { ...base, exceptionClass: 'transport' });
   assert.equal(safeEvent({ ...base, exceptionClass: 'synthetic private exception message' }), undefined);
 });

@@ -1170,7 +1170,7 @@ test('W1030 persona: every ability the capability line names is a live definitio
 const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
 const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
 const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
-type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown };
+type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown; anyOf?: unknown; pattern?: unknown; minLength?: unknown; maxLength?: unknown; minimum?: unknown };
 const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
   const tool = declarations.find(candidate => candidate.name === name);
   assert.ok(tool, `the live table declares ${name}`);
@@ -1310,44 +1310,77 @@ test('#873 conformance: create_event commits from the declared shape and from th
 // AL-R1: the declaration is the whole contract the model can read, so every object it declares names
 // its properties and a value built only from it is never refused as a schema failure.
 /**
- * The choices the declaration states: its own enum, or the original schema the provider dialect appends
- * to the description, which is the only place a collapsed enum's choices reach the model.
+ * The schema the declaration states. The provider dialect collapses ARRAY, BOOLEAN and every enum to a
+ * STRING and appends the original schema to the description, so the true type, choices and bounds reach
+ * the model as that prose. Reading it back is what a model does with the same text.
  */
-const statedChoices = (schema: DeclaredSchema): unknown[] => {
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum;
+const declaredShape = (schema: DeclaredSchema): DeclaredSchema => {
   const description = typeof schema.description === 'string' ? schema.description : '';
   const at = description.lastIndexOf('Original schema: ');
-  if (at < 0) return [];
+  if (at < 0) return schema;
   try {
-    const original = JSON.parse(description.slice(at + 'Original schema: '.length).trim()) as { enum?: unknown };
-    return Array.isArray(original.enum) ? original.enum : [];
-  } catch { return []; }
+    const original = JSON.parse(description.slice(at + 'Original schema: '.length).trim()) as DeclaredSchema;
+    return { ...original, description };
+  } catch { return schema; }
 };
-/** A string the declaration itself asks for: the shape it names, never a value of his. */
-const sampleString = (description: unknown): string => {
-  const text = typeof description === 'string' ? description : '';
-  return /\bHH:MM\b/u.test(text) ? '09:00' : 'synthetic';
-};
-const sampleOf = (schema: DeclaredSchema): unknown => {
-  const choices = statedChoices(schema);
-  if (choices.length > 0) return choices[0];
-  switch (String(schema.type ?? '').toUpperCase()) {
-    case 'STRING': return sampleString(schema.description);
-    case 'INTEGER': case 'NUMBER': return 1;
-    case 'BOOLEAN': return true;
-    case 'ARRAY': return [sampleOf(schema.items ?? {})];
-    case 'OBJECT': return declaredValues(schema)[0] ?? {};
-    default: return sampleString(schema.description);
-  }
+/** The choices the declaration states: its own enum, or the one the appended original schema carries. */
+const statedChoices = (schema: DeclaredSchema): unknown[] => {
+  const shape = declaredShape(schema);
+  return Array.isArray(shape.enum) && shape.enum.length > 0 ? shape.enum : [];
 };
 /**
- * Every value the declaration alone describes, most complete first: all of its keys, then the ones it
- * requires. A declaration that names no required key is not met by one key alone, and one that holds
- * exclusive fields is met by the first candidate that is not.
+ * The strings the declaration names, most specific first: an example it gives, then the shape it asks
+ * for in its own words, then a bare word, and only the candidates its own bounds and pattern admit.
+ */
+const declaredStrings = (schema: DeclaredSchema): string[] => {
+  const shape = declaredShape(schema);
+  const text = typeof shape.description === 'string' ? shape.description : '';
+  const pool: string[] = [];
+  const example = /\blike ([A-Za-z0-9/_.~-]{2,40})/u.exec(text)?.[1];
+  if (example !== undefined) pool.push(example);
+  if (/\bHH:MM\b/u.test(text)) pool.push('09:00');
+  if (/\bYYYY-MM-DD\b/u.test(text)) pool.push('2030-01-05');
+  if (/\bIANA\b|Europe\//u.test(text)) pool.push('Europe/Berlin');
+  if (/\babsolute\b/iu.test(text)) pool.push('/synthetic');
+  pool.push('synthetic topic', 'synthetic');
+  const minLength = Number(shape.minLength ?? 1);
+  const maxLength = Number(shape.maxLength ?? 1024);
+  let pattern: RegExp | undefined;
+  if (typeof shape.pattern === 'string') { try { pattern = new RegExp(shape.pattern, 'u'); } catch { pattern = undefined; } }
+  const admitted = pool.filter(value => value.length >= minLength && value.length <= maxLength
+    && (pattern === undefined || pattern.test(value)));
+  return admitted.length > 0 ? admitted : ['synthetic'.slice(0, maxLength)];
+};
+const sampleOf = (schema: DeclaredSchema): unknown => {
+  const shape = declaredShape(schema);
+  const choices = statedChoices(shape);
+  if (choices.length > 0) return choices[0];
+  switch (String(shape.type ?? '').toUpperCase()) {
+    case 'STRING': return declaredStrings(shape)[0] ?? 'synthetic';
+    case 'INTEGER': case 'NUMBER': return Math.max(1, Number(shape.minimum ?? 1));
+    case 'BOOLEAN': return true;
+    case 'ARRAY': return [sampleOf(shape.items ?? {})];
+    case 'OBJECT': return declaredValues(shape)[0] ?? {};
+    default: return declaredStrings(shape)[0] ?? 'synthetic';
+  }
+};
+/** The keys the declaration requires: its own list, plus the first anyOf branch it states. */
+const requiredOf = (schema: DeclaredSchema): string[] => {
+  const shape = declaredShape(schema);
+  const required = Array.isArray(shape.required) ? shape.required as string[] : [];
+  const branches = Array.isArray(shape.anyOf) ? shape.anyOf as DeclaredSchema[] : [];
+  const branch = branches[0] === undefined ? [] : (Array.isArray(branches[0]!.required) ? branches[0]!.required as string[] : []);
+  return [...new Set([...required, ...branch])].filter(key => key in (shape.properties ?? {}));
+};
+/**
+ * Every value the declaration alone describes, most complete first: all of its keys, then the keys it
+ * requires, then one key, and a pair where it holds exclusive fields. A declaration that names no
+ * required key is not met by one key alone, and one that holds exclusive fields is met by the pair.
  */
 const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
-  const properties = schema.properties ?? {};
-  const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : [];
+  const shape = declaredShape(schema);
+  const properties = shape.properties ?? {};
+  const required = requiredOf(shape);
   const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
   const keys = Object.keys(properties);
   const candidates = [build(keys), build(required.length > 0 ? required : keys.slice(0, 1)), ...keys.map(key => build([key]))];
@@ -1365,18 +1398,27 @@ const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]):
 };
 
 /**
- * The declared tools whose own rule refuses every value their declaration describes, with the file that
- * owns the declaration. None of these files is in this wagon's scope, so each one is raised as a finding
- * for its lane instead of edited here. The list is exact by design: a tool that joins it, leaves it with a
- * different rule, or refuses a declaration-described value it used to accept, all fail this test.
+ * The one declared tool whose own rule refuses every value a declaration can describe, with the reason it
+ * has none. AL-R2(c): a value the host issues and no declaration can describe stays here by name, with its
+ * one-line reason, and the assertion stays exact so any new refusal fails this test.
+ *
+ * read_received_body cursor: the host mints the cursor. server/tools/index.ts:357 issues it only for
+ * evidence it holds (`randomUUID()` when the lease is `remote-body`), and the tool's own validate at
+ * server/tools/index.ts:1329-1331 admits an argument only when that exact cursor is in the bodyPages map
+ * this run filled. A model that invented one is refused, and the declaration says so in its own words
+ * ("using only bodyContinuation.cursor or nextCursor from this run").
+ *
+ * What this builder does and does not establish: it builds each candidate from the declaration as the
+ * provider receives it, including the original schema the dialect appends, and only from the choices,
+ * types, bounds, examples and required and anyOf keys that declaration states. It shows that the
+ * declaration admits a value. It does not show that a real model produces that value, and it cannot
+ * prove a constraint the declaration states only as an unbounded rule, which is why the issued-only case
+ * above is named rather than built.
  */
 const REFUSED_DECLARATIONS: readonly string[] = [
-  'get_insight ids:type', // server/connectors/index.ts: the declared ids are not the ids it reads
-  'open_file path:refused', // server/tools/open.ts: the accepted path shape lives only in its description
-  'open_source handle:refused', // server/tools/open.ts: the accepted handle shape is prose there
-  'read_received_body cursor:refused', // server/tools/received-body.ts: the cursor rule is prose
-  'research lookups:type', // server/tools/research.ts: the declared lookups type is not the one it reads
+  'read_received_body cursor:refused', // host-issued cursor, server/tools/index.ts:357 and :1329
 ];
+
 test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
   const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });

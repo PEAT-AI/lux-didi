@@ -17,6 +17,9 @@ export interface AlarmReadBack { date: string; weekday: string; localTime: strin
 /** A committed alarm time: the instant, the zone it was read in, and the read-back she says. */
 export interface AlarmReady {
   status: 'ready'; fireAtUtc: number; tz: string; localTime: string; date: string; weekday: string;
+  /** C-DIAG109: the owner's local clock at the moment the alarm was committed, and how many whole minutes
+   *  away the instant is. Both are the host's own arithmetic, so she never counts from a stale clock. */
+  nowLocalTime: string; minutesAway: number;
   confirmation: string; source: 'owner' | 'model' | 'combined';
   /** Set when the model's structured time was not the one committed, so the result can say so. */
   corrected?: 'model_time_differs' | 'model_time_missing';
@@ -96,9 +99,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
 
   const ready = (fireAtUtc: number, source: AlarmReady['source'], corrected?: AlarmReady['corrected']): AlarmTime => {
     const readBack = alarmReadBack(fireAtUtc, zone);
+    // C-DIAG109: the clock she is given is read at commit time, never at call open, so a long session still
+    // hands her the minute it is now; the minutes away are counted by the host, never by the model.
+    const minutesAway = Math.max(0, Math.round((fireAtUtc - now) / 60_000));
     let result: AlarmReady = {
       status: 'ready', fireAtUtc, tz: zone, localTime: readBack.localTime, date: readBack.date, weekday: readBack.weekday,
-      confirmation: `Alarm set for ${readBack.spoken}.`, source, ...(corrected ? { corrected } : {}),
+      nowLocalTime: alarmReadBack(now, zone).localTime, minutesAway,
+      confirmation: `Alarm set for ${readBack.spoken}. That is in ${minutesAway} minutes.`, source, ...(corrected ? { corrected } : {}),
     };
     if (series) {
       // The owner's resolved wall time is the rule's time; an ambiguous bare hour reads as the
@@ -109,6 +116,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
       const fireAt = seriesNextFireAt(rule, now);
       const ruleReadBack = alarmReadBack(fireAt, zone);
       result = { ...result, fireAtUtc: fireAt, localTime: ruleReadBack.localTime, date: ruleReadBack.date, weekday: ruleReadBack.weekday,
+        minutesAway: Math.max(0, Math.round((fireAt - now) / 60_000)),
         series: rule, confirmation: `Alarm set for ${ruleReadBack.spoken}; repeats ${seriesText(rule)}.` };
     }
     return result;

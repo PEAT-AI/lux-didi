@@ -878,6 +878,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             // C-TIME read-back: weekday, date, local time, zone and the id, so she says what was committed.
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
               local_time: parsed.localTime, date: parsed.date, weekday: parsed.weekday, label,
+              now_local_time: parsed.nowLocalTime, minutes_away: parsed.minutesAway,
               ...(parsed.corrected ? { corrected: parsed.corrected } : {}),
               ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
               say: parsed.confirmation + (parsed.corrected === 'model_time_differs' ? ' I used the time you said.' : '') + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });

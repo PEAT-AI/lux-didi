@@ -208,6 +208,18 @@ const isSafeMembers = (value: unknown, allowed: readonly string[]): value is str
 const isSafeWord = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+/**
+ * C-DIAG109: the closed pair a stall or rebuild line may carry about the response the owner final earned.
+ * The two fields arrive together or not at all: a created response has an age, an absent one has none.
+ */
+const responsePair = (value: Record<string, unknown>): { responseCreated: boolean; msSinceResponseCreated: number | null } | Record<string, never> | undefined => {
+  if (!Object.hasOwn(value, 'responseCreated')) return {};
+  if (typeof value.responseCreated !== 'boolean') return undefined;
+  if (value.responseCreated) {
+    return isSafeCount(value.msSinceResponseCreated) ? { responseCreated: true, msSinceResponseCreated: value.msSinceResponseCreated } : undefined;
+  }
+  return value.msSinceResponseCreated === null ? { responseCreated: false, msSinceResponseCreated: null } : undefined;
+};
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
 const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification', 'alarm_relaunch'];
 /** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
@@ -1138,10 +1150,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // Two waits, both durations and never any turn content: E1's gap between input final and first audio,
     // and D3's stall receipt, how long the answer was owed and how long since any audible output.
     const stallKeys = ['event', 'msSinceTool', 'msSinceAudible'].sort().join(',');
-    if (Object.keys(value).sort().join(',') === stallKeys) {
+    const response = responsePair(value);
+    if (response === undefined) return;
+    const stalled = ['event', 'msSinceTool', 'msSinceAudible',
+      ...(Object.hasOwn(value, 'responseCreated') ? ['responseCreated', 'msSinceResponseCreated'] : [])].sort().join(',');
+    if (Object.keys(value).sort().join(',') === stallKeys || Object.keys(value).sort().join(',') === stalled) {
       if (!isSafeCount(value.msSinceTool)) return;
       if (!(value.msSinceAudible === null || isSafeCount(value.msSinceAudible))) return;
-      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible };
+      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible, ...response };
     }
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
@@ -1291,7 +1307,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
     // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
     const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
-    const extended = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    const response = responsePair(value);
+    if (response === undefined) return;
+    const base = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    const extended = Object.hasOwn(value, 'responseCreated') ? [...base, 'responseCreated', 'msSinceResponseCreated'] : base;
     if (!closedKeys(value, extended)) return;
     if (!isSafeMember(value.trigger, LIVE_REBUILD_TRIGGERS)) return;
     if (!isSafeMember(value.cause, LOG_CAUSES)) return;
@@ -1299,9 +1318,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.hasOwn(value, 'closeCode')) {
       if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
       return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
-        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason };
+        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason, ...response };
     }
-    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
   }
   if (value.event === 'research_context_rebuild') {
     // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the

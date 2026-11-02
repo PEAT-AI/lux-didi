@@ -67,6 +67,24 @@ The three that stay local, and the reason from the script itself:
 
 A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty.
 
+## Timing
+
+Release time is measured, not estimated, so the next release can say which step moved.
+
+- The gate prints `== pass: <check> (<n>s)` per check and one total, and writes one TSV row per
+  check plus a total to `$DIDI_TIMING_FILE` (CI points it at the runner's temp directory and prints
+  it in the log step; a local run gets a fresh file in `$TMPDIR` and the script prints its path).
+  Columns: `kind`, `name`, `verdict`, `seconds`, where kind is `GATE_CHECK` or `GATE_TOTAL` and
+  verdict is `pass`, `failed` or `blocked`. The ten checks this records include `check-install-smoke`,
+  so install and startup cost is in the same record as the rest.
+- `scripts/check-combined-tree.sh` writes the same shape to `$DIDI_TIMING_FILE` (`COMBINED_CHECK`,
+  `COMBINED_TOTAL`) and prints a per-check duration column plus a total row in its Markdown summary.
+- The three release producers print one `TIME <step> <n>s` line per step and a `TIME total <n>s`
+  line, through `scripts/lib/timing.sh`, and append the same steps to `$DIDI_TIMING_FILE` when it is
+  set: `scripts/build-asset-bundle.sh` (node runtime, service package, web shell, asset-only),
+  `scripts/build-macos-app.sh` (bundle skeleton, native compile, accepted assets, signing) and
+  `scripts/install-macos-app.sh` (stage copy, swap, installed checks).
+
 `check-mcp` needs no macOS tool either, so it could run on ubuntu, but it is not a gate check and CI does not run it: it covers the MCP connector surface and belongs to a change that touches that connector.
 
 After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).

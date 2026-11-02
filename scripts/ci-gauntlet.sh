@@ -119,7 +119,10 @@ ran=0
 failed=0
 blocked=0
 started=$SECONDS
-timing="${DIDI_TIMING_FILE:-}"
+# Per-check and per-run seconds, printable and machine readable: the release timing record
+# (docs/checks.md, "Timing"). CI points DIDI_TIMING_FILE at the runner's temp directory so the
+# log step keeps it; a local run gets one in the temp directory and prints the path.
+timing="${DIDI_TIMING_FILE:-$(mktemp "${TMPDIR:-/tmp}/didi-gate-timing.XXXXXX.tsv")}"
 logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-gauntlet.XXXXXX")"
 trap 'rm -rf "$logdir"' EXIT
 record() {
@@ -153,18 +156,18 @@ for check in "${selected[@]}"; do
       exit "$status"
     fi
   fi
-  if [ -n "$timing" ]; then record "$check" "$verdict" "$elapsed"; fi
+  record "$check" "$verdict" "$elapsed"
   ran=$((ran + 1))
 done
 
-if [ -n "$timing" ]; then
-  printf 'GATE_TOTAL\tall\t%s\n' "$((SECONDS - started))" >> "$timing"
-fi
+printf 'GATE_TOTAL\tall\t%s\n' "$((SECONDS - started))" >> "$timing"
 
 if [ "$failed" -ne 0 ] || [ "$blocked" -ne 0 ]; then
   printf '== gate FAILED: %d ran, %d failed, %d blocked in %ss%s\n' \
     "$ran" "$failed" "$blocked" "$((SECONDS - started))" "${group:+ (group $group)}" >&2
+  printf '== timing: %s\n' "$timing" >&2
   exit 1
 fi
 
 echo "== gate passed: $ran checks in $((SECONDS - started))s${mode:+ (--ci)}${group:+ (group $group)}"
+printf '== timing: %s\n' "$timing"

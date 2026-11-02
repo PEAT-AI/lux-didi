@@ -519,9 +519,10 @@ PY
 
 run_checks() {
   local base="$1" head="$2" checks="$3" static_log="$4"
-  local logdir summary table failed=0 check start rc seconds last last_file
+  local logdir summary table failed=0 blocked=0 total=0 check start rc seconds verdict last last_file
   logdir="$(mktemp -d "${TMPDIR:-/tmp}/didi-combined.XXXXXX")"
   summary="${DIDI_CHECK_SUMMARY:-${TMPDIR:-/tmp}/didi-combined-summary.md}"
+  timing="${DIDI_TIMING_FILE:-}"
   table=''
   for check in $checks; do
     start=$(date +%s)
@@ -531,14 +532,26 @@ run_checks() {
     seconds=$(( $(date +%s) - start ))
     last="$(grep -aoE 'not ok [0-9]+ - .*|✖ .*|^FAIL [^ ].*' "$last_file" | tail -1 | cut -c1-120)"
     [[ -z "$last" ]] && last='-'
+    verdict=pass
     if [[ $rc -ne 0 ]]; then
-      failed=$((failed + 1))
-      printf 'COMBINED failure output: %s\n' "$check"
-      grep -aE 'not ok [0-9]+|✖ |error:|error TS|FAIL ' "$last_file" | tail -n 40 || true
-      tail -n 60 "$last_file"
+      # A check that cannot run says so and is never read as a pass: a blocked check is counted
+      # apart from a failed one, and both keep the release from shipping.
+      if grep -q 'CHECK BLOCKED' "$last_file"; then
+        verdict=blocked
+        blocked=$((blocked + 1))
+        printf 'COMBINED blocked: %s (exit %s)\n' "$check" "$rc"
+      else
+        verdict=failed
+        failed=$((failed + 1))
+        printf 'COMBINED failure output: %s\n' "$check"
+        grep -aE 'not ok [0-9]+|✖ |error:|error TS|FAIL ' "$last_file" | tail -n 40 || true
+        tail -n 60 "$last_file"
+      fi
     fi
-    table+="| \`$check\` | $rc | ${seconds}s | $last |"$'\n'
-    printf 'COMBINED %s rc=%s %ss\n' "$check" "$rc" "$seconds"
+    total=$((total + seconds))
+    if [[ -n "$timing" ]]; then printf 'COMBINED_CHECK\t%s\t%s\t%s\n' "$check" "$verdict" "$seconds" >> "$timing"; fi
+    table+="| \`$check\` | $verdict | ${seconds}s | $last |"$'\n'
+    printf 'COMBINED %s %s %ss\n' "$check" "$verdict" "$seconds"
   done
   {
     printf '# Combined-tree gate: %s..%s\n\n' "$base" "$head"
@@ -546,17 +559,25 @@ run_checks() {
     cat "$static_log"
     printf '```\n\n## Checks\n\n'
     if [[ -n "$table" ]]; then
-      printf '| check | rc | duration | last failing test |\n| --- | --- | --- | --- |\n'
+      printf '| check | result | duration | last failing test |\n| --- | --- | --- | --- |\n'
       printf '%s' "$table"
+      printf '| total | | %ss | |\n' "$total"
     else
       printf 'No check ran.\n'
     fi
-    if [[ $failed -eq 0 ]]; then printf '\nEvery check passed.\n'; else printf '\n%s check(s) failed.\n' "$failed"; fi
+    if [[ -n "$timing" ]]; then printf 'COMBINED_TOTAL\tall\t%s\n' "$total" >> "$timing"; fi
+    if [[ $failed -eq 0 && $blocked -eq 0 ]]; then
+      printf '\nEvery check passed, in %ss.\n' "$total"
+    elif [[ $blocked -ne 0 ]]; then
+      printf '\n%s check(s) failed and %s could not run, in %ss.\n' "$failed" "$blocked" "$total"
+    else
+      printf '\n%s check(s) failed, in %ss.\n' "$failed" "$total"
+    fi
   } >"$summary"
   [[ "$summary" != /dev/stdout ]] && cat "$summary"
   printf 'COMBINED summary %s\n' "$summary"
   rm -rf "$logdir"
-  [[ $failed -eq 0 ]]
+  [[ $failed -eq 0 && $blocked -eq 0 ]]
 }
 
 case "${1:-}" in

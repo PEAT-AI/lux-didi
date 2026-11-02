@@ -10,7 +10,7 @@ import {
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
-  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, type EarlierConversationCandidate,
+  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, OPENER_NOVELTY_WINDOW_MS, type EarlierConversationCandidate, type RecentOpening,
   EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
@@ -1155,6 +1155,53 @@ test('3u: health, family, fitness, sleep and personal habits are never an opener
   assert.ok(mixed.options.every(option => (OPENING_OPTION_KINDS as readonly string[]).includes(option.kind)), 'the kinds stay a closed set');
 });
 
+// --- C-OPENER 10.9: the plan knows what the last openings used, not only what they were offered ---
+
+const recent = (kind: "calendar" | "open-loop" | "recent-thread", topic: string, at: number): RecentOpening => ({ kind, topic, at });
+
+test('C-OPENER: a kind the last opening used inside the window is not offered again', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const first = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0 });
+  assert.equal(optionOf(first, 'calendar')?.topic, '15:00 review', 'the first call of the burst offers the calendar');
+  const used: readonly RecentOpening[] = [{ ...recent('calendar', '15:00 review', NOW_3U), at: NOW_3U }];
+  const second = buildOpeningOptions({ candidates, now: NOW_3U + 120_000, timeZone: 'UTC',
+    calendar: '15:00 review', rotation: 1, recentOpenings: used });
+  assert.equal(optionOf(second, 'calendar'), undefined, 'the calendar kind the last opening used is closed inside the window');
+  assert.ok(second.options.length <= 1, 'the second call plans something else, or nothing');
+});
+
+test('C-OPENER: three calls inside the window plan three different openings, then a plain greeting', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const clock = NOW_3U;
+  const first = buildOpeningOptions({ candidates, now: clock, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)] });
+  const kinds = first.options.map(option => option.kind);
+  assert.ok(kinds.includes('calendar') && kinds.length >= 2, 'the first of the burst plans more than one kind');
+  // Every kind the first call used, recorded as a key, closes for the calls that follow inside the window.
+  const used = first.options.map(option => recent(option.kind, option.topic, clock));
+  const second = buildOpeningOptions({ candidates, now: clock + 90_000, timeZone: 'UTC', calendar: '15:00 review', rotation: 1,
+    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)], recentOpenings: used });
+  assert.equal(second.options.length, 0, 'nothing new exists, so the second call offers no option at all');
+  assert.equal(second.section, '', 'and no plan section, so she opens with a plain greeting');
+});
+
+test('C-OPENER: an opening older than the window closes nothing, and a quick re-call closes the bit it used', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const stale = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - OPENER_NOVELTY_WINDOW_MS - 1_000 }] });
+  assert.equal(optionOf(stale, 'calendar')?.topic, '15:00 review', 'an hour old opening leaves the calendar open');
+  const quick = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - 5_000 }] });
+  assert.equal(optionOf(quick, 'calendar'), undefined, 'a re-call five seconds after a stop does not re-run the same bit');
+});
+
+test('C-OPENER: an opening that used the same subject in different words still closes that subject', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
+  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'recent-thread', topic: 'The invoice is still to be sent.', at: NOW_3U - 60_000 }] });
+  assert.equal(optionOf(plan, 'recent-thread'), undefined, 'the topic key, not the wording, closes the subject');
+});
+
 // --- contract 1023 N8: the plan draws on the last sessions, never on narration or a fragment -----
 
 test('1023-N8: the newest call leads the plan, and a calendar item inside six hours takes the lead', () => {
@@ -1639,4 +1686,16 @@ test('W1030: the four write abilities are stated once with the never-send, never
   assert.match(NAYA_WRITE_SURFACE, /one this call made or one he named that a calendar read here returned/u);
   assert.match(NAYA_WRITE_SURFACE, /say its cause in your words, never blame him/u);
   assert.match(NAYA_WRITE_SURFACE, /a write waits for his next words: ask a one-word yes/u);
+});
+
+// --- C-OPENER 10.9: a wait belongs to a response that really makes a call ------------------------
+
+test('C-OPENER: the wait guidance is meta, ties a wait to a real call, and pins no line to say', () => {
+  assert.ok(NAYA_VOICE_SURFACE.includes('never use a stock waiting line'), 'the stock waiting line ban stays');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /need a moment/u, 'no text invites a wait with no call behind it');
+  assert.match(NAYA_VOICE_SURFACE, /response that really makes a call/u, 'the wait is tied to a real call');
+  assert.match(NAYA_VOICE_SURFACE, /direct ask gets the call/u, 'a direct ask gets the call, not an announcement');
+  // No recitable line was added: the wait guidance never puts a wait into quotes for her to repeat.
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
+    'the guidance offers no sample waiting line');
 });

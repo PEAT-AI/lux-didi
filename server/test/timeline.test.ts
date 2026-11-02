@@ -656,6 +656,30 @@ test('C-LABELS 4: every announced look-up with no call in its turn is counted', 
 });
 
 
+// C-OPENER 10.9: a waiting phrase is a promise of work as much as a look-up announcement is, and the field
+// miss was "one moment" said after a direct ask with no call behind it. The phrase class covers the wait, the
+// call side stays structural, and the count is telemetry: nothing here gates or alters speech.
+test('C-OPENER: a waiting phrase with no call behind it counts, one with a real call does not', () => {
+  withStore(store => {
+    const waiting = ['One moment, let me set that alarm.', 'Just a second.', 'Give me a moment.',
+      'Hang on, sorting that now.', 'Bear with me one minute.'];
+    for (const [index, text] of waiting.entries()) {
+      const id = `waiting-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    // A turn whose wait really carried the call it promised is not a claim without a call.
+    turn(store, SESSION, 'waiting-with-call', waiting.length + 1, T0 + 90_000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)',
+      ['waiting-with-call', 'model', T0 + 90_100, 'One moment, setting it.']));
+    call(store, SESSION, 'waiting-with-call', 'call:alarm', 'set_alarm', 'completed', 30, T0 + 90_200);
+    const read = store.transaction(tx => buildTimeline(tx, SESSION));
+    assert.equal(buildCallAudit(read, scanLogs([])).aggregates.claimsWithoutCall, waiting.length,
+      'every wait with no call is counted, the one with a call is not');
+    assert.equal(read.transcript, undefined, 'the audit still exports counts, never transcript content');
+  });
+});
+
 test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source directory', () => {
   const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
   const source = mkdtempSync(join(tmpdir(), 'truth-wal-source-'));

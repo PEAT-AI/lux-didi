@@ -772,3 +772,49 @@ test('a dot inside a number does not split the sentence a claim is dropped from'
       'the time survives whole and only the refused claim goes');
   } finally { h.cleanup(); }
 });
+
+// --- C-OPENER 10.9: an opening recap item is only as true as the row behind it -------------------
+
+const missedRow = (store: Store, id: string, fireAtUtc: number, label: string): void => {
+  store.transaction(tx => tx.run(`INSERT INTO alarms (id, fire_at_utc, tz, label, state, created_journal_id)
+    VALUES (?,?,?,?, 'missed', ?)`, [id, fireAtUtc, 'UTC', label, 'journal-1']));
+};
+/** 10:30 UTC on the day of the synthetic clock, so the spoken time and the row agree. */
+const TEN_THIRTY_UTC = Math.floor(SUMMARY_NOW / 86_400_000) * 86_400_000 + 10 * 3_600_000 + 30 * 60_000;
+
+test('C-OPENER: a seeded recap that names a missed reminder with no missed row drops the claim', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-unbacked');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-missed', liveSessionId: 's-missed-unbacked',
+      endedAt: SUMMARY_NOW,
+      summary: 'The owner missed the 10:30 reminder about the standup. The tax form is still to be filed.' }]));
+    assert.equal(guarded.length, 1, 'the summary survives as a candidate');
+    assert.doesNotMatch(guarded[0]!.summary, /missed/i, 'no missed item is offered without a missed alarm row');
+    assert.match(guarded[0]!.summary, /tax form/, 'the sentence beside it is untouched');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a seeded recap that names a missed reminder backed by a missed row keeps it', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-backed');
+    missedRow(h.store, '9a1c4d2e77bb', TEN_THIRTY_UTC, 'standup');
+    const text = 'The owner missed the 10:30 reminder about the standup. The tax form is still to be filed.';
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-backed', liveSessionId: 's-missed-backed',
+      endedAt: SUMMARY_NOW, summary: text }]));
+    assert.equal(guarded[0]!.summary, text, 'a backed missed item is kept byte for byte');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: an open loop that names a missed reminder with no missed row drops the claim', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-missed-loop');
+    const loops = h.store.transaction(tx => guardSeededLoops(tx, [{ sessionId: 's-missed-loop',
+      text: 'You missed my 07:15 wake up call. The deposit is still to be paid.' }]));
+    assert.equal(loops.length, 1, 'the loop survives as a candidate');
+    assert.doesNotMatch(loops[0]!.text, /missed/i, 'the unbacked missed sentence is dropped');
+    assert.match(loops[0]!.text, /deposit/, 'the rest of the loop is untouched');
+  } finally { h.cleanup(); }
+});

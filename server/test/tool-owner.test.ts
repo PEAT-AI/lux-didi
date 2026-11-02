@@ -1361,12 +1361,14 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
       // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
       const lines = events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
-      if (lines.length > 0) refused.push(declaration.name);
+      for (const line of lines) refused.push(`${declaration.name} ${String(line.reason)} ${(line.violations ?? []).join('+')}`);
       if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
     }
     // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
     // every set_alarm call in release 10.8, and no declared value may reach it any more.
     assert.deepEqual(unnamed, [], 'no tool answers a value its declaration describes with an unnamed schema failure');
-    assert.ok(refused.length >= 0, `a named refusal is repairable: ${refused.join(', ')}`);
+    // AL-R1: naming the rejection repairs the model's retry, not the conformance. A value the declaration
+    // alone describes is accepted, so a declaration-generated call is never refused at all.
+    assert.deepEqual(refused, [], 'every declared tool accepts a value built only from its declaration');
   } finally { detach(); }
 });

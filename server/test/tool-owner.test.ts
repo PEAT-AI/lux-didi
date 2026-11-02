@@ -19,7 +19,7 @@ import { ALARM_IDENTITY } from '../tools/alarm.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
-import { runToolCalls } from '../tools/declarations.js';
+import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
@@ -44,7 +44,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads' }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -78,7 +78,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -98,7 +98,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
   };
 }
 
@@ -1158,5 +1158,145 @@ test('W1030 persona: every ability the capability line names is a live definitio
   for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
     assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the persona names ${ability}`);
     assert.ok(names.includes(ability), `${ability} is a live definition`);
+  }
+});
+
+// #873 C-ALARM: every argument object below is built from the DECLARED schema as the live provider
+// receives it after the adapter conversion, then driven through the production call path to a
+// committed row. No provider call is made: the conversion and the handler are the whole surface.
+const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
+const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
+const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
+type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema> };
+const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
+  const tool = declarations.find(candidate => candidate.name === name);
+  assert.ok(tool, `the live table declares ${name}`);
+  return tool.parameters as DeclaredSchema;
+};
+/** Every key and value type the case sends is one the declaration states, so the model can produce it. */
+const assertDeclared = (properties: Record<string, DeclaredSchema>, values: Record<string, unknown>, where: string): void => {
+  for (const [key, value] of Object.entries(values)) {
+    const declared = properties[key];
+    assert.ok(declared !== undefined, `${where}: the declaration names ${key}`);
+    if (value === null) continue;
+    const expected = String(declared.type ?? '').toLowerCase();
+    const actual = Array.isArray(value) ? 'array' : typeof value;
+    assert.equal(actual, expected === 'integer' ? 'number' : expected, `${where}: ${key} is a declared ${expected}`);
+  }
+};
+/** One declared time shape, and the instant it must fire at on the fixed clock in the UTC host zone. */
+interface TimeCase { label: string; fields: Record<string, unknown>; fireAt: number }
+const DECLARED_TIME_CASES: readonly TimeCase[] = [
+  { label: 'today', fields: { mode: 'wall', date: 'today', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
+  { label: 'tomorrow', fields: { mode: 'wall', date: 'tomorrow', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
+  { label: 'weekday name', fields: { mode: 'wall', date: 'thursday', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
+  { label: 'iso date', fields: { mode: 'wall', date: '2030-01-05', local_time: '09:00' }, fireAt: Date.parse('2030-01-05T09:00:00Z') },
+  { label: 'no date', fields: { mode: 'wall', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
+  { label: 'relative minutes', fields: { mode: 'relative', amount: 30, unit: 'minutes' }, fireAt: ALARM_CLOCK + 30 * 60000 },
+  { label: 'relative hours', fields: { mode: 'relative', amount: 2, unit: 'hours' }, fireAt: ALARM_CLOCK + 2 * 3600000 },
+];
+/** A voice model fills every unused property: null, then an empty string, then leaves mode out. */
+const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, unknown>) => Record<string, unknown> }[] = [
+  { label: 'declared', build: fields => ({ ...fields }) },
+  { label: 'unused nulls', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : null])) },
+  { label: 'unused empty strings', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : key === 'amount' ? null : ''])) },
+  { label: 'no mode', build: fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'mode')) },
+];
+const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
+  ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+
+test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+  const { declarations } = declarationsFor(liveTools(f));
+  const time = declaredSchema(declarations, 'set_alarm').properties?.['time'];
+  assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
+  // The property is a flat string the model can produce; the nested object it used to receive was empty.
+  assert.equal(String(time.properties['date']?.type), 'STRING', 'date is declared as a string');
+  assert.equal(time.properties['date']?.properties, undefined, 'date carries no nested object');
+  let step = 0;
+  for (const timeCase of DECLARED_TIME_CASES) {
+    for (const variant of TIME_VARIANTS) {
+      const where = `${timeCase.label} / ${variant.label}`;
+      const values = variant.build(timeCase.fields);
+      assertDeclared(time.properties, values, where);
+      const args = { time: values };
+      const executionId = `run:1:${++step}`;
+      const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
+      assert.equal(outcome.status, 'completed', `${where}: ${String(outcome.reason)}`);
+      const row = f.store.transaction(tx => tx.get('SELECT fire_at_utc, tz FROM alarms WHERE id=?', [executionId]));
+      assert.ok(row, `${where} commits an alarm row`);
+      assert.equal(Number(row['fire_at_utc']), timeCase.fireAt, `${where} fires at the wall instant he named`);
+      assert.equal(String(row['tz']), 'UTC', `${where} keeps the zone it was read in`);
+    }
+  }
+});
+
+test('#873 a refusal names the date field, and the retry with a valid date commits', async t => {
+  const events: { event?: string; fields?: string[]; violations?: string[] }[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
+  try {
+    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+    const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
+    const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
+    assert.equal(refused.status, 'refused', 'an unreadable date is refused');
+    assert.match(String(refused.reason), /Rejected argument: time:date_unreadable/, String(refused.reason));
+    assert.match(String(refused.reason), /date accepts today, tomorrow, a weekday name or YYYY-MM-DD/, String(refused.reason));
+    assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a refused ask arms nothing');
+    const rejected = events.find(line => line.event === 'tool_arguments_rejected');
+    assert.ok(rejected, 'the refusal reaches the log');
+    assert.deepEqual(rejected.violations, ['time:date_unreadable'], 'the violation is never empty on a schema rejection');
+    assert.deepEqual(rejected.fields, ['time:object', 'time.date:string', 'time.local_time:string', 'time.mode:string'], 'the closed fields name keys and types, never values');
+    assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
+    const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
+    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:1:1', retried), retried, 2);
+    assert.equal(retry.status, 'completed', String(retry.reason));
+    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:1:1']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
+  } finally { detach(); }
+});
+
+test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+  const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
+  const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
+  assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
+  assert.match(String(outcome.result_json), /missing_time/, 'the C-TIME boundary asks for the one time it lacks');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'nothing is armed without a time');
+});
+
+test('#873 conformance: create_event commits from the declared shape and from the same time fields', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads', alarms: alarmClock() });
+  const { declarations } = declarationsFor(liveTools(f));
+  const declared = declaredSchema(declarations, 'create_event');
+  assert.ok(declared.properties, 'create_event declares its arguments');
+  // The event tool takes the day from his own words and offers no time of its own.
+  assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
+  const created = async (turn: number, args: Record<string, unknown>, words: string) => {
+    f.owner.observeAlarmOwner('run', `j${turn}`, words, turn * 1_000);
+    const executionId = `run:1:${turn}`;
+    const outcome = await liveExecute(f, composeCall(f, executionId, 'create_event', args), args, turn);
+    assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
+    return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
+  };
+  const fromWords = await created(1, { summary: 'cardio', duration_minutes: 45 }, 'block cardio in my calendar tomorrow at 9');
+  assert.ok(fromWords !== undefined, 'the declared shape commits the block he said');
+  assert.ok(Number(fromWords) > ALARM_CLOCK, 'the block he said is in his future');
+  // A model that fills the time anyway is understood, not refused: the same flat fields as set_alarm.
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let turn = 1;
+  for (const timeCase of DECLARED_TIME_CASES) {
+    for (const variant of TIME_VARIANTS) {
+      const where = `create_event ${timeCase.label} / ${variant.label}`;
+      turn += 1;
+      const start = await created(turn, { summary: 'focus', time: variant.build(timeCase.fields) }, 'block focus time in my calendar');
+      assert.ok(start !== undefined, `${where} commits a block`);
+      const local = new Intl.DateTimeFormat('en-GB', { timeZone: hostZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(Number(start));
+      const expected = timeCase.fields['local_time'];
+      if (typeof expected === 'string') assert.equal(local, expected, `${where} starts at the clock he named`);
+      else assert.equal(Number(start) - ALARM_CLOCK, timeCase.fireAt - ALARM_CLOCK, `${where} starts the span he named`);
+    }
   }
 });

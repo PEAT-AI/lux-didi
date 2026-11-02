@@ -8491,8 +8491,13 @@ test('#107: a write after an owner past-tense report dispatches once', async t =
   await composeWriteDispatches(t, 'i put a block in my calendar yesterday at noon', 'compose-report', 'create_event', { summary: 'block' });
 });
 
-test('#107: a negated block writes nothing', async t => {
-  await noComposeWrite(t, "don't reserve a slot in my calendar tomorrow at noon", 'compose-negation', 'create_event', { summary: 'block' });
+// DESK-R5 / #874: FREE create_event dispatches despite negation; guarded deletion still refuses.
+test('#107: a negated FREE block dispatches once', async t => {
+  await composeWriteDispatches(t, "don't reserve a slot in my calendar tomorrow at noon", 'compose-negation', 'create_event', { summary: 'block' });
+});
+
+test('#107: a negated guarded delete writes nothing', async t => {
+  await noComposeWrite(t, "don't delete that calendar event", 'compose-delete-negation', 'delete_event', { event_id: 'event-1' });
 });
 
 test('#107: a write after a block quoted from another voice dispatches once', async t => {

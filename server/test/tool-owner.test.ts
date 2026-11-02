@@ -1318,11 +1318,14 @@ const sampleOf = (schema: DeclaredSchema): unknown => {
     default: return 'synthetic';
   }
 };
-/** The value the declaration alone describes: its required keys, else every key it names. */
+/**
+ * The minimal value the declaration alone promises: the keys it requires, and nothing else. A tool that
+ * requires none is called with no argument, because that is the value its own declaration allows.
+ */
 const declaredValue = (schema: DeclaredSchema): Record<string, unknown> => {
   const properties = schema.properties ?? {};
-  const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : undefined;
-  return Object.fromEntries((required ?? Object.keys(properties)).map(key => [key, sampleOf(properties[key] ?? {})]));
+  const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : [];
+  return Object.fromEntries(required.map(key => [key, sampleOf(properties[key] ?? {})]));
 };
 /** Every object the declaration offers, so a property-less one is named rather than silently empty. */
 const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {

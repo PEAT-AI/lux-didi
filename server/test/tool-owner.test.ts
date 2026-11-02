@@ -795,7 +795,7 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
   // so the one call he made still sets the alarm he did ask for.
   // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
-  const eleven = { mode: 'wall', date: { kind: 'today' }, local_time: '11:00' };
+  const eleven = { mode: 'wall', date: 'today', local_time: '11:00' };
   const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily', time: eleven }), { kind: 'daily', time: eleven }, 1);
   // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
   assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
@@ -1221,7 +1221,9 @@ test('#873 conformance: every declared alarm time shape commits an alarm row', a
       const values = variant.build(timeCase.fields);
       assertDeclared(time.properties, values, where);
       const args = { time: values };
-      const executionId = `run:1:${++step}`;
+      step += 1;
+      // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
+      const executionId = `run:${step}:0`;
       const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
       assert.equal(outcome.status, 'completed', `${where}: ${String(outcome.reason)}`);
       const row = f.store.transaction(tx => tx.get('SELECT fire_at_utc, tz FROM alarms WHERE id=?', [executionId]));
@@ -1250,9 +1252,9 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
     assert.deepEqual([...rejected.fields ?? []].sort(), ['time.date:string', 'time.local_time:string', 'time.mode:string', 'time:object'], 'the closed fields name keys and types, never values');
     assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
     const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
-    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:1:1', retried), retried, 2);
+    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:2:0', retried), retried, 2);
     assert.equal(retry.status, 'completed', String(retry.reason));
-    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:1:1']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
+    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:2:0']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
   } finally { detach(); }
 });
 
@@ -1276,8 +1278,7 @@ test('#873 conformance: create_event commits from the declared shape and from th
   assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
   const created = async (turn: number, args: Record<string, unknown>, words: string) => {
     f.owner.observeAlarmOwner('run', `j${turn}`, words, turn * 1_000);
-    const executionId = `run:1:${turn}`;
-    const outcome = await liveExecute(f, composeCall(f, executionId, 'create_event', args), args, turn);
+    const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
     assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
     return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
   };

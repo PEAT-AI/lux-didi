@@ -72,3 +72,24 @@ Every identity-bearing connector acts as the one owner email in `ownerIdentity` 
 - Data-class and owner-approval rules: [privacy-and-authority.md](privacy-and-authority.md).
 
 Changing a helper's build does not authorize expanding its stored tool grant. Review the new declarations and connection approval through the host, even when the remote service has the same name.
+
+### Startup call admission
+
+The host lets configured connector discovery and its existing recovery ladder run
+before admitting a call during the first 25 seconds of the host process. It opens
+as soon as every configured endpoint is connected or has a terminal failure. A
+retry in flight remains pending. The ceiling is process age, not an additional
+25-second delay on every call; a later owner call does not wait.
+
+At the ceiling the call still opens. Its accepted prompt contains a host capability
+fact naming unavailable descriptor groups, missing endpoint counts and missing
+source-tool envelope counts. This is not a line to recite. The closed
+`live_tools_incomplete` event carries the same group counts and either `deadline`
+or `failed`. No endpoint URL or error message enters this fact or event. Discovery
+failures also log a closed exception class when known: refused, DNS, TLS, timeout,
+HTTP status family or transport; otherwise unknown. Recovery spacing is unchanged.
+
+A late connector recovery does not change an open call's fixed tool snapshot.
+Supporting that later needs a provider-supported tool-schema update plus refreshed
+capability facts and authority checks, or an explicit next-call boundary. It must
+not silently make live reconnects more aggressive.

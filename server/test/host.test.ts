@@ -1,3 +1,4 @@
+import { discoveryExceptionClass } from '../adapters/mcp/adapter.js';
 import { WebSocket } from 'ws';
 import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
 import './memory-eligibility-integration.js';
@@ -1630,4 +1631,29 @@ test('connector failure preserves only closed exception classes', () => {
   const base = { event: 'connector_failure', connector: 'google', stage: 'handshake', reason: 'discovery-unavailable', exceptionCode: 'unknown' };
   assert.deepEqual(safeEvent({ ...base, exceptionClass: 'transport' }), { ...base, exceptionClass: 'transport' });
   assert.equal(safeEvent({ ...base, exceptionClass: 'synthetic private exception message' }), undefined);
+});
+
+test('discovery failures distinguish closed transport causes without messages', () => {
+  for (const [error, expected] of [
+    [{ cause: { code: 'ECONNREFUSED' } }, 'refused'], [{ code: 'ENOTFOUND' }, 'dns'],
+    [{ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }, 'tls'], [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ status: 401 }, 'http_4xx'], [{ status: 503 }, 'http_5xx'],
+    [{ cause: { code: 'ECONNRESET' } }, 'transport'], [{ message: 'synthetic private payload' }, 'unknown'],
+  ] as const) assert.equal(discoveryExceptionClass(error), expected);
+});
+
+test('connector admission keeps waiting during an in-flight recovery and aggregates missing groups', async () => {
+  let now = 0;
+  const endpoints = () => [
+    { connector: 'lux-knowledge', state: now < 12_000 ? 'connecting' : 'connected', retrying: false },
+    { connector: 'lux-knowledge', state: 'error', retrying: false },
+  ];
+  const result = await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
+  assert.equal(now, 12_000);
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.reason, 'failed');
+  assert.equal(result[0]?.missingEndpoints, 1);
+  const groups = incompleteConnectorTools([{ connector: 'lux-knowledge', state: 'error' }, { connector: 'lux-knowledge', state: 'error' }]);
+  assert.equal(groups[0]?.missingEndpoints, 2);
+  assert.equal(groups[0]?.missingTools, 2 * result[0]!.missingTools);
 });

@@ -894,3 +894,52 @@ test('C-OPENER: the noun first, backed by its row, stays through the real seed g
     assert.equal(guarded[0]!.summary, text, 'a backed claim in the other word order is kept byte for byte');
   } finally { h.cleanup(); }
 });
+
+// --- OP-R3 re-review: a short label still names the item, so it still has to be named -----------------
+
+test('C-OPENER: a row whose label is only short words does not back a claim by its clock time', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-short-label');
+    missedRow(h.store, '9a1c4d2e77d2', TEN_THIRTY_UTC, 'pay tax');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-short-label', liveSessionId: 's-short-label',
+      endedAt: SUMMARY_NOW,
+      summary: 'The owner missed the 10:30 reminder to collect the parcel. The tax form is still to be filed.' }]));
+    assert.doesNotMatch(guarded[0]!.summary, /parcel/u, 'a labelled row is never backed by its clock time alone');
+    assert.match(guarded[0]!.summary, /tax form/u, 'the sentence beside it is untouched');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: one shared label word does not back a different bill', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-shared-bill');
+    missedRow(h.store, '9a1c4d2e77d3', TEN_THIRTY_UTC, 'pay gas bill');
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-shared-bill', liveSessionId: 's-shared-bill',
+      endedAt: SUMMARY_NOW, summary: 'The owner missed the 10:30 electricity bill reminder. The tax form is still to be filed.' }]));
+    assert.doesNotMatch(guarded[0]!.summary, /electricity/u, 'the rest of the row label has to be there too');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a short label named in full keeps its claim', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-short-label-named');
+    missedRow(h.store, '9a1c4d2e77d4', TEN_THIRTY_UTC, 'pay tax');
+    const text = 'The owner missed the 10:30 pay tax reminder. The tax form is still to be filed.';
+    const guarded = h.store.transaction(tx => guardSeededSummaries(tx, [{ id: 'sum-short-named', liveSessionId: 's-short-label-named',
+      endedAt: SUMMARY_NOW, summary: text }]));
+    assert.equal(guarded[0]!.summary, text, 'the row the claim names is kept byte for byte');
+  } finally { h.cleanup(); }
+});
+
+test('C-OPENER: a two letter word in the label is part of the name it must match', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-short-word-label');
+    missedRow(h.store, '9a1c4d2e77d5', TEN_THIRTY_UTC - 11_700_000, 'wake up call');
+    const text = 'You missed my 07:15 wake up call. The deposit is still to be paid.';
+    const loops = h.store.transaction(tx => guardSeededLoops(tx, [{ sessionId: 's-short-word-label', text }]));
+    assert.equal(loops[0]!.text, text, 'a labelled row the sentence names in full keeps its claim');
+  } finally { h.cleanup(); }
+});

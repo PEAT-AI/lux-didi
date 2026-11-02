@@ -103,6 +103,10 @@ async function runCase(browser, id) {
     await composer();
     cdp = await context.newCDPSession(page);
     await cdp.send('Debugger.enable');
+    // The observation itself is the signal: a case that waits for a specific refusal awaits this
+    // promise instead of sleeping and re-reading the array (CIFIX-R1).
+    let markAuthorityChanged;
+    const authorityChanged = new Promise(resolve => { markAuthorityChanged = resolve; });
     cdp.on('Debugger.paused', async event => {
       try {
         if (['exception', 'promiseRejection'].includes(event.reason) && event.data?.objectId) {
@@ -112,6 +116,7 @@ async function runCase(browser, id) {
           });
           proof.exceptions.push({ ...result.result.value, pauseReason: event.reason });
           if (collecting) proof.firstExceptions.push({ ...result.result.value, pauseReason: event.reason });
+          if (result.result.value?.code === 'AUTHORITY_CHANGED') markAuthorityChanged();
         }
       } catch (error) { proof.browserErrors.push(`Exception observation: ${error.message}`); }
       finally { await cdp.send('Debugger.resume').catch(error => proof.browserErrors.push(`Debugger resume: ${error.message}`)); }
@@ -156,17 +161,25 @@ async function runCase(browser, id) {
     if (id === 'C8') {
       await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length >= 2);
     } else if (id === 'C7') {
-      // A changed epoch clears the client's authority; the observed exception is the settle signal.
-      for (let i = 0; i < 50 && !proof.firstExceptions.some(error => error.code === 'AUTHORITY_CHANGED'); i += 1) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      // A changed epoch clears the client's authority; the recorded exception is the settle signal,
+      // with one bounded deadline so a missing refusal fails loudly instead of hanging the case.
+      let deadline;
+      try {
+        await Promise.race([authorityChanged, new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(Error('The AUTHORITY_CHANGED refusal was never observed')), 15000);
+        })]);
+      } finally { clearTimeout(deadline); }
     } else {
       await settleFailure();
     }
     collecting = false;
 
     if (id === 'C7') {
-      // A changed epoch clears the client's authority; the owner reconnects and retries by hand.
+      // The refusal is observed; stop watching throws (a reload tears the execution context down)
+      // so the reconnect cannot be mistaken for a browser error, then let the owner reconnect.
+      await cdp.send('Debugger.setPauseOnExceptions', { state: 'none' }).catch(() => {});
+      await cdp.detach().catch(() => {});
+      cdp = undefined;
       await page.reload();
       if (await page.locator('#pair-code').count()) await pair();
       await composer();

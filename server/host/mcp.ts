@@ -395,7 +395,7 @@ export async function composeMcpRuntime(options: {
   const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
     reason: string, exceptionCode?: string, exceptionClass?: string): void => {
     failureReasons.set(entry.id, reason);
-    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}), ...(exceptionClass ? { exceptionClass } : {}) });
+    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}), ...(exceptionClass ? { exceptionClass: ['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(exceptionClass) ? exceptionClass : 'unknown' } : {}) });
   };
   const reportToolStatus = (connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
@@ -606,6 +606,8 @@ export async function composeMcpRuntime(options: {
     generations.set(entry.id, token);
     ready.delete(entry.id);
     registry.suspend(entry.id);
+    const previous = reports.get(entry.id);
+    if (previous) reports.set(entry.id, { ...previous, state: 'connecting' });
     if (replaceSession.delete(entry.id)) await port.retire(entry.id);
     const started = now();
     const result = await settleWithin(entry, token, 'refresh', identityForHost);

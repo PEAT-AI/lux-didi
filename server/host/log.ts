@@ -874,7 +874,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
      *  name belongs here, so an unknown word can never carry a value into the line. */
     const VIOLATION_KEYWORDS: ReadonlySet<string> = new Set(['unknown_key', 'unknown', 'not_object', 'type', 'empty', 'long',
       'placeholder', 'min2', 'format', 'range', 'required', 'not_for_person', 'not_for_channel', 'not_for_intent',
-      'needs_conversation', 'one_conversation', 'undeclared', 'date_unreadable', 'clock_format', 'amount_range',
+      'needs_conversation', 'one_conversation', 'undeclared', 'date_unreadable', 'clock_format', 'amount_range', 'refused',
       'unit_value', 'timezone_value', 'mode_unknown', 'mode_ambiguous']);
     const named = (violation: string): boolean => violationPattern.test(violation)
       && VIOLATION_KEYWORDS.has(violation.slice(violation.indexOf(':') + 1));

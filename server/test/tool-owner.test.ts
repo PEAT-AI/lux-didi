@@ -718,8 +718,9 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
-  // C-ARGS: a tool whose refusal is a plain validator names no rule, and the line never carries a value.
-  assert.deepEqual(event.violations, []);
+  // AL-R1: a tool whose refusal is a plain validator still names the declared key it is about, so the
+  // retry has somewhere to land, and the line never carries a value.
+  assert.deepEqual(event.violations, ['ids:refused']);
   assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
@@ -735,7 +736,8 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[] };
   assert.equal(event.tool, 'create_event');
-  assert.deepEqual(event.violations, [], 'a validate-only write names no rule');
+  // AL-R1: a refusal names the declared key it is about, here the required one that never arrived.
+  assert.deepEqual(event.violations, ['ids:required'], 'a refusal names the field it is about');
   const logged = JSON.stringify(event);
   for (const value of ['cardio with Zara', '1.5', 'true']) {
     assert.equal(logged.includes(value), false, `no value of his reaches the log: ${value}`);
@@ -1353,9 +1355,11 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       const args = declaredValue(declaration.parameters as DeclaredSchema);
       step += 1;
       await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
-      // A grant, a connector or a missing owner ask may refuse the call; its arguments never may.
-      if (events.some(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name)) refused.push(declaration.name);
+      // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
+      // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
+      const lines = events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
+      if (lines.some(line => (line.violations ?? []).length === 0)) refused.push(declaration.name);
     }
-    assert.deepEqual(refused, [], 'no tool is refused for the arguments its declaration describes');
+    assert.deepEqual(refused, [], 'no tool answers a value its declaration describes with an unnamed schema failure');
   } finally { detach(); }
 });

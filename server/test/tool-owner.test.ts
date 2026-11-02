@@ -1323,27 +1323,36 @@ const statedChoices = (schema: DeclaredSchema): unknown[] => {
     return Array.isArray(original.enum) ? original.enum : [];
   } catch { return []; }
 };
+/** A string the declaration itself asks for: the shape it names, never a value of his. */
+const sampleString = (description: unknown): string => {
+  const text = typeof description === 'string' ? description : '';
+  return /\bHH:MM\b/u.test(text) ? '09:00' : 'synthetic';
+};
 const sampleOf = (schema: DeclaredSchema): unknown => {
   const choices = statedChoices(schema);
   if (choices.length > 0) return choices[0];
   switch (String(schema.type ?? '').toUpperCase()) {
-    case 'STRING': return 'synthetic';
+    case 'STRING': return sampleString(schema.description);
     case 'INTEGER': case 'NUMBER': return 1;
     case 'BOOLEAN': return true;
     case 'ARRAY': return [sampleOf(schema.items ?? {})];
-    case 'OBJECT': return declaredValue(schema);
-    default: return 'synthetic';
+    case 'OBJECT': return declaredValues(schema)[0] ?? {};
+    default: return sampleString(schema.description);
   }
 };
 /**
- * The value the declaration alone describes: the keys it requires when it names any, else its first
- * declared key, because a tool that requires nothing is not done with nothing.
+ * Every value the declaration alone describes, most complete first: all of its keys, then the ones it
+ * requires. A declaration that names no required key is not met by one key alone, and one that holds
+ * exclusive fields is met by the first candidate that is not.
  */
-const declaredValue = (schema: DeclaredSchema): Record<string, unknown> => {
+const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
   const properties = schema.properties ?? {};
   const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : [];
-  const keys = required.length > 0 ? required : Object.keys(properties).slice(0, 1);
-  return Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
+  const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
+  const candidates = [build(Object.keys(properties))];
+  candidates.push(build(required.length > 0 ? required : Object.keys(properties).slice(0, 1)));
+  const seen = new Set<string>();
+  return candidates.filter(candidate => { const key = JSON.stringify(candidate); if (seen.has(key)) return false; seen.add(key); return true; });
 };
 /** Every object the declaration offers, so a property-less one is named rather than silently empty. */
 const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {
@@ -1369,14 +1378,22 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
     for (const declaration of declarations) {
       const definition = definitions.find(candidate => candidate.name === declaration.name);
       assert.ok(definition, `the live table defines ${declaration.name}`);
-      const args = declaredValue(declaration.parameters as DeclaredSchema);
-      step += 1;
-      await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
-      // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
-      // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
-      const lines = events.filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
-      for (const line of lines) refused.push(`${declaration.name} ${String(line.reason)} ${(line.violations ?? []).join('+')}`);
-      if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
+      // The declaration describes more than one value; the tool accepting any one of them is what
+      // conformance means, and a declaration whose every described value is refused describes nothing.
+      const refusedHere: string[] = [];
+      let accepted = false;
+      for (const args of declaredValues(declaration.parameters as DeclaredSchema)) {
+        step += 1;
+        const at = events.length;
+        await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
+        // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
+        // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
+        const lines = events.slice(at).filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
+        for (const line of lines) refusedHere.push(`${String(line.reason)} ${(line.violations ?? []).join('+')}`);
+        if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
+        if (lines.length === 0) { accepted = true; break; }
+      }
+      if (!accepted) refused.push(`${declaration.name} ${refusedHere.join(' then ')}`);
     }
     // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
     // every set_alarm call in release 10.8, and no declared value may reach it any more.

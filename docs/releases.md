@@ -8,7 +8,7 @@ A release in this repository is one squash-merged pull request to `main`. There 
 
 This train combines reviewed fixes for dictated-note negation, recent live openings and evidence-backed write claims, connector readiness before calls, alarm argument validation, bounded call diagnostics and CI gate accuracy/timing.
 
-Tracked delivery issues: #874 (notes), #877 (openings), #875 (connector readiness), #873 (alarms), #876 (diagnostics), #867 and #841 (CI checks). Native audibility receipt timing remains open in #878; the broader guarded-gate and alarm-audit requests in #828 and #829 also remain open.
+Tracked delivery issues: #874 (notes), #877 (openings), #875 (connector readiness), #873 (alarms), #876 (diagnostics) and #867 (CI checks). Pre-existing MCP check staging defects are repaired on this train. The known held-positive installed-proof failure recurred under #841 and remains a failed check, not a pass; installed checks after merge are still owed. Native audibility receipt timing remains open in #878; the broader guarded-gate and alarm-audit requests in #828 and #829 also remain open.
 
 The release number belongs to the squash commit title and release notes, as in release 10.8. It does not change the application's independent bundle version. A missing installed runtime makes the macOS install check blocked, never passed. Assembly and check evidence must accompany the release handoff before any merge or install.
 

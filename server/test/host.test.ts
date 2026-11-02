@@ -1,3 +1,4 @@
+import { discoveryExceptionClass } from '../adapters/mcp/adapter.js';
 import { WebSocket } from 'ws';
 import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
 import './memory-eligibility-integration.js';
@@ -19,7 +20,7 @@ import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextp
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { ConfigError } from '../config/files.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
-import { composeMcpRuntime } from '../host/mcp.js';
+import { waitForStartupConnectors, incompleteConnectorTools, composeMcpRuntime } from '../host/mcp.js';
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
 import { createGoogleReader } from '../connectors/index.js';
 import { projectGoogleResult } from '../tools/google.js';
@@ -40,7 +41,8 @@ import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '
 import type { GoogleEvidence, GoogleResult } from '../connectors/google.js';
 import { listenService } from '../http/server.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
+import { liveProfileIdentity } from '../live/config.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -1585,3 +1587,227 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// C-CONNWAIT: synthetic endpoints only; the host clock never waits in real time.
+for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
+  test(`startup connector admission waits for recovery at ${recoveredAt}`, async () => {
+    let now = 0;
+    const endpoints = () => [
+      { id: 'fixture-a', connector: 'google', state: 'connected' as const, tools: 3, retrying: false, lastHandshakeAt: null },
+      { id: 'fixture-b', connector: 'lux-knowledge', state: now >= recoveredAt ? 'connected' as const : 'error' as const,
+        tools: now >= recoveredAt ? 4 : 0, retrying: now < recoveredAt, lastHandshakeAt: null },
+    ];
+    const result = await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints,
+      pause: async (ms: number) => { now += ms; } });
+    assert.equal(now, Math.min(recoveredAt, 25_000));
+    assert.equal(result.length, recoveredAt === Infinity ? 1 : 0);
+    assert.equal(endpoints().reduce((sum, row) => sum + row.tools, 0), recoveredAt === Infinity ? 3 : 7);
+    if (recoveredAt === Infinity) {
+      assert.equal(result[0]?.reason, 'deadline');
+      assert.equal(result[0]?.missingEndpoints, 1);
+    }
+  });
+}
+
+test('startup connector admission does not delay a late owner call or a terminal refusal', async () => {
+  const endpoint = { id: 'fixture', connector: 'google', state: 'error' as const, tools: 0, retrying: true, lastHandshakeAt: null };
+  let pauses = 0;
+  const options = { startedAt: 0, now: () => 60_000, endpoints: () => [endpoint], pause: async () => { pauses++; } };
+  assert.equal((await waitForStartupConnectors(options))[0]?.reason, 'deadline');
+  assert.equal(pauses, 0);
+  assert.equal((await waitForStartupConnectors({ ...options, now: () => 200, endpoints: () => [{ ...endpoint, retrying: false }] }))[0]?.reason, 'failed');
+  assert.equal(pauses, 0);
+});
+
+test('incomplete tools host fact is closed and contains group counts', () => {
+  const groups = incompleteConnectorTools([{ id: 'fixture', connector: 'google', state: 'error', tools: 0, retrying: true, lastHandshakeAt: null }]);
+  const event = { event: 'live_tools_incomplete', groups };
+  assert.equal(groups.length, 1);
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, privateText: 'synthetic forbidden field' }), undefined);
+  assert.equal(safeEvent({ event: 'live_tools_incomplete', groups: [{ ...groups[0], connector: 'https://synthetic.invalid/private' }] }), undefined);
+});
+
+test('connector failure preserves only closed exception classes', () => {
+  const base = { event: 'connector_failure', connector: 'google', stage: 'handshake', reason: 'discovery-unavailable', exceptionCode: 'unknown' };
+  assert.deepEqual(safeEvent({ ...base, exceptionClass: 'transport' }), { ...base, exceptionClass: 'transport' });
+  assert.equal(safeEvent({ ...base, exceptionClass: 'synthetic private exception message' }), undefined);
+});
+
+test('discovery failures distinguish closed transport causes without messages', () => {
+  for (const [error, expected] of [
+    [{ cause: { code: 'ECONNREFUSED' } }, 'refused'], [{ code: 'ENOTFOUND' }, 'dns'],
+    [{ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }, 'tls'], [{ code: 'ETIMEDOUT' }, 'timeout'],
+    [{ status: 401 }, 'http_4xx'], [{ status: 503 }, 'http_5xx'],
+    [{ cause: { code: 'ECONNRESET' } }, 'transport'], [{ message: 'synthetic private payload' }, 'unknown'],
+  ] as const) assert.equal(discoveryExceptionClass(error), expected);
+});
+
+test('connector admission keeps waiting during an in-flight recovery and aggregates missing groups', async () => {
+  let now = 0;
+  const endpoints = () => [
+    { connector: 'lux-knowledge', state: now < 12_000 ? 'connecting' : 'connected', retrying: false },
+    { connector: 'lux-knowledge', state: 'error', retrying: false },
+  ];
+  const result = await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
+  assert.equal(now, 12_000);
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.reason, 'failed');
+  assert.equal(result[0]?.missingEndpoints, 1);
+  const groups = incompleteConnectorTools([{ connector: 'lux-knowledge', state: 'error' }, { connector: 'lux-knowledge', state: 'error' }]);
+  assert.equal(groups[0]?.missingEndpoints, 2);
+  assert.equal(groups[0]?.missingTools, 2 * result[0]!.missingTools);
+});
+
+for (const recoveredAt of [0, 12_000, 24_000, Infinity]) {
+for (const admission of [false, true]) {
+test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accepted prompt without provider`, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-connwait-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'synthetic-config');
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  let owner: ReturnType<typeof createLiveSessionOwner> | undefined;
+  // The synthetic interactive launch requests its call ten seconds after process start.
+  let now = 10_000;
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+      modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', dataClasses: ['ordinary'],
+      preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } }), { mode: 0o600 });
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge',
+      state: now >= recoveredAt ? 'connected' : 'error', retrying: now < recoveredAt }];
+    owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+      now: () => now, timeZone: 'UTC', tools: { owner: runtime.owner, connectionIds: () => [], status: () => ({ endpoints: endpoints() }) } });
+    // Before this change the host invoked create directly, without this barrier.
+    if (admission) await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
+    const expectedOpenAt = admission ? Math.max(10_000, Math.min(recoveredAt, 25_000)) : 10_000;
+    const session = owner.create({ inputClass: 'ordinary', idempotencyKey: 'synthetic-connwait' },
+      { clientId: 'synthetic-client', auditId: randomUUID(), authorityEpoch: store.authorityEpoch });
+    const prompt = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['accepted_prompt_snapshot'])));
+    const openedAt = store.transaction(tx => Number(tx.get('SELECT created_at FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['created_at']));
+    assert.equal(openedAt, expectedOpenAt);
+    assert.equal(now, expectedOpenAt);
+    if (now >= recoveredAt) {
+      assert.doesNotMatch(prompt.system, /Host capability fact/);
+      return;
+    }
+    assert.match(prompt.system, /Host capability fact/);
+    assert.match(prompt.system, /"connector":"lux-knowledge"/);
+    assert.match(prompt.system, /"reason":"deadline"/);
+    assert.match(prompt.system, /Tools are fixed at call open/);
+    assert.doesNotMatch(prompt.system, /fixture/);
+  } finally {
+    await owner?.shutdown();
+    await runtime?.close();
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+}
+}
+
+// CONNWAIT-REV-1: exercise the production runtime gate and HTTP create, not a hand-joined helper.
+for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000, 10_000], [Infinity, 10_000], [Infinity, 30_000]]) {
+  test(`host HTTP admission receives recovered schemas at ${recoveredAt}, requested ${requestedAt}`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'didi-admission-http-'));
+    const configDir = join(dir, 'synthetic-config');
+    let now = requestedAt!;
+    let pauses = 0;
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    let address: URL | undefined;
+    try {
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+        modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', dataClasses: ['ordinary'],
+        preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } }), { mode: 0o600 });
+      host = await startHost({ dataDir: dir, configDir, webRoot, port: 0, now: () => now,
+        liveTesting: { credentials: { resolve: async () => { throw Error('provider must not be contacted'); } } },
+        connectorTesting: {
+          processStartedAt: 0,
+          pause: async ms => { pauses++; now += ms; },
+          compose: async options => {
+            const runtime = await composeMcpRuntime(options);
+            const loaded = loadLiveConfig({ configDir, ownerId: options.ownerId });
+            if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
+            const specs = [
+              { id: 'fixture-search', at: 0, name: 'search_knowledge', properties: { query: { type: 'string' } } },
+              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { ids: { type: 'array', items: { type: 'integer' } } } },
+            ];
+            const connected = new Set<string>();
+            const synchronize = () => {
+              for (const spec of specs) {
+                if (now < spec.at || connected.has(spec.id)) continue;
+                const endpoint = { id: spec.id, url: 'https://synthetic.invalid/mcp', account: 'synthetic', resource: spec.id };
+                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, inputSchema: { type: 'object', properties: spec.properties } }];
+                runtime.registry.register(endpoint);
+                runtime.registry.enable(spec.id); runtime.registry.allowEgress(spec.id);
+                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
+                runtime.owner.applyConnection({ schemaVersion: 1, ownerId: options.ownerId, connectionId: spec.id,
+                  generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null },
+                  toolNames: [spec.name], schemaDigest: canonicalToolDigest(schemas),
+                  sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+                  route: { identity: liveProfileIdentity(loaded.config.profile), allowedClasses: ['ordinary'] },
+                  bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+                connected.add(spec.id);
+              }
+            };
+            return { ...runtime,
+              connectionIds: () => { synchronize(); return [...connected]; },
+              status: () => { synchronize(); return { endpoints: specs.map(spec => ({ id: spec.id, connector: 'lux-knowledge',
+                state: connected.has(spec.id) ? 'connected' as const : 'error' as const,
+                tools: connected.has(spec.id) ? 1 : 0, retrying: !connected.has(spec.id), lastHandshakeAt: null,
+                // Deliberately private-looking fixture fields must not survive safeEvent.
+                error: 'synthetic-private-endpoint-detail' })) }; },
+            };
+          },
+        },
+      });
+      address = new URL(host.service.origin);
+      const response = await fetch(host.service.origin + '/api/v1/live-sessions', { method: 'POST',
+        headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch,
+          'Content-Type': 'application/json', 'Idempotency-Key': 'synthetic-http-admission' },
+        body: JSON.stringify({ inputClass: 'ordinary' }) });
+      assert.equal(response.status, 200, await response.clone().text());
+      const { data: session } = await response.json();
+      const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+      assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
+      const tools = host.tools.owner.definitions(session.liveSessionId);
+      assert.ok(tools.some(tool => tool.name === 'search_knowledge'));
+      const read = tools.find(tool => tool.name === 'get_insight');
+      assert.equal(Boolean(read), recoveredAt !== Infinity, 'session receives the recovered endpoint declaration');
+      if (read) {
+        const properties = read.parameters['properties'] as Record<string, { type: string; items: { type: string } }>;
+        assert.equal(properties['ids']?.type, 'array');
+        assert.equal(properties['ids']?.items.type, 'integer');
+      }
+      const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
+      const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      const incomplete = events.filter(event => event.event === 'live_tools_incomplete');
+      if (recoveredAt === Infinity) {
+        assert.match(prompt.system, /Host capability fact/);
+        assert.match(prompt.system, /"connector":"lux-knowledge"/);
+        assert.match(prompt.system, /"reason":"deadline"/);
+        assert.equal(incomplete.length, 1);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 2, reason: 'deadline' }]);
+        assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
+        assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
+      } else {
+        assert.doesNotMatch(prompt.system, /Host capability fact/);
+        assert.deepEqual(incomplete, []);
+      }
+      if (requestedAt! > 25_000) assert.equal(pauses, 0, 'late owner call does not wait');
+    } finally {
+      await host?.close();
+      if (address) {
+        const probe = createServer();
+        await new Promise<void>((resolve, reject) => { probe.once('error', reject); probe.listen(Number(address!.port), address!.hostname, resolve); });
+        await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}

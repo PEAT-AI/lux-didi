@@ -23,6 +23,9 @@ function fixture() {
   const scripts = join(root, 'scripts'); mkdirSync(scripts);
   const installer = join(scripts, 'install-macos-app.sh');
   copyFileSync(sourceInstaller, installer);
+  // DESK-R6: the CI timing instrumentation is part of the portable installer fixture.
+  mkdirSync(join(scripts, 'lib'));
+  copyFileSync(join(dirname(sourceInstaller), 'lib', 'timing.sh'), join(scripts, 'lib', 'timing.sh'));
   copyFileSync(join(dirname(sourceInstaller), 'run-installed-checks.sh'), join(scripts, 'run-installed-checks-real.sh'));
   const checks = join(scripts, 'fixture-checks'); mkdirSync(checks);
   // Explicit check-set injection keeps this portable-app fixture off all account and alarm probes.

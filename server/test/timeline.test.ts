@@ -11,7 +11,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
-  CALL_AUDIT_SCHEMA_VERSION, buildAuditSummary, buildCallAudit, buildCallStory, buildTimeline, listCalls, logHealth,
+  CALL_AUDIT_SCHEMA_VERSION, FRAGMENT_FOLLOW_MS, buildAuditSummary, buildCallAudit, buildCallStory, buildTimeline, listCalls, logHealth,
   renderAuditSummary, renderCallAudit, renderCallList, renderCallStory, renderLogHealth, scanLogs,
   type CallAudit, type LogInput, type LogStream, type TimelineReport, type TraceRead,
 } from '../trace/timeline.js';
@@ -529,10 +529,10 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
       // final to the first create, that create to its first audio, the last tool output to the continuation's
       // create, and every connector request the turn made.
       ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
-        'nativeFirstAudibleAt', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
+        'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
-    assert.equal(json['version'], 2);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'noProviderAudioFinals', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+    assert.equal(json['version'], 3);
   });
 });
 
@@ -610,7 +610,7 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
-    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 2\)/);
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 3\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
     assert.match(text, /missing no_native_receipt/);
   } finally {
@@ -651,10 +651,36 @@ test('C-LABELS 4: every announced look-up with no call in its turn is counted', 
     call(store, SESSION, 'announced-served', 'looked-up', 'search_knowledge', 'completed', 40, T0 + 7002);
     turn(store, SESSION, 'plain-answer', 8, T0 + 8000);
     store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['plain-answer', 'model', T0 + 8001, 'The invoice is due on the tenth.']));
-    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 5);
+    // C-OPENER 10.9: the count read 5 of these 6 because "Give me a second" was outside the listed phrasings,
+    // which is the same miss the field calls showed. Every one of them now counts, the served turn still does not.
+    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, announced.length);
   });
 });
 
+
+// C-OPENER 10.9: a waiting phrase is a promise of work as much as a look-up announcement is, and the field
+// miss was "one moment" said after a direct ask with no call behind it. The phrase class covers the wait, the
+// call side stays structural, and the count is telemetry: nothing here gates or alters speech.
+test('C-OPENER: a waiting phrase with no call behind it counts, one with a real call does not', () => {
+  withStore(store => {
+    const waiting = ['One moment, let me set that alarm.', 'Just a second.', 'Give me a moment.',
+      'Hang on, sorting that now.', 'Bear with me one minute.'];
+    for (const [index, text] of waiting.entries()) {
+      const id = `waiting-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    // A turn whose wait really carried the call it promised is not a claim without a call.
+    turn(store, SESSION, 'waiting-with-call', waiting.length + 1, T0 + 90_000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)',
+      ['waiting-with-call', 'model', T0 + 90_100, 'One moment, setting it.']));
+    call(store, SESSION, 'waiting-with-call', 'call:alarm', 'set_alarm', 'completed', 30, T0 + 90_200);
+    const read = store.transaction(tx => buildTimeline(tx, SESSION));
+    assert.equal(buildCallAudit(read, scanLogs([])).aggregates.claimsWithoutCall, waiting.length,
+      'every wait with no call is counted, the one with a call is not');
+    assert.equal(read.transcript, undefined, 'the audit still exports counts, never transcript content');
+  });
+});
 
 test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source directory', () => {
   const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
@@ -741,4 +767,65 @@ test('#1072: a dist newer than its source that lacks the refusal probe is rebuil
     assert.match(audit.stdout, /after rebuild, no turn calls=1/);
     assert.match(audit.stdout, /^- k-2 send_message \S+ 5ms refused owner_only$/m);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** C-DIAG109: one spoken sentence split by the turn splitter, then an ask nobody answered, then the last final. */
+const silentFinalScan = () => {
+  const session = { liveSessionId: SESSION };
+  const final = (at: number, turnId: string) => line(at, 'owner_final', { ...session, turnId, ownerFinalAt: at });
+  const audio = (at: number, turnId: string) =>
+    line(at, 'live_first_audio', { ...session, turnId, msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 1_200, missingReason: null });
+  return scanOf([
+    // f1 and f2 are one sentence: f2 lands a second after f1 and is the final that is answered.
+    final(T0 + 1_000, 'f1'), final(T0 + 2_000, 'f2'), audio(T0 + 3_000, 'f2'),
+    // f3 is an ask nobody answered, and he speaks again eight seconds later.
+    final(T0 + 10_000, 'f3'), final(T0 + 18_000, 'f4'), audio(T0 + 19_000, 'f4'),
+    // f5 is the last final of the call, with no follow-up at all.
+    final(T0 + 30_000, 'f5'),
+  ]);
+};
+
+const silentFinalStore = (store: Store): void => {
+  for (const [index, turnId] of ['f1', 'f2', 'f3', 'f4', 'f5'].entries()) turn(store, SESSION, turnId, index + 1, T0 + index * 1_000);
+};
+
+test('C-DIAG109: a final with no provider audio is a fragment only inside the follow bound, and answered', () => {
+  withStore(store => {
+    silentFinalStore(store);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), silentFinalScan());
+    assert.deepEqual(audit.turns.map(row => [row.turnId, row.missingReason, row.noAudioClass]), [
+      ['f1', 'no_provider_audio', 'fragment'],
+      ['f2', 'no_native_receipt', null],
+      ['f3', 'no_provider_audio', 'unanswered'],
+      ['f4', 'no_native_receipt', null],
+      ['f5', 'no_provider_audio', 'unanswered'],
+    ], 'a split sentence is a fragment, an unheard ask and the call-ending final are unanswered');
+    assert.deepEqual(audit.aggregates.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });
+    const text = renderCallAudit(audit);
+    assert.match(text, /f1 \S+ missing missing missing missing no_provider_audio fragment/u);
+    assert.match(text, /f5 \S+ missing missing missing missing no_provider_audio unanswered/u);
+  });
+});
+
+test('C-DIAG109: a silent final whose next final is silent too is unanswered, never a fragment', () => {
+  withStore(store => {
+    turn(store, SESSION, 'g1', 1, T0);
+    turn(store, SESSION, 'g2', 2, T0 + 1_000);
+    const session = { liveSessionId: SESSION };
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([
+      line(T0 + 1_000, 'owner_final', { ...session, turnId: 'g1', ownerFinalAt: T0 + 1_000 }),
+      line(T0 + 2_000, 'owner_final', { ...session, turnId: 'g2', ownerFinalAt: T0 + 2_000 }),
+    ]));
+    assert.deepEqual(audit.turns.map(row => row.noAudioClass), ['unanswered', 'unanswered']);
+  });
+});
+
+test('C-DIAG109: the across-sessions summary counts both readings and names the bound it used', () => {
+  withStore(store => {
+    silentFinalStore(store);
+    const summary = buildAuditSummary(readOf(store), silentFinalScan(), T0 - 1);
+    assert.deepEqual(summary.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });
+    assert.match(renderAuditSummary(summary),
+      /owner finals with no provider audio unanswered=2 fragment=1 fragmentBound=5000ms/u);
+  });
 });

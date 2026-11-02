@@ -113,3 +113,64 @@ export function activeAlarms(tx: Transaction): readonly ActiveAlarm[] | null {
   return tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc", [])
     .map(row => ({ id: String(row['id']), fireAtUtc: Number(row['fire_at_utc']), tz: String(row['tz']), label: String(row['label']) }));
 }
+
+/** One alarm the table holds as missed, with the day, time and label she could truthfully name for it. */
+export interface MissedAlarmFact { readonly date: string; readonly time: string; readonly label: string }
+
+/** The calendar day a moment falls on in the alarm's own zone, so a claim about a day can be held to it. */
+const alarmDay = (at: number, timeZone: string): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+
+/**
+ * C-OPENER 10.9: the missed alarms the table actually holds. A stored summary or open loop is model prose, so
+ * a recap that names a missed reminder is only true while a missed row stands behind it.
+ */
+export function missedAlarmFacts(tx: Transaction): readonly MissedAlarmFact[] {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='alarms'", [])) return [];
+  return tx.all("SELECT fire_at_utc,tz,label FROM alarms WHERE state='missed' ORDER BY fire_at_utc", []).map(row => ({
+    date: alarmDay(Number(row['fire_at_utc']), String(row['tz'])),
+    time: new Intl.DateTimeFormat('en-GB', { timeZone: String(row['tz']), hour: '2-digit', minute: '2-digit' }).format(Number(row['fire_at_utc'])),
+    label: String(row['label'] ?? ''),
+  }));
+}
+
+/** The start's own clock, so a claim naming a day can be held against the day the row fired. */
+export interface ClaimClock { readonly now: number; readonly timeZone: string }
+
+/** A sentence that speaks of a missed alarm, reminder or wake up call, in either word order, whichever word
+ *  it chose for the miss. The field phrasing is both shapes, so both reach the guard. */
+const MISSED_CLAIM = /\b(?:missed\b[^.]*\b(?:alarms?|reminders?|wake[- ]?ups?)|(?:alarms?|reminders?|wake[- ]?ups?)[^.]*\bmissed\b)/iu;
+/** A clock time as the alarm row states it, so a claim that names one must name this row's. */
+const CLOCK_TIME = /\b\d{1,2}:\d{2}\b/gu;
+/** The two day shapes a recap uses for a missed item; with no clock they cannot be checked, so they never back. */
+const TODAY_CLAIM = /\b(?:today|this (?:morning|afternoon|evening)|tonight)\b/iu;
+const YESTERDAY_CLAIM = /\b(?:yesterday|last night)\b/iu;
+
+/**
+ * Drop every sentence that names a missed alarm or reminder the alarms table does not hold as missed. A text
+ * with no such sentence is returned byte-identical, so an ordinary recap never changes. A row backs a claim
+ * only by correspondence: the clock time and label the sentence names must be that row's, and a day it names
+ * must be that row's day. A shared clock time or a shared word is not correspondence.
+ */
+export function guardMissedClaims(text: string, facts: readonly MissedAlarmFact[], at?: ClaimClock): GuardedClaims {
+  const all = sentences(text);
+  const backed = (sentence: string): boolean => {
+    const times: readonly string[] = sentence.match(CLOCK_TIME) ?? [];
+    const words = new Set(sentence.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean));
+    const day = TODAY_CLAIM.test(sentence) ? (at === undefined ? null : alarmDay(at.now, at.timeZone))
+      : YESTERDAY_CLAIM.test(sentence) ? (at === undefined ? null : alarmDay(at.now - 86_400_000, at.timeZone)) : undefined;
+    if (day === null) return false;
+    return facts.some(fact => {
+      if (times.length > 0 && !times.includes(fact.time)) return false;
+      // OP-R4: every word of the label, of any length, has to be in the sentence, and a row whose label names
+      // nothing backs no claim. Doubt drops the sentence: a lost recap is harmless, an invented one is the bug.
+      const label = fact.label.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
+      if (label.length === 0 || !label.every(word => words.has(word))) return false;
+      return day === undefined || fact.date === day;
+    });
+  };
+  const kept = all.filter(sentence => !(MISSED_CLAIM.test(sentence) && !backed(sentence)));
+  const dropped = all.length - kept.length;
+  if (dropped === 0) return { text, dropped, kept: kept.length };
+  return { text: kept.join(' ').replace(/\s+/g, ' ').trim(), dropped, kept: kept.length };
+}

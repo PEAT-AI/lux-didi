@@ -12,6 +12,8 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+. scripts/lib/timing.sh
+started=$SECONDS
 if test -n "$(git status --porcelain -- server web scripts/build-asset-bundle.sh scripts/check-asset-bundle.sh)"; then
   echo 'Asset bundle requires clean, committed server and web source' >&2
   exit 1
@@ -24,6 +26,7 @@ out=$(cd "$out" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-asset-build.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
+step_started=$SECONDS
 node_version="${ASSET_BUNDLE_NODE_VERSION:-26.8.2}"
 fetch_base="${ASSET_BUNDLE_FETCH_BASE:-https://nodejs.org/dist}"
 bundled_node="$out/Resources/node/bin/node"
@@ -39,8 +42,10 @@ tar -xzf "$work/$archive" -C "$out/Resources/node" --strip-components=1
 test -x "$bundled_node" || { echo 'Bundled node binary is not executable' >&2; exit 1; }
 test "$("$bundled_node" -p 'process.version')" = "v${node_version}" || { echo 'Bundled node version mismatch' >&2; exit 1; }
 node_sha=$(cut -d' ' -f1 "$work/${archive}.sha256")
+timing_step node-runtime "$((SECONDS - step_started))"
 
 # 2. Accepted server package: packed offline, then installed offline into a private prefix.
+step_started=$SECONDS
 mkdir -p "$work/source"
 git archive HEAD server | tar -xf - -C "$work/source"
 builder="$work/source/server"
@@ -54,8 +59,10 @@ bash scripts/npm-ci-offline.sh "$out/server" install --offline --omit=dev --igno
 installed="$out/server/node_modules/@lux-didi/service"
 test -d "$installed/dist/tools" || { echo 'Offline install is missing the compiled tools tree' >&2; exit 1; }
 test -f "$installed/dist/host/index.js" || { echo 'Offline install is missing the host entry' >&2; exit 1; }
+timing_step service-package "$((SECONDS - step_started))"
 
 # 3. Built interface shell, served by the host entry with an explicit web root.
+step_started=$SECONDS
 git archive HEAD web | tar -xf - -C "$work/source"
 web="$work/source/web"
 (cd "$web" && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
@@ -67,8 +74,10 @@ mkdir -p "$out/Resources/web/dist"
 cp -R "$web/dist/." "$out/Resources/web/dist/"
 test -f "$out/Resources/web/dist/index.html" || { echo 'Built web shell is missing its index' >&2; exit 1; }
 test ! -e "$out/Resources/web/dist/dist" || { echo 'Built web shell nested itself under Resources/web/dist/dist' >&2; exit 1; }
+timing_step web-shell "$((SECONDS - step_started))"
 
 # 4. Asset-only: never sign and never claim the app.
+step_started=$SECONDS
 if /usr/bin/find "$out" \( -name Info.plist -o -name _CodeSignature -o -name '*.app' -o -name '*.framework' \) -print -quit | grep -q .; then
   echo 'Asset bundle must not contain a signing or app claim' >&2
   exit 1
@@ -83,6 +92,8 @@ host_entry=server/node_modules/@lux-didi/service/dist/host/index.js
 asset_only=unsigned
 EOF
 
+timing_step asset-only "$((SECONDS - step_started))"
+timing_total "$((SECONDS - started))" asset-bundle
 printf 'ASSET_BUNDLE=%s\n' "$out"
 printf 'ASSET_BUNDLE_NODE=v%s\n' "$node_version"
 printf 'ASSET_BUNDLE_NODE_SHA256=%s\n' "$node_sha"

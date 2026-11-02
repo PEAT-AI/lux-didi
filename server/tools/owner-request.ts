@@ -1,21 +1,15 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
 import { composeGrantKinds } from './compose.js';
 import { advancesExposure, tierOf } from './tiers.js';
+import { hostLogEvent } from './host-events.js';
 const normalizeOwnerWords = (words: string): string => words.replace(/(\d)\s*:\s*(\d)/g, '$1:$2');
-/** Every free write whose authority is the open owner call itself, never a phrase of his. */
-/** A clause he negated commands nothing: "do not open the deck" is not an ask to open it. */
+/** Every free write whose authority is the open owner call itself, never a phrase of his. C-NOTEGATE
+ *  (#874): a free write never reads a clause of his speech, since a regex over speech voided an open
+ *  owner call in three releases; the fence and the one-owner-final rule are the free gate. */
+/** The one guarded kind that still reads a negated clause, its own selector unchanged. */
 const NEGATED_CLAUSE = /\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)\s+([^.!?]*)/gi;
 /** What a negated clause has to name to void this kind, and only this kind. */
 const NEGATED_ACTION: Record<string, RegExp> = {
-  open: /\b(?:open|show|launch)\b/i,
-  set_alarm: /\b(?:set|put|make|create|add)\b.*\balarm\b|\bwake me\b|\bremind me\b/i,
-  cancel_alarm: /\b(?:cancel|stop)\b/i,
-  snooze_alarm: /\bsnooze\b/i,
-  list_alarms: /\b(?:list|show)\b.*\balarm/i,
-  lux_note: /\b(?:save|remember|note|write|put)\b/i,
-  draft_email: /\b(?:draft|write|send|e-?mail|mail|message|reply)\b/i,
-  draft_chat: /\b(?:draft|write|send|message|reply|post)\b/i,
-  create_event: /\b(?:schedule|block|add|put|book|calendar|event)\b/i,
   delete_event: /\b(?:cancel|delete|remove)\b/i,
 };
 const isFreeKind = (kind: ActionKind): boolean =>
@@ -127,6 +121,11 @@ export class OwnerRequests implements OwnerRequestPort {
    * after his last words; nothing else is asked of his speech.
    */
   freeGate(session: string, kind: ActionKind, target: string): RequestAuthorization {
+    const decision = this.freeDecision(session, kind, target);
+    this.gateDecision(session, kind, decision.code);
+    return decision;
+  }
+  private freeDecision(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
     if (!request) return { code: 'no_owner_request' };
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
@@ -135,9 +134,15 @@ export class OwnerRequests implements OwnerRequestPort {
     // P-R6: a free write needs at least one owner final in this session as well as the fence, so with
     // no owner words nothing writes and nothing opens.
     if ((this.positions.get(session)?.owner ?? 0) === 0) return { ...common, code: 'no_owner_request' };
-    if (this.negated(request.words, kind)) return { ...common, code: 'no_owner_request' };
     if (this.fenced(session)) return { ...common, code: 'external_text_only' };
     return this.settle(request, kind, target, common);
+  }
+  /** C-NOTEGATE (#828): the gate's answer as closed fields: the tool, the decision, the code, the two
+   *  fence positions and whether any owner final existed. Never a word of his. */
+  private gateDecision(session: string, kind: ActionKind, code: string): void {
+    const at = this.positions.get(session);
+    hostLogEvent({ event: 'gate_decision', tool: kind, decision: code === 'allowed' ? 'allowed' : 'refused',
+      code, owner: at?.owner ?? 0, exposure: at?.exposure ?? 0, ownerFinal: (this.requests.get(session)?.finals ?? 0) > 0 });
   }
   private negated(words: string, kind: ActionKind): boolean {
     const governed = NEGATED_ACTION[kind];
@@ -147,10 +152,6 @@ export class OwnerRequests implements OwnerRequestPort {
       // it names rather than voiding it. The negator "forget it" itself still cancels what follows.
       if (/^forget\b/i.test(match[1]!)) continue;
       if (governed.test(match[1]!)) return true;
-      // A bare cancel that names only the object voids it: "never mind the alarm" sets no alarm. It
-      // must name it in its own clause, because a later final never takes an earlier ask back
-      // ("never mind, no alarm" leaves the alarm he already asked for standing).
-      if (kind === 'set_alarm' && /^(?:never mind|no need to)\s+(?:the |an? |my )?alarm\b/i.test(match[0]!)) return true;
     }
     return false;
   }
@@ -261,8 +262,8 @@ export class OwnerRequests implements OwnerRequestPort {
 
 export function requestRefusal(code: string): { status: 'refused'; code: string; say: string } {
   const sentences: Record<string, string> = {
-    no_owner_request: 'There is no current owner request authorizing that action.',
-    external_text_only: 'Outside text arrived after your last words; say it again and I will do it.',
+    no_owner_request: 'There is no current owner request authorizing that action; it needs your words in this session.',
+    external_text_only: 'Outside text arrived after your last words, so that write was refused. It clears when you next speak.',
     request_expired: 'That owner request has expired.', grant_spent: 'That request has already completed this kind of action.',
     target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?', ambiguous_time: 'Morning or evening?', past_time: 'That time has already passed today. Which time should I set?',
     missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',

@@ -1,3 +1,4 @@
+import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
@@ -8,7 +9,7 @@ import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } f
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
-import { activeAlarms, guardWriteClaims, writeFacts, type ActiveAlarm } from '../domain/write-claims.js';
+import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -30,7 +31,7 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -120,15 +121,15 @@ export function openerFromJournal(rows: readonly { readonly kind: string; readon
  * recorded. The words the opener shares with an option decide it, so a topic is never guessed: an
  * opener whose subject the plan does not name is reported without one.
  */
-function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): string | undefined {
+function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): { readonly topic: string; readonly kind: OpeningOptionKind } | undefined {
   const words = (text: string): Set<string> => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4));
   const spoken = words(opener);
-  let best: { topic: string; shared: number } | undefined;
+  let best: { topic: string; kind: OpeningOptionKind; shared: number } | undefined;
   for (const option of recorded) {
     const shared = [...words(option.topic)].filter(word => spoken.has(word)).length;
-    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, shared };
+    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, kind: option.kind, shared };
   }
-  return best?.topic;
+  return best === undefined ? undefined : { topic: best.topic, kind: best.kind };
 }
 
 /** The options an earlier call's start instruction recorded, from its own accepted-prompt snapshot. */
@@ -175,9 +176,21 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[] }[] {
-  const sessions = tx.all(`SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
-  const previous: ReturnType<typeof previousOpeners> = [];
+/** One earlier call's opening utterance and the plan its start offered. */
+export interface PreviousOpener { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }
+/** An opening an earlier call used, as a kind and a subject key, so the next plan prefers something else. */
+export interface UsedOpening { readonly kind: OpeningOptionKind; readonly topic: string; readonly at: number }
+/** The three newest openers the anti-repeat note and the plan rotation read. */
+const PREVIOUS_OPENER_SOURCES = 3;
+/** How many openings used inside the window are kept, so a burst of calls cannot grow this read without bound. */
+const RECENT_OPENINGS_READ = 8;
+/** The three newest earlier openers for the note, and every opening used inside the window. */
+export interface OpenerHistory { readonly previous: readonly PreviousOpener[]; readonly recent: readonly UsedOpening[] }
+
+export function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], recentSince?: number): OpenerHistory {
+  const sessions = tx.all(`SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
+  const previous: PreviousOpener[] = [];
+  const recent: UsedOpening[] = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   for (const row of sessions) {
     const source = historySessionEvidence(tx, String(row.live_session_id), eligibility);
@@ -187,15 +200,22 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
       text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
       finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
     })));
-    if (text === '') continue;
     const recorded = recordedOptions(row['accepted_prompt_snapshot']);
-    const topic = openerTopicOf(text, recorded);
+    const used = text === '' ? undefined : openerTopicOf(text, recorded);
+    // C-OPENER 10.9: an opening a call used is remembered for the whole window, not only while that call stays
+    // among the three newest, so a run of short re-calls that opened plainly cannot reopen a subject it used.
+    if (used !== undefined && recentSince !== undefined && Number(row['created_at']) >= recentSince
+      && recent.length < RECENT_OPENINGS_READ) recent.push({ ...used, at: Number(row['created_at']) });
+    if (text === '') continue;
     // Contract 1023 N8: the plan this call offered, so the next start never leads with the same subject twice.
-    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, kinds: recorded.map(option => option.kind),
-      ...(topic === undefined ? {} : { topic }) });
-    if (previous.length === 3) break;
+    // C-OPENER 10.9: and what its opening actually used, as a kind and a subject key, never the words.
+    if (previous.length < PREVIOUS_OPENER_SOURCES) previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass,
+      kinds: recorded.map(option => option.kind), at: Number(row['created_at']),
+      ...(used === undefined ? {} : { topic: used.topic, used }) });
+    if (previous.length === PREVIOUS_OPENER_SOURCES && (recentSince === undefined || Number(row['created_at']) < recentSince
+      || recent.length >= RECENT_OPENINGS_READ)) break;
   }
-  return previous;
+  return { previous, recent };
 }
 /** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
 const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
@@ -233,11 +253,13 @@ export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataCl
 /** C-MEMORYTRUTH: a stored open loop reaches the greeting only with the claims its own call's receipts and this
  *  start's alarms table support, so a refused write is never offered as something still to do the wrong way. */
 export function guardSeededLoops<T extends { readonly text: string; readonly sessionId: string }>(
-  tx: Transaction, loops: readonly T[],
+  tx: Transaction, loops: readonly T[], at?: ClaimClock,
 ): readonly T[] {
+  const missed = missedAlarmFacts(tx);
   return loops.map(loop => {
-    const guarded = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
-    return guarded.dropped === 0 ? loop : { ...loop, text: guarded.text };
+    const writes = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
+    const claims = guardMissedClaims(writes.text, missed, at);
+    return writes.dropped + claims.dropped === 0 ? loop : { ...loop, text: claims.text };
   }).filter(loop => loop.text !== '');
 }
 
@@ -252,13 +274,15 @@ export function armedAlarmsNote(alarms: readonly ActiveAlarm[] | null): string |
 /** C-MEMORYTRUTH: an earlier call's summary reaches the seed only with the claims that call's own receipts and
  *  this start's alarms table support. The stored row is left as it is. */
 export function guardSeededSummaries<T extends { readonly liveSessionId?: string; readonly summary: string }>(
-  tx: Transaction, candidates: readonly T[],
+  tx: Transaction, candidates: readonly T[], at?: ClaimClock,
 ): readonly T[] {
+  const missed = missedAlarmFacts(tx);
   return candidates.map(candidate => {
     if (candidate.liveSessionId === undefined) return candidate;
     const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
-    const guarded = guardWriteClaims(candidate.summary, facts);
-    return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
+    const writes = guardWriteClaims(candidate.summary, facts);
+    const claims = guardMissedClaims(writes.text, missed, at);
+    return writes.dropped + claims.dropped === 0 ? candidate : { ...candidate, summary: claims.text };
     // A summary whose every claim was unsupported offers nothing, so it leaves the candidate list instead of
     // rendering an earlier-conversations header with no body behind it.
   }).filter(candidate => candidate.summary.trim() !== '');
@@ -444,6 +468,21 @@ export const refusedResponse = (response: JsonObject): boolean => {
  */
 export function answersTheAsk(openingTurn: boolean | undefined, turnSpoken: string | undefined): boolean {
   return openingTurn !== true && !isAckOnlyResponse(turnSpoken ?? '');
+}
+
+/**
+ * C-DIAG109: whether the provider announced a response for the owner final now in flight, and how long ago.
+ * A silence the owner hears is either a model that never spoke (no response created) or one that spoke into
+ * a response the host cannot read; the two are told apart by this pair and nothing else. Telemetry only:
+ * no recovery reads it, and no reconnect or rebuild timing changes (#820).
+ */
+export function stallResponseFacts(input: {
+  ownerFinalAt?: number | undefined; responseCreatedAt?: number | undefined; now: number;
+}): { responseCreated: boolean; msSinceResponseCreated: number | null } {
+  const created = input.responseCreatedAt;
+  const final = input.ownerFinalAt;
+  if (created === undefined || final === undefined || created < final) return { responseCreated: false, msSinceResponseCreated: null };
+  return { responseCreated: true, msSinceResponseCreated: Math.max(0, input.now - created) };
 }
 
 /**
@@ -1716,6 +1755,11 @@ export class LiveSessionOwner {
     return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
+  /** C-DIAG109: the response pair every stall and rebuild line carries, read off the turn now in flight. */
+  #stallFacts(handle: ActiveSession): { responseCreated: boolean; msSinceResponseCreated: number | null } {
+    return stallResponseFacts({ ownerFinalAt: handle.inputFinalAt, responseCreatedAt: handle.responseCreatedAt, now: this.#now() });
+  }
+
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
   /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
   readonly #connectorNotes = new ConnectorNotes();
@@ -1845,7 +1889,8 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
+      const openerHistory = previousOpeners(tx, assistantId, this.#profile.route.dataClasses, now - OPENER_NOVELTY_WINDOW_MS);
+      const earlierOpeners = openerHistory.previous;
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between
@@ -1859,7 +1904,7 @@ export class LiveSessionOwner {
       // still names what the table holds.
       const armedAlarms = activeAlarms(tx);
       const alarmNote = armedAlarmsNote(armedAlarms);
-      const seededSummaries = guardSeededSummaries(tx, storedSummaries);
+      const seededSummaries = guardSeededSummaries(tx, storedSummaries, { now, timeZone });
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
@@ -1869,10 +1914,11 @@ export class LiveSessionOwner {
       const openerPlan = buildOpeningOptions({ candidates: seededSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: openLoopCooling ? [] : guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now,
-          staleRefusedNoteSessions(tx, assistantId))),
+          staleRefusedNoteSessions(tx, assistantId)), { now, timeZone }),
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
+        recentOpenings: openerHistory.recent,
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
@@ -1933,7 +1979,11 @@ export class LiveSessionOwner {
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '
         + missedAlarms.map(alarm => `${new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))} ${JSON.stringify(String(alarm.label ?? ''))}`).join('; ') + '.' : '';
       for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
+      // C-CONNWAIT: a capability fact, not a scripted apology or a late schema update.
+      const missingToolGroups = incompleteConnectorTools(this.#tools?.status?.().endpoints ?? []);
+      const missingToolsFact = missingToolGroups.length ? '\n\nHost capability fact: these configured tool groups are unavailable for this call: ' + JSON.stringify(missingToolGroups) + '. Tools are fixed at call open.' : '';
+      if (missingToolGroups.length) hostLogEvent({ event: 'live_tools_incomplete', groups: missingToolGroups });
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + missingToolsFact + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
@@ -2738,7 +2788,8 @@ export class LiveSessionOwner {
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
-      msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+      msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt),
+      ...this.#stallFacts(handle) });
     hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
@@ -3002,7 +3053,8 @@ export class LiveSessionOwner {
           // the debt rung is the one nudge. A second one here named the same wait twice and made the owner's first
           // audible recovery look like two.
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
-            msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+            msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt),
+            ...this.#stallFacts(handle) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
           // O1b-A (D12-3): a turn that never became audible is a typed stall, with the age it reached and what the
           // watchdog could see of it, so it is a receipt instead of an absence.
@@ -3620,7 +3672,8 @@ export class LiveSessionOwner {
     const cause = this.#upstreamCause(handle, reason);
     handle.quietRebuild = trigger === 'no_output_after_ambient';
     hostLogEvent({ event: 'live_rebuild', trigger, cause, liveSessionId: handle.liveSessionId, generation: handle.generation,
-      ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }) });
+      ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }),
+      ...this.#stallFacts(handle) });
     this.#cancelSpeakingHold(handle);
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));

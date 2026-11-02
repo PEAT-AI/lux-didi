@@ -138,6 +138,12 @@ assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.say.includes('nothing is ope
 assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech.length > 0, true, 'a refused binding carries a fix');
 assert.deepEqual([...open.OPEN_WEB_PARAMETERS.properties.kind.enum].sort(), ['maps', 'search', 'site'], 'the web kind set is closed');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
+// C-OPENER 10.9: the field calls said a waiting phrase with no call behind it, and once after a direct ask.
+// The text she reads now ties the wait to a response that really makes a call, so the rule is asserted where
+// it is guidance, never as a line she is told to say.
+assert.ok(voice.includes('response that really makes a call'), 'the wait is tied to a response with a real call');
+assert.ok(voice.includes('direct ask gets the call'), 'a direct ask gets the call, not an announcement');
+assert.ok(!voice.includes('need a moment'), 'no text invites a wait without a call behind it');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
 console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
+import { alarmDistance, parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
 import { checkOwnerTime, type TimeSpec } from '../tools/time-check.js';
 
 // Synthetic words and a fixed instant only. These tests never use the system clock.
@@ -364,4 +364,26 @@ test('T-R1 counts: how the checker reads this file\'s golden rows', () => {
   console.log(`C-TIME golden checker reading: ${JSON.stringify(goldenReading)} over ${total} read rows`);
   assert.ok(total >= 12, `every migrated golden row is counted (${total})`);
   assert.ok(goldenReading.unique >= 8, `most golden rows state one settled time (${JSON.stringify(goldenReading)})`);
+});
+
+// C-DIAG109: the read-back clock and the distance are the host's own figures, and both are read from the
+// clock the tool runs on. The alarm itself still resolves from the ask's clock, so a slow tool cannot move it.
+test('C-DIAG109: the read-back clock and distance are the execution clock, not the ask stamp', () => {
+  const askAt = now;
+  const ranAt = askAt + 3 * 60_000;
+  const result = parseAlarmTime('set an alarm in five minutes', askAt, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.fireAtUtc, askAt + 5 * 60_000, 'the alarm keeps the ask-time reading');
+  const readBack = alarmDistance(result.fireAtUtc, tz, ranAt);
+  assert.equal(readBack.nowLocalTime, '21:03');
+  assert.equal(readBack.minutesAway, 2);
+});
+
+test('C-DIAG109: a long session is given the clock it is in, never the clock the call opened on', () => {
+  // The call opened at 21:00 local and this ask arrives 41 minutes later; the seed prompt cannot know that.
+  const late = now + 41 * 60_000;
+  const readBack = alarmDistance(late + 5 * 60_000, tz, late);
+  assert.equal(readBack.nowLocalTime, '21:41');
+  assert.equal(readBack.minutesAway, 5);
 });

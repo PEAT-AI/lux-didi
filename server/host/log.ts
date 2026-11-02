@@ -1,3 +1,4 @@
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
@@ -208,6 +209,18 @@ const isSafeMembers = (value: unknown, allowed: readonly string[]): value is str
 const isSafeWord = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+/**
+ * C-DIAG109: the closed pair a stall or rebuild line may carry about the response the owner final earned.
+ * The two fields arrive together or not at all: a created response has an age, an absent one has none.
+ */
+const responsePair = (value: Record<string, unknown>): { responseCreated: boolean; msSinceResponseCreated: number | null } | Record<string, never> | undefined => {
+  if (!Object.hasOwn(value, 'responseCreated')) return {};
+  if (typeof value.responseCreated !== 'boolean') return undefined;
+  if (value.responseCreated) {
+    return isSafeCount(value.msSinceResponseCreated) ? { responseCreated: true, msSinceResponseCreated: value.msSinceResponseCreated } : undefined;
+  }
+  return value.msSinceResponseCreated === null ? { responseCreated: false, msSinceResponseCreated: null } : undefined;
+};
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
 const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification', 'alarm_relaunch'];
 /** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
@@ -412,6 +425,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
+  if (value.event === 'gate_decision') {
+    // C-NOTEGATE (#828): the free gate's answer as closed fields: which tool, which decision, which closed
+    // code, the two fence positions and whether any owner final existed. Never a word of his.
+    if (!closedKeys(value, ['code', 'decision', 'event', 'exposure', 'owner', 'ownerFinal', 'tool'])) return;
+    if (!isSafeWord(value.tool) || !isSafeWord(value.code)) return;
+    if (value.decision !== 'allowed' && value.decision !== 'refused') return;
+    if (!isSafeCount(value.owner) || !isSafeCount(value.exposure)) return;
+    if (typeof value.ownerFinal !== 'boolean') return;
+    return { event: 'gate_decision', tool: value.tool, decision: value.decision, code: value.code,
+      owner: value.owner, exposure: value.exposure, ownerFinal: value.ownerFinal };
+  }
   // W1030/WT-R2: the write tools' grant and its spend reach the audit trail beside the read tools'.
   if (['open_audit', 'alarm_audit', 'lux_note_audit', 'compose_audit'].includes(String(value.event)) && 'grantKind' in value) {
     if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;
@@ -549,6 +573,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.tool !== 'string' || !/^[a-zA-Z0-9_]{1,128}$/.test(value.tool)) return;
     return { event: value.event, endpointId: value.endpointId, tool: value.tool };
   }
+  if (value.event === 'live_tools_incomplete') {
+    if (Object.keys(value).sort().join(',') !== 'event,groups' || !Array.isArray(value.groups)
+      || value.groups.length === 0 || value.groups.length > Object.keys(CONNECTOR_DESCRIPTORS).length) return;
+    const seen = new Set<string>();
+    for (const group of value.groups) {
+      if (!group || typeof group !== 'object' || Object.keys(group).sort().join(',') !== 'connector,missingEndpoints,missingTools,reason'
+        || typeof group.connector !== 'string' || !Object.hasOwn(CONNECTOR_DESCRIPTORS, group.connector) || seen.has(group.connector)
+        || !Number.isSafeInteger(group.missingEndpoints) || group.missingEndpoints < 1
+        || !Number.isSafeInteger(group.missingTools) || group.missingTools < 0
+        || !['deadline', 'failed'].includes(group.reason)) return;
+      seen.add(group.connector);
+    }
+    return { event: 'live_tools_incomplete', groups: value.groups.map(group => ({ connector: group.connector,
+      missingEndpoints: group.missingEndpoints, missingTools: group.missingTools, reason: group.reason })) };
+  }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
@@ -556,17 +595,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
+    const hasExceptionClass = Object.prototype.hasOwnProperty.call(value, 'exceptionClass');
     const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
     const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
-    const allowed = ['connector', 'event', 'stage', ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    const allowed = ['connector', 'event', 'stage', ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
+    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(String(value.exceptionClass))) return;
     if (hasReason && !token(value.reason)) return;
     if (hasException && !token(value.exceptionCode)) return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
+    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'tool_classified_failure') {
     // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log
@@ -864,20 +905,31 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'tool_arguments_rejected') {
     // C-ARGS: closed shape. One `path:keyword` token per violation, together, and never a value: the
     // keyword is a rule name the tool's own predicate declares, the path is the argument key it names.
-    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'violations', 'reason'].sort().join(',')) return;
+    const shapeKeys = Object.keys(value).sort().join(',');
+    const plainKeys = ['event', 'tool', 'violations', 'reason'].sort().join(',');
+    const fieldKeys = ['event', 'tool', 'violations', 'reason', 'argumentFields'].sort().join(',');
+    if (shapeKeys !== plainKeys && shapeKeys !== fieldKeys) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const violationPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:[a-z][a-z0-9_]{0,47}$/u;
     /** The closed keyword set: the rule names the live tools' own rejection predicates declare. A new rule
      *  name belongs here, so an unknown word can never carry a value into the line. */
     const VIOLATION_KEYWORDS: ReadonlySet<string> = new Set(['unknown_key', 'unknown', 'not_object', 'type', 'empty', 'long',
       'placeholder', 'min2', 'format', 'range', 'required', 'not_for_person', 'not_for_channel', 'not_for_intent',
-      'needs_conversation', 'one_conversation']);
+      'needs_conversation', 'one_conversation', 'undeclared', 'date_unreadable', 'clock_format', 'amount_range', 'refused',
+      'unit_value', 'timezone_value', 'mode_unknown', 'mode_ambiguous']);
     const named = (violation: string): boolean => violationPattern.test(violation)
       && VIOLATION_KEYWORDS.has(violation.slice(violation.indexOf(':') + 1));
     if (!token(value.tool)) return;
     if (!Array.isArray(value.violations) || value.violations.length > 24 || value.violations.some(violation => typeof violation !== 'string' || !named(violation))) return;
     if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
-    return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason };
+    // C-ALARM: the key names and value types of the refused arguments, closed to a `path:type` token,
+    // so a later audit sees which field the model guessed and never what his own words were. It carries
+    // its own closed name: `fields` was the declared-shape list a past decision removed for good.
+    const argumentsField = (v: unknown): v is string => typeof v === 'string'
+      && /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}\.)?[A-Za-z_][A-Za-z0-9_]{0,63}:(?:string|number|boolean|object|array|null|empty)$/u.test(v);
+    if (value.argumentFields !== undefined && (!Array.isArray(value.argumentFields) || value.argumentFields.length > 32 || value.argumentFields.some(field => !argumentsField(field)))) return;
+    return { event: 'tool_arguments_rejected', tool: value.tool, violations: value.violations, reason: value.reason,
+      ...(value.argumentFields !== undefined ? { argumentFields: value.argumentFields } : {}) };
   }
   if (value.event === 'tool_arguments_normalized') {
     // C-ARGS: the dropped-key telemetry, a closed event of its own: `path:reason`, the reason from the
@@ -1138,10 +1190,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // Two waits, both durations and never any turn content: E1's gap between input final and first audio,
     // and D3's stall receipt, how long the answer was owed and how long since any audible output.
     const stallKeys = ['event', 'msSinceTool', 'msSinceAudible'].sort().join(',');
-    if (Object.keys(value).sort().join(',') === stallKeys) {
+    const response = responsePair(value);
+    if (response === undefined) return;
+    const stalled = ['event', 'msSinceTool', 'msSinceAudible',
+      ...(Object.hasOwn(value, 'responseCreated') ? ['responseCreated', 'msSinceResponseCreated'] : [])].sort().join(',');
+    if (Object.keys(value).sort().join(',') === stallKeys || Object.keys(value).sort().join(',') === stalled) {
       if (!isSafeCount(value.msSinceTool)) return;
       if (!(value.msSinceAudible === null || isSafeCount(value.msSinceAudible))) return;
-      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible };
+      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible, ...response };
     }
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
@@ -1291,7 +1347,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
     // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
     const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
-    const extended = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    const response = responsePair(value);
+    if (response === undefined) return;
+    const base = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    const extended = Object.hasOwn(value, 'responseCreated') ? [...base, 'responseCreated', 'msSinceResponseCreated'] : base;
     if (!closedKeys(value, extended)) return;
     if (!isSafeMember(value.trigger, LIVE_REBUILD_TRIGGERS)) return;
     if (!isSafeMember(value.cause, LOG_CAUSES)) return;
@@ -1299,9 +1358,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.hasOwn(value, 'closeCode')) {
       if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
       return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
-        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason };
+        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason, ...response };
     }
-    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
   }
   if (value.event === 'research_context_rebuild') {
     // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the

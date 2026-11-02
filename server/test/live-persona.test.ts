@@ -10,7 +10,7 @@ import {
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
-  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, type EarlierConversationCandidate,
+  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, OPENER_NOVELTY_WINDOW_MS, type EarlierConversationCandidate, type RecentOpening,
   EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
@@ -372,10 +372,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '32256596c59bbca3a045a06aed551b7c9b80f5a56841c63873cb72525d22a398');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
+  assert.equal(sha(NAYA_TOOLS), 'dfdc3e2eebf54889228c2809474385a857bdfd5021ce8466db0837f5ffc8706b');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -711,7 +711,7 @@ const WRAPPER_3O_CHARS = 6603;
 const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
+    'Do not announce routine lookups or fill the wait with status updates. A wait belongs only to a response that really makes a call, and it says nothing about work you have not started; a direct ask gets the call, not an announcement of it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask and answer your own question.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
@@ -1153,6 +1153,53 @@ test('3u: health, family, fitness, sleep and personal habits are never an opener
   assert.equal(optionOf(mixed, 'open-loop')?.topic, 'the tax form is still to be filed', 'the work loop is offered, its attribution dropped so the line reads as a phrase');
   assert.ok(!mixed.section.includes('hospital'), 'the health sentence never reaches the plan');
   assert.ok(mixed.options.every(option => (OPENING_OPTION_KINDS as readonly string[]).includes(option.kind)), 'the kinds stay a closed set');
+});
+
+// --- C-OPENER 10.9: the plan knows what the last openings used, not only what they were offered ---
+
+const recent = (kind: "calendar" | "open-loop" | "recent-thread", topic: string, at: number): RecentOpening => ({ kind, topic, at });
+
+test('C-OPENER: a kind the last opening used inside the window is not offered again', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const first = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0 });
+  assert.equal(optionOf(first, 'calendar')?.topic, '15:00 review', 'the first call of the burst offers the calendar');
+  const used: readonly RecentOpening[] = [{ ...recent('calendar', '15:00 review', NOW_3U), at: NOW_3U }];
+  const second = buildOpeningOptions({ candidates, now: NOW_3U + 120_000, timeZone: 'UTC',
+    calendar: '15:00 review', rotation: 1, recentOpenings: used });
+  assert.equal(optionOf(second, 'calendar'), undefined, 'the calendar kind the last opening used is closed inside the window');
+  assert.ok(second.options.length <= 1, 'the second call plans something else, or nothing');
+});
+
+test('C-OPENER: three calls inside the window plan three different openings, then a plain greeting', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const clock = NOW_3U;
+  const first = buildOpeningOptions({ candidates, now: clock, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)] });
+  const kinds = first.options.map(option => option.kind);
+  assert.ok(kinds.includes('calendar') && kinds.length >= 2, 'the first of the burst plans more than one kind');
+  // Every kind the first call used, recorded as a key, closes for the calls that follow inside the window.
+  const used = first.options.map(option => recent(option.kind, option.topic, clock));
+  const second = buildOpeningOptions({ candidates, now: clock + 90_000, timeZone: 'UTC', calendar: '15:00 review', rotation: 1,
+    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)], recentOpenings: used });
+  assert.equal(second.options.length, 0, 'nothing new exists, so the second call offers no option at all');
+  assert.equal(second.section, '', 'and no plan section, so she opens with a plain greeting');
+});
+
+test('C-OPENER: an opening older than the window closes nothing, and a quick re-call closes the bit it used', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const stale = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - OPENER_NOVELTY_WINDOW_MS - 1_000 }] });
+  assert.equal(optionOf(stale, 'calendar')?.topic, '15:00 review', 'an hour old opening leaves the calendar open');
+  const quick = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - 5_000 }] });
+  assert.equal(optionOf(quick, 'calendar'), undefined, 'a re-call five seconds after a stop does not re-run the same bit');
+});
+
+test('C-OPENER: an opening that used the same subject in different words still closes that subject', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
+  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    recentOpenings: [{ kind: 'recent-thread', topic: 'The invoice is still to be sent.', at: NOW_3U - 60_000 }] });
+  assert.equal(optionOf(plan, 'recent-thread'), undefined, 'the topic key, not the wording, closes the subject');
 });
 
 // --- contract 1023 N8: the plan draws on the last sessions, never on narration or a fragment -----
@@ -1639,4 +1686,16 @@ test('W1030: the four write abilities are stated once with the never-send, never
   assert.match(NAYA_WRITE_SURFACE, /one this call made or one he named that a calendar read here returned/u);
   assert.match(NAYA_WRITE_SURFACE, /say its cause in your words, never blame him/u);
   assert.match(NAYA_WRITE_SURFACE, /a write waits for his next words: ask a one-word yes/u);
+});
+
+// --- C-OPENER 10.9: a wait belongs to a response that really makes a call ------------------------
+
+test('C-OPENER: the wait guidance is meta, ties a wait to a real call, and pins no line to say', () => {
+  assert.ok(NAYA_VOICE_TOOLS.includes('never use a stock waiting line'), 'the stock waiting line ban stays');
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /need a moment/u, 'no text invites a wait with no call behind it');
+  assert.match(NAYA_VOICE_TOOLS, /response that really makes a call/u, 'the wait is tied to a real call');
+  assert.match(NAYA_VOICE_TOOLS, /direct ask gets the call/u, 'a direct ask gets the call, not an announcement');
+  // No recitable line was added: the wait guidance never puts a wait into quotes for her to repeat.
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
+    'the guidance offers no sample waiting line');
 });

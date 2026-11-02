@@ -92,9 +92,14 @@ if [ -n "$signing_identity" ] && is_adhoc_requirement "$built_requirement"; then
 fi
 
 mkdir -p "$target_dir"
+. "$script_dir/lib/timing.sh"
+started=$SECONDS
+step_started=$SECONDS
 ditto "$built" "$stage"
 codesign --verify --deep --strict "$stage" || { echo "install-macos-app.sh: staged copy failed verification" >&2; rm -rf "$stage"; exit 1; }
 
+timing_step stage-copy "$((SECONDS - step_started))"
+step_started=$SECONDS
 rollback=""
 if [ -e "$target" ]; then
   rollback="$target.rollback-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -109,20 +114,24 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
   echo "install-macos-app.sh: post-swap validation failed; prior app restored" >&2
   exit 1
 fi
+timing_step swap "$((SECONDS - step_started))"
 
 # Installation owns only the app bundle. Configuration remains owner-controlled.
 # C-CONNECT9: an install that leaves a shipped connector unconnected is not an install. Every
 # scripts/check-installed-*.sh runs against the app just installed, and one failure restores the prior app.
+step_started=$SECONDS
 if ! bash "$script_dir/run-installed-checks.sh" "$target"; then
   rm -rf "$target"
   if [ -n "$rollback" ]; then mv "$rollback" "$target"; fi
   echo "install-macos-app.sh: an installed check failed; prior app restored" >&2
   exit 1
 fi
+timing_step installed-checks "$((SECONDS - step_started))"
 installed_requirement="$(designated_requirement "$target")"
 printf 'INSTALL-MACOS-APP designated requirement: %s\n' "${installed_requirement:-unknown}"
 if is_adhoc_requirement "$installed_requirement"; then
   printf 'INSTALL-MACOS-APP WARNING ad-hoc signature: this requirement changes every build, so the Accessibility grant will not survive the next install\n' >&2
 fi
 
+timing_total "$((SECONDS - started))" macos-install
 printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"

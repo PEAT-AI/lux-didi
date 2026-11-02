@@ -312,6 +312,12 @@ test('C-ARGS tool_arguments_rejected carries path and keyword per violation and 
   assert.equal(safeEvent(line(['limit:1e400'])), undefined, 'a number is not a keyword');
   assert.equal(safeEvent(line(['summary:cardio with Zara'])), undefined, 'free text is refused');
   assert.equal(safeEvent({ ...line(['limit:range']), fields: ['limit:number'] }), undefined, 'the shape-only key list is gone');
+  // C-ALARM: the observed key names and their value types ride their own closed name, never a value.
+  const typed = { ...line(['limit:range']), argumentFields: ['limit:number', 'time:object', 'time.date:string', 'time.amount:null', 'label:empty'] };
+  assert.deepEqual(safeEvent(typed), typed, 'a closed key name and value type per observed field');
+  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:someday'] }), undefined, 'a value is never admitted in the type place');
+  assert.equal(safeEvent({ ...typed, argumentFields: ['time.date:string\u0000'] }), undefined, 'a control character never rides the token');
+  assert.equal(safeEvent({ ...typed, argumentFields: Array.from({ length: 33 }, () => 'limit:number') }), undefined, 'the list is bounded');
 });
 test('C-ARGS tool_arguments_normalized carries the dropped keys and a closed reason, never a value', () => {
   const line = { event: 'tool_arguments_normalized', tool: 'mattermost_chat', dropped: ['channel:not_read', 'post_id:absent', 'zzz:undeclared'] };
@@ -768,9 +774,14 @@ test('direct102: open audit reports request counts and codes, never owner or tar
   const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });
   try { openAudit({ ...requests.audit('s', 'open'), refusalCode: 'none' }); }
   finally { detach(); }
-  assert.deepEqual(lines[0], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
+  assert.deepEqual(lines[0], { event: 'gate_decision', tool: 'open', decision: 'allowed', code: 'allowed', owner: 1, exposure: 0, ownerFinal: true });
+  assert.deepEqual(lines[1], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
   assert.deepEqual(safeEvent(lines[0]), lines[0]);
   assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
+  assert.equal(safeEvent({ ...lines[0], owner: -1 }), undefined);
+  assert.equal(safeEvent({ ...lines[0], decision: 'maybe' }), undefined);
+  assert.deepEqual(safeEvent(lines[1]), lines[1]);
+  assert.equal(safeEvent({ ...lines[1], words: 'secret' }), undefined);
   assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
 });
 
@@ -837,4 +848,22 @@ test('host log: alarm_speech_failed admits one closed reason and the alarm id on
   assert.equal(safeEvent({ event: 'alarm_speech_failed', alarmId: 'synthetic-alarm-1', reason: 'snapshot_mismatch', label: 'go to sport' }),
     undefined, 'the private label never enters this line');
   assert.equal(safeEvent({ event: 'alarm_speech_failed', reason: 'socket_lost' }), undefined, 'the line names the alarm');
+});
+
+// C-DIAG109: a stall and a rebuild say whether the provider announced a response for the owner final, and how
+// old that response was, so a model that never spoke and one whose answer cannot be read are told apart.
+test('C-DIAG109: a stall and a rebuild carry the owner final response pair', () => {
+  const stall = { event: 'live_dead_air', msSinceTool: 4_000, msSinceAudible: 9_000, responseCreated: true, msSinceResponseCreated: 1_500 };
+  assert.deepEqual(safeEvent(stall), stall);
+  const quiet = { event: 'live_dead_air', msSinceTool: 4_000, msSinceAudible: null, responseCreated: false, msSinceResponseCreated: null };
+  assert.deepEqual(safeEvent(quiet), quiet);
+  const rebuild = { event: 'live_rebuild', trigger: 'no_output_after_owner', cause: 'provider', liveSessionId: LIVE_SESSION_ID,
+    generation: 3, responseCreated: false, msSinceResponseCreated: null };
+  assert.deepEqual(safeEvent(rebuild), rebuild);
+  const dropped = { event: 'live_rebuild', trigger: 'line_dropped', cause: 'network', liveSessionId: LIVE_SESSION_ID, generation: 3 };
+  assert.deepEqual(safeEvent(dropped), dropped, 'a rebuild with no owner final in flight keeps its old shape');
+  // The pair is closed: a created response has an age, an absent one has none.
+  assert.equal(safeEvent({ ...stall, msSinceResponseCreated: null }), undefined);
+  assert.equal(safeEvent({ ...quiet, msSinceResponseCreated: 5 }), undefined);
+  assert.equal(safeEvent({ ...stall, responseCreated: 'yes' }), undefined);
 });

@@ -361,8 +361,9 @@
    "fire_at_utc": null,
    "tool": "set_alarm"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "ready",
+  "fire_at_utc": 1793343600000,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-30",
@@ -373,8 +374,9 @@
    "fire_at_utc": null,
    "tool": "set_alarm"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "ready",
+  "fire_at_utc": 1793343600000,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-31",
@@ -436,8 +438,9 @@
    "target": "https://example.com",
    "tool": "open_web"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-36",
@@ -463,8 +466,9 @@
    "target": "Synthetic Park",
    "tool": "open_web"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-38",
@@ -490,8 +494,9 @@
    "target": "synthetic clocks",
    "tool": "open_web"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-40",
@@ -515,8 +520,9 @@
    "tool": "open_app",
    "name": "Calculator"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-42",
@@ -540,8 +546,9 @@
    "path": "~/synthetic.txt",
    "tool": "open_file"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "case-44",
@@ -565,8 +572,9 @@
    "app": "gmail",
    "tool": "open_home"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "save-46",
@@ -610,8 +618,9 @@
   "call": {
    "tool": "remember_note"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "save-50",
@@ -655,8 +664,9 @@
   "call": {
    "tool": "save_to_vault"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "save-54",
@@ -700,8 +710,9 @@
   "call": {
    "tool": "stage_lux_note"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "AL-1",
@@ -1408,8 +1419,9 @@
   "call": {
    "tool": "remember_note"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "GA-R2-112",
@@ -1454,8 +1466,9 @@
   "call": {
    "tool": "save_to_vault"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "GA-R2-116",
@@ -1499,8 +1512,9 @@
   "call": {
    "tool": "stage_lux_note"
   },
-  "code": "no_owner_request",
-  "fire_at_utc": null
+  "code": "allowed",
+  "fire_at_utc": null,
+  "rebased": "C-NOTEGATE"
  },
  {
   "id": "GA-R2-120",

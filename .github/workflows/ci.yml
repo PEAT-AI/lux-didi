@@ -7,6 +7,12 @@ name: CI
 #
 # No macOS job: the fleet rule is ubuntu only, and the macOS checks are the ones no runner here
 # can carry.
+#
+# The ten checks run in three parallel jobs, one per group of docs/checks.md ("Check inventory").
+# Each group runs on its own machine, so ports and artifact directories cannot collide, and
+# fail-fast is off so one run reports a red in every group instead of only the first. Every check
+# still runs exactly once across the three jobs; server/test/ci-gate-groups.mjs proves the
+# partition against scripts/ci-gauntlet.sh and this file.
 
 on:
   pull_request:
@@ -30,11 +36,16 @@ env:
   VECLIB_MAXIMUM_THREADS: "1"
 
 jobs:
-  gauntlet:
-    name: Release gate (Linux)
+  gate:
+    name: Gate (${{ matrix.group }})
     runs-on: ubuntu-latest
     # A gate check past 20 minutes is a defect (docs/checks.md); the target is under 15.
     timeout-minutes: 20
+    # One leg per group. fail-fast off: a red in one group never hides a red in another.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [gateway, session, other]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -58,22 +69,31 @@ jobs:
         # a warm cache restored by setup-node it adds nothing.
         run: bash scripts/warm-npm-cache.sh
 
-      - name: Run the gate
-        run: bash scripts/ci-gauntlet.sh --ci
+      - name: Run the gate group
+        # The group runs every check it owns before it reports, so one run shows every red.
+        # Per-check and total seconds are kept for the release timing record.
+        env:
+          DIDI_TIMING_FILE: ${{ runner.temp }}/gate-timing.tsv
+        run: bash scripts/ci-gauntlet.sh --ci --group "${{ matrix.group }}"
+
+      - name: Keep the timing record
+        if: always()
+        run: cat "${{ runner.temp }}/gate-timing.tsv" || true
 
   # One status a branch protection can require, so a new gate check added to the gauntlet
-  # cannot be green by being new: any failed or cancelled job above fails this one.
+  # cannot be green by being new: a leg that failed, was cancelled or was blocked (a check that
+  # prints CHECK BLOCKED exits non-zero) fails this job, and only an all-success run passes it.
   ci-success:
     name: ci-success
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [gauntlet]
+    needs: [gate]
     if: always()
     steps:
       - name: Check the gate passed
         run: |
-          if [[ "${{ needs.gauntlet.result }}" != "success" ]]; then
-            echo "The release gate did not pass: ${{ needs.gauntlet.result }}"
+          if [[ "${{ needs.gate.result }}" != "success" ]]; then
+            echo "The release gate did not pass: ${{ needs.gate.result }}"
             exit 1
           fi
           echo "The release gate passed."

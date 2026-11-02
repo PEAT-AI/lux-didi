@@ -589,7 +589,8 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   // C-ARGS: a tool whose only rule is its validator keeps the values it was sent, so nothing is dropped
   // and the refusal itself names rule tokens only: no key, no length, and never a value of his.
   assert.equal(events.find(line => line.event === 'tool_arguments_normalized'), undefined, 'no value was repaired away');
-  assert.deepEqual(event?.violations, [], 'a validate-only tool names no rule, and never a value');
+  // DESK-R7b / C-ALARM item 3: a schema rejection names its field, never its value.
+  assert.deepEqual(event?.violations, ['view:refused'], 'a validate-only refusal names its declared field, never a value');
 });
 
 // C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema

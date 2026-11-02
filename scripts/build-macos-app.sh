@@ -21,6 +21,8 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
+. "$root/scripts/lib/timing.sh"
+started=$SECONDS
 
 app=""
 assets=""
@@ -83,6 +85,7 @@ else
   echo "build-macos-app.sh: WARNING so macOS drops the Accessibility grant on the next install; run scripts/create-signing-identity.sh" >&2
 fi
 
+step_started=$SECONDS
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/Info.plist "$app/Contents/Info.plist"
@@ -94,8 +97,10 @@ if [ -n "$bundle_id" ]; then
   echo "build-macos-app.sh: bundle identifier $bundle_id" >&2
 fi
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+timing_step bundle-skeleton "$((SECONDS - step_started))"
 
 # Canonical native compile identity. Production never defines COMPANION_TEST.
+step_started=$SECONDS
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw Resources/Info.plist)"
 [[ "$minimum_macos" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo 'build-macos-app.sh: macOS minimum must be a numeric version' >&2; exit 2; }
 # The AVFAudio boundary guard is the one Objective-C file: only Objective-C can catch the exception
@@ -109,7 +114,9 @@ minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw Resources/I
   "$cache/AVFAudioGuard.o" \
   -o "$app/Contents/MacOS/LuxDidi"
 
+timing_step native-compile "$((SECONDS - step_started))"
 if [ -n "$assets" ]; then
+  step_started=$SECONDS
   # Accepted asset-bundle layout (scripts/build-asset-bundle.sh @8b548fc).
   [ -f "$assets/Resources/node/bin/node" ] || { echo "build-macos-app.sh: accepted asset node missing" >&2; exit 2; }
   [ -f "$assets/server/node_modules/@lux-didi/service/dist/host/index.js" ] || { echo "build-macos-app.sh: accepted service host entry missing" >&2; exit 2; }
@@ -165,9 +172,11 @@ with open(path, "w") as handle:
     handle.write("\n")
 PY
   chmod 0644 "$app/Contents/Resources/didi-runtime.json"
+  timing_step accepted-assets "$((SECONDS - step_started))"
 fi
 
 # Sign nested Mach-O code first, the completed outer bundle last (TN2206).
+step_started=$SECONDS
 while IFS= read -r -d '' candidate; do
   case "$candidate" in
     "$app/Contents/MacOS/LuxDidi") continue;;
@@ -182,4 +191,6 @@ done < <(find "$app" -type f -print0)
 
 codesign --force "${sign_args[@]}" --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --deep --strict "$app"
+timing_step signing "$((SECONDS - step_started))"
+timing_total "$((SECONDS - started))" macos-app
 printf 'BUILD-MACOS-APP PASS app=%s assets=%s libs=%s\n' "$app" "${assets:-none}" "$(ls "$app/Contents/MacOS"/*.dylib 2>/dev/null | wc -l | tr -d ' ')"

@@ -1110,7 +1110,7 @@ for (const openCase of [
 });
 
 for (const scenario of [
-  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'There is no current owner request authorizing that action.' },
+  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'There is no current owner request authorizing that action; it needs your words in this session.' },
   { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },

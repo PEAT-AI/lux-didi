@@ -179,6 +179,8 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 export interface PreviousOpener { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }
 /** An opening an earlier call used, as a kind and a subject key, so the next plan prefers something else. */
 export interface UsedOpening { readonly kind: OpeningOptionKind; readonly topic: string; readonly at: number }
+/** The three newest openers the anti-repeat note and the plan rotation read. */
+const PREVIOUS_OPENER_SOURCES = 3;
 /** How many openings used inside the window are kept, so a burst of calls cannot grow this read without bound. */
 const RECENT_OPENINGS_READ = 8;
 /** The three newest earlier openers for the note, and every opening used inside the window. */
@@ -206,10 +208,10 @@ export function previousOpeners(tx: Transaction, assistantId: string, allowedCla
     if (text === '') continue;
     // Contract 1023 N8: the plan this call offered, so the next start never leads with the same subject twice.
     // C-OPENER 10.9: and what its opening actually used, as a kind and a subject key, never the words.
-    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, kinds: recorded.map(option => option.kind),
-      at: Number(row['created_at']),
+    if (previous.length < PREVIOUS_OPENER_SOURCES) previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass,
+      kinds: recorded.map(option => option.kind), at: Number(row['created_at']),
       ...(used === undefined ? {} : { topic: used.topic, used }) });
-    if (previous.length === 3 && (recentSince === undefined || Number(row['created_at']) < recentSince
+    if (previous.length === PREVIOUS_OPENER_SOURCES && (recentSince === undefined || Number(row['created_at']) < recentSince
       || recent.length >= RECENT_OPENINGS_READ)) break;
   }
   return { previous, recent };

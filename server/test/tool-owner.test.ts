@@ -1404,7 +1404,7 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
         // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
         // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
         const lines = events.slice(at).filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
-        for (const line of lines) refusedHere.push(`${String(line.reason)} ${(line.violations ?? []).join('+')}`);
+        for (const line of lines) refusedHere.push(...(line.violations ?? []));
         if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
         if (lines.length === 0) { accepted = true; break; }
       }

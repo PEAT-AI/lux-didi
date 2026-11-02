@@ -200,7 +200,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             }
             // Alarm starts use the same cached calendar digest as an ordinary call.
             if (live) await live.prepareCalendar();
-          await Promise.resolve(); // sensitivity mutant: admission removed
+          await options.beforeLiveCreate?.();
             const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName, idempotencyKey);
             if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
             // A retried start of the same occurrence replays the one session it already opened.
@@ -313,7 +313,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           // fresh cache it waits at most 1,500 ms for a read in flight, never a whole read. It cannot
           // fail the start: an absent, failed or stale read leaves the slot out.
           await live.prepareCalendar();
-          await Promise.resolve(); // sensitivity mutant: admission removed
+          await options.beforeLiveCreate?.();
           if (res.destroyed) return;
           send(res, 200, success(jobs.createWithPending ? jobs.createWithPending(String(resolved.input['inputClass']) as DataClass, key, context, resolved.input['pickupJobId'] as string | undefined) : live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
         }

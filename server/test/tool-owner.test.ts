@@ -1340,7 +1340,7 @@ const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]):
 };
 
 test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
-  const events: { event?: string; tool?: string; violations?: string[] }[] = [];
+  const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
   try {
     const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock() });

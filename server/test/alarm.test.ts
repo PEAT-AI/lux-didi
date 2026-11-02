@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { alarmDistance, parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
+import { parseAlarmTime, parseCancelScope, parseSeriesRule, seriesNextFireAt, seriesText, verifyAlarmRule } from '../tools/alarm.js';
 import { checkOwnerTime, type TimeSpec } from '../tools/time-check.js';
 
 // Synthetic words and a fixed instant only. These tests never use the system clock.
@@ -44,7 +44,8 @@ test('alarm: an unqualified wake request chooses the next occurrence in the syst
   if (result.status !== 'ready') return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, tz);
-  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore).');
+  // C-DIAG109: the confirmation also carries the host's minutes away, from 28 October 21:00 to 29 October 08:00.
+  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore). That is in 660 minutes.');
 });
 
 test('alarm: explicit morning and evening resolve without a model-supplied time', () => {
@@ -366,24 +367,23 @@ test('T-R1 counts: how the checker reads this file\'s golden rows', () => {
   assert.ok(goldenReading.unique >= 8, `most golden rows state one settled time (${JSON.stringify(goldenReading)})`);
 });
 
-// C-DIAG109: the read-back clock and the distance are the host's own figures, and both are read from the
-// clock the tool runs on. The alarm itself still resolves from the ask's clock, so a slow tool cannot move it.
-test('C-DIAG109: the read-back clock and distance are the execution clock, not the ask stamp', () => {
-  const askAt = now;
-  const ranAt = askAt + 3 * 60_000;
-  const result = parseAlarmTime('set an alarm in five minutes', askAt, tz);
+// C-DIAG109: the read-back carries the host's own clock and the minutes away, read at commit time, so a
+// clock time and a relative phrase can never disagree by her arithmetic.
+test('C-DIAG109: a set-alarm read-back carries the current local time and the minutes away', () => {
+  const result = parseAlarmTime('set an alarm in five minutes', now, tz);
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
-  assert.equal(result.fireAtUtc, askAt + 5 * 60_000, 'the alarm keeps the ask-time reading');
-  const readBack = alarmDistance(result.fireAtUtc, tz, ranAt);
-  assert.equal(readBack.nowLocalTime, '21:03');
-  assert.equal(readBack.minutesAway, 2);
+  assert.equal(result.nowLocalTime, '21:00');
+  assert.equal(result.minutesAway, 5);
+  assert.match(result.confirmation, /That is in 5 minutes\./u);
 });
 
 test('C-DIAG109: a long session is given the clock it is in, never the clock the call opened on', () => {
   // The call opened at 21:00 local and this ask arrives 41 minutes later; the seed prompt cannot know that.
   const late = now + 41 * 60_000;
-  const readBack = alarmDistance(late + 5 * 60_000, tz, late);
-  assert.equal(readBack.nowLocalTime, '21:41');
-  assert.equal(readBack.minutesAway, 5);
+  const result = parseAlarmTime('set an alarm in five minutes', late, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.nowLocalTime, '21:41');
+  assert.equal(result.minutesAway, 5);
 });

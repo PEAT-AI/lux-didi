@@ -1222,6 +1222,8 @@ test('#873 conformance: every declared alarm time shape commits an alarm row', a
       assertDeclared(time.properties, values, where);
       const args = { time: values };
       step += 1;
+      // One mutation per ask: each case is a new ask, so the last one is never a consumed request.
+      f.owner.observeAlarmOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
       // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
       const executionId = `run:${step}:0`;
       const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);

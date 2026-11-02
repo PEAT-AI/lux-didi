@@ -71,6 +71,68 @@ The three that stay local, and the reason from the script itself:
 
 A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty.
 
+### Every check in the map
+
+`config/check-map.json` names 42 check scripts. This table says what each one needs and what it
+costs, read from the scripts themselves and not from a run of each; the reference gate in
+`scripts/ci-gauntlet.sh` is exercised every pull request, so a reading is what keeps the map
+honest without turning a docs change into forty minutes of the shared Mac. `Group` is the CI group
+from the table above for the ten gate checks and `-` for a check CI does not run. `Repeats unit
+suites` counts test files this check names that another check also names, so a check marked `yes`
+runs work something else already runs. `Duration` is seconds measured by the gate's own record on
+this host (`GATE_CHECK` rows of `$DIDI_TIMING_FILE`), and `missing` where no measurement exists.
+
+| Check | Group | Platform | Prerequisites | Repeats unit suites | Duration (s) |
+| --- | --- | --- | --- | --- | --- |
+| `check-evals` | - | Linux-portable | server `node_modules` installed in this worktree; refuses a symlinked one | no | missing |
+| `check-prompt` | other | Linux-portable | server TypeScript and `@types/node` installed | yes (10 of 28 test files) | 20 |
+| `check-live-voice` | session | Linux-portable | built server and the local provider fixtures | yes (1 of 5 test files) | 68 |
+| `check-live-session` | session | Linux-portable | built server and the live suites' local provider adapters | yes (17 of 44 test files) | 571 |
+| `check-model` | - | Linux-portable | server TypeScript and `@types/node` installed | yes (2 of 2 test files) | missing |
+| `check-host` | - | Mac only | Swift toolchain, a built app bundle and the `lux-browser-slot` lease | yes (8 of 18 test files) | missing |
+| `check-host-entry` | - | Linux-portable | a clean committed tree and a built `dist` | yes (1 of 1 test file) | missing |
+| `check-service` | - | Linux-portable | `npm ci` in `server` | yes (2 of 2 test files) | missing |
+| `check-connected` | - | Linux-portable | the renderer lease and a built server and web | yes (1 of 2 test files) | missing |
+| `check-archive-scale` | - | Linux-portable | Node 26 or newer, `node_modules`, and an output path it writes | no | missing |
+| `check-api-response` | - | Linux-portable | the renderer lease, installed server and web dependencies, built `dist` | no | missing |
+| `check-live-gateway` | gateway | Linux-portable | built server and the local provider fixture | yes (8 of 8 test files) | 110 |
+| `check-domain` | - | Linux-portable | `npm ci` in `server` | yes (3 of 3 test files) | missing |
+| `check-memory-context` | - | Linux-portable | server build and `git` | yes (10 of 10 test files) | missing |
+| `check-knowledge-connector` | - | Linux-portable | built server | yes (1 of 1 test file) | missing |
+| `check-chat` | - | Linux-portable | built server | yes (10 of 17 test files) | missing |
+| `check-provider-config` | - | Linux-portable | built server | no | missing |
+| `check-credential-binding` | - | Linux-portable | built server and `git` | no | missing |
+| `check-tool-owner` | other | Linux-portable | installed TypeScript, Node types and the MCP SDK | yes (4 of 18 test files) | 18 |
+| `check-google-connector` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | yes (4 of 10 test files) | 13 |
+| `check-company-connectors` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | yes (8 of 32 test files) | 16 |
+| `check-mcp` | - | Linux-portable | npm dependencies for the MCP surface | no | missing |
+| `check-mcp-stdio` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | no | missing |
+| `check-mcp-config` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | no | missing |
+| `check-dispatch-gate` | - | Linux-portable | installed TypeScript, Node types and the MCP SDK | no | missing |
+| `check-test-sensitivity` | - | Linux-portable | `python3`, `tsc` and `git`; writes mutated copies and runs them | no | missing |
+| `check-latency-budget` | - | Linux-portable | npm dependencies and its budget test | no | missing |
+| `check-live-boundary` | - | Linux-portable | server TypeScript and `@types/node` installed | no | missing |
+| `check-native-live` | - | Mac only | `xcrun swiftc` under the compile lock and a built app bundle | yes (2 of 2 test files) | missing |
+| `check-native-conversation` | - | Mac only | a built macOS app, the renderer lease and `git` | yes (5 of 6 test files) | missing |
+| `check-macos-install` | - | Mac only | Swift toolchain, `codesign`, the installed-app paths and the renderer lease | no | missing |
+| `check-install-smoke` | other | Linux-portable | `npm` and `node` only | no | 8 |
+| `check-installed-alarm` | - | Mac only | the Swift toolchain and the installed app's shipped runtime | no | missing |
+| `check-installed-connectors` | - | Mac only | the installed app and its shipped runtime | no | missing |
+| `check-installed-open-web` | - | Mac only | the built app and the Swift toolchain | no | missing |
+| `check-pending-request` | - | Mac only | the Swift toolchain only | no | missing |
+| `check-package` | other | Linux-portable | `git`, `npm`, `tar`, `node` and an empty npm cache for the offline install | yes (1 of 3 test files) | 59 |
+| `check-selected-memory-ui` | - | Linux-portable | the renderer lease and a built server and web | yes (4 of 5 test files) | missing |
+| `check-asset-bundle` | - | Linux-portable | `git`, `node` and the asset-bundle build scripts | no | missing |
+| `check-web-unit` | other | Linux-portable | web dependencies installed | yes (2 of 24 test files) | 3 |
+| `check-docs` | - | Linux-portable | `node` only; also runs the gate inventory test | no | missing |
+| `check-combined-tree` | - | Mac only for the full union, `--static` is portable | `git`, `python3` and `swift` for the static Swift pass; runs the mapped union | yes, by design | missing |
+
+Two consequences worth naming. Nine scripts are `Mac only` (and `check-combined-tree` needs macOS
+for its full union), so they cannot move to an ubuntu runner without a rewrite that removes the
+Swift, `codesign` or installed-app dependency from each. Twenty two of the 42 run at least one test
+file another check already runs, which is where a future wagon can look for a real saving; nothing
+moves in this wagon, and the count is a file overlap, not a claim about duplicate seconds.
+
 ## Timing
 
 Release time is measured, not estimated, so the next release can say which step moved.

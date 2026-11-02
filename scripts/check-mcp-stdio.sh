@@ -25,6 +25,10 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 # server/tools imports the Live provider union type: copy its declaration module too.
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
+# DESK-R4: base-red MCP staging also needs people resolution and host event types.
+mkdir -p "$out/source/people"
+cp "$root"/server/people/*.ts "$out/source/people/"
+cp "$root/server/host/events.ts" "$out/source/host/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
 cp "$root/server/host/compose-dispatch.ts" "$out/source/host/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"

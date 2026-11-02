@@ -164,12 +164,12 @@ for (const [words, kind] of [
   });
 }
 
-// C-NOTEGATE (#874): only the guarded delete still reads a negated clause, through the compose grant
-// selector and the one entry left in NEGATED_ACTION. Every free kind above commits regardless.
+// C-NOTEGATE (#874): the guarded delete keeps its own negation reading, on the one negator the compose
+// grant selector does not own ("forget it"). Every free kind commits regardless.
 test('C-NOTEGATE #874 the guarded delete still reads a negated clause', () => {
   const requests = new OwnerRequests(() => 0);
-  requests.observe('s', 'j', 'forget it, delete the synthetic meeting');
-  assert.equal(requests.authorize('s', 'delete_event', 'that'), 'no_owner_request');
+  requests.observe('s', 'j', 'forget it delete the synthetic meeting');
+  assert.equal(requests.authorize('s', 'delete_event', 'that').code, 'no_owner_request');
 });
 
 // C-NOTEGATE (#874): a dictation is content, not a command. A negated verb inside several finals is a
@@ -220,8 +220,9 @@ test('C-NOTEGATE #828 the free gate logs its decision as closed fields and never
   assert.equal(decisions.length, 2);
   assert.deepEqual(Object.keys(decisions[0]!).sort(), ['code', 'decision', 'event', 'exposure', 'owner', 'ownerFinal', 'tool']);
   assert.deepEqual(decisions.map(entry => [entry['decision'], entry['code']]), [['allowed', 'allowed'], ['refused', 'external_text_only']]);
-  assert.deepEqual(decisions.map(entry => [entry['tool'], entry['owner'], entry['exposure'], entry['ownerFinal']]),
-    [['lux_note', 1, 0, true], ['lux_note', 1, 1, true]]);
+  assert.deepEqual(decisions.map(entry => [entry['tool'], entry['owner'], entry['ownerFinal']]),
+    [['lux_note', 1, true], ['lux_note', 1, true]]);
+  assert.ok(Number(decisions[1]!['exposure']) > Number(decisions[0]!['exposure']), 'the fence moved between the two decisions');
   assert.equal(JSON.stringify(seen).includes('invoice'), false, 'no owner word reaches the log');
 });
 

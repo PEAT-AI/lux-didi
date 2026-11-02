@@ -47,11 +47,11 @@ function dispatchedFailureCode(reason: string): ToolFailureCode {
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const TIME_PARAMETER = {
   type: 'object',
-  description: 'The time he stated in this ask, never an earlier one. A wall time is his clock and the day he named, in his zone. A relative time is a span he said.',
+  description: 'The time he stated in this ask, never an earlier one. Wall: his clock and his day. Relative: a span he said.',
   properties: {
-    mode: { type: 'string', enum: ['wall', 'relative'], description: 'wall for a clock time on a day, relative for a span. Omit it when the other fields make it clear.' },
-    date: { type: 'string', description: 'wall only: today, tomorrow, a weekday name, or YYYY-MM-DD. Omit it for today.' },
-    local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never a UTC conversion.' },
+    mode: { type: 'string', enum: ['wall', 'relative'], description: 'wall or relative; omit it when the fields make it clear.' },
+    date: { type: 'string', description: 'wall only: today, tomorrow, a weekday name, or YYYY-MM-DD. Omit for today.' },
+    local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never UTC.' },
     timezone: { type: 'string', description: 'Only when he named a zone; an IANA name such as Europe/Berlin.' },
     amount: { type: 'number', description: 'relative only: a positive count. unit: minutes or hours.' },
     unit: { type: 'string', enum: ['minutes', 'hours'] },

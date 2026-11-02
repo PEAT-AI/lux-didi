@@ -1309,9 +1309,23 @@ test('#873 conformance: create_event commits from the declared shape and from th
 
 // AL-R1: the declaration is the whole contract the model can read, so every object it declares names
 // its properties and a value built only from it is never refused as a schema failure.
+/**
+ * The choices the declaration states: its own enum, or the original schema the provider dialect appends
+ * to the description, which is the only place a collapsed enum's choices reach the model.
+ */
+const statedChoices = (schema: DeclaredSchema): unknown[] => {
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum;
+  const description = typeof schema.description === 'string' ? schema.description : '';
+  const at = description.lastIndexOf('Original schema: ');
+  if (at < 0) return [];
+  try {
+    const original = JSON.parse(description.slice(at + 'Original schema: '.length).trim()) as { enum?: unknown };
+    return Array.isArray(original.enum) ? original.enum : [];
+  } catch { return []; }
+};
 const sampleOf = (schema: DeclaredSchema): unknown => {
-  const choices = schema.enum;
-  if (Array.isArray(choices) && choices.length > 0) return choices[0];
+  const choices = statedChoices(schema);
+  if (choices.length > 0) return choices[0];
   switch (String(schema.type ?? '').toUpperCase()) {
     case 'STRING': return 'synthetic';
     case 'INTEGER': case 'NUMBER': return 1;

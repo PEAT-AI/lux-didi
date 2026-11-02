@@ -179,7 +179,7 @@
         "reason": "the base refuses the declared open_web argument shape (kind/target) for every ask: no per-intent normalizer names the field it reads (D5). C-ARGS fixes this."
       }
     },
-{
+    {
       "id": "note-dictation-negated-verb-saves",
       "why": "C-NOTEGATE (#874): a long dictation that denies a verb is content, not a withdrawal of the open owner call. The save the corpus asks for at the end must commit on the model's first stage_lux_note call, so the vault receives the note.",
       "families": [
@@ -212,7 +212,7 @@
         "status": "PASS"
       }
     },
-{
+    {
       "id": "note-direct-save-commits",
       "why": "A direct save ask with no negation anywhere still commits on the first call, so the #874 fix widens nothing.",
       "families": [
@@ -242,7 +242,7 @@
         "status": "PASS"
       }
     },
-{
+    {
       "id": "note-without-owner-final-refuses",
       "why": "P-R6: with no owner final in the session no write is authorized at all, and nothing reaches the vault. The gate names its own code no_owner_request; the live call refuses it one layer earlier, so this scenario pins only that nothing is dispatched.",
       "families": [
@@ -267,41 +267,27 @@
         "status": "PASS"
       }
     },
-{
+    {
       "id": "note-after-outside-text-refuses",
-      "why": "The fence is untouched: third-party text handed to the model after his last final refuses the save external_text_only and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
+      "why": "The fence is untouched: a knowledge read that hands outside text to the model after his last final refuses the save external_text_only, and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
       "families": [
         "knowledge"
       ],
-      "researchWeb": true,
       "finals": [
-        "What is the state of the synthetic bridge?"
+        "Look up the synthetic bridge in my knowledge."
       ],
       "steps": [
         {
-          "tool": "research",
+          "tool": "search_knowledge",
           "args": {
-            "action": "start",
-            "question": "What is the state of the synthetic bridge?",
-            "topic": "synthetic bridge",
-            "sources": "knowledge"
+            "query": "synthetic bridge",
+            "limit": 3
           },
           "expect": {
-            "responseNot": [
-              "turn_spent"
-            ]
-          }
-        },
-        {
-          "tool": "research",
-          "args": {
-            "action": "continue",
-            "researchId": "SYNTHETIC-RESEARCH-ID"
-          },
-          "expect": {
-            "responseNot": [
-              "turn_spent"
-            ]
+            "dispatch": {
+              "connector": "knowledge",
+              "tool": "search_knowledge"
+            }
           }
         },
         {

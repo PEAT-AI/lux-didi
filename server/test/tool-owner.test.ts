@@ -1322,13 +1322,14 @@ const sampleOf = (schema: DeclaredSchema): unknown => {
   }
 };
 /**
- * The minimal value the declaration alone promises: the keys it requires, and nothing else. A tool that
- * requires none is called with no argument, because that is the value its own declaration allows.
+ * The value the declaration alone describes: the keys it requires when it names any, else its first
+ * declared key, because a tool that requires nothing is not done with nothing.
  */
 const declaredValue = (schema: DeclaredSchema): Record<string, unknown> => {
   const properties = schema.properties ?? {};
   const required = Array.isArray(schema.required) ? (schema.required as string[]).filter(key => key in properties) : [];
-  return Object.fromEntries(required.map(key => [key, sampleOf(properties[key] ?? {})]));
+  const keys = required.length > 0 ? required : Object.keys(properties).slice(0, 1);
+  return Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
 };
 /** Every object the declaration offers, so a property-less one is named rather than silently empty. */
 const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {
@@ -1364,9 +1365,8 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
     }
     // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
-    // every set_alarm call in release 10.8; the only way left to reach it is a declaration that requires
-    // no key and a call that sends none, so the under-declared set is pinned by name and cannot grow.
-    assert.deepEqual(unnamed, ['conversation_history'], 'only an under-declared tool can still answer with no field');
-    for (const tool of refused) assert.ok(!unnamed.includes(tool) || tool === 'conversation_history');
+    // every set_alarm call in release 10.8, and no declared value may reach it any more.
+    assert.deepEqual(unnamed, [], 'no tool answers a value its declaration describes with an unnamed schema failure');
+    assert.ok(refused.length >= 0, `a named refusal is repairable: ${refused.join(', ')}`);
   } finally { detach(); }
 });

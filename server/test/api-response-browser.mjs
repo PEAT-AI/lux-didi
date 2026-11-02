@@ -40,7 +40,7 @@ async function runCase(browser, id) {
   await mkdir(state, { recursive: true });
   const started = performance.now();
   const proof = { sha, case: id, attempts: [], exceptions: [], firstExceptions: [], browserErrors: [], transportCalls: 0 };
-  let collecting = false, child, context, page, cdp, stderr = '';
+  let collecting = false, watching = true, child, context, page, cdp, stderr = '';
   try {
     child = fork(join(root, 'server/dist/test/connected-process.js'), [state, join(root, 'web/dist'), '0'],
       { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
@@ -118,8 +118,8 @@ async function runCase(browser, id) {
           if (collecting) proof.firstExceptions.push({ ...result.result.value, pauseReason: event.reason });
           if (result.result.value?.code === 'AUTHORITY_CHANGED') markAuthorityChanged();
         }
-      } catch (error) { proof.browserErrors.push(`Exception observation: ${error.message}`); }
-      finally { await cdp.send('Debugger.resume').catch(error => proof.browserErrors.push(`Debugger resume: ${error.message}`)); }
+      } catch (error) { if (watching) proof.browserErrors.push(`Exception observation: ${error.message}`); }
+      finally { await cdp.send('Debugger.resume').catch(error => { if (watching) proof.browserErrors.push(`Debugger resume: ${error.message}`); }); }
     });
     await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
 
@@ -177,6 +177,7 @@ async function runCase(browser, id) {
     if (id === 'C7') {
       // The refusal is observed; stop watching throws (a reload tears the execution context down)
       // so the reconnect cannot be mistaken for a browser error, then let the owner reconnect.
+      watching = false;
       await cdp.send('Debugger.setPauseOnExceptions', { state: 'none' }).catch(() => {});
       await cdp.detach().catch(() => {});
       cdp = undefined;

@@ -1170,7 +1170,7 @@ test('W1030 persona: every ability the capability line names is a live definitio
 const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
 const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
 const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
-type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown };
+type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown };
 const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
   const tool = declarations.find(candidate => candidate.name === name);
   assert.ok(tool, `the live table declares ${name}`);

@@ -1207,7 +1207,7 @@ const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: s
 
 test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
   const { declarations } = declarationsFor(liveTools(f));
   const time = declaredSchema(declarations, 'set_alarm').properties?.['time'];
   assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
@@ -1239,7 +1239,7 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
   const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
   try {
     const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
     const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
     const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
     assert.equal(refused.status, 'refused', 'an unreadable date is refused');
@@ -1260,7 +1260,7 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
 
 test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', 1_000);
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
   const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
   const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
   assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
@@ -1277,7 +1277,7 @@ test('#873 conformance: create_event commits from the declared shape and from th
   // The event tool takes the day from his own words and offers no time of its own.
   assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
   const created = async (turn: number, args: Record<string, unknown>, words: string) => {
-    f.owner.observeAlarmOwner('run', `j${turn}`, words, turn * 1_000);
+    f.owner.observeAlarmOwner('run', `j${turn}`, words, ALARM_CLOCK);
     const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
     assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
     return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];

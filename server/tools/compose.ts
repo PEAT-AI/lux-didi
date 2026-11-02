@@ -1,4 +1,4 @@
-import { parseAlarmTime, validateTimeSpec } from './alarm.js';
+import { parseAlarmTime, readTimeSpec } from './alarm.js';
 import type { TimeSpec } from './time-check.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
@@ -99,7 +99,7 @@ export function validateDraftChat(args: unknown): args is DraftChatArguments {
 }
 export function validateCreateEvent(args: unknown): args is CreateEventArgs {
   if (!keys(args, ['summary', 'time', 'duration_minutes']) || !isText(args['summary'], 200)) return false;
-  if (args['time'] !== undefined && !validateTimeSpec(args['time'])) return false;
+  if (readTimeSpec(args['time']).state === 'refused') return false;
   const minutes = args['duration_minutes'];
   return minutes === undefined || (Number.isSafeInteger(minutes) && Number(minutes) >= 5 && Number(minutes) <= 720);
 }
@@ -389,7 +389,9 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
     return await port.deleteEvent({ eventId: input.event_id, clientRequestId: context.clientRequestId });
   }
   const input = args as unknown as CreateEventArgs;
-  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName, input.time);
+  // C-ALARM: the model's flat day is read as the internal spec here, the same boundary as the alarms.
+  const time = readTimeSpec(input.time);
+  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName, time.state === 'read' ? time.spec : undefined);
   if (window.status !== 'ready') return { state: 'failed', reason: window.reason };
   const description = window.names.length > 0 ? `${input.summary}. Owner-only block; ${window.names.join(', ')} is named here and was not invited.` : `${input.summary}. Owner-only block; no invitations were sent.`;
   return await port.createEvent({ summary: input.summary, startUtc: window.startUtc, endUtc: window.endUtc, timeZone: window.timeZone, description, clientRequestId: context.clientRequestId });

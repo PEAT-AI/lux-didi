@@ -19,7 +19,7 @@ import { ALARM_IDENTITY } from '../tools/alarm.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
-import { runToolCalls } from '../tools/declarations.js';
+import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
@@ -44,7 +44,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads' }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -78,7 +78,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -98,7 +98,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}) }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
   };
 }
 
@@ -706,7 +706,8 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }) };
   const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' } }], errorContext(tool) as never);
-  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Expected an object with query \(string\), limit \(integer\)\./);
+  // AL-R1: the refusal names the declared key it is about before it states the shape.
+  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
 });
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
@@ -718,8 +719,9 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
-  // C-ARGS: a tool whose refusal is a plain validator names no rule, and the line never carries a value.
-  assert.deepEqual(event.violations, []);
+  // AL-R1: a tool whose refusal is a plain validator still names the declared key it is about, so the
+  // retry has somewhere to land, and the line never carries a value.
+  assert.deepEqual(event.violations, ['ids:refused']);
   assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
@@ -735,7 +737,8 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[] };
   assert.equal(event.tool, 'create_event');
-  assert.deepEqual(event.violations, [], 'a validate-only write names no rule');
+  // AL-R1: a refusal names the declared key it is about, here the required one that never arrived.
+  assert.deepEqual(event.violations, ['ids:required'], 'a refusal names the field it is about');
   const logged = JSON.stringify(event);
   for (const value of ['cardio with Zara', '1.5', 'true']) {
     assert.equal(logged.includes(value), false, `no value of his reaches the log: ${value}`);
@@ -795,7 +798,7 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
   // so the one call he made still sets the alarm he did ask for.
   // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
-  const eleven = { mode: 'wall', date: { kind: 'today' }, local_time: '11:00' };
+  const eleven = { mode: 'wall', date: 'today', local_time: '11:00' };
   const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily', time: eleven }), { kind: 'daily', time: eleven }, 1);
   // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
   assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
@@ -1159,4 +1162,309 @@ test('W1030 persona: every ability the capability line names is a live definitio
     assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the persona names ${ability}`);
     assert.ok(names.includes(ability), `${ability} is a live definition`);
   }
+});
+
+// #873 C-ALARM: every argument object below is built from the DECLARED schema as the live provider
+// receives it after the adapter conversion, then driven through the production call path to a
+// committed row. No provider call is made: the conversion and the handler are the whole surface.
+const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
+const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
+const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
+type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown; anyOf?: unknown; pattern?: unknown; minLength?: unknown; maxLength?: unknown; minimum?: unknown };
+const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
+  const tool = declarations.find(candidate => candidate.name === name);
+  assert.ok(tool, `the live table declares ${name}`);
+  return tool.parameters as DeclaredSchema;
+};
+/** Every key and value type the case sends is one the declaration states, so the model can produce it. */
+const assertDeclared = (properties: Record<string, DeclaredSchema>, values: Record<string, unknown>, where: string): void => {
+  for (const [key, value] of Object.entries(values)) {
+    const declared = properties[key];
+    assert.ok(declared !== undefined, `${where}: the declaration names ${key}`);
+    if (value === null) continue;
+    const expected = String(declared.type ?? '').toLowerCase();
+    const actual = Array.isArray(value) ? 'array' : typeof value;
+    assert.equal(actual, expected === 'integer' ? 'number' : expected, `${where}: ${key} is a declared ${expected}`);
+  }
+};
+/** One declared time shape, and the instant it must fire at on the fixed clock in the UTC host zone. */
+interface TimeCase { label: string; fields: Record<string, unknown>; fireAt: number }
+const DECLARED_TIME_CASES: readonly TimeCase[] = [
+  { label: 'today', fields: { mode: 'wall', date: 'today', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
+  { label: 'tomorrow', fields: { mode: 'wall', date: 'tomorrow', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
+  { label: 'weekday name', fields: { mode: 'wall', date: 'thursday', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
+  { label: 'iso date', fields: { mode: 'wall', date: '2030-01-05', local_time: '09:00' }, fireAt: Date.parse('2030-01-05T09:00:00Z') },
+  { label: 'no date', fields: { mode: 'wall', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
+  { label: 'relative minutes', fields: { mode: 'relative', amount: 30, unit: 'minutes' }, fireAt: ALARM_CLOCK + 30 * 60000 },
+  { label: 'relative hours', fields: { mode: 'relative', amount: 2, unit: 'hours' }, fireAt: ALARM_CLOCK + 2 * 3600000 },
+];
+/** A voice model fills every unused property: null, then an empty string, then leaves mode out. */
+const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, unknown>) => Record<string, unknown> }[] = [
+  { label: 'declared', build: fields => ({ ...fields }) },
+  { label: 'unused nulls', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : null])) },
+  { label: 'unused empty strings', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : key === 'amount' ? null : ''])) },
+  { label: 'no mode', build: fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'mode')) },
+];
+const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
+  ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+
+test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+  const { declarations } = declarationsFor(liveTools(f));
+  const time = declaredSchema(declarations, 'set_alarm').properties?.['time'];
+  assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
+  // The property is a flat string the model can produce; the nested object it used to receive was empty.
+  assert.equal(String(time.properties['date']?.type), 'STRING', 'date is declared as a string');
+  assert.equal(time.properties['date']?.properties, undefined, 'date carries no nested object');
+  let step = 0;
+  for (const timeCase of DECLARED_TIME_CASES) {
+    for (const variant of TIME_VARIANTS) {
+      const where = `${timeCase.label} / ${variant.label}`;
+      const values = variant.build(timeCase.fields);
+      assertDeclared(time.properties, values, where);
+      const args = { time: values };
+      step += 1;
+      // One mutation per ask: each case is a new ask, so the last one is never a consumed request.
+      f.owner.observeAlarmOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
+      // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
+      const executionId = `run:${step}:0`;
+      const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
+      assert.equal(outcome.status, 'completed', `${where}: ${String(outcome.reason)}`);
+      const row = f.store.transaction(tx => tx.get('SELECT fire_at_utc, tz FROM alarms WHERE id=?', [executionId]));
+      assert.ok(row, `${where} commits an alarm row`);
+      assert.equal(Number(row['fire_at_utc']), timeCase.fireAt, `${where} fires at the wall instant he named`);
+      assert.equal(String(row['tz']), 'UTC', `${where} keeps the zone it was read in`);
+    }
+  }
+});
+
+test('#873 a refusal names the date field, and the retry with a valid date commits', async t => {
+  const events: { event?: string; argumentFields?: string[]; violations?: string[] }[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
+  try {
+    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+    const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
+    const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
+    assert.equal(refused.status, 'refused', 'an unreadable date is refused');
+    assert.match(String(refused.reason), /Rejected argument: time:date_unreadable/, String(refused.reason));
+    assert.match(String(refused.reason), /date accepts today, tomorrow, a weekday name or YYYY-MM-DD/, String(refused.reason));
+    assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a refused ask arms nothing');
+    const rejected = events.find(line => line.event === 'tool_arguments_rejected');
+    assert.ok(rejected, 'the refusal reaches the log');
+    assert.deepEqual(rejected.violations, ['time:date_unreadable'], 'the violation is never empty on a schema rejection');
+    assert.deepEqual([...rejected.argumentFields ?? []].sort(), ['time.date:string', 'time.local_time:string', 'time.mode:string', 'time:object'], 'the closed fields name keys and types, never values');
+    assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
+    const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
+    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:2:0', retried), retried, 2);
+    assert.equal(retry.status, 'completed', String(retry.reason));
+    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:2:0']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
+  } finally { detach(); }
+});
+
+test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
+  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
+  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+  const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
+  const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
+  assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
+  assert.match(String(outcome.result_json), /missing_time/, 'the C-TIME boundary asks for the one time it lacks');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'nothing is armed without a time');
+});
+
+test('#873 conformance: create_event commits from the declared shape and from the same time fields', async t => {
+  const port = composePort();
+  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads', alarms: alarmClock() });
+  const { declarations } = declarationsFor(liveTools(f));
+  const declared = declaredSchema(declarations, 'create_event');
+  assert.ok(declared.properties, 'create_event declares its arguments');
+  // The event tool takes the day from his own words and offers no time of its own.
+  assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
+  const created = async (turn: number, args: Record<string, unknown>, words: string) => {
+    f.owner.observeAlarmOwner('run', `j${turn}`, words, ALARM_CLOCK);
+    const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
+    assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
+    return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
+  };
+  const fromWords = await created(1, { summary: 'cardio', duration_minutes: 45 }, 'block cardio in my calendar tomorrow at 9');
+  assert.ok(fromWords !== undefined, 'the declared shape commits the block he said');
+  assert.ok(Number(fromWords) > ALARM_CLOCK, 'the block he said is in his future');
+  // A model that fills the time anyway is understood, not refused: the same flat fields as set_alarm.
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let turn = 1;
+  for (const timeCase of DECLARED_TIME_CASES) {
+    for (const variant of TIME_VARIANTS) {
+      const where = `create_event ${timeCase.label} / ${variant.label}`;
+      turn += 1;
+      const start = await created(turn, { summary: 'focus', time: variant.build(timeCase.fields) }, 'block focus time in my calendar');
+      assert.ok(start !== undefined, `${where} commits a block`);
+      const local = new Intl.DateTimeFormat('en-GB', { timeZone: hostZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(Number(start));
+      const expected = timeCase.fields['local_time'];
+      if (typeof expected === 'string') assert.equal(local, expected, `${where} starts at the clock he named`);
+      else assert.equal(Number(start) - ALARM_CLOCK, timeCase.fireAt - ALARM_CLOCK, `${where} starts the span he named`);
+    }
+  }
+});
+
+// AL-R1: the declaration is the whole contract the model can read, so every object it declares names
+// its properties and a value built only from it is never refused as a schema failure.
+/**
+ * The schema the declaration states. The provider dialect collapses ARRAY, BOOLEAN and every enum to a
+ * STRING and appends the original schema to the description, so the true type, choices and bounds reach
+ * the model as that prose. Reading it back is what a model does with the same text.
+ */
+const declaredShape = (schema: DeclaredSchema): DeclaredSchema => {
+  const description = typeof schema.description === 'string' ? schema.description : '';
+  const at = description.lastIndexOf('Original schema: ');
+  if (at < 0) return schema;
+  try {
+    const original = JSON.parse(description.slice(at + 'Original schema: '.length).trim()) as DeclaredSchema;
+    return { ...original, description };
+  } catch { return schema; }
+};
+/** The choices the declaration states: its own enum, or the one the appended original schema carries. */
+const statedChoices = (schema: DeclaredSchema): unknown[] => {
+  const shape = declaredShape(schema);
+  return Array.isArray(shape.enum) && shape.enum.length > 0 ? shape.enum : [];
+};
+/**
+ * The strings the declaration names, most specific first: an example it gives, then the shape it asks
+ * for in its own words, then a bare word, and only the candidates its own bounds and pattern admit.
+ */
+const declaredStrings = (schema: DeclaredSchema): string[] => {
+  const shape = declaredShape(schema);
+  const text = typeof shape.description === 'string' ? shape.description : '';
+  const pool: string[] = [];
+  // The example the declaration gives in its own words, without the sentence's own punctuation.
+  const example = /\blike ([A-Za-z0-9/_.~-]{2,40})/u.exec(text)?.[1]?.replace(/[.,;:]+$/u, '');
+  if (example !== undefined && example.length >= 2) pool.push(example);
+  if (/\bHH:MM\b/u.test(text)) pool.push('09:00');
+  if (/\bYYYY-MM-DD\b/u.test(text)) pool.push('2030-01-05');
+  if (/\bIANA\b|Europe\//u.test(text)) pool.push('Europe/Berlin');
+  if (/\babsolute\b/iu.test(text)) pool.push('/synthetic');
+  pool.push('synthetic topic', 'synthetic');
+  const minLength = Number(shape.minLength ?? 1);
+  const maxLength = Number(shape.maxLength ?? 1024);
+  let pattern: RegExp | undefined;
+  if (typeof shape.pattern === 'string') { try { pattern = new RegExp(shape.pattern, 'u'); } catch { pattern = undefined; } }
+  const admitted = pool.filter(value => value.length >= minLength && value.length <= maxLength
+    && (pattern === undefined || pattern.test(value)));
+  return admitted.length > 0 ? admitted : ['synthetic'.slice(0, maxLength)];
+};
+const sampleOf = (schema: DeclaredSchema): unknown => {
+  const shape = declaredShape(schema);
+  const choices = statedChoices(shape);
+  if (choices.length > 0) return choices[0];
+  switch (String(shape.type ?? '').toUpperCase()) {
+    case 'STRING': return declaredStrings(shape)[0] ?? 'synthetic';
+    case 'INTEGER': case 'NUMBER': return Math.max(1, Number(shape.minimum ?? 1));
+    case 'BOOLEAN': return true;
+    case 'ARRAY': return [sampleOf(shape.items ?? {})];
+    case 'OBJECT': return declaredValues(shape)[0] ?? {};
+    default: return declaredStrings(shape)[0] ?? 'synthetic';
+  }
+};
+/** The keys the declaration requires: its own list, plus the first anyOf branch it states. */
+const requiredOf = (schema: DeclaredSchema): string[] => {
+  const shape = declaredShape(schema);
+  const required = Array.isArray(shape.required) ? shape.required as string[] : [];
+  const branches = Array.isArray(shape.anyOf) ? shape.anyOf as DeclaredSchema[] : [];
+  const branch = branches[0] === undefined ? [] : (Array.isArray(branches[0]!.required) ? branches[0]!.required as string[] : []);
+  return [...new Set([...required, ...branch])].filter(key => key in (shape.properties ?? {}));
+};
+/**
+ * Every value the declaration alone describes, most complete first: all of its keys, then the keys it
+ * requires, then one key, and a pair where it holds exclusive fields. A declaration that names no
+ * required key is not met by one key alone, and one that holds exclusive fields is met by the pair.
+ */
+const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
+  const shape = declaredShape(schema);
+  const properties = shape.properties ?? {};
+  const required = requiredOf(shape);
+  const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
+  const keys = Object.keys(properties);
+  const candidates = [build(keys), build(required.length > 0 ? required : keys.slice(0, 1)), ...keys.map(key => build([key]))];
+  // A declaration may hold exclusive fields it cannot mark, so a pair of them is a value it also describes.
+  if (keys.length <= 4) for (const a of keys) for (const b of keys) if (a < b) candidates.push(build([a, b]));
+  const seen = new Set<string>();
+  return candidates.filter(candidate => { const key = JSON.stringify(candidate); if (seen.has(key)) return false; seen.add(key); return true; });
+};
+/** Every object the declaration offers, so a property-less one is named rather than silently empty. */
+const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]): void => {
+  // An empty map is a tool that takes no argument; a missing map is a shape the model must guess.
+  if (String(schema.type ?? '').toUpperCase() === 'OBJECT' && schema.properties === undefined) found.push(path);
+  for (const [key, child] of Object.entries(schema.properties ?? {})) namelessObjects(child, `${path}.${key}`, found);
+  if (schema.items !== undefined) namelessObjects(schema.items, `${path}[]`, found);
+};
+
+/**
+ * The one declared tool whose own rule refuses every value a declaration can describe, with the reason it
+ * has none. AL-R2(c): a value the host issues and no declaration can describe stays here by name, with its
+ * one-line reason, and the assertion stays exact so any new refusal fails this test.
+ *
+ * read_received_body cursor: the host mints the cursor. server/tools/index.ts:357 issues it only for
+ * evidence it holds (`randomUUID()` when the lease is `remote-body`), and the tool's own validate at
+ * server/tools/index.ts:1329-1331 admits an argument only when that exact cursor is in the bodyPages map
+ * this run filled. A model that invented one is refused, and the declaration says so in its own words
+ * ("using only bodyContinuation.cursor or nextCursor from this run").
+ *
+ * What this builder does and does not establish: it builds each candidate from the declaration as the
+ * provider receives it, including the original schema the dialect appends, and only from the choices,
+ * types, bounds, examples and required and anyOf keys that declaration states. It shows that the
+ * declaration admits a value. It does not show that a real model produces that value, and it cannot
+ * prove a constraint the declaration states only as an unbounded rule, which is why the issued-only case
+ * above is named rather than built.
+ */
+const REFUSED_DECLARATIONS: readonly string[] = [
+  'read_received_body cursor:refused', // host-issued cursor, server/tools/index.ts:357 and :1329
+];
+
+test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
+  const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
+  try {
+    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock() });
+    const definitions = liveTools(f);
+    const { declarations } = declarationsFor(definitions);
+    const nameless: string[] = [];
+    const refused: string[] = [];
+    const tried: string[] = [];
+    const unnamed: string[] = [];
+    for (const declaration of declarations) namelessObjects(declaration.parameters as DeclaredSchema, declaration.name, nameless);
+    assert.deepEqual(nameless, [], 'every object parameter names its properties');
+    let step = 0;
+    for (const declaration of declarations) {
+      const definition = definitions.find(candidate => candidate.name === declaration.name);
+      assert.ok(definition, `the live table defines ${declaration.name}`);
+      // The declaration describes more than one value; the tool accepting any one of them is what
+      // conformance means, and a declaration whose every described value is refused describes nothing.
+      const refusedHere: string[] = [];
+      let accepted = false;
+      for (const args of declaredValues(declaration.parameters as DeclaredSchema)) {
+        step += 1;
+        const at = events.length;
+        await liveExecute(f, { callId: `call-${step}`, toolName: declaration.name, accountId: definition.accountId, resourceId: definition.resourceId }, args, step);
+        // A grant, a connector or a missing owner ask may refuse the call; its arguments never may be
+        // refused anonymously, which is the failure that met every set_alarm call in release 10.8.
+        const lines = events.slice(at).filter(line => line.event === 'tool_arguments_rejected' && line.tool === declaration.name);
+        for (const line of lines) refusedHere.push(...(line.violations ?? []));
+        if (lines.some(line => (line.violations ?? []).length === 0)) unnamed.push(declaration.name);
+        if (lines.length === 0) { accepted = true; break; }
+      }
+      if (!accepted) {
+        refused.push(`${declaration.name} ${refusedHere[0] ?? 'refused'}`);
+        tried.push(`${declaration.name}: ${JSON.stringify(declaredValues(declaration.parameters as DeclaredSchema))}`);
+      }
+    }
+    // A refusal that names its field is repairable. One that names nothing is the opaque answer that met
+    // every set_alarm call in release 10.8, and no declared value may reach it any more.
+    assert.deepEqual(unnamed, [], 'no tool answers a value its declaration describes with an unnamed schema failure');
+    // AL-R1: naming the rejection repairs the model's retry, not the conformance. A value the declaration
+    // alone describes is accepted, so a declaration-generated call is refused only by a tool whose own rule
+    // refuses everything its declaration describes. Those five are raised as findings against the files
+    // named above; the list is exact, so a sixth tool or a different rule on one of them fails right here.
+    assert.deepEqual([...refused].sort(), [...REFUSED_DECLARATIONS].sort(),
+      `every declared tool accepts a value built only from its declaration: ${tried.join(' | ')}`);
+  } finally { detach(); }
 });

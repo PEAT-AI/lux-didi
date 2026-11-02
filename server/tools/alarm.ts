@@ -174,39 +174,111 @@ const WEEKDAY_LIMIT = 7;
 const weekdayList = (value: unknown): value is number[] => Array.isArray(value) && value.length > 0 && value.length <= WEEKDAY_LIMIT
   && value.every(day => Number.isInteger(day) && day >= 0 && day <= 6) && new Set(value).size === value.length;
 
-function validWallDay(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const day = value as Record<string, unknown>;
-  if (day.kind === 'today' || day.kind === 'tomorrow') return Object.keys(day).length === 1;
-  if (day.kind === 'next_weekday') return Object.keys(day).length === 2 && Number.isInteger(day.weekday) && (day.weekday as number) >= 0 && (day.weekday as number) <= 6;
-  return day.kind === 'iso' && Object.keys(day).length === 2 && typeof day.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day.value);
+/** C-ALARM: the weekday names the declaration offers, Sunday first so the index is the weekday number. */
+const WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+/** The flat day the model declares, read as the internal wall day: a word he said or an ISO date. */
+function wallDayOf(value: string): WallDay | undefined {
+  const word = value.trim().toLowerCase();
+  if (word === 'today') return { kind: 'today' };
+  if (word === 'tomorrow') return { kind: 'tomorrow' };
+  const weekday = WEEKDAY_NAMES.indexOf(word as typeof WEEKDAY_NAMES[number]);
+  if (weekday >= 0) return { kind: 'next_weekday', weekday };
+  return /^\d{4}-\d{2}-\d{2}$/.test(word) ? { kind: 'iso', value: word } : undefined;
 }
 
-/** C-TIME: the closed shape of the structured time the model may supply. */
-export function validateTimeSpec(value: unknown): value is TimeSpec {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const spec = value as Record<string, unknown>;
-  if (spec.mode === 'relative') {
-    return Object.keys(spec).every(key => key === 'mode' || key === 'amount' || key === 'unit')
-      && typeof spec.amount === 'number' && Number.isFinite(spec.amount) && spec.amount > 0 && spec.amount <= 10080
-      && (spec.unit === 'minutes' || spec.unit === 'hours');
+/** Every field the time argument declares, and the ones a voice model fills when it has nothing. */
+const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
+const WALL_FIELDS: readonly string[] = ['date', 'local_time', 'timezone'];
+const RELATIVE_FIELDS: readonly string[] = ['amount', 'unit'];
+
+/** A null, an empty string or an empty list is a field the model did not fill, never a value. */
+const absentValue = (value: unknown): boolean => value === undefined || value === null || value === ''
+  || (Array.isArray(value) && value.length === 0);
+
+/** C-ALARM: what the boundary made of the model's time: read as a spec, absent, or the rule it breaks. */
+export type TimeRead = { state: 'absent' } | { state: 'read'; spec: TimeSpec } | { state: 'refused'; violation: string };
+
+/**
+ * C-ALARM: the model's flat time read as the internal spec. A field it filled with null or an empty
+ * string, and a field the chosen mode does not read, count as absent; the mode is inferred when the
+ * fields make it clear. An unknown key, an unreadable day or a clock that is not HH:MM refuses, and
+ * the violation names the rule, never a value.
+ */
+export function readTimeSpec(value: unknown): TimeRead {
+  if (absentValue(value)) return { state: 'absent' };
+  if (typeof value !== 'object' || Array.isArray(value)) return { state: 'refused', violation: 'time:not_object' };
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some(key => !(TIME_FIELDS as readonly string[]).includes(key))) return { state: 'refused', violation: 'time:unknown_key' };
+  const fields: Record<string, unknown> = {};
+  for (const key of TIME_FIELDS) if (!absentValue(raw[key])) fields[key] = raw[key];
+  if (Object.keys(fields).length === 0) return { state: 'absent' };
+  const stated = fields['mode'];
+  if (stated !== undefined && stated !== 'wall' && stated !== 'relative') return { state: 'refused', violation: 'time:mode_unknown' };
+  const wall = WALL_FIELDS.some(key => key in fields);
+  const relative = RELATIVE_FIELDS.some(key => key in fields);
+  const mode = stated ?? (wall && !relative ? 'wall' : relative && !wall ? 'relative' : undefined);
+  if (mode === undefined) return { state: 'refused', violation: 'time:mode_ambiguous' };
+  if (mode === 'relative') {
+    const amount = fields['amount'];
+    const unit = fields['unit'];
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || amount > 10080) return { state: 'refused', violation: 'time:amount_range' };
+    if (unit !== 'minutes' && unit !== 'hours') return { state: 'refused', violation: 'time:unit_value' };
+    return { state: 'read', spec: { mode: 'relative', amount, unit } };
   }
-  if (spec.mode !== 'wall') return false;
-  return Object.keys(spec).every(key => key === 'mode' || key === 'date' || key === 'local_time' || key === 'timezone')
-    && validWallDay(spec.date)
-    && typeof spec.local_time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(spec.local_time)
-    && (spec.timezone === undefined || typeof spec.timezone === 'string' && spec.timezone.length > 0 && spec.timezone.length < 64 && isZone(spec.timezone));
+  const dayWord = fields['date'];
+  const day = dayWord === undefined ? { kind: 'today' as const } : typeof dayWord === 'string' ? wallDayOf(dayWord) : undefined;
+  if (day === undefined) return { state: 'refused', violation: 'time:date_unreadable' };
+  const localTime = fields['local_time'];
+  if (typeof localTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(localTime)) return { state: 'refused', violation: 'time:clock_format' };
+  const zone = fields['timezone'];
+  if (zone !== undefined && (typeof zone !== 'string' || !isZone(zone))) return { state: 'refused', violation: 'time:timezone_value' };
+  return { state: 'read', spec: { mode: 'wall', date: day, local_time: localTime, ...(zone !== undefined ? { timezone: zone } : {}) } };
+}
+
+/** C-ALARM: one retry sentence stating what each field of the time argument accepts. */
+export const ALARM_ARGUMENT_GUIDANCE = 'Send time as an object: date accepts today, tomorrow, a weekday name or YYYY-MM-DD; local_time is HH:MM on a 24 hour clock; amount is a positive number with unit minutes or hours; timezone is an IANA zone name; kind is daily, weekdays or weekly. Omit every field the mode does not use, and omit mode itself when the fields make it clear.';
+
+const ALARM_KEYS: readonly string[] = ['id', 'time', 'label', 'kind', 'weekdays'];
+const ALARM_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
+const argumentPath = (key: string): string => ALARM_KEY_PATTERN.test(key) ? key : 'arguments';
+
+/** C-ALARM: the first argument the host cannot read, as the closed `key:rule` token the log accepts. */
+export function alarmRejection(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return 'arguments:not_object';
+  const value = args as Record<string, unknown>;
+  const undeclared = Object.keys(value).find(key => !ALARM_KEYS.includes(key));
+  if (undeclared !== undefined) return `${argumentPath(undeclared)}:undeclared`;
+  const time = readTimeSpec(value['time']);
+  if (time.state === 'refused') return time.violation;
+  const id = value['id'];
+  if (!absentValue(id) && (typeof id !== 'string' || id.length >= 200)) return 'id:format';
+  const label = value['label'];
+  if (!absentValue(label) && (typeof label !== 'string' || label.length > 200)) return 'label:long';
+  const kind = value['kind'];
+  if (!absentValue(kind) && kind !== 'daily' && kind !== 'weekdays' && kind !== 'weekly') return 'kind:type';
+  const weekdays = value['weekdays'];
+  if (!absentValue(weekdays) && !weekdayList(weekdays)) return 'weekdays:format';
+  return undefined;
+}
+
+/** C-ALARM: the model's alarm arguments read as the internal shapes, or undefined when refused. */
+export function alarmArguments(args: unknown): AlarmArguments | undefined {
+  if (alarmRejection(args) !== undefined) return undefined;
+  const value = args as Record<string, unknown>;
+  const time = readTimeSpec(value['time']);
+  const id = value['id'], label = value['label'], kind = value['kind'], weekdays = value['weekdays'];
+  return {
+    ...(absentValue(id) ? {} : { id: id as string }),
+    ...(time.state === 'read' ? { time: time.spec } : {}),
+    ...(absentValue(label) ? {} : { label: label as string }),
+    ...(absentValue(kind) ? {} : { kind: kind as SeriesKind }),
+    ...(absentValue(weekdays) ? {} : { weekdays: weekdays as number[] }),
+  };
 }
 
 export function validateAlarmArguments(args: unknown): args is AlarmArguments {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
-  const value = args as Record<string, unknown>;
-  return Object.keys(value).every(key => key === 'id' || key === 'time' || key === 'label' || key === 'kind' || key === 'weekdays')
-    && (value.id === undefined || typeof value.id === 'string' && value.id.length > 0 && value.id.length < 200)
-    && (value.time === undefined || validateTimeSpec(value.time))
-    && (value.label === undefined || typeof value.label === 'string' && value.label.length <= 200)
-    && (value.kind === undefined || value.kind === 'daily' || value.kind === 'weekdays' || value.kind === 'weekly')
-    && (value.weekdays === undefined || weekdayList(value.weekdays));
+  return alarmArguments(args) !== undefined;
 }
 
 export type SeriesKind = 'daily' | 'weekdays' | 'weekly';

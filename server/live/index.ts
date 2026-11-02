@@ -239,8 +239,9 @@ export function guardSeededLoops<T extends { readonly text: string; readonly ses
 ): readonly T[] {
   const missed = missedAlarmFacts(tx);
   return loops.map(loop => {
-    const guarded = guardMissedClaims(guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId))).text, missed);
-    return guarded.dropped === 0 ? loop : { ...loop, text: guarded.text };
+    const writes = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
+    const claims = guardMissedClaims(writes.text, missed);
+    return writes.dropped + claims.dropped === 0 ? loop : { ...loop, text: claims.text };
   }).filter(loop => loop.text !== '');
 }
 
@@ -261,8 +262,9 @@ export function guardSeededSummaries<T extends { readonly liveSessionId?: string
   return candidates.map(candidate => {
     if (candidate.liveSessionId === undefined) return candidate;
     const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
-    const guarded = guardMissedClaims(guardWriteClaims(candidate.summary, facts).text, missed);
-    return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
+    const writes = guardWriteClaims(candidate.summary, facts);
+    const claims = guardMissedClaims(writes.text, missed);
+    return writes.dropped + claims.dropped === 0 ? candidate : { ...candidate, summary: claims.text };
     // A summary whose every claim was unsupported offers nothing, so it leaves the candidate list instead of
     // rendering an earlier-conversations header with no body behind it.
   }).filter(candidate => candidate.summary.trim() !== '');

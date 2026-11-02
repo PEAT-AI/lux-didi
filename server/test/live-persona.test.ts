@@ -375,7 +375,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   assert.equal(sha(NAYA_VOICE_TOOLS), '690222da8099c686c9d32be4760ac43158ebcd981c699b22080da352146b6356');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
+  assert.equal(sha(NAYA_TOOLS), '8be2cb605825a1e0c661cde27e461900c3942426c57d1fb5f01314b511a03acc');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -711,7 +711,7 @@ const WRAPPER_3O_CHARS = 6603;
 const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
+    'Do not announce routine lookups or fill the wait with status updates. A wait belongs only to a response that really makes a call, and it says nothing about work you have not started; a direct ask gets the call, not an announcement of it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask and answer your own question.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is

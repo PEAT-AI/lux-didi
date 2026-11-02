@@ -651,7 +651,9 @@ test('C-LABELS 4: every announced look-up with no call in its turn is counted', 
     call(store, SESSION, 'announced-served', 'looked-up', 'search_knowledge', 'completed', 40, T0 + 7002);
     turn(store, SESSION, 'plain-answer', 8, T0 + 8000);
     store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['plain-answer', 'model', T0 + 8001, 'The invoice is due on the tenth.']));
-    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 5);
+    // C-OPENER 10.9: the count read 5 of these 6 because "Give me a second" was outside the listed phrasings,
+    // which is the same miss the field calls showed. Every one of them now counts, the served turn still does not.
+    assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, announced.length);
   });
 });
 

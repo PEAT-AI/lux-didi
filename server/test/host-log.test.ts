@@ -768,9 +768,14 @@ test('direct102: open audit reports request counts and codes, never owner or tar
   const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });
   try { openAudit({ ...requests.audit('s', 'open'), refusalCode: 'none' }); }
   finally { detach(); }
-  assert.deepEqual(lines[0], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
+  assert.deepEqual(lines[0], { event: 'gate_decision', tool: 'open', decision: 'allowed', code: 'allowed', owner: 1, exposure: 0, ownerFinal: true });
+  assert.deepEqual(lines[1], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
   assert.deepEqual(safeEvent(lines[0]), lines[0]);
   assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
+  assert.equal(safeEvent({ ...lines[0], owner: -1 }), undefined);
+  assert.equal(safeEvent({ ...lines[0], decision: 'maybe' }), undefined);
+  assert.deepEqual(safeEvent(lines[1]), lines[1]);
+  assert.equal(safeEvent({ ...lines[1], words: 'secret' }), undefined);
   assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
 });
 

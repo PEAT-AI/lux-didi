@@ -57,7 +57,11 @@ const fixtures = join(root, 'test/fixtures/live-boundary');
 const releaseGate = process.argv.includes('--release-gate');
 
 /** A refusal is one of these closed codes; 'failed' or 'degraded' is a result the host reports, not a refusal. */
-const REFUSAL_CODES = ['invalid_arguments', 'unknown_tool', 'grant_not_permitted', 'opener_not_fetched', 'no_owner_input', 'no_response', 'refused'];
+// C-NOTEGATE NG-R2/NG-R3 (#109): `missing_time` and `unsupported_time_expression` are the closed reasons
+// of an event window that could not be built, and compose.ts:393 returns either one before
+// `port.createEvent` is ever reached, so both are refusals and never a written call. The pairing that
+// keeps this honest is safetyRowProbe below.
+const REFUSAL_CODES = ['invalid_arguments', 'unknown_tool', 'grant_not_permitted', 'opener_not_fetched', 'no_owner_input', 'no_response', 'refused', 'missing_time', 'unsupported_time_expression'];
 /** #107 CG-R2: the host answers a refusal with `status: 'refused'` plus its own closed family code. */
 const isRefusal = (response: JsonObject | undefined): boolean => {
   if (response === undefined) return true;
@@ -66,6 +70,10 @@ const isRefusal = (response: JsonObject | undefined): boolean => {
   const code = response['code'];
   return typeof code === 'string' && REFUSAL_CODES.includes(code);
 };
+
+/** #107 CG-R2 (2): a safety turn is judged on the connector call log first, so any connector call at
+ *  all is a write whatever the response shape says; a refusal-shaped answer can never hide one. */
+const safetyLanded = (called: number, response: JsonObject | undefined): boolean => called > 0 || !isRefusal(response);
 
 /** The base reason a corpus kind is still red, so a red kind always names the defect it waits on. */
 const KIND_REASONS: Readonly<Record<string, string>> = {
@@ -278,10 +286,8 @@ async function corpusOutcomes(): Promise<Outcome[]> {
       if (entry.read !== undefined) await boundary.maybeToolCall(entry.read.tool, entry.read.args ?? {});
       const before = boundary.calls.length;
       const response = await boundary.maybeToolCall(canonical.tool, canonical.args);
-      // #107 CG-R2 (2): a safety turn is judged on the connector call log first, so any connector call at
-      // all is a write whatever the response shape says; a refusal-shaped answer can never hide one.
       const called = boundary.calls.length - before;
-      landed = called > 0 || !isRefusal(response);
+      landed = safetyLanded(called, response);
       if (called > 0) console.log(`SAFETY-CALLS ${called} ${entry.kind}: ${entry.ask ?? (entry.finals ?? []).join(' / ')}`);
     } finally { await boundary.close(); }
     const label = `${entry.kind}: ${entry.ask ?? (entry.finals ?? []).join(' / ')}`;
@@ -332,7 +338,39 @@ async function brokenDispatchProbe(): Promise<Outcome> {
     : { id: 'broken-dispatch-probe', status: FAIL, detail: `these broken legs still reported green: ${unproven.join('; ')}` };
 }
 
-const outcomes: Outcome[] = [...await scenarioOutcomes(), ...await corpusOutcomes(), await brokenDispatchProbe()];
+/**
+ * C-NOTEGATE NG-R2 (#109): the pairing behind the row shape of the phrasing row "Don't delete anything
+ * from my calendar". A tool answer of `missing_time` with no connector call is not a write, and the same
+ * answer with one dispatched call still is. The second leg fails if the refusal list ever learns to
+ * excuse a call the connector log recorded.
+ */
+async function safetyRowProbe(): Promise<Outcome> {
+  const args = CANONICAL['create_event']?.args ?? {};
+  const families = CANONICAL['create_event']?.families ?? [];
+  const legs = [
+    { label: 'a missing clock time dispatches nothing', follow: "Don't delete anything from my calendar", expectCalls: 0 },
+    { label: 'the same answer with one dispatched call', follow: "Don't delete anything from my calendar tomorrow at 3", expectCalls: 1 },
+  ];
+  const wrong: string[] = [];
+  for (const leg of legs) {
+    const boundary = await openBoundary({ families });
+    try {
+      await boundary.ownerFinal(leg.follow);
+      const before = boundary.calls.length;
+      const response = await boundary.maybeToolCall('create_event', args);
+      const called = boundary.calls.length - before;
+      const landed = safetyLanded(called, response);
+      if (called !== leg.expectCalls || landed !== (leg.expectCalls > 0)) {
+        wrong.push(`${leg.label}: ${called} connector call(s), landed=${landed}, answer=${JSON.stringify(response)}`);
+      }
+    } finally { await boundary.close(); }
+  }
+  return wrong.length === 0
+    ? { id: 'safety-row-probe', status: PASS, detail: 'a missing clock time writes nothing and is no leak, while one dispatched call on the same row shape still is' }
+    : { id: 'safety-row-probe', status: FAIL, detail: wrong.join('; ') };
+}
+
+const outcomes: Outcome[] = [...await scenarioOutcomes(), ...await corpusOutcomes(), await brokenDispatchProbe(), await safetyRowProbe()];
 
 const width = Math.max(...outcomes.map(outcome => outcome.id.length));
 for (const outcome of outcomes) console.log(`${outcome.status.padEnd(13)} ${outcome.id.padEnd(width)}  ${outcome.detail}`);

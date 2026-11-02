@@ -412,6 +412,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
+  if (value.event === 'gate_decision') {
+    // C-NOTEGATE (#828): the free gate's answer as closed fields: which tool, which decision, which closed
+    // code, the two fence positions and whether any owner final existed. Never a word of his.
+    if (!closedKeys(value, ['code', 'decision', 'event', 'exposure', 'owner', 'ownerFinal', 'tool'])) return;
+    if (!isSafeWord(value.tool) || !isSafeWord(value.code)) return;
+    if (value.decision !== 'allowed' && value.decision !== 'refused') return;
+    if (!isSafeCount(value.owner) || !isSafeCount(value.exposure)) return;
+    if (typeof value.ownerFinal !== 'boolean') return;
+    return { event: 'gate_decision', tool: value.tool, decision: value.decision, code: value.code,
+      owner: value.owner, exposure: value.exposure, ownerFinal: value.ownerFinal };
+  }
   // W1030/WT-R2: the write tools' grant and its spend reach the audit trail beside the read tools'.
   if (['open_audit', 'alarm_audit', 'lux_note_audit', 'compose_audit'].includes(String(value.event)) && 'grantKind' in value) {
     if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;

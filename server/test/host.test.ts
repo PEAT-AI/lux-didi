@@ -1767,17 +1767,10 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         },
       });
       address = new URL(host.service.origin);
-      const pairing = await fetch(host.service.origin + '/api/v1/auth/pairing', { method: 'POST',
-        headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json' }, body: '{}' });
-      const { data: { pairingCode } } = await pairing.json();
-      const paired = await fetch(host.service.origin + '/api/v1/auth/pair', { method: 'POST',
-        headers: { Origin: host.service.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode }) });
-      assert.equal(paired.status, 200);
-      const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
-      const { data: { csrfToken } } = await paired.json();
       const response = await fetch(host.service.origin + '/api/v1/live-sessions', { method: 'POST',
-        headers: { Cookie: cookie, Origin: host.service.origin, 'X-Didi-CSRF': csrfToken, 'Content-Type': 'application/json',
-          'Idempotency-Key': 'synthetic-http-admission' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+        headers: { Authorization: `Bearer ${host.store.adminCredential}`, 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch,
+          'Content-Type': 'application/json', 'Idempotency-Key': 'synthetic-http-admission' },
+        body: JSON.stringify({ inputClass: 'ordinary' }) });
       assert.equal(response.status, 200, await response.clone().text());
       const { data: session } = await response.json();
       const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;

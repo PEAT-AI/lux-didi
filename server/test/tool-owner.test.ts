@@ -1336,8 +1336,9 @@ const declaredStrings = (schema: DeclaredSchema): string[] => {
   const shape = declaredShape(schema);
   const text = typeof shape.description === 'string' ? shape.description : '';
   const pool: string[] = [];
-  const example = /\blike ([A-Za-z0-9/_.~-]{2,40})/u.exec(text)?.[1];
-  if (example !== undefined) pool.push(example);
+  // The example the declaration gives in its own words, without the sentence's own punctuation.
+  const example = /\blike ([A-Za-z0-9/_.~-]{2,40})/u.exec(text)?.[1]?.replace(/[.,;:]+$/u, '');
+  if (example !== undefined && example.length >= 2) pool.push(example);
   if (/\bHH:MM\b/u.test(text)) pool.push('09:00');
   if (/\bYYYY-MM-DD\b/u.test(text)) pool.push('2030-01-05');
   if (/\bIANA\b|Europe\//u.test(text)) pool.push('Europe/Berlin');

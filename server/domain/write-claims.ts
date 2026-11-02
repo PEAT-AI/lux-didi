@@ -113,3 +113,37 @@ export function activeAlarms(tx: Transaction): readonly ActiveAlarm[] | null {
   return tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc", [])
     .map(row => ({ id: String(row['id']), fireAtUtc: Number(row['fire_at_utc']), tz: String(row['tz']), label: String(row['label']) }));
 }
+
+/** One alarm the table holds as missed, with the time and label she could truthfully name for it. */
+export interface MissedAlarmFact { readonly time: string; readonly label: string }
+
+/**
+ * C-OPENER 10.9: the missed alarms the table actually holds. A stored summary or open loop is model prose, so
+ * a recap that names a missed reminder is only true while a missed row stands behind it.
+ */
+export function missedAlarmFacts(tx: Transaction): readonly MissedAlarmFact[] {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='alarms'", [])) return [];
+  return tx.all("SELECT fire_at_utc,tz,label FROM alarms WHERE state='missed' ORDER BY fire_at_utc", []).map(row => ({
+    time: new Intl.DateTimeFormat('en-GB', { timeZone: String(row['tz']), hour: '2-digit', minute: '2-digit' }).format(Number(row['fire_at_utc'])),
+    label: String(row['label'] ?? ''),
+  }));
+}
+
+/** A sentence that speaks of a missed alarm, reminder or wake up call, whichever word it chose for the miss. */
+const MISSED_CLAIM = /\bmissed\b[^.]*\b(?:alarms?|reminders?|wake[- ]?up)\b/iu;
+
+/**
+ * Drop every sentence that names a missed alarm or reminder the alarms table does not hold as missed. A text
+ * with no such sentence is returned byte-identical, so an ordinary recap never changes.
+ */
+export function guardMissedClaims(text: string, facts: readonly MissedAlarmFact[]): GuardedClaims {
+  const all = sentences(text);
+  const backed = (sentence: string): boolean => facts.some(fact => {
+    const words = fact.label.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4);
+    return sentence.includes(fact.time) || words.some(word => sentence.toLowerCase().includes(word));
+  });
+  const kept = all.filter(sentence => !(MISSED_CLAIM.test(sentence) && !backed(sentence)));
+  const dropped = all.length - kept.length;
+  if (dropped === 0) return { text, dropped, kept: kept.length };
+  return { text: kept.join(' ').replace(/\s+/g, ' ').trim(), dropped, kept: kept.length };
+}

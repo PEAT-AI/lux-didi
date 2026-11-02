@@ -8,7 +8,7 @@ import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } f
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
-import { activeAlarms, guardWriteClaims, writeFacts, type ActiveAlarm } from '../domain/write-claims.js';
+import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -120,15 +120,15 @@ export function openerFromJournal(rows: readonly { readonly kind: string; readon
  * recorded. The words the opener shares with an option decide it, so a topic is never guessed: an
  * opener whose subject the plan does not name is reported without one.
  */
-function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): string | undefined {
+function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): { readonly topic: string; readonly kind: OpeningOptionKind } | undefined {
   const words = (text: string): Set<string> => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4));
   const spoken = words(opener);
-  let best: { topic: string; shared: number } | undefined;
+  let best: { topic: string; kind: OpeningOptionKind; shared: number } | undefined;
   for (const option of recorded) {
     const shared = [...words(option.topic)].filter(word => spoken.has(word)).length;
-    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, shared };
+    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, kind: option.kind, shared };
   }
-  return best?.topic;
+  return best === undefined ? undefined : { topic: best.topic, kind: best.kind };
 }
 
 /** The options an earlier call's start instruction recorded, from its own accepted-prompt snapshot. */
@@ -175,8 +175,8 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[] }[] {
-  const sessions = tx.all(`SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
+function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }[] {
+  const sessions = tx.all(`SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
   const previous: ReturnType<typeof previousOpeners> = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   for (const row of sessions) {
@@ -189,10 +189,12 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
     })));
     if (text === '') continue;
     const recorded = recordedOptions(row['accepted_prompt_snapshot']);
-    const topic = openerTopicOf(text, recorded);
+    const used = openerTopicOf(text, recorded);
     // Contract 1023 N8: the plan this call offered, so the next start never leads with the same subject twice.
+    // C-OPENER 10.9: and what its opening actually used, as a kind and a subject key, never the words.
     previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, kinds: recorded.map(option => option.kind),
-      ...(topic === undefined ? {} : { topic }) });
+      at: Number(row['created_at']),
+      ...(used === undefined ? {} : { topic: used.topic, used }) });
     if (previous.length === 3) break;
   }
   return previous;
@@ -235,8 +237,9 @@ export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataCl
 export function guardSeededLoops<T extends { readonly text: string; readonly sessionId: string }>(
   tx: Transaction, loops: readonly T[],
 ): readonly T[] {
+  const missed = missedAlarmFacts(tx);
   return loops.map(loop => {
-    const guarded = guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId)));
+    const guarded = guardMissedClaims(guardWriteClaims(loop.text, writeFacts(readToolOutcomes(tx, loop.sessionId))).text, missed);
     return guarded.dropped === 0 ? loop : { ...loop, text: guarded.text };
   }).filter(loop => loop.text !== '');
 }
@@ -254,10 +257,11 @@ export function armedAlarmsNote(alarms: readonly ActiveAlarm[] | null): string |
 export function guardSeededSummaries<T extends { readonly liveSessionId?: string; readonly summary: string }>(
   tx: Transaction, candidates: readonly T[],
 ): readonly T[] {
+  const missed = missedAlarmFacts(tx);
   return candidates.map(candidate => {
     if (candidate.liveSessionId === undefined) return candidate;
     const facts = writeFacts(readToolOutcomes(tx, candidate.liveSessionId));
-    const guarded = guardWriteClaims(candidate.summary, facts);
+    const guarded = guardMissedClaims(guardWriteClaims(candidate.summary, facts).text, missed);
     return guarded.dropped === 0 ? candidate : { ...candidate, summary: guarded.text };
     // A summary whose every claim was unsupported offers nothing, so it leaves the candidate list instead of
     // rendering an earlier-conversations header with no body behind it.
@@ -1873,6 +1877,7 @@ export class LiveSessionOwner {
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
+        recentOpenings: earlierOpeners.flatMap(early => early.used === undefined ? [] : [{ ...early.used, at: early.at }]),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.

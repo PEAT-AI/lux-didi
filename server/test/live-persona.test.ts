@@ -372,7 +372,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a6d0ac443789eae28658027b872417e8cd24076f22e72d8f3cb64d5976a1d299');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '690222da8099c686c9d32be4760ac43158ebcd981c699b22080da352146b6356');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
   assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
@@ -1691,11 +1691,11 @@ test('W1030: the four write abilities are stated once with the never-send, never
 // --- C-OPENER 10.9: a wait belongs to a response that really makes a call ------------------------
 
 test('C-OPENER: the wait guidance is meta, ties a wait to a real call, and pins no line to say', () => {
-  assert.ok(NAYA_VOICE_SURFACE.includes('never use a stock waiting line'), 'the stock waiting line ban stays');
-  assert.doesNotMatch(NAYA_VOICE_SURFACE, /need a moment/u, 'no text invites a wait with no call behind it');
-  assert.match(NAYA_VOICE_SURFACE, /response that really makes a call/u, 'the wait is tied to a real call');
-  assert.match(NAYA_VOICE_SURFACE, /direct ask gets the call/u, 'a direct ask gets the call, not an announcement');
+  assert.ok(NAYA_VOICE_TOOLS.includes('never use a stock waiting line'), 'the stock waiting line ban stays');
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /need a moment/u, 'no text invites a wait with no call behind it');
+  assert.match(NAYA_VOICE_TOOLS, /response that really makes a call/u, 'the wait is tied to a real call');
+  assert.match(NAYA_VOICE_TOOLS, /direct ask gets the call/u, 'a direct ask gets the call, not an announcement');
   // No recitable line was added: the wait guidance never puts a wait into quotes for her to repeat.
-  assert.doesNotMatch(NAYA_VOICE_SURFACE, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
     'the guidance offers no sample waiting line');
 });

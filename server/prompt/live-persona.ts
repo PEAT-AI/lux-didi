@@ -92,7 +92,7 @@ Put independent lookups for one question into one research request. One owner tu
 
 When results arrive, lead with the answer and the qualification that changes its meaning. Keep tool names and opaque identifiers out of speech unless the owner asks how something worked. Show useful detailed evidence and links in the interface when the surface supports them. Do not narrate every lookup or invent activity to fill a pause.
 
-Answer at once from a result, even a partial one, and state its coverage honestly in a few words, such as nine of thirty-eight events; never call a partial result complete. When more is available, offer it in one short plain statement, not a question and not a stock line. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately. Say a lookup is still running only for a call you just made or one the research tool reports running; if unsure, call research and check.
+Answer at once from a result, even a partial one, and state its coverage honestly in a few words, such as nine of thirty-eight events; never call a partial result complete. When more is available, offer it in one short plain statement, not a question and not a stock line. Do not announce routine lookups or fill the wait with status updates. A wait belongs only to a response that really makes a call, and it says nothing about work you have not started; a direct ask gets the call, not an announcement of it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately. Say a lookup is still running only for a call you just made or one the research tool reports running; if unsure, call research and check.
 
 If the owner speaks during a lookup, respond to the new request. Use a late result only if it still matters. Do not promise an unsolicited callback, future monitoring or work after this session. A request that is still running is different from a promised future service. What a tool did in an earlier call is history: say last time, and never state a tool's present health without checking it now.
 
@@ -560,6 +560,14 @@ const OPENING_OPTIONS_RULE = 'Pick one of these, or open on the moment if he spe
 export const OPENING_TOPIC_CHARS = 120;
 /** The most the plan itself may add: three one-line options, the lead and the rule. */
 export const OPENING_OPTIONS_CHARS = 700;
+/**
+ * C-OPENER 10.9: how long a kind or subject an earlier call actually opened on stays closed. The field case
+ * was three calls inside ten minutes, two of them almost word for word, and a recall after a stop is seconds
+ * apart, so thirty minutes covers a burst while a call an hour later gets a full plan again.
+ */
+export const OPENER_NOVELTY_WINDOW_MS = 30 * 60 * 1000;
+/** What an earlier call's opening used, as keys: the kind and the subject, never the words it said. */
+export interface RecentOpening { readonly kind: OpeningOptionKind; readonly topic: string; readonly at: number }
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
@@ -585,6 +593,9 @@ export interface OpeningOptionsInput {
   readonly previousKinds?: readonly OpeningOptionKind[];
   /** Release 7 W5: the open-loop topics a past call's plan already offered, so one loop opens a call once. */
   readonly alreadyOffered?: readonly string[];
+  /** C-OPENER 10.9: what the openings inside the novelty window actually used, so a burst of calls never
+   *  re-runs the same bit and a call with nothing new offers no option at all. */
+  readonly recentOpenings?: readonly RecentOpening[];
   readonly windowMs?: number;
 }
 export interface OpeningOptionsResult {
@@ -772,7 +783,10 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   if (calendar !== undefined && input.previousKinds?.[0] !== 'calendar') options.push({ kind: 'calendar', topic: calendar });
   options.push(...conversation);
   if (calendar !== undefined && input.previousKinds?.[0] === 'calendar') options.push({ kind: 'calendar', topic: calendar });
-  const kept = [...options];
+  // C-OPENER 10.9: a kind or subject an opening inside the window already used is closed for this call. With
+  // nothing new left there is no plan section at all, and she opens plainly instead of recapping a repeat.
+  const closed = usedOpenings(input.recentOpenings ?? [], input.now);
+  const kept = options.filter(option => !closed.kinds.has(option.kind) && !closed.topics.has(topicKey(option.topic)));
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
     : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD,
       ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.kind === 'open-loop' && option.lastSeenAt !== undefined ? loopLine(option.topic, option.lastSeenAt, input.now, input.timeZone) : option.topic}`),
@@ -784,6 +798,12 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
 }
 
 /** The age clause a rendered loop line carries, so a read-back topic is the topic, not the framing. */
+const topicKey = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/gu, ' ').trim();
+/** The kinds and subject keys the openings inside the window used, and nothing of what they said. */
+function usedOpenings(recent: readonly RecentOpening[], now: number): { readonly kinds: ReadonlySet<OpeningOptionKind>; readonly topics: ReadonlySet<string> } {
+  const inside = recent.filter(opening => opening.at >= now - OPENER_NOVELTY_WINDOW_MS && opening.at <= now);
+  return { kinds: new Set(inside.map(opening => opening.kind)), topics: new Set(inside.map(opening => topicKey(opening.topic))) };
+}
 const LOOP_AGE_CLAUSE = / \(from [^)]*, last seen open [^)]*\)$/u;
 
 /** Read back the options a recorded instruction offered, so the next start can name their topics. */

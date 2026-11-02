@@ -137,7 +137,12 @@ const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
 const ANNOUNCED_LOOKUPS = ['looking this up', 'looking that up', 'looking it up', 'looking into it', "i'll check",
   'i will check', 'let me check', 'let me look', 'let me see', 'let me find', 'let me pull', 'let me take a look',
   'let me have a look', "let's check", "let's see", "let's look", "let's take a look", "let's have a look",
-  'take a look', 'have a look', 'pull that up', 'one second%checking', 'checking now'] as const;
+  'take a look', 'have a look', 'pull that up', 'one second%checking', 'checking now',
+  // C-OPENER 10.9: a wait is the same promise in other words. The field calls said "one moment" seven times,
+  // with a call behind one of them, and the count read zero because only look-up phrasings were listed.
+  'one moment', 'just a moment', 'a moment', 'one sec', 'just a sec', 'one second', 'just a second',
+  'give me a second', 'give me a moment', 'give me one moment', 'bear with me', 'hold on', 'hang on',
+  'one minute', 'just a minute'] as const;
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };

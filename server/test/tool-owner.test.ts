@@ -1371,11 +1371,11 @@ const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]):
  * different rule, or refuses a declaration-described value it used to accept, all fail this test.
  */
 const REFUSED_DECLARATIONS: readonly string[] = [
-  'get_insight ids:type (server/connectors/index.ts)',
-  'open_file path:refused (server/tools/open.ts)',
-  'open_source handle:refused (server/tools/open.ts)',
-  'read_received_body cursor:refused (server/tools/received-body.ts)',
-  'research lookups:type (server/tools/research.ts)',
+  'get_insight ids:type', // server/connectors/index.ts: the declared ids are not the ids it reads
+  'open_file path:refused', // server/tools/open.ts: the accepted path shape lives only in its description
+  'open_source handle:refused', // server/tools/open.ts: the accepted handle shape is prose there
+  'read_received_body cursor:refused', // server/tools/received-body.ts: the cursor rule is prose
+  'research lookups:type', // server/tools/research.ts: the declared lookups type is not the one it reads
 ];
 test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
   const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];

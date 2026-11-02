@@ -34,16 +34,28 @@ A direct ask executes now, without confirmation.
 `snooze_alarm`, `list_alarms`, `create_event`, `draft_email`, `draft_chat`, `remember_note`,
 `stage_lux_note`, `save_to_vault`, `trello_write` and every `open_*` tool; everything else is
 `guarded`, so a send tool added later is guarded without any code here. A free tool executes on the
-model's call while the owner's live call is open: no cue regex, no verb and noun set, and no later
-final takes an earned grant back. `delete_event` stays guarded on its created-or-named selector, and
-a refusal always names its cause, which the model may repeat.
+model's call while the owner's live call is open: no cue regex, no verb and noun set, no negation scan
+and no later final takes an earned grant back. `delete_event` stays guarded on its created-or-named
+selector, and it is the one kind that still reads a negated clause. A refusal always names its cause,
+which the model may repeat.
+
+The free tier reads no clause of his speech (C-NOTEGATE, #874). A dictation that says "I don't want to
+put the survey in there" is content about the survey, not a withdrawal of the open owner call, so the
+save it ends with still commits on the first call. Only `delete_event` keeps a negation reading, beside
+its created-or-named selector.
 
 The one guard left on the free tier is the injection fence. The host keeps one monotonic order per
 session for the owner's finalized words and for third-party text. Mail bodies, chat messages, web
 pages and research results advance the exposure position immediately before the model sees them;
 reading his own calendar, alarms, notes, vault and Trello does not. A free write executes only when
 the latest owner final is newer than the latest exposure; otherwise it is refused `external_text_only`
-with the plain reason "Outside text arrived after your last words; say it again and I will do it".
+with the fact of what happened and what clears it: "Outside text arrived after your last words, so
+that write was refused. It clears when you next speak." No refusal invites him to repeat a phrase or
+to say a magic sentence, and none asks for a fresh authorization.
+
+The gate's answer is one `gate_decision` host log line (C-NOTEGATE, #828): the tool, the decision, the
+closed code, the two fence positions and whether any owner final existed, never a word of his.
+
 Model turns, assistant speech, tool results and retries never advance the owner position, and a
 refused write is never auto-flushed by a later final: it needs a fresh model call.
 

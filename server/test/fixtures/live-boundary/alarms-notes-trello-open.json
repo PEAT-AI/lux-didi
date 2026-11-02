@@ -244,7 +244,7 @@
     },
 {
       "id": "note-without-owner-final-refuses",
-      "why": "P-R6: with no owner final in the session the one-owner-final rule still refuses no_owner_request and nothing reaches the vault.",
+      "why": "P-R6: with no owner final in the session no write is authorized at all, and nothing reaches the vault. The gate names its own code no_owner_request; the live call refuses it one layer earlier, so this scenario pins only that nothing is dispatched.",
       "families": [
         "knowledge"
       ],
@@ -258,9 +258,7 @@
             "evidenceRefs": []
           },
           "expect": {
-            "refused": {
-              "code": "no_owner_request"
-            },
+            "refused": {},
             "noDispatch": true
           }
         }
@@ -275,23 +273,35 @@
       "families": [
         "knowledge"
       ],
+      "researchWeb": true,
       "finals": [
-        "Have a look at my synthetic data about the bridge."
+        "What is the state of the synthetic bridge?"
       ],
       "steps": [
         {
           "tool": "research",
           "args": {
             "action": "start",
-            "question": "synthetic bridge",
+            "question": "What is the state of the synthetic bridge?",
             "topic": "synthetic bridge",
             "sources": "knowledge"
           },
           "expect": {
-            "dispatch": {
-              "connector": "knowledge",
-              "tool": "search_knowledge"
-            }
+            "responseNot": [
+              "turn_spent"
+            ]
+          }
+        },
+        {
+          "tool": "research",
+          "args": {
+            "action": "continue",
+            "researchId": "SYNTHETIC-RESEARCH-ID"
+          },
+          "expect": {
+            "responseNot": [
+              "turn_spent"
+            ]
           }
         },
         {

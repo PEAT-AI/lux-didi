@@ -471,6 +471,21 @@ export function answersTheAsk(openingTurn: boolean | undefined, turnSpoken: stri
 }
 
 /**
+ * C-DIAG109: whether the provider announced a response for the owner final now in flight, and how long ago.
+ * A silence the owner hears is either a model that never spoke (no response created) or one that spoke into
+ * a response the host cannot read; the two are told apart by this pair and nothing else. Telemetry only:
+ * no recovery reads it, and no reconnect or rebuild timing changes (#820).
+ */
+export function stallResponseFacts(input: {
+  ownerFinalAt?: number | undefined; responseCreatedAt?: number | undefined; now: number;
+}): { responseCreated: boolean; msSinceResponseCreated: number | null } {
+  const created = input.responseCreatedAt;
+  const final = input.ownerFinalAt;
+  if (created === undefined || final === undefined || created < final) return { responseCreated: false, msSinceResponseCreated: null };
+  return { responseCreated: true, msSinceResponseCreated: Math.max(0, input.now - created) };
+}
+
+/**
  * G4: the rebuild trigger a model mute names. A turn that owes the owner an answer it already holds (a pending tool
  * result, an answer still owed) is never ambient, whatever the length of the filler it filed; the ambient case is
  * a call that was only listening and owes nothing.
@@ -1740,6 +1755,11 @@ export class LiveSessionOwner {
     return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
+  /** C-DIAG109: the response pair every stall and rebuild line carries, read off the turn now in flight. */
+  #stallFacts(handle: ActiveSession): { responseCreated: boolean; msSinceResponseCreated: number | null } {
+    return stallResponseFacts({ ownerFinalAt: handle.inputFinalAt, responseCreatedAt: handle.responseCreatedAt, now: this.#now() });
+  }
+
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
   /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
   readonly #connectorNotes = new ConnectorNotes();
@@ -2768,7 +2788,8 @@ export class LiveSessionOwner {
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
-      msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+      msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt),
+      ...this.#stallFacts(handle) });
     hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
@@ -3032,7 +3053,8 @@ export class LiveSessionOwner {
           // the debt rung is the one nudge. A second one here named the same wait twice and made the owner's first
           // audible recovery look like two.
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
-            msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+            msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt),
+            ...this.#stallFacts(handle) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
           // O1b-A (D12-3): a turn that never became audible is a typed stall, with the age it reached and what the
           // watchdog could see of it, so it is a receipt instead of an absence.
@@ -3650,7 +3672,8 @@ export class LiveSessionOwner {
     const cause = this.#upstreamCause(handle, reason);
     handle.quietRebuild = trigger === 'no_output_after_ambient';
     hostLogEvent({ event: 'live_rebuild', trigger, cause, liveSessionId: handle.liveSessionId, generation: handle.generation,
-      ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }) });
+      ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }),
+      ...this.#stallFacts(handle) });
     this.#cancelSpeakingHold(handle);
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));

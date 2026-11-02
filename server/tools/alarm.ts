@@ -36,6 +36,15 @@ export function alarmReadBack(instant: number, tz: string): AlarmReadBack {
     spoken: `${get(long, 'weekday')} ${Number(get(long, 'day'))} ${get(long, 'month')} at ${localTime} (${tz})` };
 }
 
+/**
+ * C-DIAG109: the clock she is handed with a committed alarm is read from the clock the tool runs on, never
+ * from the stamp of the ask, so a research or provider delay shows in the figures instead of being hidden.
+ * The distance to the instant is the host's arithmetic, so the model never counts and never recites a line.
+ */
+export function alarmDistance(fireAtUtc: number, tz: string, now: number): { nowLocalTime: string; minutesAway: number } {
+  return { nowLocalTime: alarmReadBack(now, tz).localTime, minutesAway: Math.max(0, Math.round((fireAtUtc - now) / 60_000)) };
+}
+
 function isZone(value: string | undefined): value is string {
   if (!value) return false;
   try { new Intl.DateTimeFormat('en-GB', { timeZone: value }); return true; } catch { return false; }

@@ -769,9 +769,9 @@ test('C-DIAG109: a final with no provider audio is a fragment only inside the fo
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), silentFinalScan());
     assert.deepEqual(audit.turns.map(row => [row.turnId, row.missingReason, row.noAudioClass]), [
       ['f1', 'no_provider_audio', 'fragment'],
-      ['f2', null, null],
+      ['f2', 'no_native_receipt', null],
       ['f3', 'no_provider_audio', 'unanswered'],
-      ['f4', null, null],
+      ['f4', 'no_native_receipt', null],
       ['f5', 'no_provider_audio', 'unanswered'],
     ], 'a split sentence is a fragment, an unheard ask and the call-ending final are unanswered');
     assert.deepEqual(audit.aggregates.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });

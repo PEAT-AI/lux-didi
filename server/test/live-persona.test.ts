@@ -373,10 +373,11 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
   // C-DIAG109: the alarm sentence was replaced to name the read-back's clock and minutes away, so this block is re-pinned.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '1e5c3821b33a4789fc962489cd9fa9f770492772435fad8c1337230985a4ae65');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1a1985f7b988b99d015c5f53bd937f18ebce8ab4855df6d29a25352294c4f180');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), '3e9fe444af2306fcb0372bcbab2146363b9c04d26762d9f09f0b34d098e11b84');
+  // C-DIAG109: the tools block carries the voice-tools sentence, so the alarm read-back re-pins it too.
+  assert.equal(sha(NAYA_TOOLS), '2c4bec5a4ef223e6f46ff3433dcc18b738a12bca2e3635a2c4a1d0d10ce27d2e');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));

@@ -269,24 +269,25 @@
     },
     {
       "id": "note-after-outside-text-refuses",
-      "why": "The fence is untouched: a knowledge read that hands outside text to the model after his last final refuses the save external_text_only, and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
+      "why": "The fence is untouched: a mail body handed to the model after his last final refuses the save external_text_only, and nothing reaches the vault. This is the paired case for note-dictation-negated-verb-saves.",
       "families": [
+        "mail",
         "knowledge"
       ],
       "finals": [
-        "Look up the synthetic bridge in my knowledge."
+        "Read the synthetic mail message about the bridge."
       ],
       "steps": [
         {
-          "tool": "search_knowledge",
+          "tool": "gmail_read_message",
           "args": {
-            "query": "synthetic bridge",
-            "limit": 3
+            "id": "msg_synthetic_1",
+            "format": "full"
           },
           "expect": {
             "dispatch": {
-              "connector": "knowledge",
-              "tool": "search_knowledge"
+              "connector": "mail",
+              "tool": "gmail_read_message"
             }
           }
         },

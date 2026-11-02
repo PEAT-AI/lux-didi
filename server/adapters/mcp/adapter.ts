@@ -462,7 +462,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         }
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
-        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: className, code } };
+        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: discoveryExceptionClass(error), code } };
       } finally { releaseExclusive(); }
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },
@@ -576,4 +576,20 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
     },
     async close(): Promise<void> { closed = true; for (const set of waiters.values()) for (const resolve of set) resolve(); waiters.clear(); for (const gate of gates.values()) gate.fail('adapter-closed'); await Promise.all([...sessions.keys()].map(async id => { suspend(id); await retire(id); })); await Promise.allSettled([...creating.values()]); },
   };
+}
+
+/** C-CONNWAIT: closed diagnostics only; never inspect or publish exception messages. */
+export function discoveryExceptionClass(error: unknown): string {
+  for (let depth = 0; depth < 3 && error && typeof error === 'object'; depth++) {
+    const value = error as { code?: unknown; status?: unknown; cause?: unknown; name?: unknown };
+    if (value.code === 'ECONNREFUSED') return 'refused';
+    if (value.code === 'ENOTFOUND' || value.code === 'EAI_AGAIN') return 'dns';
+    if (typeof value.code === 'string' && /^(ERR_TLS_|CERT_|DEPTH_ZERO_|UNABLE_TO_VERIFY_)/.test(value.code)) return 'tls';
+    if (value.code === 'ETIMEDOUT' || value.code === 'UND_ERR_CONNECT_TIMEOUT' || value.name === 'TimeoutError') return 'timeout';
+    if (typeof value.status === 'number' && value.status >= 400 && value.status < 500) return 'http_4xx';
+    if (typeof value.status === 'number' && value.status >= 500 && value.status < 600) return 'http_5xx';
+    if (value.code === 'ECONNRESET' || value.code === 'EPIPE') return 'transport';
+    error = value.cause;
+  }
+  return 'unknown';
 }

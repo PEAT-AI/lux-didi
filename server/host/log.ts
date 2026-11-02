@@ -1,3 +1,4 @@
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
@@ -549,6 +550,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.tool !== 'string' || !/^[a-zA-Z0-9_]{1,128}$/.test(value.tool)) return;
     return { event: value.event, endpointId: value.endpointId, tool: value.tool };
   }
+  if (value.event === 'live_tools_incomplete') {
+    if (Object.keys(value).sort().join(',') !== 'event,groups' || !Array.isArray(value.groups)
+      || value.groups.length === 0 || value.groups.length > Object.keys(CONNECTOR_DESCRIPTORS).length) return;
+    const seen = new Set<string>();
+    for (const group of value.groups) {
+      if (!group || typeof group !== 'object' || Object.keys(group).sort().join(',') !== 'connector,missingEndpoints,missingTools,reason'
+        || typeof group.connector !== 'string' || !Object.hasOwn(CONNECTOR_DESCRIPTORS, group.connector) || seen.has(group.connector)
+        || !Number.isSafeInteger(group.missingEndpoints) || group.missingEndpoints < 1
+        || !Number.isSafeInteger(group.missingTools) || group.missingTools < 0
+        || !['deadline', 'failed'].includes(group.reason)) return;
+      seen.add(group.connector);
+    }
+    return { event: 'live_tools_incomplete', groups: value.groups.map(group => ({ connector: group.connector,
+      missingEndpoints: group.missingEndpoints, missingTools: group.missingTools, reason: group.reason })) };
+  }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
@@ -556,17 +572,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
+    const hasExceptionClass = Object.prototype.hasOwnProperty.call(value, 'exceptionClass');
     const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
     const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
-    const allowed = ['connector', 'event', 'stage', ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    const allowed = ['connector', 'event', 'stage', ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
+    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(String(value.exceptionClass))) return;
     if (hasReason && !token(value.reason)) return;
     if (hasException && !token(value.exceptionCode)) return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
+    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'tool_classified_failure') {
     // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log

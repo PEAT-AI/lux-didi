@@ -73,6 +73,44 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
 export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch' | 'owner-approval-required' | 'ambiguous-legacy-policy'; /** W2-R1: the added read names a remaining refusal names, closed tool names only. */ addedToolNames?: readonly string[]; exception?: { class: string; code: string } }
+/** C-CONNWAIT: names come from the descriptor authority, never endpoint labels or errors. */
+export interface IncompleteToolGroup {
+  connector: string;
+  missingEndpoints: number;
+  missingTools: number;
+  reason: 'deadline' | 'failed';
+}
+type AdmissionEndpoint = { state: string; connector: string; retrying?: boolean };
+export function incompleteConnectorTools(endpoints: readonly AdmissionEndpoint[]): IncompleteToolGroup[] {
+  const groups = new Map<string, IncompleteToolGroup>();
+  for (const endpoint of endpoints) {
+    if (endpoint.state === 'connected' || endpoint.state === 'missing') continue;
+    const descriptor = CONNECTOR_DESCRIPTORS[endpoint.connector];
+    if (!descriptor) continue;
+    const pending = endpoint.retrying || endpoint.state === 'connecting' || endpoint.state === 'configured';
+    const previous = groups.get(endpoint.connector);
+    groups.set(endpoint.connector, { connector: endpoint.connector,
+      missingEndpoints: (previous?.missingEndpoints ?? 0) + 1,
+      missingTools: (previous?.missingTools ?? 0) + descriptor.envelope.length,
+      reason: pending || previous?.reason === 'deadline' ? 'deadline' : 'failed' });
+  }
+  return [...groups.values()];
+}
+/** A process-age ceiling, not a fresh delay on each request. Existing connector recovery owns retries. */
+export async function waitForStartupConnectors(options: {
+  startedAt: number; now: () => number; endpoints: () => readonly AdmissionEndpoint[];
+  pause?: (ms: number) => Promise<void>;
+}): Promise<IncompleteToolGroup[]> {
+  const pause = options.pause ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  for (;;) {
+    const endpoints = options.endpoints();
+    const remaining = options.startedAt + 25_000 - options.now();
+    if (remaining <= 0 || endpoints.every(row => row.state === 'connected' || row.state === 'missing'
+      || (row.state === 'error' && !row.retrying))) return incompleteConnectorTools(endpoints);
+    await pause(Math.min(100, remaining));
+  }
+}
+
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -135,6 +173,7 @@ export type ConnectStage = 'credential' | 'config' | 'spawn' | 'handshake' | 'fi
 export interface ConnectorFailureDetail {
   reason?: string;
   exceptionCode?: string;
+  exceptionClass?: string;
   endpointId?: string;
   /** Which connect pass this is: the first one, or the one bounded re-discovery. */
   attempt?: 'first-connect' | 'refresh';
@@ -354,9 +393,9 @@ export async function composeMcpRuntime(options: {
   // this line is written for each of them, not only for the first connect.
   const failureReasons = new Map<string, string>();
   const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
-    reason: string, exceptionCode?: string): void => {
+    reason: string, exceptionCode?: string, exceptionClass?: string): void => {
     failureReasons.set(entry.id, reason);
-    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
+    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}), ...(exceptionClass ? { exceptionClass } : {}) });
   };
   const reportToolStatus = (connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
@@ -673,8 +712,8 @@ export async function composeMcpRuntime(options: {
       const discovery = await port.discover(entry.id);
       if (stale()) return { retryable: false };
       if (discovery.state !== 'discovered') {
-        const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
-        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
+        const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code, discovery.exception?.class);
+        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code, discovery.exception?.class);
         // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
         // a missing record does, so the login reconnects it without a restart (R9).
         if (stage === 'credential' && entry.connector === 'mongoose' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));

@@ -24,7 +24,7 @@ import type { CalendarDigestOwner, WarmPrewarmReceipt } from '../live/index.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
-import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
+import { waitForStartupConnectors, composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from './mongoose-login.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
@@ -644,6 +644,7 @@ export async function startHost(config: HostConfig) {
     // L2: the same for the first connect of a run, whose start read raced the connector.
     let refreshCalendarFirstConnect = (_endpointId: string): void => { /* bound once the composition exists */ };
     const hostStartedAt = (config.now ?? Date.now)();
+    const processStartedAt = hostStartedAt - process.uptime() * 1000;
     const alarmShell = new AlarmShellBridge();
     const alarms = new AlarmScheduler({ store, clock: {
       now: config.now ?? Date.now,
@@ -732,7 +733,7 @@ export async function startHost(config: HostConfig) {
         trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
       }).catch(() => { /* the row stays file based when the probe cannot answer */ });
     }
-    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), beforeLiveCreate: async () => { await waitForStartupConnectors({ startedAt: processStartedAt, now: config.now ?? Date.now, endpoints: () => mcp.status().endpoints }); }, mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       alarms.recheck('start');
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };

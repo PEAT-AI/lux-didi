@@ -457,7 +457,8 @@ test('host Google discovery preserves the five-second startup bound', async t =>
   const { runtime } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
   assert.ok(performance.now() - began < 6000, 'slow Google discovery cannot consume a thirty-second call budget');
   const report = runtime.status().endpoints[0]; assert.equal(report?.state, 'error');
-  assert.equal(report?.error, 'timeout-or-cancelled'); assert.equal(google.executed, 0);
+  // DESK-R7a / CW-R1: discovery deadlines use the reviewed closed failure class.
+  assert.equal(report?.error, 'connect_timeout'); assert.equal(google.executed, 0);
 });
 
 test('host Google earlier cancellation fails one call and preserves frozen authority', async t => {

@@ -30,7 +30,7 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -179,10 +179,12 @@ const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 export interface PreviousOpener { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[]; readonly used?: { readonly kind: OpeningOptionKind; readonly topic: string }; readonly at: number }
 /** An opening an earlier call used, as a kind and a subject key, so the next plan prefers something else. */
 export interface UsedOpening { readonly kind: OpeningOptionKind; readonly topic: string; readonly at: number }
+/** How many openings used inside the window are kept, so a burst of calls cannot grow this read without bound. */
+const RECENT_OPENINGS_READ = 8;
 /** The three newest earlier openers for the note, and every opening used inside the window. */
 export interface OpenerHistory { readonly previous: readonly PreviousOpener[]; readonly recent: readonly UsedOpening[] }
 
-export function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], _recentSince?: number): OpenerHistory {
+export function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], recentSince?: number): OpenerHistory {
   const sessions = tx.all(`SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND ${ownerMemorySessionSql('live_sessions')} ORDER BY created_at DESC, rowid DESC`, [assistantId]);
   const previous: PreviousOpener[] = [];
   const recent: UsedOpening[] = [];
@@ -195,15 +197,20 @@ export function previousOpeners(tx: Transaction, assistantId: string, allowedCla
       text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
       finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
     })));
-    if (text === '') continue;
     const recorded = recordedOptions(row['accepted_prompt_snapshot']);
-    const used = openerTopicOf(text, recorded);
+    const used = text === '' ? undefined : openerTopicOf(text, recorded);
+    // C-OPENER 10.9: an opening a call used is remembered for the whole window, not only while that call stays
+    // among the three newest, so a run of short re-calls that opened plainly cannot reopen a subject it used.
+    if (used !== undefined && recentSince !== undefined && Number(row['created_at']) >= recentSince
+      && recent.length < RECENT_OPENINGS_READ) recent.push({ ...used, at: Number(row['created_at']) });
+    if (text === '') continue;
     // Contract 1023 N8: the plan this call offered, so the next start never leads with the same subject twice.
     // C-OPENER 10.9: and what its opening actually used, as a kind and a subject key, never the words.
     previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, kinds: recorded.map(option => option.kind),
       at: Number(row['created_at']),
       ...(used === undefined ? {} : { topic: used.topic, used }) });
-    if (previous.length === 3) break;
+    if (previous.length === 3 && (recentSince === undefined || Number(row['created_at']) < recentSince
+      || recent.length >= RECENT_OPENINGS_READ)) break;
   }
   return { previous, recent };
 }
@@ -1859,7 +1866,7 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const openerHistory = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
+      const openerHistory = previousOpeners(tx, assistantId, this.#profile.route.dataClasses, now - OPENER_NOVELTY_WINDOW_MS);
       const earlierOpeners = openerHistory.previous;
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
@@ -1874,7 +1881,7 @@ export class LiveSessionOwner {
       // still names what the table holds.
       const armedAlarms = activeAlarms(tx);
       const alarmNote = armedAlarmsNote(armedAlarms);
-      const seededSummaries = guardSeededSummaries(tx, storedSummaries);
+      const seededSummaries = guardSeededSummaries(tx, storedSummaries, { now, timeZone });
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
@@ -1884,11 +1891,11 @@ export class LiveSessionOwner {
       const openerPlan = buildOpeningOptions({ candidates: seededSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: openLoopCooling ? [] : guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now,
-          staleRefusedNoteSessions(tx, assistantId))),
+          staleRefusedNoteSessions(tx, assistantId)), { now, timeZone }),
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
-        recentOpenings: earlierOpeners.flatMap(early => early.used === undefined ? [] : [{ ...early.used, at: early.at }]),
+        recentOpenings: openerHistory.recent,
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.

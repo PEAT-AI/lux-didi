@@ -838,3 +838,21 @@ test('host log: alarm_speech_failed admits one closed reason and the alarm id on
     undefined, 'the private label never enters this line');
   assert.equal(safeEvent({ event: 'alarm_speech_failed', reason: 'socket_lost' }), undefined, 'the line names the alarm');
 });
+
+// C-DIAG109: a stall and a rebuild say whether the provider announced a response for the owner final, and how
+// old that response was, so a model that never spoke and one whose answer cannot be read are told apart.
+test('C-DIAG109: a stall and a rebuild carry the owner final response pair', () => {
+  const stall = { event: 'live_dead_air', msSinceTool: 4_000, msSinceAudible: 9_000, responseCreated: true, msSinceResponseCreated: 1_500 };
+  assert.deepEqual(safeEvent(stall), stall);
+  const quiet = { event: 'live_dead_air', msSinceTool: 4_000, msSinceAudible: null, responseCreated: false, msSinceResponseCreated: null };
+  assert.deepEqual(safeEvent(quiet), quiet);
+  const rebuild = { event: 'live_rebuild', trigger: 'no_output_after_owner', cause: 'provider', liveSessionId: LIVE_SESSION_ID,
+    generation: 3, responseCreated: false, msSinceResponseCreated: null };
+  assert.deepEqual(safeEvent(rebuild), rebuild);
+  const dropped = { event: 'live_rebuild', trigger: 'line_dropped', cause: 'network', liveSessionId: LIVE_SESSION_ID, generation: 3 };
+  assert.deepEqual(safeEvent(dropped), dropped, 'a rebuild with no owner final in flight keeps its old shape');
+  // The pair is closed: a created response has an age, an absent one has none.
+  assert.equal(safeEvent({ ...stall, msSinceResponseCreated: null }), undefined);
+  assert.equal(safeEvent({ ...quiet, msSinceResponseCreated: 5 }), undefined);
+  assert.equal(safeEvent({ ...stall, responseCreated: 'yes' }), undefined);
+});

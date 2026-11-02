@@ -43,7 +43,9 @@ test('alarm mode: only the display name and scheduled time enter setup instructi
 
 test('alarm guidance names all four tools and states the sleep and closed-lid limits', async () => {
   const { NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  assert.ok(NAYA_VOICE_TOOLS.includes("Alarms: this ask's time, no earlier ones, say the read-back, ring only on an awake Mac"));
+  // C-DIAG109: the sentence names the host's own clock and minutes away in the read-back, so she says the
+  // figure instead of counting from a clock the call opened on.
+  assert.ok(NAYA_VOICE_TOOLS.includes("Alarms: this ask's time, no earlier ones, ring only on an awake Mac; say the read-back, which carries the local clock and the minutes away"));
   // C-TIME: the guidance names the current ask's time and the spoken read-back, and the sleep limits stay.
   assert.match(NAYA_VOICE_TOOLS, /no earlier ones|this ask's time/);
 });

@@ -44,7 +44,8 @@ test('alarm: an unqualified wake request chooses the next occurrence in the syst
   if (result.status !== 'ready') return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, tz);
-  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore).');
+  // C-DIAG109: the confirmation also carries the host's minutes away, from 28 October 21:00 to 29 October 08:00.
+  assert.equal(result.confirmation, 'Alarm set for Thursday 29 October at 08:00 (Asia/Singapore). That is in 660 minutes.');
 });
 
 test('alarm: explicit morning and evening resolve without a model-supplied time', () => {
@@ -364,4 +365,25 @@ test('T-R1 counts: how the checker reads this file\'s golden rows', () => {
   console.log(`C-TIME golden checker reading: ${JSON.stringify(goldenReading)} over ${total} read rows`);
   assert.ok(total >= 12, `every migrated golden row is counted (${total})`);
   assert.ok(goldenReading.unique >= 8, `most golden rows state one settled time (${JSON.stringify(goldenReading)})`);
+});
+
+// C-DIAG109: the read-back carries the host's own clock and the minutes away, read at commit time, so a
+// clock time and a relative phrase can never disagree by her arithmetic.
+test('C-DIAG109: a set-alarm read-back carries the current local time and the minutes away', () => {
+  const result = parseAlarmTime('set an alarm in five minutes', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.nowLocalTime, '21:00');
+  assert.equal(result.minutesAway, 5);
+  assert.match(result.confirmation, /That is in 5 minutes\./u);
+});
+
+test('C-DIAG109: a long session is given the clock it is in, never the clock the call opened on', () => {
+  // The call opened at 21:00 local and this ask arrives 41 minutes later; the seed prompt cannot know that.
+  const late = now + 41 * 60_000;
+  const result = parseAlarmTime('set an alarm in five minutes', late, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.nowLocalTime, '21:41');
+  assert.equal(result.minutesAway, 5);
 });

@@ -410,6 +410,15 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
     assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
     assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
     assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
+    // C-DIAG109: the read-back the model is handed carries the host's clock and minutes away, so she says the
+    // figure instead of counting from the clock the call opened on.
+    const delivered = response.toolResponse.functionResponses[0]!.response;
+    const result = (typeof delivered === 'string' ? JSON.parse(delivered) : delivered) as
+      { status: string; now_local_time: string; minutes_away: number; say: string };
+    assert.equal(result.status, 'set', JSON.stringify(result));
+    assert.match(result.now_local_time, /^\d{2}:\d{2}$/u, JSON.stringify(result));
+    assert.ok(Number.isSafeInteger(result.minutes_away) && result.minutes_away > 0, JSON.stringify(result));
+    assert.match(result.say, new RegExp(`That is in ${result.minutes_away} minutes`, 'u'));
   }
 });
 

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { analyse, replay, tone } from './voice-replay/driver.js';
 import type { Replay } from './voice-replay/driver.js';
-import { NO_LOOKUP_RUNNING_NOTE, REBUILD_AUDIO_HOLD_BYTES } from '../live/index.js';
+import { NO_LOOKUP_RUNNING_NOTE, REBUILD_AUDIO_HOLD_BYTES, stallResponseFacts } from '../live/index.js';
 
 /**
  * #1024 T3, rebuild-at-every-point sweep. Owner order 2026-10-25: the escapes in the audit class "state across
@@ -283,4 +283,18 @@ test('C-REBUILD: a rebuild settles the response it tears down as superseded', as
       [r.liveSessionId, rebuiltAt]));
     assert.deepEqual(open, [], `no response is left pending by a rebuild: ${JSON.stringify(open)}`);
   } finally { await r.release(); }
+});
+
+// C-DIAG109: a silence the owner hears is either a model that never answered or one whose response cannot be
+// read. Telemetry only: this pair re-times nothing, and no reconnect or rebuild rule reads it (#820).
+test('C-DIAG109: the stall pair says whether a response was created for the owner final, and its age', () => {
+  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 1_000, responseCreatedAt: 1_500, now: 4_000 }),
+    { responseCreated: true, msSinceResponseCreated: 2_500 });
+  // A response announced before the owner's final belongs to the turn before it, never to this stall.
+  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 2_000, responseCreatedAt: 1_500, now: 9_000 }),
+    { responseCreated: false, msSinceResponseCreated: null });
+  assert.deepEqual(stallResponseFacts({ responseCreatedAt: 1_500, now: 9_000 }),
+    { responseCreated: false, msSinceResponseCreated: null });
+  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 1_000, now: 9_000 }),
+    { responseCreated: false, msSinceResponseCreated: null });
 });

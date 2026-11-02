@@ -156,14 +156,16 @@ export function guardMissedClaims(text: string, facts: readonly MissedAlarmFact[
   const all = sentences(text);
   const backed = (sentence: string): boolean => {
     const times: readonly string[] = sentence.match(CLOCK_TIME) ?? [];
-    const words = new Set(sentence.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4));
+    const words = new Set(sentence.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean));
     const day = TODAY_CLAIM.test(sentence) ? (at === undefined ? null : alarmDay(at.now, at.timeZone))
       : YESTERDAY_CLAIM.test(sentence) ? (at === undefined ? null : alarmDay(at.now - 86_400_000, at.timeZone)) : undefined;
     if (day === null) return false;
     return facts.some(fact => {
       if (times.length > 0 && !times.includes(fact.time)) return false;
-      const label = fact.label.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4);
-      if (label.length === 0 ? !times.includes(fact.time) : !label.every(word => words.has(word))) return false;
+      // OP-R4: every word of the label, of any length, has to be in the sentence, and a row whose label names
+      // nothing backs no claim. Doubt drops the sentence: a lost recap is harmless, an invented one is the bug.
+      const label = fact.label.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
+      if (label.length === 0 || !label.every(word => words.has(word))) return false;
       return day === undefined || fact.date === day;
     });
   };

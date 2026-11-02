@@ -256,18 +256,14 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           // not validated again, and its branch ends until the owner adds facts.
           if (!shape && cached !== undefined) { record.reason = `${cached} ${BRANCH_CLOSED}`; return; }
           const named = shape ? [] : argumentViolationsOf(tool, args);
-          // AL-R1: a value the declaration does not admit is a schema failure, and a value it admits but the
-          // tool's own rule refuses is a rule refusal. They reach the log as different reasons, because the
-          // first one says the declaration is wrong for the model and the second says only his value is.
-          const unreadable = !shape && !tool.validate(args);
-          if (shape || unreadable || named.length > 0) {
+          if (shape || named.length > 0 || !tool.validate(args)) {
             // AL-R1: a refusal always names the field it is about, so the model's retry can land.
             const violations = named.length > 0 ? named : shape ? [] : argumentFallback(tool.parameters, args);
             const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, callKey);
             const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters, violations);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
             rejections.set(callKey, record.reason);
-            logArgumentsRejected(call.name, violations, shape ? 'arguments_not_object' : unreadable ? 'schema_validation_failed' : 'argument_rule_refused', call.args);
+            logArgumentsRejected(call.name, violations, shape ? 'arguments_not_object' : 'schema_validation_failed', call.args);
             return;
           }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {

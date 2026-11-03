@@ -82,8 +82,8 @@ test('SEARCH-110: the bare topic of a mixed question passes the egress check', (
   const mixed = 'from:dana.smith@example.com OR to:dana.smith@example.com find the email from Dana Smith and look her up on the web';
   assert.equal(publicQueryOf(mixed), undefined, 'the compiled query is what the check refused on 10.9');
   const bare = bareWebTopic(mixed);
-  assert.equal(bare, 'dana smith', bare);
-  assert.equal(publicQueryOf(String(bare)), 'dana smith', 'the retry query passes, with the protections untouched');
+  assert.equal(bare, 'dana smith');
+  assert.equal(publicQueryOf(bare ?? ''), 'dana smith', 'the retry query passes, with the protections untouched');
   // The protections themselves are unchanged.
   assert.equal(publicQueryOf('is rob@example.com free on Friday'), undefined);
   assert.equal(publicQueryOf('order 123456789012'), undefined);

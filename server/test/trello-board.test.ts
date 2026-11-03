@@ -14,7 +14,6 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, TRELLO_READ_VIEWS, TrelloBoard as TrelloBoardService } from '../tools/trello.js';
 import { diagnosticInputFields } from '../tools/diagnostic-input.js';
 import { STAGE_NOTE_PARAMETERS } from '../tools/lux-note.js';
-import { researchDeclaration } from '../tools/research.js';
 import type { ToolCallJournal, ToolDefinition, ToolResultGate } from '../adapters/model/types.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
@@ -593,13 +592,14 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   assert.deepEqual(event?.violations, ['view:refused'], 'a validate-only refusal names its declared field, never a value');
 });
 
-// C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema
+// C-ARGS requirement 2: the closed field lists must name exactly what each tool declares, so a schema
 // edit cannot leave a real argument reported as `unknown` again (B1: trello_write had lost its `due`).
-test('C-ARGS: every diagnostic field list matches the properties its tool declares', () => {
+test('C-ARGS: Trello and internal vault diagnostic fields match their schemas; research is retired', () => {
+  assert.deepEqual(diagnosticInputFields('research'), []);
   const declared = (parameters: { properties?: object }) => Object.keys(parameters.properties ?? {}).sort();
   for (const [name, properties] of [
     ['trello_read', TRELLO_READ_PARAMETERS.properties], ['trello_write', TRELLO_WRITE_PARAMETERS.properties],
-    ['research', (researchDeclaration().parameters as { properties: object }).properties], ['stage_lux_note', STAGE_NOTE_PARAMETERS.properties],
+    ['stage_lux_note', STAGE_NOTE_PARAMETERS.properties],
   ] as const) assert.deepEqual([...diagnosticInputFields(name)].sort(), declared({ properties }), name);
 });
 

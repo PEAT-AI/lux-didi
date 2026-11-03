@@ -1,3 +1,4 @@
+import { TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
@@ -90,6 +91,10 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
     filters: { anyOf: capabilities.map(item => strictSchema(item.parameters)) },
   }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
+export function nativeTaskReadTool(name: string, connector: string): string | undefined {
+  const mapping = mappings[name];
+  return mapping?.connector === connector ? mapping.tool : undefined;
+}
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
@@ -106,7 +111,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
       try {
         const snapshot = binding.project(result);
         const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
-        return { ...shaped, dataClasses: snapshot.dataClasses };
+        return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
       } catch { return failed('The connector result could not be safely disclosed. Repair its source policy or use another approved source.'); }
     }
     return projectTaskPayload(name, result.decodedResult, args);

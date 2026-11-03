@@ -1,7 +1,9 @@
+export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
 export interface ToolResult {
+  [TASK_DISCLOSURE]?: import('../tools/types.js').ModelSnapshot;
   dataClasses?: readonly import('../adapters/model/types.js').DataClass[];
   exposures?: import('./authority.js').Exposure[];
   status: ResultStatus;

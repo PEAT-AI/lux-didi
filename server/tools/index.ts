@@ -1,3 +1,4 @@
+import { nativeTaskReadTool } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
@@ -327,11 +328,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
     }
     if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
-    const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
+    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && call.effect === 'read' && TASK_TOOL_NAMES.has(call.toolName);
+    const bound = taskRead
+      ? snapshot.connections.find(item => item.policy.endpoint.id === evidence.source.endpointId && item.policy.endpoint.account === evidence.source.account && item.policy.endpoint.resource === evidence.source.resource)
+      : snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
+    if (taskRead && bound && (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId))) return false;
     if (!bound || evidence.expiresAt <= Date.now() || !/^[a-f0-9]{64}$/.test(evidence.entitySha256) || sha256(evidence.body) !== evidence.bodySha256) return false;
     const p = bound.policy, source = evidence.source;
     const binding = 'transport' in p.endpoint ? bindingDigestOf(p.endpoint) : p.endpoint.url;
-    return evidence.tool === call.toolName && source.toolName === call.toolName && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
+    const nativeTool = taskRead ? nativeTaskReadTool(call.toolName, p.connector) : call.toolName;
+    return evidence.tool === nativeTool && source.toolName === nativeTool && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
       && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
   };
   const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {

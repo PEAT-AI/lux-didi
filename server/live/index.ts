@@ -4718,15 +4718,18 @@ export class LiveSessionOwner {
    * native acts on, the session's own terminal.
    */
   #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
-    if (!handle.terminal && generation === handle.generation && handle.taskWords?.trim()) {
-      const words = handle.taskWords; handle.taskWords = ''; handle.taskOwnerOpen = false;
-      handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
+    if (handle.terminal || generation !== handle.generation) return;
+    if (handle.taskWords?.trim()) {
+      const words = handle.taskWords; handle.taskWords = '';
       handle.taskOwnerTurn = (handle.taskOwnerTurn ?? 0) + 1;
       void handle.tasks?.input(words, handle.taskOwnerTurn).catch(() => {
         hostLogEvent({ event: 'task_effect_check', code: 'task_failed' });
       });
     }
-    if (handle.stopFinalJournalId === handle.inputJournalId || handle.terminal || generation !== handle.generation) return;
+    // A correction must become current before releasing a queued answer from the speech hold.
+    handle.taskOwnerOpen = false;
+    handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
+    if (handle.stopFinalJournalId === handle.inputJournalId) return;
     handle.stopFinalJournalId = handle.inputJournalId;
     if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;
     // A fallback can finalize the last text row rather than writing an empty final marker.

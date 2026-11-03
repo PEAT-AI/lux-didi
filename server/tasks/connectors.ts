@@ -1,4 +1,4 @@
-import { TASK_DISCLOSURE } from './results.js';
+import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
@@ -108,6 +108,8 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
+    const hostRepair = connectorFailures.get(result);
+    if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
     if (result.state !== 'completed') return failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.');
     if (binding.project) {
       try {

@@ -3,12 +3,16 @@ import { createHash } from 'node:crypto';
 import { HOST_EVIDENCE } from '../tools/types.js';
 import { redactSecrets, redactSecretsWithCount } from '../tools/redact.js';
 export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
+/** Host-classified connector failures, never raw connector text or a model field. */
+export const TASK_CONNECTOR_FAILURE = Symbol('task-connector-failure');
+export const connectorFailures = new WeakMap<object, string>();
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
 export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void; recordRedaction?(tool: string, count: number): void };
 export interface ToolResult {
   [TASK_DISCLOSURE]?: TaskDisclosure;
+  [TASK_CONNECTOR_FAILURE]?: string;
   dataClasses?: readonly import('../adapters/model/types.js').DataClass[];
   exposures?: import('./authority.js').Exposure[];
   status: ResultStatus;

@@ -1,3 +1,4 @@
+import { TASK_CONNECTOR_FAILURE } from './results.js';
 import { isConnectorTaskRead } from './connectors.js';
 import { HOST_EVIDENCE } from '../tools/types.js';
 import { TASK_DISCLOSURE } from './results.js';
@@ -18,7 +19,7 @@ export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity
       const { signal } = context;
       return owner.runTask(call, args, async () => {
         const result = await runtime.runTool(tool.name, args, { ...identity, operation_id: context.executionId }, signal);
-        if (result.status === 'failed' && isConnectorTaskRead(tool.name)) return { status: 'completed' as const, result: owner.journal.fail(call, 'failed', 'connector_error') };
+        if (result.status === 'failed' && isConnectorTaskRead(tool.name)) return { status: 'completed' as const, result: owner.journal.fail(call, 'failed', 'connector_error', result[TASK_CONNECTOR_FAILURE]) };
         // Reads are conservatively private except host-owned alarm/roster metadata and public web evidence.
         const dataClasses: readonly DataClass[] = result.dataClasses ?? (result.status === 'failed' || tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private']);
         const snapshot = result[TASK_DISCLOSURE];

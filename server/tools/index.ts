@@ -1,3 +1,4 @@
+import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
 import { nativeTaskReadTool, isConnectorTaskRead } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
@@ -389,13 +390,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason, ...refusalCauseOf(reason) }, dataClasses: [] }, true);
       });
     },
-    fail(input, status, reason) {
+    fail(input, status, reason, hostRepair) {
       const call = callDTO(input);
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code, ...refusalCauseOf(code) }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: hostRepair ? { status, reason: code, cause: hostRepair, next: hostRepair, text: hostRepair, repair: hostRepair } : call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code, ...refusalCauseOf(code) }, dataClasses: [] });
       });
     },
   };
@@ -589,6 +590,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);
+            if (status) connectorFailures.set(evidence, status.reason);
             if (status?.log) options.log?.(status.log);
           }
           return evidence;

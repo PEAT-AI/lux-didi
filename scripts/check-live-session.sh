@@ -26,6 +26,11 @@ cd server
 group_build() {
   node test/vanilla-tree.integration.mjs || return 1
   npm run build || return 1
+  node node_modules/typescript/bin/tsc --ignoreConfig --types node --typeRoots node_modules/@types \
+    --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
+    --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --esModuleInterop \
+    --rootDir . --outDir dist test/task-call.test.ts test/task-delivery.test.ts \
+    test/tasks-lifecycle.test.ts test/task-authority.test.ts || return 1
   if git cat-file -e c77491b713808192e6314babd8b0bdbb3154cbdf^{commit} 2>/dev/null; then
   node test/direct102-red-base.integration.mjs || return 1
   else

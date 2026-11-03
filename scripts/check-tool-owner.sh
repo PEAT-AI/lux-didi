@@ -11,7 +11,7 @@ node node_modules/typescript/bin/tsc --ignoreConfig --target ES2023 --module Nod
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots node_modules/@types --rootDir . --outDir dist \
   test/owner-utterances.test.ts test/tool-owner.test.ts test/live-shape.test.ts \
-  test/redact.test.ts test/open-destinations.test.ts test/lux-note.test.ts
+  test/redact.test.ts test/open-destinations.test.ts test/lux-note.test.ts test/task-authority.test.ts
 mkdir -p dist/test/fixtures
 cp test/fixtures/open-destinations.json test/fixtures/open-evals.json test/fixtures/owner-utterances.json dist/test/fixtures/
 cp tools/open-handles.ts dist/test/fixtures/parity-open-handles.ts

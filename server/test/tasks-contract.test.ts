@@ -70,3 +70,25 @@ test('both provider ports carry strict typed calls and return a final answer wit
     assert.equal(result.text, 'verified final'); assert.equal(calls, 2);
   }
 });
+
+test('Gmail operators narrow synthetic fixture results and read returns the whole body', async () => {
+  const fixtures = await import(new URL('../scripts/eval-worker-replay.mjs', import.meta.url).href);
+  const all = fixtures.searchMail({ query: '' });
+  const none = fixtures.searchMail({ query: 'after:2099/01/01' });
+  assert.ok(JSON.stringify(all).includes('m_'));
+  assert.ok(!JSON.stringify(none).includes('m_'));
+  const first = fixtures.MAIL[0];
+  assert.equal(fixtures.readMail({ id: first.id }).body, first.body);
+});
+
+test('connector projection is structural and no_match never opens a neighbour', async () => {
+  const { projectTaskPayload } = await import('../tasks/connectors.js');
+  const body = 'body '.repeat(4500);
+  const result = projectTaskPayload('read_mail', { content: [{ type: 'text', text: JSON.stringify({ data: { body } }) }] }, { id: 'm' });
+  assert.equal(result.text, body.trim());
+  const ranked = projectTaskPayload('search_company', { results: [{ id: 'near', title: 'Cedar', body: 'must not be opened' }] }, { query: 'Orchid' });
+  assert.equal(ranked.status, 'no_match'); assert.equal(ranked.references[0]?.match, 'neighbour');
+  assert.doesNotMatch(ranked.text, /must not/);
+  assert.equal(projectTaskPayload('search_mail', { unexpected: 'x' }, { query: 'x' }).status, 'failed');
+  assert.equal(projectTaskPayload('search_mail', { messages: [] }, { query: 'x' }).status, 'empty');
+});

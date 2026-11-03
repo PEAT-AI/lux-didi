@@ -11,7 +11,7 @@ export { DEFAULT_WORKER_MODEL } from './model.js';
 export const DEFAULT_WORKER_EFFORT = 'low';
 export interface ToolCall { id: string; name: string; args: unknown }
 export interface Output { id: string; name: string; result: ToolResult }
-export interface Inference { text: string; calls: ToolCall[]; no_action?: boolean }
+export interface Inference { text: string; calls: ToolCall[]; no_action?: boolean; continuation?: { provider: 'openai' | 'gemini'; items: unknown[] } }
 export interface InferRequest {
   instructions: string; input: string; outputs: Output[]; turns: Inference[];
   tools: TaskTool[]; model: string; effort: string;

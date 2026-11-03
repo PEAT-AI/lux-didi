@@ -45,20 +45,23 @@ export function createModelPort(options: ModelOptions): Infer {
     if (role.provider === 'openai') {
       const input: unknown[] = [{ role: 'user', content: request.input }];
       for (const turn of request.turns) {
-        if (turn.text) input.push({ role: 'assistant', content: turn.text });
-        for (const call of turn.calls) input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.args) });
+        if (turn.continuation?.provider === 'openai') input.push(...turn.continuation.items);
+        else {
+          if (turn.text) input.push({ role: 'assistant', content: turn.text });
+          for (const call of turn.calls) input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.args) });
+        }
         for (const call of turn.calls) {
           const output = allOutputs.get(call.id);
           if (output) input.push({ type: 'function_call_output', call_id: call.id, output: JSON.stringify(output.result) });
         }
       }
       url = 'https://api.openai.com/v1/responses';
-      body = { model: role.model, reasoning: { effort: role.effort }, instructions: request.instructions + terminalRule, input, tools: declarations(request, 'openai'), parallel_tool_calls: true, store: false };
+      body = { model: role.model, reasoning: { effort: role.effort }, instructions: request.instructions + terminalRule, input, tools: declarations(request, 'openai'), parallel_tool_calls: true, store: false, include: ['reasoning.encrypted_content'] };
       headers = { 'content-type': 'application/json', authorization: `Bearer ${key}` };
     } else {
       const contents: unknown[] = [{ role: 'user', parts: [{ text: request.input }] }];
       for (const turn of request.turns) {
-        contents.push({ role: 'model', parts: [...(turn.text ? [{ text: turn.text }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: call.name, args: call.args } }))] });
+        contents.push({ role: 'model', parts: turn.continuation?.provider === 'gemini' ? turn.continuation.items : [...(turn.text ? [{ text: turn.text }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: call.name, args: call.args } }))] });
         const responses = turn.calls.flatMap(call => {
           const output = allOutputs.get(call.id);
           return output ? [{ functionResponse: { id: call.id, name: call.name, response: output.result } }] : [];
@@ -94,6 +97,7 @@ export function createModelPort(options: ModelOptions): Infer {
       }
     }
     if (!calls.length && !texts.length) throw new Error('Worker response empty');
-    return terminal(texts.join('\n'), calls);
+    const items = role.provider === 'openai' ? (Array.isArray(json.output) ? json.output : []) : (record(record((json.candidates as unknown[])[0]).content).parts as unknown[]);
+    return { ...terminal(texts.join('\n'), calls), continuation: { provider: role.provider, items } };
   };
 }

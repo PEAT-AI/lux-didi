@@ -522,8 +522,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (!isConnectorTaskRead(name)) return true;
       return store.transaction(tx => {
         const { snapshot } = readRun(tx, runId);
-        return snapshot.connections.some(bound => (nativeTaskReadTool(name, bound.policy.connector) !== undefined || (name === 'query_company' && bound.policy.connector === 'mongoose'))
-          && currentPolicies(tx, snapshot, bound.connectionId) && currentProjection(snapshot, bound.connectionId));
+        return snapshot.connections.some(bound => {
+          const p = bound.policy, c = p.sourcePolicy.unknownClass;
+          return (nativeTaskReadTool(name, p.connector) !== undefined || (name === 'query_company' && p.connector === 'mongoose'))
+            && p.enabled && p.bindingMode === 'connection' && c !== null
+            && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
+        });
       });
     },
     runTask(call, args, body) {

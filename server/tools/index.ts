@@ -523,13 +523,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const snapshot = validateCallRun(tx, call);
         const bound = snapshot.connections.find(item => {
           const native = nativeTaskReadTool(call.toolName, item.policy.connector, args);
-          return native !== undefined && connectorDescriptor(item.policy.connector)?.declarations(item.policy).some(tool => tool.name === native && tool.effect === 'read');
+          return native !== undefined;
         });
         if (!bound) return undefined;
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('task_source_policy_denied');
         return { call, bound, snapshotSha256: sha256(canonicalJSON(snapshot)), allowedClasses: snapshot.acceptance.allowedClasses };
       });
-      return scope ? dispatch.run(scope, body) : body();
+      if (scope) { bodyConsumers.add(call.runId); return dispatch.run(scope, body); }
+      return body();
     },
     closeTaskCall(sessionId) { options.trello?.end(sessionId); },
     taskExecutors(sessionId) {

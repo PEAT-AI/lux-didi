@@ -713,7 +713,7 @@ test('P1: 3.8 Live keeps its 800 ms silence window and exposes only helper deleg
   
   
   
-assert.deepEqual(setup.tools[0]!.functionDeclarations, [EXPECTED_DELEGATE]);
+assert.deepEqual(setup.tools[0]!.functionDeclarations, [{ ...EXPECTED_DELEGATE, behavior: 'BLOCKING' }]);
 });
 
 

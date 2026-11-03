@@ -1,6 +1,4 @@
-import { taskDefinitions } from '../tasks/chat.js';
-import { chatCapabilities } from '../chat/context.js';
-import { compilePrompt, PROMPT_VERSION } from '../prompt/index.js';
+import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/index.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { test, type TestContext } from 'node:test';
 import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
@@ -105,33 +103,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const taskFactory = syntheticTaskFactory(f.store, composition);
-  const diagnosedTaskFactory: typeof taskFactory = (...args) => {
-    try {
-      const runtime = taskFactory(...args);
-      return new Proxy(runtime, { get(target, name) {
-        const value: unknown = Reflect.get(target, name, target);
-        if (typeof value !== 'function') return value;
-        return (...parameters: unknown[]) => {
-          try {
-            const result: unknown = Reflect.apply(value, target, parameters);
-            if (name === 'begin') {
-              const revision = result as ReturnType<typeof target.begin>;
-              try {
-                const capabilities = chatCapabilities(taskDefinitions(target, revision.identity, composition.owner), f.config.context.sources);
-                const compiled = compilePrompt({ ownerId: f.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
-                  preferences: f.config.preferences, capabilities, evidence: [], history: [{ schemaVersion: 1, ownerId: f.store.assistantId, dataClass: 'ordinary', id: 'synthetic-preflight', role: 'user', text: 'Synthetic compiler preflight' }], budgets: f.config.context.budgets });
-                console.error('CHAT_TASK_PROMPT_OK', compiled.system.length);
-              } catch (error) { console.error('CHAT_TASK_PROMPT', String(error)); }
-            }
-            return result;
-          }
-          catch (error) { console.error('CHAT_TASK_SETUP', String(name), String(error)); throw error; }
-        };
-      } });
-    } catch (error) { console.error('CHAT_TASK_FACTORY', String(error)); throw error; }
-  };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, createTaskRuntime: diagnosedTaskFactory, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
@@ -590,7 +562,7 @@ test('real chat turn reads a local reminder and commits a task note through cano
     return { status: 'complete', text: call ? '' : 'Synthetic turn finished.', providerContent: { role: 'model', parts: call ? [{ functionCall: call }] : [{ text: 'Synthetic turn finished.' }] },
       reason: 'complete', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
   } };
-  const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: 40000, contextChars: 12000, historyChars: 12000 }, sources: [] } });
+  const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, contextChars: 12000, historyChars: 12000 }, sources: [] } });
   let completionError = ''; const complete = f.owner.complete.bind(f.owner);
   f.owner.complete = (...args) => { try { return complete(...args); } catch (error) { completionError = error instanceof Error ? error.message : 'non_error'; throw error; } };
   f.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", ['synthetic-reminder', Date.UTC(2030, 0, 2), 'UTC', 'Known reminder label', 'synthetic-journal']));

@@ -1,7 +1,7 @@
 import { hostTaskFactory } from '../tasks/host.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
-import { fixtureUntil } from './live-voice-fixture.js';
+import { fixtureUntil, fixtureSettled } from './live-voice-fixture.js';
 import { pumpOutput } from '../http/live-upgrade.js';
 import type { LiveAttachment } from '../live/index.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -1086,19 +1086,21 @@ for (const finalized of [false, true]) {
     await once(ws, 'open'); await h.f.frame(1); h.f.send({ setupComplete: {} });
     await fixtureUntil(() => received.some(frame => frame.type === 'ready'), 'gateway ready');
     if (finalized) h.f.send({ serverContent: { inputTranscription: { text: 'Check the synthetic gateway fact', finished: true } } });
+    const delegateDelivered = once(h.f.clients[0]!, 'message');
     h.f.send({ toolCall: { functionCalls: [{ id: 'synthetic-delegate', name: 'delegate', args: { request: 'Check the synthetic gateway fact' } }] } });
+    await delegateDelivered; await fixtureSettled();
     if (finalized) {
-      await h.f.frame(2);
+      await fixtureUntil(() => h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'gateway helper answer');
       assert.equal(inputs.length, 1);
       assert.match(inputs[0]!, /Check the synthetic gateway fact/);
-      const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
+      const response = h.f.frames.find(frame => 'toolResponse' in (frame as object)) as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
       assert.equal(response.toolResponse.functionResponses[0]?.id, 'synthetic-delegate');
       assert.equal(response.toolResponse.functionResponses[0]?.name, 'delegate');
       assert.equal(response.toolResponse.functionResponses[0]?.response.text, 'Exact synthetic gateway answer.');
     } else {
       await new Promise<void>(resolve => setImmediate(resolve));
       assert.equal(inputs.length, 0, 'a delegation without owner input is not an instruction carrier');
-      assert.equal(h.f.frames.length, 1);
+      assert.equal(h.f.frames.some(frame => 'toolResponse' in (frame as object)), false);
     }
     assert.equal(JSON.stringify(received).includes('owner_words_in_order'), false, 'worker input never reaches the browser');
     ws.close(); await once(ws, 'close');

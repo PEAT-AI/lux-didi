@@ -33,6 +33,20 @@ import Foundation
         check(absent.code == .notFound, "absent file is not_found")
         let app = await actions.perform(.openApp, target: "Synthetic")
         check(app.code == .opened, "installed app by name opens")
+        // OPEN-R3: Spotlight must not turn an app name into a wildcard pattern.
+        let candidate = home.appendingPathComponent("Applications/Synthetic.app")
+        let searched = RecordingAppSearch(candidate: candidate)
+        let literal = NativeActions(home: home, opener: { _, _ in true }, appSearch: { searched.search($0) })
+        for target in ["Synth*", "Synth?tic"] {
+            let result = await literal.perform(.openApp, target: target)
+            check(result.code == .notFound, "OPEN-F1 wildcard name cannot open unrelated app")
+        }
+        check(searched.queries.contains { $0.contains("\\*") }, "OPEN-F1 asterisk escaped in Spotlight predicate")
+        check(searched.queries.contains { $0.contains("\\?") }, "OPEN-F1 question mark escaped in Spotlight predicate")
+        let upper = await actions.perform(.openApp, target: "Synthetic.APP")
+        check(upper.code == .opened, "OPEN-F2 uppercase bundle suffix opens the same installed app")
+        let mixed = await actions.perform(.openApp, target: "Synthetic.ApP")
+        check(mixed.code == .opened, "OPEN-F2 mixed-case bundle suffix opens the same installed app")
         let missingApp = await actions.perform(.openApp, target: "SyntheticMissing-\(UUID().uuidString)")
         check(missingApp.code == .notFound, "missing app is not_found")
         for _ in 0..<6 {
@@ -60,4 +74,11 @@ final class RecordingWorkspace: BrowserWorkspace, @unchecked Sendable {
     func open(_ url: URL) -> Bool { calls.append("default"); return true }
     func open(_ url: URL, withApplicationAt application: URL) async -> Bool { calls.append("explicit"); return true }
     func openApplication(at url: URL) async -> Bool { calls.append("app"); return true }
+}
+
+final class RecordingAppSearch: @unchecked Sendable {
+    let candidate: URL
+    private(set) var queries: [String] = []
+    init(candidate: URL) { self.candidate = candidate }
+    func search(_ query: String) -> [URL] { queries.append(query); return [candidate] }
 }

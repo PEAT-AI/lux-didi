@@ -134,12 +134,14 @@ public struct BrowserState: Sendable, Equatable {
 /// Mechanical native opening boundary. Task authority belongs to the host.
 public actor NativeActions: NativeActionExecuting {
     public typealias Opener = @Sendable (URL, Bool) async -> Bool
+    public typealias AppSearch = @Sendable (String) -> [URL]
 
     public static let openLimit = 5
     public static let windowSeconds: TimeInterval = 60
 
     private let home: URL
     private let opener: Opener
+    private let appSearch: AppSearch
     private let browserState: @Sendable () -> BrowserState
     private let clock: @Sendable () -> Date
     private let log: Logger
@@ -150,9 +152,11 @@ public actor NativeActions: NativeActionExecuting {
                 opener: @escaping Opener = NativeActions.workspaceOpen,
                 browserState: @escaping @Sendable () -> BrowserState = NativeActions.systemBrowserState,
                 mattermostHost: String? = nil,
-                clock: @escaping @Sendable () -> Date = { Date() }) {
+                clock: @escaping @Sendable () -> Date = { Date() },
+                appSearch: @escaping AppSearch = NativeActions.spotlightApps) {
         self.home = home.resolvingSymlinksInPath().standardizedFileURL
         self.opener = opener
+        self.appSearch = appSearch
         self.browserState = browserState
         self.mattermostHost = mattermostHost
         self.clock = clock
@@ -253,11 +257,16 @@ public actor NativeActions: NativeActionExecuting {
             guard candidate.path.hasPrefix(folder.resolvingSymlinksInPath().standardizedFileURL.path + "/") else { continue }
             if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Contents/Info.plist").path) { return candidate }
         }
-        // Launch Services has no supported name lookup. Spotlight also finds apps outside standard folders.
+        // Launch Services has no supported name lookup. Spotlight finds other installed locations.
+        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let query = "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == \"\(escaped).app\"cd"
+        return appSearch(query).first
+    }
+
+    public static func spotlightApps(_ query: String) -> [URL] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        process.arguments = ["-0", "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == \"\(escaped).app\"cd"]
+        process.arguments = ["-0", query]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -265,12 +274,11 @@ public actor NativeActions: NativeActionExecuting {
             try process.run()
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            if process.terminationStatus == 0,
-               let path = String(data: data, encoding: .utf8)?.split(separator: "\0").first {
-                return URL(fileURLWithPath: String(path))
+            if process.terminationStatus == 0, let paths = String(data: data, encoding: .utf8) {
+                return paths.split(separator: "\0").map { URL(fileURLWithPath: String($0)) }
             }
-        } catch { return nil }
-        return nil
+        } catch { return [] }
+        return []
     }
 
     private func extensionOf(_ target: String) -> String {

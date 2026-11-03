@@ -37,3 +37,12 @@ test('VOICE-R19: unavailable Mattermost drafts return a plain repair, never a sy
   const f = await fixture(t, false); const result = await f.run('@synthetic-user');
   assert.match(JSON.stringify(result), /not configured/i); assert.doesNotMatch(JSON.stringify(result), /saved locally/i);
 });
+test('VOICE-R19: a named channel reaches the existing Mattermost draft port', async t => {
+  const f = await fixture(t); const result = await f.run('#synthetic-team');
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.input.channel, 'synthetic-team');
+  assert.equal(f.calls[0]!.input.message, 'Synthetic draft body'); assert.match(JSON.stringify(result), /synthetic-remote-draft/);
+});
+test('VOICE-R19: an unresolved target repairs without guessing or calling the draft port', async t => {
+  const f = await fixture(t); const result = await f.run('ambiguous synthetic target');
+  assert.equal(f.calls.length, 0); assert.match(JSON.stringify(result), /exact Mattermost/i);
+});

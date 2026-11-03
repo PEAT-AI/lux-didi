@@ -60,3 +60,13 @@ test('rejection uses bounded fallback and reconnect transcript proves heard', ()
   f.delivery.rejected('c1'); assert.equal(f.reconnects(), 1);
   f.delivery.transcript('Synthetic answer.'); assert.equal(f.states.at(-1), 'heard'); f.advance(); assert.equal(f.delivery.undelivered, undefined);
 });
+
+test('a delivery deadline during other output defers fallback until quiet', () => {
+  const f = fixture(); f.delivery.attach(identity, 'd1'); f.delivery.deliver(identity, answer('Synthetic answer.'));
+  f.delivery.activity({ outputQuiet: false, ownerSpeaking: false }); f.advance();
+  assert.equal(f.sends.length, 1);
+  f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sends.length, 2);
+  f.delivery.activity({ outputQuiet: false, ownerSpeaking: false }); f.advance();
+  assert.equal(f.reconnects(), 0);
+  f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.reconnects(), 1);
+});

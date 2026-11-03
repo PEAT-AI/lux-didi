@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -217,7 +218,7 @@ test('the adapter-shaped transcript never mints a legacy dictation write authori
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => NOW, timeZone: 'UTC',
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: fake.port, profile, now: () => NOW, timeZone: 'UTC',
     schedule: () => ({ unref: () => undefined, cancel: () => undefined }) });
   const session = owner.create({ idempotencyKey: randomUUID(), inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);

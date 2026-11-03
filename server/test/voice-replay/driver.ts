@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from '../synthetic-task.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -284,7 +285,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
       if (written === before && f.frames.length === before) return;
     }
   };
-  const owner = createLiveSessionOwner({
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store),
     store, voice: adapter as LiveVoicePort, profile,
     now: () => clock.now(), schedule: (callback, delayMs) => clock.schedule(callback, delayMs), timeZone: 'UTC',
     ...(tools ? { tools: tools.composition } : {}),

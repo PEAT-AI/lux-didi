@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import assert_ from 'node:assert/strict';
 import { test } from 'node:test';
@@ -236,7 +237,7 @@ async function harness(t: TestContext, options: { rebuildThresholdChars?: number
   });
   const { tools, hook } = await toolsFixture(t, store, profile);
   const web = webPort();
-  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools, researchWeb: web.port,
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: port.port, profile, tools, researchWeb: web.port,
     now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule, ...options });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });

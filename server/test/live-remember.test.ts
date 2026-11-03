@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { shapeDriveFile } from '../tools/live-shape.js';
 import { exposeToolResults, nativeActions, type NativeActionFrame } from '../tools/open.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -153,7 +154,7 @@ async function harness(t: TestContext, overrides: {
     backoff: async () => {},
     save: async args => { saved.push(args); if (overrides.crashAfterInsert) throw Error('synthetic crash after insert'); return overrides.vaultUnavailable ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'synthetic-81' }; },
   };
-  owner = createLiveSessionOwner({ store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, saved, tools, trace, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
 }

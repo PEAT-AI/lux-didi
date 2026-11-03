@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { hostTaskFactory } from '../tasks/host.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
@@ -1679,7 +1680,7 @@ test('real SIGKILL before dispatch intent sweeps to not_started and after intent
   const domain = createDomainPort({ outbox: Outbox });
   const migrations = [...domain.migrations, ...chatMigrations, ...liveMigrations];
   const profile = validateLiveProfile(profileInput());
-  const recoverOwner = (store: Store) => createLiveSessionOwner({
+  const recoverOwner = (store: Store) => createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store),
     store, voice: new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })), profile,
   });
 
@@ -1957,7 +1958,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
 
 test('trusted clock rejects fractional milliseconds and maximum timer delay stays bounded', async t => {
   const h = await harness(t);
-  assert.throws(() => createLiveSessionOwner({ store: h.store, voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
+  assert.throws(() => createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
   const scheduler = new DeadlineClock();
   const max = await harness(t, { scheduler, limits: { unusedMs: 2_147_483_647 } });
   const row = max.owner.create({ idempotencyKey: 'deadline-max', inputClass: 'ordinary' }, max.ctx);
@@ -1976,7 +1977,7 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: h.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example',
     style: { text: 'SYNTHETIC A', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC lore', dataClass: 'ordinary' } };
   const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
-  const owner = createLiveSessionOwner({ store: h.store,
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store,
     profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
     voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
   t.after(() => owner.shutdown());
@@ -1998,7 +1999,7 @@ test('private style alone and sensitive lore alone deny voice before adapter or 
     let calls = 0;
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: h.store.assistantId, profileVersion: 'fixture', displayName: 'Example',
       style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
-    const owner = createLiveSessionOwner({ store: h.store, profile: validateLiveProfile({ ...profileInput(),
+    const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, profile: validateLiveProfile({ ...profileInput(),
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC instruction', dataClasses: ['ordinary', styleClass, loreClass].filter((c, i, cs) => cs.indexOf(c) === i) } }),
       voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { calls++; throw Error('must not open'); } }, now: () => NOW });
     assert.throws(() => owner.create({ idempotencyKey: `denied-${styleClass}-${loreClass}`, inputClass: 'ordinary' }, h.ctx));
@@ -2015,7 +2016,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
   const accepted = owner.create({ idempotencyKey: 'wire-a', inputClass: 'ordinary' }, h.ctx);
   acceptedPrompt.system = 'SYNTHETIC current B';
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
@@ -2336,7 +2337,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW, timeZone: 'Asia/Kolkata' }); t.after(() => owner.shutdown());
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, profile, voice, now: () => NOW, timeZone: 'Asia/Kolkata' }); t.after(() => owner.shutdown());
   const accepted = owner.create({ idempotencyKey: 'wire-naya', inputClass: 'ordinary' }, h.ctx);
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
@@ -2424,7 +2425,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
     modelId: status.config.profile.liveModelId, voice: status.config.profile.voice, keyReference: status.config.profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: status.config.profile.liveModelId, dataClasses: status.config.profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
+  const first = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,

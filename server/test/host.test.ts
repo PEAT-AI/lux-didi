@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { discoveryExceptionClass } from '../adapters/mcp/adapter.js';
 import { WebSocket } from 'ws';
 import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
@@ -1679,7 +1680,7 @@ test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accept
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
     const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge',
       state: now >= recoveredAt ? 'connected' : 'error', retrying: now < recoveredAt }];
-    owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+    owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
       now: () => now, timeZone: 'UTC', tools: { owner: runtime.owner, connectionIds: () => [], status: () => ({ endpoints: endpoints() }) } });
     // Before this change the host invoked create directly, without this barrier.
     if (admission) await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });

@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -39,7 +40,7 @@ async function replay(t: TestContext): Promise<Replay> {
     features: { composedNotes: true },
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => NOW, timeZone: 'UTC',
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: fake.port, profile, now: () => NOW, timeZone: 'UTC',
     schedule: () => ({ unref: () => undefined, cancel: () => undefined }) });
   const session = owner.create({ idempotencyKey: randomUUID(), inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);

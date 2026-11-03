@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -81,7 +82,7 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
     || record.event === 'live_rebuild_removed' || record.event === 'live_rebuild_held') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   if (overrides.deadLine === true) {
     // The L19 recipe: a previous call in this conversation was lost, so this one opens by naming the drop.

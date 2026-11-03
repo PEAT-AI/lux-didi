@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -71,7 +72,7 @@ test('memory startup integration: stale HTTP wait stays bounded and unconfigured
 test('memory startup integration: current CREATE summaries and notes never mutate frozen ATTACH text', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-snapshot-integration-')), store = new Store(dir, hostMigrations);
   const fake = fakeLiveVoicePort({ provider: 'openai', inputRates: [16000] }); let now = NOW, reads = 0, note = 'Synthetic old note';
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile: profile(), now: () => now, timeZone: 'UTC',
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: fake.port, profile: profile(), now: () => now, timeZone: 'UTC',
     memorySource: () => { reads++; return [{ id: 'note', text: note, dataClass: 'ordinary' }]; } });
   const context = { clientId: 'synthetic', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   try {

@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -63,7 +64,7 @@ async function openLive(t: TestContext): Promise<Live> {
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => scheduler.now,
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: fake.port, profile, now: () => scheduler.now,
     timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `heard-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);

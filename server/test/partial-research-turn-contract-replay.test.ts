@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -191,7 +192,7 @@ async function harness(t: TestContext): Promise<Harness> {
   });
   let ownerRef: LiveSessionOwner | undefined;
   const fake = await backend(t, store, profile, () => ownerRef);
-  const owner = createLiveSessionOwner({ store, voice: provider.port, profile, tools: fake.tools,
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: provider.port, profile, tools: fake.tools,
     now: () => clock.now, timeZone: 'UTC', schedule: clock.schedule });
   ownerRef = owner;
   t.after(() => { sink(); rmSync(dir, { recursive: true, force: true }); });

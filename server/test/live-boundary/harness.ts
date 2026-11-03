@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from '../synthetic-task.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -291,7 +292,7 @@ export async function openBoundary(options: BoundaryOptions = {}): Promise<Bound
   }
 
   const context: LiveContext = { clientId: 'synthetic-tester', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  owner = createLiveSessionOwner({
+  owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store),
     store, voice: fake.port, profile, now: () => clock.now, timeZone: 'UTC',
     tools: { owner: toolOwner, connectionIds: () => [...published], status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) },
     ...(options.researchWeb ? { researchWeb: options.researchWeb } : {}),

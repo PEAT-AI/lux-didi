@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import WebSocket from 'ws';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -23,7 +24,7 @@ const voice = new GeminiLiveVoiceAdapter({
   limits: { handshakeMs: 2000, idleMs: 3000, sessionMs: 5000, closeMs: 50 },
   socketFactory: (_url, config) => new WebSocket(`ws://127.0.0.1:${port}`, config),
 });
-const owner = createLiveSessionOwner({ store, voice, profile });
+const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice, profile });
 const context: LiveContext = { clientId: 'child', auditId: 'child-audit', authorityEpoch: store.authorityEpoch };
 const session = owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, context);
 process.send?.({ phase: 'created', liveSessionId: session.liveSessionId });

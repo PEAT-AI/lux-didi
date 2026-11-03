@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -84,7 +85,7 @@ async function openLive(t: TestContext, limits: Record<string, number> = {}): Pr
     if (value.event === 'live_mute' || value.event === 'live_watchdog') receipts.push(value);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: recordingPort(fake, record), profile,
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: recordingPort(fake, record), profile,
     now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `mute-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);

@@ -10,8 +10,7 @@ import { Pcm16Upsampler } from './resample.js';
 import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
-import type { LiveTracePort, TraceDetailMap } from '../../trace/record.js';
-import type { ResponseStatus, ResponseTerminalReason, TraceEventKind } from '../../trace/kinds.js';
+import type { LiveTracePort } from '../../trace/record.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -243,19 +242,6 @@ interface Settings {
 /** 3r F: what a provider error has to name before it counts as a speech cut, and the one rejection that means a
  *  response is still active (which is the retry the continuation gate is allowed). */
 const SPEECH_CUT_ERROR = /moderation|content_filter|interrupt|barge|response_cancel|cancel/i;
-
-interface Delegation {
-  readonly id: string;
-  readonly openedAt: number;
-  /** Response ids this delegation has created, oldest first, so a continuation chain stays readable. */
-  readonly responses: string[];
-  /** Calls delegated under it that still owe their one terminal output. */
-  readonly awaiting: Set<string>;
-  /** When the last owed output went upstream and the stall timer armed from there. */
-  outputsAt: number | undefined;
-  stallTimer: unknown;
-  stalled: boolean;
-}
 
 export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private readonly settings: Settings;
@@ -504,11 +490,6 @@ class Session implements LiveVoiceSession {
   private heldAudibleBytes = 0;
   private headStartTimer: unknown;
   private readonly clock: LiveVoiceClock;
-  /** O1b-A: the host-minted key of each provider response, so a receipt joins a response to its calls. */
-  private readonly responseKeys = new Map<string, string>();
-  /** C-REBUILD: the responses this session created and has not terminated yet, so a teardown settles each one. */
-  private readonly openResponses = new Set<string>();
-  private responseKeySeq = 0;
   private readonly diagnostic = {
     audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0,
@@ -526,7 +507,7 @@ class Session implements LiveVoiceSession {
 
   constructor(private readonly settings: Settings, private readonly start: string,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
-    private readonly answerOnReady = false, private readonly openerOnReady = false) {
+    _answerOnReady = false, _openerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
     let consumed = false;
@@ -575,7 +556,7 @@ class Session implements LiveVoiceSession {
     catch { if (this.checkpoint()) this.finish('credential_unavailable'); return; }
     if (!this.checkpoint()) return;
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) { this.finish('credential_unavailable'); return; }
-    this.secret = key;
+
     step('credential_resolved');
     this.handshake = this.timer(this.settings.limits.handshakeMs, 'handshake_timeout');
     try {
@@ -1125,14 +1106,6 @@ class Session implements LiveVoiceSession {
     return id;
   }
 
-  /**
-   * O1b-A: one receipt into the host's trace store. The port binds the session, the connection epoch and the open
-   * turn, so this adapter names only its own response and call keys and never a session it was not handed.
-   */
-  private receipt<K extends TraceEventKind>(kind: K, ids: { responseKey?: string; callKey?: string }, detail: TraceDetailMap[K]): void {
-    this.settings.trace?.receipt(kind, ids, detail);
-  }
-
   /** S4a-R2 (d): a small ledger of what was sent and when, so a correlation is read from the wire and never
    *  guessed from a string. It grants nothing: an id is never permission to resend a command. */
   private recordCommand(eventId: string, kind: CommandKind): void {
@@ -1373,7 +1346,7 @@ class Session implements LiveVoiceSession {
     // A closed session has no speaking stretch: no silence check is still owed to the turn it was in.
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     this.reportUnknownFrames();
-    this.secret = '';
+
     this.readiness.reject(new LiveVoiceError(code));
     this.emit({ type: 'outcome', outcome: this.terminal });
     if (!this.creatingSocket) this.shutdownSocket();

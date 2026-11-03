@@ -34,3 +34,19 @@ test('helper source text stays out of voice context across an in-flight ordinary
   assert.ok(f.receipts.some(row => row.event === 'task_delivery' && row.state === 'heard'));
   assert.equal(JSON.stringify(f.receipts).includes(marker), false, 'source bytes never enter the closed audit');
 });
+
+test('each finalized helper ask receives a fresh host clock and the owner time zone, not model-guessed time', async t => {
+  let now = Date.UTC(2031, 0, 2, 23, 45);
+  const inputs: { time_context?: { now_utc: string; owner_time_zone: string } }[] = [];
+  const f = await taskLiveFixture(t, async request => {
+    inputs.push(JSON.parse(request.input) as typeof inputs[number]);
+    return { text: 'Synthetic clock answer.', calls: [] };
+  }, { timeZone: 'Asia/Tokyo', now: () => now });
+  await f.emit({ type: 'inputTranscription', text: 'What is today in my time zone?', finished: true, finalOrigin: 'provider' });
+  assert.equal(inputs.length, 1);
+  assert.deepEqual(inputs[0]!.time_context, { now_utc: '2031-01-02T23:45:00.000Z', owner_time_zone: 'Asia/Tokyo' });
+  now += 60000;
+  await f.emit({ type: 'inputTranscription', text: 'And now?', finished: true, finalOrigin: 'provider' });
+  assert.equal(inputs.length, 2);
+  assert.deepEqual(inputs[1]!.time_context, { now_utc: '2031-01-02T23:46:00.000Z', owner_time_zone: 'Asia/Tokyo' });
+});

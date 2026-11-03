@@ -16,7 +16,7 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 type ProviderEvent<T = LiveVoiceEvent> = T extends { sequence: number } ? Omit<T, 'sequence'> : never;
 export const flushTaskLive = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
-export async function taskLiveFixture(t: TestContext, infer?: Infer) {
+export async function taskLiveFixture(t: TestContext, infer?: Infer, timeContext: { timeZone?: string; now?: () => number } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'task-correction-synthetic-'));
   const store = new Store(directory, [...domainMigrations, ...chatMigrations, ...toolsMigrations, ...liveMigrations]);
   const fake = fakeLiveVoicePort({ provider: 'openai' }), appended: string[] = [], receipts: Record<string, unknown>[] = [];
@@ -31,7 +31,7 @@ export async function taskLiveFixture(t: TestContext, infer?: Infer) {
   const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC',
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],
       contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true,
-      infer: infer ?? (async () => new Promise<Inference>(resolve => { inference.push(resolve); })),
+      infer: infer ?? (async () => new Promise<Inference>(resolve => { inference.push(resolve); })), ...timeContext,
     }),
   });
   t.after(async () => { try { await owner.shutdown(); } finally { sink(); store.close(); rmSync(directory, { recursive: true, force: true }); } });

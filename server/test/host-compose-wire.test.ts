@@ -181,7 +181,7 @@ test('W1030: a host with no write family answers connector_not_authorized and sp
   assert.equal(h.mcp.connectionIds().length, 0);
 });
 
-test('W1030: a connect with only the read families is the read surface it always was', async t => {
+test('W1030: read grants stay intact behind canonical task reads, not raw connector declarations', async t => {
   const readChild = join(fixtures, 'google-mcp-child.mjs');
   const h = await host(t, pid => [endpoint({ id: 'gmail', connector: 'google', file: readChild, argv: ['ok', pid('gmail')] })]);
   const grant = h.mcp.registry.currentGrant('gmail');
@@ -192,8 +192,8 @@ test('W1030: a connect with only the read families is the read surface it always
   assert.equal(report?.state, 'connected');
   assert.equal(report?.tools, GOOGLE_TOOLS.length);
   const names = ownerTools(h);
-  for (const name of ['gmail_get_profile', 'gmail_search_messages', 'calendar_list_events']) assert.ok(names.includes(name), `${name} is still offered`);
-  for (const name of ['gmail_create_draft', 'calendar_create_event', 'mattermost_save_draft']) assert.equal(names.includes(name), false, `${name} is not`);
+  for (const name of ['search_mail', 'read_mail', 'calendar_events']) assert.ok(names.includes(name), `${name} is offered by the task registry`);
+  for (const name of ['gmail_get_profile', 'gmail_create_draft', 'calendar_create_event', 'mattermost_save_draft']) assert.equal(names.includes(name), false, `${name} is not`);
   // The compose tools are offered and honest about the family this host does not have.
   const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
   assert.equal(draft.state, 'not_authorized');
@@ -262,7 +262,8 @@ test('W1030: an argument refusal keeps its own closed code and never the authori
 
 test('the host task draft_chat reaches the real scoped compose bridge and native draft child receipt', async t => {
   const h = await host(t, pid => configured(pid));
-  const runtime = taskRuntime(h); t.after(() => runtime.close());
+  const runtime = taskRuntime(h);
+  try {
   const revision = runtime.begin('Draft a synthetic reply to the synthetic Sam fixture.', 1);
   const result = await runtime.runTool('draft_chat', { target: '@Sam', text: 'Synthetic task reply' }, { ...revision.identity, operation_id: 'synthetic-draft-operation' }, revision.signal);
   assert.equal(result.receipt?.state, 'committed');
@@ -270,4 +271,5 @@ test('the host task draft_chat reaches the real scoped compose bridge and native
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0]!.args, { message: 'Synthetic task reply', dm_username: 'Sam' });
   assert.equal(callsOf(h.pid('mattermost')).some(call => /send|publish|post_message/.test(call.tool)), false, 'saving a draft never posts to a human');
+  } finally { runtime.close(); }
 });

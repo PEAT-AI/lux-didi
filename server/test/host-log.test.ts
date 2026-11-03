@@ -692,3 +692,11 @@ test('C-DIAG109: a stall and a rebuild carry the owner final response pair', () 
 test('retired research audit event kinds are not accepted as current host events', () => {
   for (const event of ["research_blocked","research_id_rejected","research_joined","research_joined carries the run id only","research_operation_deadline","research_progress","research_routed","research_run","research_source","research_subcall"]) assert.equal(safeEvent({ event }), undefined);
 });
+test('task effect-check failures have a closed, text-free host audit event', () => {
+  for (const code of ['effect_check_failed', 'delete_confirmation_check_failed', 'task_failed']) {
+    const event = { event: 'task_effect_check', code };
+    assert.deepEqual(safeEvent(event), event);
+    assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
+  }
+  assert.equal(safeEvent({ event: 'task_effect_check', code: 'synthetic arbitrary error detail' }), undefined);
+});

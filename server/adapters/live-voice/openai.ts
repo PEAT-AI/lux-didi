@@ -532,8 +532,6 @@ class Session implements LiveVoiceSession {
   /** Text terminal completion is safe only when this session has no microphone stream. */
   private inputAudioSeen = false;
   private typedTurn = false;
-  private readonly typedFinals: string[] = [];
-  private typedFlushQueued = false;
   private idleQuiet: unknown;
   /** True between a delegated `response.created` and its `response.done`. */
   private delegatedOutstanding = false;
@@ -556,8 +554,6 @@ class Session implements LiveVoiceSession {
   private continuationCalls = 0;
   /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
   private batchAnswers = 0;
-  private answerNow = false;
-  private lastToolOutputAt: number | undefined;
   private researchCalls = 0;
   private researchAdmissions = new Set<string>();
   private toolRounds = 0;
@@ -570,9 +566,6 @@ class Session implements LiveVoiceSession {
    *  continuation already was. An audio-first response delivers the PCM before the item envelope, so both
    *  instants are written as measured and neither is clamped: the pair is a real ordering, never an assertion. */
   private firstResponseTiming: { kind: 'first' | 'continuation'; createdAt: number; responseKey?: string; firstItemAt: number | null; firstAudioAt: number | null } | undefined;
-  /** LAT-1022: outputs written and not yet acknowledged, so the wait between the write and the provider taking
-   *  it is measured instead of inferred from the next response. Keyed by the call the output answers. */
-  private readonly outputAckPending = new Map<string, number>();
 
   private clearNoItemTimer(): void {
     if (this.noItemTimer !== undefined) this.clock.clearTimer(this.noItemTimer);
@@ -613,17 +606,11 @@ class Session implements LiveVoiceSession {
   private lastAnswerNow = false;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
-  /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
-  private continuationRejected = false;
-  private continuationRetries = 0;
-  /** The outcome of the last tool answer, returned again for a duplicate completion the adapter ignores. */
-  private continuationOutcome: LiveToolSendOutcome = 'failed';
   /** Which delegation carried a call id, so an output can be attributed to it (3r D4). */
   private readonly callDelegation = new Map<string, string>();
   /** Open delegations from `session.delegation.created`, by provider delegation id (3r D4). */
   private readonly delegations = new Map<string, Delegation>();
   private commandSequence = 0;
-  private validationRefused = false;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
   /** Audible silence of the current speaking stretch: its timer and whether its receipt was already sent. */
@@ -643,9 +630,6 @@ class Session implements LiveVoiceSession {
   /** C-REBUILD: the responses this session created and has not terminated yet, so a teardown settles each one. */
   private readonly openResponses = new Set<string>();
   private responseKeySeq = 0;
-  private readonly observedResponses = new Set<string>();
-  /** O1b-A: when each call was delegated and by which response, for the executed/written receipts' ms. */
-  private readonly callOrigins = new Map<string, { at: number; responseKey?: string }>();
   private readonly diagnostic = {
     audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0,

@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { Store } from '../runtime/store.js';
 import type { SchemaMigration } from '../contracts/storage.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -24,7 +25,7 @@ export function openFixture(dir: string, model: ModelPort, overrides: Partial<Ch
       ? statement.replace(/\)\s*$/, `, CHECK (${faultCheck}))`) : statement) }));
   const store = new Store(dir, [...domain.migrations, ...ownedMigrations, ...extraMigrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'test-actor', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
-  const config: ChatConfig = { store, domain, model,
+  const config: ChatConfig = { createTaskRuntime: syntheticTaskFactory(store, overrides.tools), store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] },
     preferences: validatePreferences({ schemaVersion: 1, ownerId: store.assistantId, dataClass: 'ordinary', language: 'de-DE', register: 'plain', humor: 'off', verbosity: 'brief' }, store.assistantId),
     classify: () => ({ ownerId: store.assistantId, dataClass: 'ordinary', revision: 1 }),

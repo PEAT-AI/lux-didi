@@ -1,3 +1,5 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
+import type { ModelPort } from '../adapters/model/types.js';
 import { test, type TestContext } from 'node:test';
 import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
 import type { ChatStepEvent } from '../chat/types.js';
@@ -103,7 +105,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
@@ -268,7 +270,7 @@ test('private-permitted route admits the private-only envelope through the same 
 test('provider/model route change cannot reuse an existing frozen admission', async t => {
   const f = await fixture(t); const session = f.session(); await f.turn(session);
   const before = f.admission(session);
-  const changed = new ChatService({ ...f.config, tools: f.composition, route: { ...f.config.route, model: 'different-model' } });
+  const changed = new ChatService({ ...f.config, tools: f.composition, createTaskRuntime: syntheticTaskFactory(f.store, f.composition), route: { ...f.config.route, model: 'different-model' } });
   changed.recover(f.recoveryContext); t.after(() => changed.shutdown());
   assert.throws(() => changed.accept({ sessionId: session, text: 'mail', idempotencyKey: randomUUID() }, f.context), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'route_changed');
   assert.deepEqual(f.admission(session), before);
@@ -683,4 +685,26 @@ test('unsupported structured envelope withholds diagnostic evidence', async t =>
   assert.equal(rows[0]!.state, 'unavailable');
   assert.equal(rows[0]!.reason, 'structured_source_projection_unavailable');
   assert.doesNotMatch(JSON.stringify(run), /ACCEPTED|unclassified/);
+});
+
+
+test('real chat turn reads a local reminder and commits a task note through canonical declarations', async t => {
+  const observed: ModelRequest[] = []; let step = 0;
+  const model: ModelPort = { generate: async request => {
+    observed.push(request);
+    const call = step++ === 0 ? { name: 'alarm_list', args: {}, id: 'list' } : step === 2 ? { name: 'remember_note', args: { text: 'Synthetic task note body' }, id: 'note' } : undefined;
+    return { status: 'complete', text: call ? '' : 'Synthetic turn finished.', providerContent: { role: 'model', parts: call ? [{ functionCall: call }] : [{ text: 'Synthetic turn finished.' }] },
+      reason: 'complete', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
+  } };
+  const f = await fixture(t, ['ordinary', 'private'], { model });
+  f.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", ['synthetic-reminder', Date.UTC(2030, 0, 2), 'UTC', 'Known reminder label', 'synthetic-journal']));
+  const sessionId = f.session(), accepted = f.chat.accept({ sessionId, text: 'List my reminders and keep this note: Synthetic task note body', idempotencyKey: randomUUID() }, f.context);
+  let outcome: string | null = null;
+  for await (const event of f.chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { outcome = event.run.outcome; break; }
+  assert.equal(outcome, 'complete');
+  const continuation = observed.flatMap(request => request.contents).flatMap(content => content.parts).flatMap(part => part.functionResponse ? [part.functionResponse.response] : []);
+  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), 'a populated real read reaches the chat model');
+  assert.ok(continuation.some(response => JSON.stringify(response).includes('committed')), 'the chat model receives the effect receipt');
+  const notes = f.store.transaction(tx => tx.all("SELECT e.text FROM entries e JOIN sessions s ON s.id=e.session_id WHERE s.title='Task note'"));
+  assert.deepEqual(notes.map(row => row.text), ['Synthetic task note body']);
 });

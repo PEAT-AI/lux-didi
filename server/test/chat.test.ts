@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -489,7 +490,7 @@ test('real Store restart retains accepted Chat A and explicit interrupted-run re
     reopened = new Store(f.dir, [...f.domain.migrations, ...chatMigrations]);
     const context = { ...f.context, assistantId: reopened.assistantId, authorityEpoch: reopened.authorityEpoch };
     const b = { ...a, profileVersion: 'fixture-b', displayName: 'Example B', style: { ...a.style, text: 'SYNTHETIC restart B' } };
-    const restarted = new ChatService({ ...f.config, store: reopened, ownerProfile: b, schedule: task => tasks.push(task) }); restarted.recover(context);
+    const restarted = new ChatService({ ...f.config, store: reopened, createTaskRuntime: syntheticTaskFactory(reopened), ownerProfile: b, schedule: task => tasks.push(task) }); restarted.recover(context);
     assert.equal(restarted.get(run.runId, context).state, 'terminal'); assert.equal(f.model.calls.length, 0);
     assert.equal(restarted.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'restart-a' }, context).runId, run.runId);
     assert.equal(JSON.parse(String(reopened.transaction(tx => tx.get('SELECT snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [run.runId]))!.snapshot_json)).style.text, a.style.text);

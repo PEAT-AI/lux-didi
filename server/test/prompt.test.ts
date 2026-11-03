@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_WORK_DELIVERY, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };

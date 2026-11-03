@@ -1,40 +1,26 @@
+import * as opening from '../tools/open.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_SCHEMA, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
 const RUN = 'live-open-1';
 
-test('the model-facing open tools are the item tool, the home tool, a file and an app', () => {
-  assert.deepEqual(OPEN_TOOLS.map(tool => tool.name), ['open_source', 'open_home', 'open_file', 'open_app']);
-  // C-OPENWEB8: open_web joins the model-facing set, but it is not one of the single-argument handle tools.
-  assert.deepEqual([...OPEN_TOOL_NAMES].sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web']);
-  assert.equal(OPEN_TOOL_NAMES.has('open_url'), false, 'a free https url is no longer a tool the model sees');
-  assert.equal(OPEN_TOOLS.some(tool => tool.name === 'open_web'), false, 'open_web carries a kind and a target, not a handle');
-  for (const tool of OPEN_TOOLS) {
-    assert.match(tool.description, /only open things: they never type, click, send or change anything\./);
-    const parameters = openParameters(tool) as { required: string[]; additionalProperties: boolean };
-    assert.deepEqual(parameters.required, [tool.parameter]);
-    assert.equal(parameters.additionalProperties, false);
-  }
+test('canonical open exposes one strict schema and no retired model catalog', () => {
+  assert.equal(OPEN_SCHEMA.name, 'open');
+  assert.match(OPEN_SCHEMA.description, /never types, clicks, sends or edits/);
+  assert.deepEqual(OPEN_SCHEMA.parameters.required, ['kind', 'target']);
+  assert.equal(OPEN_SCHEMA.parameters.additionalProperties, false);
+  assert.equal('OPEN_TOOLS' in opening, false); assert.equal('OPEN_TOOL_NAMES' in opening, false);
 });
 
-test('the declared argument shapes accept what the allowlist allows and refuse the rest', () => {
-  const source = OPEN_TOOLS[0]!, home = OPEN_TOOLS[1]!, file = OPEN_TOOLS[2]!, app = OPEN_TOOLS[3]!;
-  assert.equal(validateOpen({ handle: 'L3' }, source), true);
-  assert.equal(validateOpen({ handle: 'L12345' }, source), false, 'a handle is one to four digits');
-  assert.equal(validateOpen({ handle: 'https://example.test/doc' }, source), false, 'a url is never a handle');
-  assert.equal(validateOpen({ handle: 'L3', extra: 'x' }, source), false);
-  assert.equal(validateOpen({ app: 'gmail' }, home), true);
-  assert.equal(validateOpen({ app: 'slack' }, home), false, 'the schema refuses any home page but the three');
-  assert.equal(validateOpen({ url: 'https://example.test/doc' }, home), false, 'open_home takes no url');
-  assert.equal(validateOpen({ path: '~/notes/a.md' }, file), true);
-  assert.equal(validateOpen({ path: '/Users/example/notes/a.md' }, file), true);
-  assert.equal(validateOpen({ path: '' }, file), false);
-  assert.equal(validateOpen({ name: 'Safari.app' }, app), true);
-  assert.equal(validateOpen({ name: '' }, app), false);
+test('canonical open arguments accept the four kinds and reject undeclared shapes', () => {
+  const validate = new AjvJsonSchemaValidator().getValidator(OPEN_SCHEMA.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0]);
+  for (const kind of ['web', 'app', 'file', 'source']) assert.equal(validate({ kind, target: 'synthetic-target' }).valid, true);
+  for (const args of [{ target: 'x' }, { kind: 'web' }, { kind: 'unknown', target: 'x' }, { kind: 'web', target: 'x', extra: 'x' }]) assert.equal(validate(args).valid, false);
 });
 
 test('the receipt names the scheme or extension and never the URL path or file name', () => {
@@ -49,8 +35,8 @@ test('the receipt names the scheme or extension and never the URL path or file n
 });
 
 test('public URL projection keeps literal references and refuses mandatory unsafe destinations', () => {
- for (const [url, kind] of [['https://docs.google.com/document/d/ABC', 'docs'], ['https://example.com/synthetic-viewer?item=42#section', 'web']] as const) assert.deepEqual(openDestination(url), { url, kind });
- for (const url of ['http://docs.google.com/document/d/ABC', 'https://user:pw@example.com/doc', 'https://localhost/doc', 'https://127.0.0.1/doc', 'https://10.0.0.1/doc', 'file:///synthetic/path', 'javascript:alert(1)']) assert.equal(openDestination(url), undefined, 'mandatory public HTTPS boundary: ' + url);
+ for (const [url, kind] of [['https://docs.google.com/document/d/ABC', 'docs'], ['http://docs.google.com/document/d/ABC', 'web'], ['https://localhost/doc', 'web'], ['https://127.0.0.1/doc', 'web'], ['https://10.0.0.1/doc', 'web'], ['https://example.com/synthetic-viewer?item=42#section', 'web']] as const) assert.deepEqual(openDestination(url), { url, kind });
+ for (const url of ['http://user:pw@example.com/doc', 'https://user:pw@example.com/doc', 'file:///synthetic/path', 'javascript:alert(1)']) assert.equal(openDestination(url), undefined, 'mandatory scheme/credential boundary: ' + url);
 });
 
 test('a shaped calendar result carries a handle and never a url in the model text', () => {
@@ -87,7 +73,9 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   exposeHandles(shaped.text);
   assert.equal(resolveHandle(handle)?.provenance, 'knowledge_body');
-  const hostile = ['http://docs.google.com/document/d/ABC', 'https://user:pw@docs.google.com/document/d/ABC', 'https://localhost/document/d/ABC', 'https://127.0.0.1/document/d/ABC'];
+  const http = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 1, content: 'note http://docs.google.com/document/d/ABC end' }));
+  assert.match(http.text, /^open: L\d+ =/m, 'a public HTTP body link may mint a handle');
+  const hostile = [ 'https://user:pw@docs.google.com/document/d/ABC', 'https://localhost/document/d/ABC', 'https://127.0.0.1/document/d/ABC', 'http://10.0.0.1/doc', 'https://169.254.169.254/doc', 'https://[::1]/doc', 'https://[fc00::1]/doc'];
   for (const url of hostile) {
     const body = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 1, content: `note ${url} end` }));
     assert.equal(/^open: /m.test(body.text), false, `no handle for ${url}`);
@@ -114,9 +102,6 @@ test('a handle minted in one live session is not_found in the next', () => {
 });
 
 test('open_home goes to the fixed destinations and open_url is not offered to the model', () => {
-  const home = OPEN_TOOLS.find(tool => tool.name === 'open_home')!;
-  const parameters = openParameters(home) as { properties: { app: { enum?: string[] } } };
-  assert.deepEqual(parameters.properties.app.enum, ['gmail', 'calendar', 'mattermost']);
   assert.deepEqual(openTarget('open_home', { app: 'gmail' }, 'open Gmail'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/', detail: 'gmail', kind: 'home', title: 'Gmail' } });
   assert.deepEqual(openTarget('open_home', { app: 'calendar' }, 'open Calendar'), { target: { action: 'open_url', target: 'https://calendar.google.com/', detail: 'calendar', kind: 'home', title: 'Google Calendar' } });
   assert.deepEqual(openTarget('open_url', { url: 'https://evil.example' }, 'open it'), { code: 'not_allowed' }, 'a name outside the four resolves nothing');

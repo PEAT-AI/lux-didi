@@ -1,3 +1,6 @@
+import { taskDefinitions } from '../tasks/chat.js';
+import { chatCapabilities } from '../chat/context.js';
+import { compilePrompt, PROMPT_VERSION } from '../prompt/index.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { test, type TestContext } from 'node:test';
 import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
@@ -110,7 +113,19 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
         const value: unknown = Reflect.get(target, name, target);
         if (typeof value !== 'function') return value;
         return (...parameters: unknown[]) => {
-          try { return Reflect.apply(value, target, parameters); }
+          try {
+            const result: unknown = Reflect.apply(value, target, parameters);
+            if (name === 'begin') {
+              const revision = result as ReturnType<typeof target.begin>;
+              try {
+                const capabilities = chatCapabilities(taskDefinitions(target, revision.identity, composition.owner), f.config.context.sources);
+                const compiled = compilePrompt({ ownerId: f.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
+                  preferences: f.config.preferences, capabilities, evidence: [], history: [{ schemaVersion: 1, ownerId: f.store.assistantId, dataClass: 'ordinary', id: 'synthetic-preflight', role: 'user', text: 'Synthetic compiler preflight' }], budgets: f.config.context.budgets });
+                console.error('CHAT_TASK_PROMPT_OK', compiled.trustedChars);
+              } catch (error) { console.error('CHAT_TASK_PROMPT', String(error)); }
+            }
+            return result;
+          }
           catch (error) { console.error('CHAT_TASK_SETUP', String(name), String(error)); throw error; }
         };
       } });

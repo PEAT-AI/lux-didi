@@ -1,3 +1,305 @@
+
+/** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
+function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
+  // C-LIVE N-2: a provider frame of digital silence (below the adapter's audible level) is not conversation.
+  if (event.type === 'audio') return event.audible === false ? undefined : 'model_audio';
+  if (event.type !== 'inputTranscription') return undefined;
+  if (event.text.trim() !== '') handle.ownerSpeechPending = true;
+  if (event.finished !== true || handle.ownerSpeechPending !== true) return undefined;
+  handle.ownerSpeechPending = false;
+  return 'owner_speech';
+}
+
+
+interface ActiveSession {
+  tasks?: TaskCall;
+  taskOwnerTurn?: number;
+  taskWords?: string;
+  taskOutputQuiet?: boolean;
+  taskOwnerOpen?: boolean;
+  taskMicAt?: number;
+  taskSilenceTimer?: ReturnType<JobTimer>;
+  taskWorkAt?: number | undefined;
+  taskDebtPlan?: { at: number; step: 'rung' | 'rebuild'; generation: number };
+  taskWatchdogPlan?: { at: number; step: 'nudge' | 'recover'; generation: number };
+  taskPausedDebt?: { remaining: number; step: 'rung' | 'rebuild'; generation: number } | undefined;
+  taskPausedWatchdog?: { remaining: number; step: 'nudge' | 'recover'; generation: number } | undefined;
+  /** F2: the session kind is fixed at creation, so a shutdown never has to ask a possibly closed store. */
+  sessionKind?: LiveSessionKind;
+  inputFinal?: boolean;
+  stopWords?: string[];
+  stopInputAt?: number | undefined;
+  stopFinalJournalId?: number | undefined;
+  stopAfterJournalId?: number;
+  stopGeneration?: number;
+  inputAt?: number;
+  typedOwnerTurn?: boolean;
+  lookupBridgeForInput?: string;
+  lookupAckAt?: number | undefined;
+  /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
+  inputFinalAt: number | undefined;
+  /** LAT-1022: when the capture path declared the owner's speech over, on this host's own clock, so the final's
+   *  own line can say how long after it the transcript landed. Cleared when the turn's input starts again. */
+  speechEndAt?: number | undefined;
+  /** First model audio of the current turn; reset at each model turn start. */
+  firstAudioAt: number | undefined;
+  audioResponseId?: string | undefined;
+  traceOutputTurnId?: string | undefined;
+  /** C-LOGS11: the turn whose first audible native receipt is already logged, so one turn logs one
+   *  final-to-audible measurement rather than one per segment. */
+  audibleLoggedTurn?: string | undefined;
+  /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
+   *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
+  heardSince?: number | undefined; heardAfterTool: boolean;
+  /** L-04: the end of the last audible model frame of the current turn, cleared at the owner's utterance boundary and at
+   *  every model turn start, so a tool turn that spoke no preamble cannot inherit an earlier turn's frame. */
+  turnAudioAt?: number | undefined;
+  /** Spoken output script codes of the current turn, counted and then reported as counts only. */
+  turnLatin: number; turnDevanagari: number; turnTelugu: number; turnKannada: number; turnChars: number;
+  /** C-REBUILD8: the words this turn's response spoke, kept so a filler-only answer is recognisable. Bounded. */
+  turnSpoken?: string | undefined;
+  /** Whether this turn followed tool work and whether the owner cut it off. */
+  turnAfterTool: boolean; turnInterrupted: boolean;
+  /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
+  claimText: string; claimTimer?: { cancel: () => void } | undefined;
+  claimToolSeen: boolean; claimCorrected: boolean;
+  /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
+   *  provider opens a model turn, which can arrive after the transcript in the same batch. */
+  answeredWords?: string | undefined;
+  /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
+  claimWriteRefused: boolean;
+  /** C-ARGS: a lookup this owner turn was rejected on or failed, so an empty-result claim has nothing behind it. */
+  claimLookupFailed: boolean;
+  inputJournalId?: number;
+  inputFinalTimer?: ReturnType<JobTimer>;
+  /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
+  inputFinalWaiters?: Set<() => void>;
+  generation: number; attempts: number; rebuilding: boolean;
+  /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
+  quietRebuild: boolean;
+  /** C-PICKUP: the pickup the last recovery attempt opened with, so the receipt names what was sent. */
+  recoveryPickup?: 'none' | 'quiet' | 'mute' | 'connection' | undefined;
+  /** G3: this session opened on the host's own line, so its speech is the opener and not the answer to an ask. */
+  openingTurn?: boolean | undefined;
+  /** #591: model text or an output transcript since this turn opened, so a turn that spoke is never called ambient. */
+  modelTextSinceOpen: boolean;
+  /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
+  openedAt?: number | undefined; readyAt?: number | undefined;
+  request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
+  /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
+  recoveries: number; lastHealthyAt?: number | undefined; lastRecoveryPath?: 'resume' | 'fresh_seeded';
+  /** The first drop of the current episode: the recovery time budget is measured from it. */
+  dropEpisodeAt?: number | undefined;
+  /** A recovery open that threw synchronously: a config or auth refusal, which ends the call at once. */
+  recoveryRefused?: boolean | undefined;
+  /** C-LIVE R2: consecutive refused recovery opens; the second one ends the call. */
+  recoveryRefusals?: number | undefined;
+  /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
+   *  own audible audio or an ended turn. Inaudible fill never clears it (D3, amendment C). */
+  awaitingAnswer: boolean; answerAt: number | undefined;
+  /** The owner muted: the provider stays open on the host's cost cap, no audio goes up or comes down. */
+  muted: boolean; mutedAt: number | undefined; muteTimer?: ReturnType<JobTimer> | undefined;
+  /** An answer that arrived while muted: its audio was dropped, never played later, and it is offered on unmute. */
+  heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined; mutedOfferAttempts: number;
+  /** L7: a response that began under the mute is never played at unmute; its frames are dropped until the turn ends. */
+  dropResponse: boolean;
+  /** L7: some of this response arrived under the mute, so it is stale at unmute even if it is still streaming. */
+  mutedResponse: boolean;
+  /** L19: whether this turn's reply has an output transcript row; a spoken turn without one is receipted. */
+  outputJournalled: boolean;
+  /** L19: this turn produced audible speech, which survives the trailing modelTurnStarted of the same batch. */
+  spokenThisTurn: boolean;
+  /** R7: this call opened with the dropped-line opener, which the owner's first words may still cancel. */
+  dropOpener: boolean;
+  /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
+  mutedMs: number;
+  /** S4a: the delegation deadline that outlives the S2 watchdog window. */
+  delegationTimer?: ReturnType<JobTimer> | undefined; lateCommentaryFor?: string | undefined; lastToolCallAt?: number | undefined;
+  /** #1028: the one delayed re-offer of a late finding a hold postponed, so a hold never discards it. */
+  lateHoldTimer?: ReturnType<JobTimer> | undefined;
+  /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
+  ownerLastWords: number;
+  /** C-CONTINUITY item 5: every research payload this call put in the conversation, refusals included. */
+  contextToolChars: number;
+  /** C-CONTINUITY T-11: the full research replies the voice cap paged, kept for this call only. */
+  voicePages: VoiceReplyBook;
+  /** S4a-R2 (e): one execution receipt per call of this turn, the only source a late line may name. */
+  exec: Map<string, { source: string; status: ExecStatus }>;
+  progressCallIds: Set<string>;
+  /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
+  watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
+  watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
+  /** C-WATCH: the wait this silence is judged on began at a tool result, not at an owner turn. */
+  watchdogSinceTool?: boolean | undefined;
+  /** C-WATCH: when the last tool result was handed to the model, so a mute can be told from a wait it never had. */
+  lastToolResultAt?: number | undefined;
+  /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
+  debtHeldForTool?: boolean | undefined;
+  /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
+  rebuildAudio: Uint8Array[]; rebuildAudioBytes: number;
+  /** #538: the audible debt clock, the debt the owner can hear is unanswered. It is non-sliding: it starts when the
+   *  model begins owing audio and only an audible frame, an owner barge-in or the turn's end clears it. `debtOutputs`
+   *  is the batch a recreate re-queues exactly once. */
+  debtSince?: number | undefined; debtTimer?: ReturnType<JobTimer> | undefined;
+  debtStep?: 'rung' | 'rebuild' | undefined;
+  debtOutputs?: LiveToolResponse[] | undefined; debtBargeIn?: boolean | undefined;
+  /** #660: the reply text of a result that returned but was never said, so a replaced session can still speak it,
+   *  and whether the session now open has already been handed it. */
+  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined; unspokenResults?: number | undefined;
+  /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
+  hostStatusNote?: boolean | undefined;
+  /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
+   *  The rung never cuts off an answer the owner can hear; it grants it one short grace. */
+  responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
+  /** C-REBUILD C: what this owner turn asked the provider for. A turn with no tool call and no created response is
+   *  the one the council removed from the rebuild triggers; both counters restart with every owner turn. */
+  turnToolCalls?: number | undefined; turnResponseCreated?: boolean | undefined;
+  /** C-REBUILD #830: how many times this call has held a rebuild and how many it has stood down for. */
+  rebuildHeld?: number | undefined; rebuildRemoved?: number | undefined;
+  /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
+  responseCreatedAt?: number | undefined;
+  /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
+  deadAirNudgedAt?: number | undefined;
+  /** C-DEADAIR: the provider wrote text for this owed answer and the owner heard none of it. */
+  debtTextSeen?: boolean | undefined;
+  /** C-PITCH: the per-response voice meter over the output PCM already forwarded to playback, and how many
+   *  responses it has closed, which is the closed id its two events carry. */
+  voiceProfile?: VoiceProfileMeter | undefined; voiceResponses?: number | undefined;
+  /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
+  speakingHoldTimer?: ReturnType<JobTimer> | undefined;
+  sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  /** O1b-A: this socket's trace epoch, its open turn and the session's turn counter. A rebuilt socket gets a
+   *  fresh object, so a receipt from the socket it replaced can no longer name the epoch it was opened under. */
+  connection: { seq: number; epoch: string; turnId: string | undefined; turnIndex: number };
+  pendingCalls: Map<string, string>;
+  toolCache: LiveToolCache;
+  connectorRecovery?: Promise<void> | undefined;
+  /** C-LIVE: owner words seen since the last finalized owner turn, for admission (independent of the idle clock). */
+  admissionSpeechPending?: boolean;
+  /** C-LIVE N-2: the idle cause last written to host.log, so live_idle_arm is a state change only. */
+  idleArmLogged?: string;
+  registry: readonly ToolDefinition[];
+  host: HostContext | undefined;
+  toolStep: number;
+  /** The live tool steps of the turn in flight, oldest first; never journalled. */
+  liveSteps: LiveToolStepBody[];
+  /** How many items each call of this turn returned, so its end step counts items and not citations. */
+  liveStepItems: Map<string, number>;
+  toolCalls: number;
+  seenIds: Set<string>;
+  /** The invalid-arguments count of the owner turn in flight, so the retry suffix never survives a turn. */
+  invalidAttempts: Map<string, number>;
+  thinking: boolean;
+  pendingCallIds: Set<string>;
+  bargeInCallIds: Set<string>;
+  /** In-flight abort handle per model call id, so a provider cancellation aborts exactly that call. */
+  callAborts: Map<string, AbortController>;
+  /** #451 V7/Q6: the turn and response a playback segment was first heard in, by playback key. */
+  playbackTurns: Map<string, { turnId?: string; responseKey?: string }>;
+  /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
+  callStartedAt: Map<string, number>;
+  speaking: boolean;
+  /** L8-11: owner words heard while she was audible this owner turn, and whether the turn's overlap receipt is written. */
+  overlapWords?: number;
+  overlapReceipted?: boolean;
+  /** Output audio that arrived below the audible threshold this turn, in playback milliseconds. */
+  inaudibleMs: number;
+  // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
+  lastModelAudioAt?: number;
+  turnCompleteSeen: boolean;
+  /** #592: the owner text joined since the last finalization, so an empty finalization is not speech. */
+  ownerSpeechPending?: boolean;
+  /** #595: the owner zone this call was composed in; the call's date math never re-resolves it. */
+  timeZone: string;
+  /** The last live state this session projected, which is the `from` of its next transition receipt. */
+  liveState?: LivePageProjection['state'];
+  liveSessionId: string;
+  session: LiveVoiceSession;
+  abort: AbortController;
+  revision: number;
+  inputClass: DataClass;
+  ready: boolean;
+  invalidated: boolean;
+  terminal: boolean;
+  consumer: OutputChannel;
+  consumerState: LiveConsumerState;
+  pendingDiagnosticLoss?: boolean;
+  journalEvents: number;
+  journalBytes: number;
+  /** The sequence the Mac sees, counted once for the whole session: a provider rebuild opens a new adapter
+   *  session whose own counter starts again at 1, and the Mac refuses a marker that does not advance. */
+  markerSequence: number;
+  adapterOutcome: LiveVoiceOutcome | undefined;
+  diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
+  ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
+  terminalOutcome: LiveTerminalOutcome | null;
+  diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
+  loopDone: { promise: Promise<void>; resolve: () => void };
+  done: { promise: Promise<LiveSessionSnapshot>; resolve: (value: LiveSessionSnapshot) => void; reject: (error: unknown) => void };
+  resolveDone: () => void;
+  persistFailure: unknown;
+}
+
+
+function countTurnScript(handle: ActiveSession, text: string): void {
+  noteSpoken(handle.liveSessionId, text);
+  // C-REBUILD8: the response's own words, bounded at four hundred characters; a longer answer keeps its head,
+  // which is never a filler, so the bound can only ever make the check say "not a filler".
+  handle.turnSpoken = `${handle.turnSpoken ?? ''} ${text}`.slice(0, 400);
+  const counts = turnScriptCounts(text);
+  handle.turnLatin += counts.latinChars; handle.turnDevanagari += counts.devanagariChars;
+  handle.turnTelugu += counts.teluguChars; handle.turnKannada += counts.kannadaChars;
+  for (const character of text) {
+    if (/\s/u.test(character)) continue;
+    handle.turnChars += 1;
+  }
+}
+
+
+function resetTurnScript(handle: ActiveSession): void {
+  handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnTelugu = 0; handle.turnKannada = 0; handle.turnChars = 0;
+  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0; handle.turnSpoken = '';
+}
+
+
+/** One metadata-only record per turn. A turn with no spoken output reports nothing. */
+function logTurnScript(handle: ActiveSession): void {
+  if (handle.turnChars === 0) { resetTurnScript(handle); return; }
+  const script = turnScriptBucket({ latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, teluguChars: handle.turnTelugu, kannadaChars: handle.turnKannada });
+  hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, teluguChars: handle.turnTelugu, kannadaChars: handle.turnKannada, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
+  resetTurnScript(handle);
+}
+
+
+/**
+ * Open2: one correction after a response completes when she claimed an open the turn did not make.
+ * The ledger consumes its own buffer, so a second call in the same turn has nothing to read, and the
+ * owner's own speech silences it.
+ */
+function correctOpenClaim(handle: ActiveSession): void {
+  if (handle.inputFinal === false || handle.muted) return;
+  const correction = openClaimCorrection(handle.liveSessionId);
+  if (correction === undefined) return;
+  hostLogEvent({ event: 'open_claim_corrected', reason: correction.reason });
+  try { handle.session.sendText({ text: hostNote(correction.text) }); } catch { /* a closed transport settles on its own */ }
+}
+
+function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: number, now: number, rmsDbfs?: number): void {
+  const second = Math.floor(now / 1000);
+  const bucket = audioBuckets.get(handle);
+  if (bucket === undefined) { audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: 0, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 }); return; }
+  if (bucket.second === second) {
+    if (channel === 'input') bucket.input += bytes; else bucket.output += bytes;
+    if (rmsDbfs !== undefined) { bucket.rmsMax = Math.max(bucket.rmsMax, rmsDbfs); bucket.rmsPower += 10 ** (rmsDbfs / 10); bucket.rmsChunks += 1; }
+    return;
+  }
+  if (bucket.output > 0) audioTotals.set(handle, (audioTotals.get(handle) ?? 0) + bucket.output);
+  // A stall marker needs a speaking second followed by three with no playback at all.
+  if (bucket.output === 0 && handle.speaking) bucket.silent += 1; else bucket.silent = 0;
+  if (bucket.silent === 3) {
+  }
+  audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 });
+}
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';

@@ -96,8 +96,14 @@ assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
 const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
 function assertVoicePolicy(text) {
-  assert.doesNotMatch(text, /research|[\u2013\u2014]|\b(?:open_web|draft_email|stage_lux_note)\b/i);
+  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assert.doesNotMatch(text, /["“][^"”]+["”]/);
+  // Apostrophes inside words are contractions or possessives, not opening quotation marks.
+  assert.doesNotMatch(text, /(?<![\p{L}\p{N}_])['‘](?=\S)[^\n]*?['’](?![\p{L}\p{N}_])/u);
+  for (const name of TASK_TOOL_NAMES) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.doesNotMatch(text, new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'iu'), `voice names registered tool: ${name}`);
+  }
 }
 assertVoicePolicy(voice);
 for (const quote of ["Say 'I have the result.'", "Say 'I'm ready.'", 'Say ‘I have the result.’']) {

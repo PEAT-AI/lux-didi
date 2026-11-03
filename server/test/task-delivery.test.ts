@@ -73,7 +73,7 @@ test('a delivery deadline during other output defers fallback until quiet', () =
 
 
 test('a reconnect is not sent or accepted until the fresh session is ready', () => {
-  const f = fixture(); f.delivery.deliver(identity, { status: 'answered', text: 'Synthetic ready answer.', toolResults: [] });
+  const f = fixture(); f.delivery.deliver(identity, answer('Synthetic ready answer.'));
   assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnecting']);
   f.advance(); assert.equal(f.delivery.undelivered, undefined, 'no heard deadline runs before setup acknowledgement');
   f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnecting', 'sent', 'accepted']);
@@ -82,7 +82,7 @@ test('a reconnect is not sent or accepted until the fresh session is ready', () 
 });
 test('reconnect instructions contain only the not-yet-heard answer chunks', () => {
   const f = fixture(), first = 'a'.repeat(440) + '.';
-  f.delivery.attach(identity, 'd'); f.delivery.deliver(identity, { status: 'answered', text: first + ' Second sentence.', toolResults: [] });
+  f.delivery.attach(identity, 'd'); f.delivery.deliver(identity, answer(first + ' Second sentence.'));
   f.delivery.transcript(first); f.delivery.rejected('c1'); f.delivery.rejected('c2');
   assert.deepEqual(f.reconnectTexts, ['Second sentence.']);
 });

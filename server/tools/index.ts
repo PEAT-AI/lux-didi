@@ -161,7 +161,8 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
   return { event: 'tool_classified_failure', endpointId: input.endpointId, connector: input.connector, tool: input.tool, code: input.code };
 }
 
-export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections { text(ownerId);
+export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
+  const { store, registry, port, lookupAuthority, ownerId } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   const historyReader = createHistoryReader();

@@ -87,27 +87,36 @@ test('a paraphrased note supported by a long delta-assembled owner turn is remem
   assert.match(String(stored.externalId), new RegExp(`^${SESSION}:\\d+:[0-9a-f]{8}$`), 'the supporting owner turn journal seq and a note discriminator are the provenance');
 });
 
-test('a note whose content only appears in the model output transcript is refused', async t => {
+test('C-FREEDOM: a note that shares no word with his turn saves, sourced from his turn and never from the output row', async t => {
   const store = liveSession(t, [
     { text: 'what is worth remembering here', finished: true },
     { kind: 'outputTranscription', text: 'The owner prefers short answers in the morning', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
+  const result = await remember(store, 'The owner prefers short answers in the morning');
+  assert.equal(result.remembered, true, 'the only refusal left on this path is polarity, so a paraphrase saves');
+  const stored = entry(store, result.entryId);
+  assert.equal(stored.text, 'The owner prefers short answers in the morning');
+  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:1:[0-9a-f]{8}$`),
+    'his own turn is the source, not the output transcription row');
 });
 
-test('a note copied from a tool result is refused', async t => {
+test('C-FREEDOM: a note copied from a tool result saves from the turn he said it in', async t => {
   const store = liveSession(t, [{ text: 'what does the mint entry say', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.equal((await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')).remembered, true,
+    'a wrong local note is his to correct, so it is kept');
 });
 
-test('C-FREEDOM: a note with partial support saves, and invention is what refuses', async t => {
-  // Two of five content words is 40 percent: that is a paraphrase of his own ask, and a note he can
-  // correct costs him less than a refusal. A note that shares no content word with him is invention.
+test('C-FREEDOM: a note with partial support saves, and a zero-overlap paraphrase saves too', async t => {
+  // One shared content word is a paraphrase of his own ask, and a note he can correct costs him less
+  // than a refusal. A paraphrase may share no content word at all: "I am exhausted" becomes
+  // "Owner feels tired". That is still his own statement, and only polarity refuses.
   const store = liveSession(t, [{ text: 'the plumber comes on tuesday morning with a ladder', finished: true }]);
   assert.equal((await remember(store, 'plumber tuesday drill attachment hammer wrench')).remembered, true,
     'a paraphrase he can correct is kept');
-  assert.deepEqual(refusal(await remember(store, 'the dentist needs a passport in lisbon')),
-    { remembered: false, code: 'owner_text_mismatch' }, 'a note that shares nothing with his words is invention');
+  const tired = liveSession(t, [{ text: 'i am exhausted', finished: true }]);
+  const zero = await remember(tired, 'Owner feels tired');
+  assert.equal(zero.remembered, true, 'a zero-overlap paraphrase of his own words is kept, not refused');
+  assert.equal(entry(tired, zero.entryId).text, 'Owner feels tired');
 });
 
 test('an owner turn older than the ten minute window is refused', async t => {
@@ -179,12 +188,13 @@ test('an ask split across two consecutive owner turns is stored', async t => {
   assert.equal(result.remembered, true, 'the union of the window\'s turns supports the note');
 });
 
-test('a note combining words from no owner turn is still refused', async t => {
+test('C-FREEDOM: a note combining words from no owner turn saves from his latest turn', async t => {
   const store = liveSession(t, [
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'the dentist needs a passport in lisbon')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.equal((await remember(store, 'the dentist needs a passport in lisbon')).remembered, true,
+    'no shared word is no longer a refusal; a wrong note is his to correct');
 });
 
 test('a note that negates what the owner affirmed is refused', async t => {

@@ -245,3 +245,15 @@ test('every read declares exposure and local calendar and memory stay clean', ()
   assert.equal(registry.get('read_mail')!.outside_text, true);
   assert.equal(registry.get('search_web')!.outside_text, true);
 });
+
+import { resolveTaskModels } from '../config/tasks.js';
+test('task model roles default independently to Terra low and support Gemini explicitly', () => {
+  const defaults = resolveTaskModels(undefined);
+  assert.equal(defaults.worker.model, 'gpt-6.1-terra'); assert.equal(defaults.effect_check.model, 'gpt-6.1-terra');
+  assert.equal(defaults.worker.effort, 'low'); assert.equal(defaults.effect_check.effort, 'low');
+  const selected = resolveTaskModels({ worker: { provider: 'gemini', model: 'gemini-3.8-flash' } });
+  assert.equal(selected.worker.provider, 'gemini'); assert.equal(selected.worker.model, 'gemini-3.8-flash');
+  assert.equal(selected.effect_check.model, 'gpt-6.1-terra');
+  assert.throws(() => resolveTaskModels({ worker: { effort: 'unbounded' } }));
+  assert.throws(() => resolveTaskModels({ worker: { tools: ['send'] } }));
+});

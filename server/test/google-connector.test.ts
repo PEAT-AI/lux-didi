@@ -488,7 +488,7 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
-    assert.equal(flipped?.state, 'configured', JSON.stringify(task?.results));
+    assert.equal(flipped?.state, 'configured', JSON.stringify({ results: task?.results, calls: readFileSync(`${pidFile}.calls`, 'utf8') }));
     assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar to sign in again');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };

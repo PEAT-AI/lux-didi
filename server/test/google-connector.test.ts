@@ -26,7 +26,6 @@ import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, 
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, GOOGLE_DEFAULTS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleConsentLine, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
-import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -551,11 +550,6 @@ async function stdioMailRuntime(mode: string): Promise<{ runtime: Awaited<Return
   return { runtime, store, close };
 }
 
-/** The sources the research layer names as unreachable, read off the live endpoint report. */
-function unreachableIn(runtime: Awaited<ReturnType<typeof composeMcpRuntime>>): readonly { source: string; reason: string }[] {
-  return configuredSourcesForEndpoints(runtime.status().endpoints as unknown as readonly ConfiguredEndpointStatus[], [...GOOGLE_TOOLS]);
-}
-
 /** The line one dispatched call spoke, as the stored tool result carries it. */
 function spokenLine(store: Store, executionId: string): string {
   const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [executionId]));
@@ -575,12 +569,7 @@ test('#636: a transient helper failure on one mail ask never becomes the reason 
     const served: string[] = [];
     const rows: string[] = [];
     for (const [n, q] of asks.entries()) {
-      const refused = unreachableIn(h.runtime).filter(entry => entry.source === 'mail');
-      if (refused.length > 0) {
-        served.push(`unavailable:${refused[0]!.reason}`);
-        rows.push(`ask ${n + 1} "${q}": refused without a read, named reason ${refused[0]!.reason} -> ${plainReason(refused[0]!.reason)}`);
-        continue;
-      }
+      assert.equal(h.runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail')?.state, 'connected', 'a transient helper failure does not revoke the native source');
       const args0 = { query: q, cursor: null };
       const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: `run:1:${n}`, toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(args0)), callId: `call-${n}`, accountId: definition!.accountId, resourceId: definition!.resourceId };
       assert.equal(h.runtime.owner.journal.intent(intent), 'fresh');
@@ -613,10 +602,8 @@ test('#636: a dead credential names mail in words the owner can act on, never wi
     assert.equal(spokenLine(h.store, intent.executionId), googleOwnerLine(googleErrorEntry('credential-missing')!, 'gmail'), 'the failing read speaks the helper\'s own line');
     const endpoint = h.runtime.status().endpoints[0]!;
     assert.equal(endpoint.state, 'configured', 'a pinned refusal is the one status that stops the reads');
-    const named = unreachableIn(h.runtime);
-    assert.deepEqual(named, [{ source: 'mail', reason: 'not_signed_in' }], 'the named reason is a closed code, never the state word');
-    assert.equal(plainReason(named[0]!.reason), 'not signed in', 'and it is spoken in the owner\'s words');
-    assert.equal(JSON.stringify(named).includes('configured'), false, 'the state word never reaches the reply');
+    assert.match(String(endpoint.error), /auth needed: run lux-google-mcp authorize --family gmail/);
+    assert.equal(spokenLine(h.store, intent.executionId).includes('configured'), false, 'endpoint bookkeeping state is not presented as the cause');
   } finally {
     task?.close();
     await h.close();

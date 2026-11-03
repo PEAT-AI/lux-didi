@@ -5390,7 +5390,7 @@ test('live deletion cannot confirm in its staging owner turn', async t => {
 test('live deletion confirmation on a later finalized owner turn commits once', async t => {
   const outcomes: unknown[] = [];
   const p = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true });
-  const h = await harness(t, { port: p.port, provider: 'openai', calendar: true, calendarDelete: true, grantMode: 'owner-trusted-reads',
+  const h = await harness(t, { port: p.port, provider: 'openai', tools: true, calendar: true, calendarDelete: true, grantMode: 'owner-trusted-reads',
     calendarData: async () => ({ status: 'ok', deleted: true, id: 'synthetic-event' }),
     taskInfer: async request => {
       if (request.turns.length === 0) return { text: '', calls: [{ id: 'delete', name: 'delete_event', args: { id: 'synthetic-event' } }] };

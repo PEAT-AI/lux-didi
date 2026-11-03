@@ -5388,10 +5388,14 @@ test('live deletion cannot confirm in its staging owner turn', async t => {
   await settlePort(); assert.equal(deletes, 0);
 });
 test('live deletion confirmation on a later finalized owner turn commits once', async t => {
+  const outcomes: unknown[] = [];
   const p = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true });
   const h = await harness(t, { port: p.port, provider: 'openai', calendar: true, calendarDelete: true, grantMode: 'owner-trusted-reads',
     calendarData: async () => ({ status: 'ok', deleted: true, id: 'synthetic-event' }),
-    taskInfer: async request => request.turns.length === 0 ? { text: '', calls: [{ id: 'delete', name: 'delete_event', args: { id: 'synthetic-event' } }] } : { text: 'Synthetic task settled.', calls: [] },
+    taskInfer: async request => {
+      if (request.turns.length === 0) return { text: '', calls: [{ id: 'delete', name: 'delete_event', args: { id: 'synthetic-event' } }] };
+      outcomes.push(...request.outputs); return { text: 'Synthetic task settled.', calls: [] };
+    },
   });
   const { attachment } = await openPort(h, 'task-later-turn'); consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'staging-binding' });
@@ -5400,8 +5404,8 @@ test('live deletion confirmation on a later finalized owner turn commits once', 
   assert.equal(h.calls.filter(call => call.name === 'calendar_delete_event').length, 0);
   p.emit({ type: 'delegation', delegationId: 'confirmation-binding' });
   p.emit({ type: 'inputTranscription', text: 'Yes, delete it', finished: true, finalOrigin: 'provider' });
-  await fixtureUntil(() => h.calls.some(call => call.name === 'calendar_delete_event'), 'confirmed deletion reaches the granted synthetic connector');
-  assert.equal(h.calls.filter(call => call.name === 'calendar_delete_event').length, 1);
+  await fixtureUntil(() => outcomes.length >= 2, 'both staged and confirmed helper decisions settled');
+  assert.equal(h.calls.filter(call => call.name === 'calendar_delete_event').length, 1, JSON.stringify({ outcomes, operations: h.store.transaction(tx => tx.all('SELECT tool,state FROM task_operations')) }));
 });
 
 test('a pending task owns silence without an old tool batch or background job', async t => {

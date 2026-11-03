@@ -3,15 +3,15 @@ import { test } from 'node:test';
 import { TaskDelivery, splitSpokenText, DELIVERY_HEARD_MS } from '../tasks/delivery.js';
 const identity = { task_id: 't', task_revision: 1, connection_generation: 1 };
 function fixture() {
-  let current = true, reconnects = 0; const pending = new Set<() => void>();
+  const reconnectTexts: string[] = []; let current = true, reconnects = 0; const pending = new Set<() => void>();
   const sends: { id: string; text: string; command: string }[] = [], states: string[] = [];
   const delivery = new TaskDelivery({ isCurrent: () => current,
     append: (id, text) => { const command = `c${sends.length}`; sends.push({ id, text, command }); return command; },
-    reconnect: () => { reconnects++; return true; },
+    reconnect: text => { reconnectTexts.push(text); reconnects++; return true; },
     state: (_identity, state) => states.push(state),
     after: (_ms, callback) => { pending.add(callback); return () => { pending.delete(callback); }; },
   });
-  return { delivery, sends, states, stale: () => { current = false; }, reconnects: () => reconnects,
+  return { delivery, sends, states, reconnectTexts, stale: () => { current = false; }, reconnects: () => reconnects,
     advance: () => { const callbacks = [...pending]; pending.clear(); callbacks.forEach(callback => callback()); } };
 }
 const answer = (text: string) => ({ status: 'complete' as const, text, findings: [] });
@@ -69,4 +69,20 @@ test('a delivery deadline during other output defers fallback until quiet', () =
   f.delivery.activity({ outputQuiet: false, ownerSpeaking: false }); f.advance();
   assert.equal(f.reconnects(), 0);
   f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.reconnects(), 1);
+});
+
+
+test('a reconnect is not sent or accepted until the fresh session is ready', () => {
+  const f = fixture(); f.delivery.deliver(identity, { status: 'answered', text: 'Synthetic ready answer.', toolResults: [] });
+  assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnecting']);
+  f.advance(); assert.equal(f.delivery.undelivered, undefined, 'no heard deadline runs before setup acknowledgement');
+  f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnecting', 'sent', 'accepted']);
+  f.delivery.transcript('Synthetic ready answer.'); f.advance();
+  assert.equal(f.states.at(-1), 'heard'); assert.equal(f.delivery.undelivered, undefined);
+});
+test('reconnect instructions contain only the not-yet-heard answer chunks', () => {
+  const f = fixture(), first = 'a'.repeat(440) + '.';
+  f.delivery.attach(identity, 'd'); f.delivery.deliver(identity, { status: 'answered', text: first + ' Second sentence.', toolResults: [] });
+  f.delivery.transcript(first); f.delivery.rejected('c1'); f.delivery.rejected('c2');
+  assert.deepEqual(f.reconnectTexts, ['Second sentence.']);
 });

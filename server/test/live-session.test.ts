@@ -4460,7 +4460,7 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
   assert.ok(played.length >= 1, 'the answer frames reach the device');
   h.f.send({ serverContent: { outputTranscription: { text: 'here is the folder answer', finished: true } } });
-  await tick(); await tick();
+  await fixtureUntil(() => h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [next.liveSessionId])).some(row => String(row['text']).includes('here is the folder answer')), 'fresh dropped-line answer reaches the journal');
   const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [next.liveSessionId]));
   const said = rows.map(row => String(row['text'])).join(' ');
   assert.equal(said.includes('the last answer of the dead call'), false, 'the answer never repeats the dead call');

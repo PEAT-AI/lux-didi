@@ -23,8 +23,6 @@ export const CAUSE_NOT_KNOWN = 'the reason is not known';
 export const HOST_REFUSAL_CODES = ['replay_identity_mismatch', 'recorded_result_unavailable'] as const;
 export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
 
-const NOTHING_SEARCHED = 'Nothing was searched.';
-
 export const REFUSAL_CAUSES: Readonly<Record<HostRefusalCode, RefusalCause>> = Object.freeze({
   replay_identity_mismatch: {
     cause: 'This call id was already recorded for a different tool, so this call was refused rather than replayed.',

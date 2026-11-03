@@ -15,45 +15,20 @@ fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-prompt.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 cd "$root"
-# Stage only this unit under a temporary ESM marker, so the isolated worktree
-# follows SERVICE's actual NodeNext conventions without a competing manifest.
-mkdir -p "$out/source/tasks" "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts" "$out/source/trace" "$out/source/domain" "$out/source/live"
-cp server/adapters/model/*.ts "$out/source/adapters/model/"
-cp server/adapters/live-voice/types.ts server/adapters/live-voice/gemini.ts server/adapters/live-voice/index.ts "$out/source/adapters/live-voice/"
-cp server/test/openai-live-voice-fixture.ts "$out/source/test/"
-# #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
-# and the two modules it imports are staged; nothing else of the adapter tree is compiled.
-cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
-# The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
-cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
-cp server/domain/history-turns.ts server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
-cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
-cp server/connectors/google.ts "$out/source/connectors/"
-cp server/tools/vault-write.ts server/tools/lux-note.ts server/tools/find-file.ts "$out/source/tools/"
-cp server/tasks/*.ts "$out/source/tasks/"
-# W7: the Trello tool descriptions are voice content too.
-cp server/tools/trello.ts "$out/source/tools/"
-cp server/tools/redact.ts "$out/source/tools/"
-cp server/tools/refusal-cause.ts server/tools/declarations.ts server/tools/normalize.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts server/tools/google.ts server/tools/lux-knowledge.ts server/tools/mongoose.ts server/tools/mattermost.ts "$out/source/tools/"
-cp server/prompt/*.ts "$out/source/prompt/"
-cp server/tasks/instructions.ts "$out/source/tasks/"
-# W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
-# staging tree carries that module and its import closure too.
-mkdir -p "$out/source/people"
-cp server/people/*.ts "$out/source/people/"
-cp server/host/log.ts "$out/source/host/"
-# L2: host/log.ts re-exports the call-context helpers from host/events.ts, so stage that module too.
-cp server/host/events.ts "$out/source/host/"
-# host/log.ts names the stop gate constants, so stage the module it imports.
-cp server/live/stop-phrase.ts server/live/tool-outcome.ts "$out/source/live/"
-# The latency wagon made host/log.ts import the mongoose connector's clock, so stage that module too.
-cp server/connectors/*.ts "$out/source/connectors/"
-# The live-voice adapters import the alarm mode marker, so stage its module too.
-cp server/live/alarm-mode.ts "$out/source/live/"
-cp server/http/routes.ts "$out/source/http/"
-cp server/config/files.ts server/config/owner-profile.ts "$out/source/config/"
-cp server/contracts/*.ts "$out/source/contracts/"
-cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts         server/test/chat-prompt.test.ts "$out/source/test/"
+# Compile the prompt test graph from the real source tree. Removed research modules
+# are not staged, and TypeScript resolves each current transitive dependency itself.
+printf '{"type":"module"}\n' > "$out/package.json"
+ln -s "$deps" "$out/node_modules"
+sources=(server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts
+  server/test/runtime-context.test.ts server/test/chat-prompt.test.ts)
+node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
+  --strict --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+  --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$root/server" --outDir "$out/dist" "${sources[@]}"
+tests=()
+for source in "${sources[@]}"; do
+  name="${source##*/}"
+  tests+=("$out/dist/test/${name%.ts}.js")
+done
 node_test_files --test-reporter=tap --test-timeout=15000 "${tests[@]}" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"
 # #562: the accepted prompt content, byte for byte, over the same strict compile staged above.

@@ -203,7 +203,7 @@ function buildTaskAudit(read, lines = [], selection = {}) {
       ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
   }
   const deliveryEvents = events.filter(event => event.event === 'task_delivery');
-  const logAudit = { helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
+  const logAudit = { lifecycleCoverage: events.some(event => event.event === 'task_lifecycle') ? 'observed host-log task identities' : 'unavailable: no matching task_lifecycle events with task identity and generation', helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
     deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
     deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
     unjoinedTaskEvents: unjoined, promisesWithoutTask: null,
@@ -321,6 +321,7 @@ async function main() {
     try { lines = readFileSync(options.session, 'utf8').split('\n').filter(Boolean).map(text => ({ stream: 'host', record: JSON.parse(text) })); }
     catch { fail('task-log requires a readable host-log JSONL file with valid records; content omitted'); }
     const audit = buildTaskAudit({ all: () => [] }, lines);
+    audit.coverage = 'host-log metadata only; task store not opened';
     process.stdout.write(`${JSON.stringify(audit, null, 2)}\n`);
     return;
   }

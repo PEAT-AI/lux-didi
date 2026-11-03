@@ -878,6 +878,7 @@ test('task audit reads lifecycle and delivery host events without content', asyn
   assert.equal(unrelated.deliveryEvents.length, 0);
   assert.equal(unrelated.unjoinedTaskEvents, 10);
   assert.equal(unrelated.deliveryStates.heard, null);
+  assert.match(unrelated.lifecycleCoverage, /unavailable/);
   const missingStore = buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }, events);
   assert.equal(missingStore.deliveryStates.heard, 1);
   const invalid = buildTaskAudit({ all: () => [] }, [
@@ -898,6 +899,7 @@ test('task audit CLI reads only synthetic host-log metadata', async () => {
   assert.equal(result.status, 0, result.stderr);
   const audit = JSON.parse(result.stdout);
   assert.equal(audit.lifecycle.length, 4);
+  assert.match(audit.coverage, /store not opened/);
   assert.equal(audit.deliveryStates.heard, 1);
   assert.equal(audit.promisesWithoutTask, null);
   assert.equal(result.stdout.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);

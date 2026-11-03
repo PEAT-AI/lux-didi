@@ -1,3 +1,4 @@
+import './task-unbounded-projection.test.js';
 import './task-draft-chat.test.js';
 import './task-live-correction.test.js';
 import assert from 'node:assert/strict';

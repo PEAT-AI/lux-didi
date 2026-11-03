@@ -174,3 +174,42 @@ test('pending outcome is never executed a second time', async () => {
   assert.equal(result.allow, false);
   if (!result.allow) assert.equal(result.code, 'outcome_unknown');
 });
+
+// Exercises the real permission layer through the worker port, not FakeAuthority.
+import { createTaskAuthority } from '../tasks/authority.js';
+import { createRegistry } from '../tasks/tools.js';
+import type { ToolResult } from '../tasks/results.js';
+const portResult: ToolResult = { status: 'ok', text: 'Saved.', references: [], next_cursor: null, coverage: 'Complete.', repair: null };
+function portFixture(answer = true) {
+  let current = true, checked = 0, executed = 0;
+  const records = new Map<string, JournalRecord>();
+  const permission = new Authority({ checkEffect: async () => { checked++; return answer; }, log: () => {}, journal: { get: async id => records.get(id), put: async (id, value) => { records.set(id, value); } } });
+  const context = { isCurrent: () => current, taskContext: () => ({ id: 't', revision: 1, ownerWords: 'Save this note', ownerTurn: 7, exposures: ['mail'] as const }), hostUrls: () => [] as string[], registry: () => registry };
+  const port = createTaskAuthority(permission, context);
+  const registry = createRegistry({ authority: port, execute: async () => portResult });
+  const request = { task_id: 't', task_revision: 1, operation_id: 'op', connection_generation: 1, tool: 'remember_note', effect: 'local' as const, args: { text: 'Synthetic note' }, outside_text: false };
+  return { port, request, records, stale: () => { current = false; }, checked: () => checked, executed: () => executed, execute: async () => { executed++; return portResult; } };
+}
+test('worker authority rejects stale and cancelled before admission, paired with current admission', async () => {
+  const stale = portFixture(); stale.stale();
+  assert.equal((await stale.port.authorize(stale.request, stale.execute, new AbortController().signal)).repair, REPAIRS.superseded);
+  assert.equal(stale.checked(), 0); assert.equal(stale.executed(), 0);
+  const cancelled = portFixture();
+  assert.equal((await cancelled.port.authorize(cancelled.request, cancelled.execute, AbortSignal.abort())).repair, REPAIRS.cancelled);
+  assert.equal(cancelled.checked(), 0);
+  const valid = portFixture(); assert.equal((await valid.port.authorize(valid.request, valid.execute, new AbortController().signal)).status, 'ok'); assert.equal(valid.executed(), 1);
+});
+test('worker authority denial cannot execute, paired with owner-requested write', async () => {
+  const denied = portFixture(false);
+  assert.equal((await denied.port.authorize(denied.request, denied.execute, new AbortController().signal)).repair, REPAIRS.not_owner_asked);
+  assert.equal(denied.executed(), 0);
+  const valid = portFixture(); await valid.port.authorize(valid.request, valid.execute, new AbortController().signal); assert.equal(valid.checked(), 1); assert.equal(valid.executed(), 1);
+});
+test('worker commit identity deduplicates revisions but not different arguments', async () => {
+  const f = portFixture(); const signal = new AbortController().signal;
+  await f.port.authorize(f.request, f.execute, signal);
+  await f.port.authorize({ ...f.request, task_revision: 2, operation_id: 'new' }, f.execute, signal);
+  assert.equal(f.executed(), 1);
+  await f.port.authorize({ ...f.request, args: { text: 'Different note' } }, f.execute, signal);
+  assert.equal(f.executed(), 2);
+});

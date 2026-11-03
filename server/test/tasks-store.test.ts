@@ -75,3 +75,20 @@ test('runtime retains outside exposure and host result URLs across a following t
     assert.equal(runtime.taskContext(second.revision.identity.task_id)?.ownerTurn, 2);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('Store owns a durable effect journal without persisting canonical argument keys', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-effect-journal-'));
+  let store = new Store(directory);
+  try {
+    const journal = store.taskEffectJournal(() => true);
+    await journal.put('synthetic-task:remember_note:{"text":"synthetic-private-marker"}', { status: 'pending' });
+    await journal.put('synthetic-completed', { status: 'succeeded', value: { status: 'ok', text: 'Synthetic receipt.' } });
+    const keys = store.transaction(tx => tx.all('SELECT identity_hash FROM task_effect_journal'));
+    assert.ok(keys.every(row => /^[a-f0-9]{64}$/.test(String(row.identity_hash))));
+    store.close(); store = new Store(directory);
+    assert.deepEqual(await store.taskEffectJournal(() => true).get('synthetic-task:remember_note:{"text":"synthetic-private-marker"}'), { status: 'pending' });
+    assert.deepEqual(await store.taskEffectJournal(() => true).get('synthetic-completed'), { status: 'succeeded', value: { status: 'ok', text: 'Synthetic receipt.' } });
+    await store.taskEffectJournal(() => false).put('redacted', { status: 'succeeded', value: { text: 'synthetic-private-marker' } });
+    assert.equal(JSON.stringify(await store.taskEffectJournal(() => true).get('redacted')).includes('synthetic-private-marker'), false);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

@@ -31,7 +31,7 @@ import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
  */
 const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
 /** Delegation backend pinned by the docs ("Start with gpt-6-luna", guides/live-delegation). */
-export const OPENAI_DELEGATION_MODEL = 'gpt-6-luna';
+
 /** Delegation probe 2026-10-18 (delegation-probe-1018.md): both fields are accepted by delegation.responses on
  *  gpt-live-1, and the final answer arrives 1.6 to 2.3 s sooner per tool turn than the default. `effort: none` is
  *  unreliable and `parallel_tool_calls: false` is the slowest, so the pair below is the pinned shape. */
@@ -370,13 +370,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, instructions: openAiBackendInstructions(settings.backendProcedure, settings.backendBrevityTight),
-          text: { verbosity: DELEGATION_TEXT_VERBOSITY }, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
-          parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT },
-          // C-POSTTOOL switch a: the delegation names audio output, so the delegated response speaks instead of
-          // writing text. It cannot ride on `response.create`: the recorded 10.5.1 refusal names an extra create
-          // field as unknown_parameter param=response, and the wire fixture pins creates to type and event_id.
-          ...(settings.firstResponseAudio ? { audio: { output: { voice: voicePayload(settings.voice) } } } : {}) } },
+        delegation: { type: 'client' },
       },
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes

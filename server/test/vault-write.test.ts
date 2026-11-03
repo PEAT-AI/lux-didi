@@ -17,7 +17,7 @@ import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { VAULT_REMOTE_TOOL, VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -308,20 +308,18 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
     backoff: async ms => { delays.push(ms); },
     transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
-  h.store.transaction(tx => writer.observe(tx, SESSION, 'retry', `save this to lux: ${NOTE}`));
-  const claim = writer.claim(SESSION, NOTE);
-  assert.equal(claim.state, 'dispatch');
-  if (claim.state !== 'dispatch') return;
-  const result = await writer.dispatch(claim);
+  const input = { sessionId: SESSION, identity: { task_id: 'retry-task', task_revision: 1, operation_id: 'save', connection_generation: 1 }, content: NOTE, title: NOTE, outsideTextSeen: false };
+  const result = await writer.saveTask(input);
   assert.equal(result.saved, true);
   assert.match(String(result.guidance), /retried.*lux/i);
   assert.deepEqual(delays, [250]);
   assert.equal(calls, 2);
-  assert.equal(writer.claim(SESSION, NOTE).state, 'settled');
+  assert.deepEqual(await writer.saveTask(input), result); assert.equal(calls, 2, 'replay does not send a third request');
 });
 
 test('startup retries a legacy unavailable row only once across restarts', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
+  h.store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: SESSION, stageId: 'legacy-unavailable', content: NOTE, title: NOTE, now: NOW }));
   h.store.transaction(tx => tx.run("UPDATE vault_writes SET state='failed',code='vault_unavailable'"));
   let calls = 0;
   const delays: number[] = [];

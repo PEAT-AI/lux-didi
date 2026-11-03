@@ -1402,6 +1402,8 @@ test('C-CONVO9: tool_failure cannot become an opener topic', () => {
 });
 
 test('client-mode composition retains work and spoken delivery without declared tools', () => {
+  const profile = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('SYNTHETIC STYLE', 'SYNTHETIC LORE') });
+  console.log(JSON.stringify({ case: 'synthetic_profile_sizes', chars: profile.text.length, toolsChars: profile.sections.find(section => section.id === 'tools')?.chars ?? 0 }));
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE });
   assert.match(composed.text, /# Work and spoken delivery/);
   assert.ok(composed.sections.some(section => section.id === 'tools'));

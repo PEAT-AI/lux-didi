@@ -6,14 +6,9 @@ These are **awake-Mac alarms**, not a replacement for a hardware alarm clock. A 
 
 ## Tools and authority
 
-| Tool | Behavior |
-| --- | --- |
-| `set_alarm` | Takes the model's structured `time` and the owner's words of the current ask, resolves one instant in a real IANA zone, and commits a pending alarm. |
-| `list_alarms` | Lists pending and ringing alarms. |
-| `cancel_alarm` | Cancels one armed alarm, or lists them when several are armed, only with a fresh finalized spoken cancellation request. |
-| `snooze_alarm` | Completes the old occurrence and creates a new pending alarm atomically, from the same `time` shape. |
+The call helper declares `alarm_create`, `alarm_list`, `alarm_cancel` and `alarm_update` in `server/tasks/tools.ts`. It receives structured time and text fields rather than a phrase-based permission grant. Task permission belongs in `server/tasks/authority.ts`; a direct ask runs, and outside text cannot supply an owner ask.
 
-Set, cancel and snooze never derive authority from model output, typed text, host notes or alarm setup instructions. The ask may span the last two finalized owner turns, provided the latest turn continues the alarm request. An unrelated newer turn or a consumed request cannot authorize a mutation. An alarm is a free local write, so his ask in this session does not expire; the two minute expiry is kept for the guarded deletion only (C-FREEDOM).
+The existing scheduler and native delivery still own ringing, wake and acknowledgement. Legacy scheduler entry points have different names; they are implementation details, not commands the person has to learn. Only a stored alarm receipt proves creation.
 
 ## The time contract
 

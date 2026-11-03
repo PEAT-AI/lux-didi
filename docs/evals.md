@@ -397,7 +397,7 @@ Nothing in either script reads the network.
 
 ## The combined-tree gate
 
-A wagon gate sees one branch. Two wagons can each be green and their merge red, because a check's staging list or
+A branch check sees one branch. Two branches can each be green and their merge red, because a check's staging list or
 a Swift compile unit never learned about a file the other wagon added. `scripts/check-combined-tree.sh <base> <head>`
 runs on the combined tree:
 

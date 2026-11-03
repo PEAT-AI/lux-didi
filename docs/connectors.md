@@ -11,25 +11,7 @@ A connected source is an account or service Naya can consult through a host-appr
 | Mattermost | `server/connectors/mattermost.ts` | Read people, channels, threads and attention evidence |
 | Mongoose | `server/connectors/mongoose.ts` | Read the separately approved knowledge, data and CRM endpoints |
 
-Each Mongoose endpoint is its own connection, so one unsigned endpoint never hides another: `mongoose-knowledge`
-serves the research `company` source, `mongoose-data` serves the research `data` source (company numbers), and an
-unsigned `mongoose-crm` disables only the CRM reads.
-
-A forwarded Mongoose tool reaches the planner with the input schema and description the endpoint published in its
-own MCP tool list, sanitized for the provider (integer bounds only, no keyword the provider rejects). The catalogue
-is taken at connect time; a schema that cannot be sanitized fails that connect with the closed code
-`schema_unsanitizable`, never as an empty schema. A business, KPI or metric question goes to the data endpoint's own
-agent, `ask_data_agent`, with the owner's question verbatim; its job is read with `data_agent_job` `op get` while it
-is running, and a `needs_reply` clarification is put back to the owner and answered with `op reply`. The answer's
-number or ranking travels with the definition and assumptions the endpoint returned. The Lightdash tools
-(`search_fields`, `run_metric_query`, ...) serve explores and saved charts and are not the path for a KPI question,
-which is why the count route no longer dispatches them.
-
-A company answer on the `knowledge` endpoint is one `search` in answer mode and then a `read` of the top hit's ref,
-paged by the server's own `next_cursor` until `coverage.complete` or the read page budget, and reported as partial
-with `read_omitted: cursor_budget` when the budget ends it first. A coverage question (forecast, nowcast, call-level,
-district granularity, an unfamiliar country or crop) asks `check_data_capability` first and never answers a
-capability the router reports unavailable.
+Each Mongoose endpoint is a separate connection. Knowledge, company data and CRM need their own sign-in and approved capabilities; a missing endpoint is not evidence that another has no results. `server/tasks/connectors.ts` maps the helper's typed calls to configured connector tools and builds company tool declarations from accepted capabilities. Source schemas and descriptions are sanitized before reaching the helper. The helper chooses queries and follows returned cursors; the host does not route a question by reading its words.
 
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` is the registry. These descriptors are read-only: `ConnectorToolDeclaration.effect` is `'read'`. Do not infer that all host tools are read-only. Trello is a separate host gateway in `server/host/trello.ts`, with a privately configured board (`TRELLO_BOARD_FILE`), rather than another descriptor in this registry. Its write authority and the note-writing flows belong in [tool-owner.md](tool-owner.md).
 
@@ -41,7 +23,7 @@ capability the router reports unavailable.
 4. Configure the connection through `server/config/mcp.ts` and the route classes through `server/config/route-classes.ts`. Load and approval are owned by `server/host/mcp.ts`. Follow [mcp-configuration.md](mcp-configuration.md) rather than adding a token to a profile or repository file.
 5. Add synthetic fixtures under `server/test/fixtures/` and tests under `server/test/`. No real account or credential belongs in a connector check. Use [checks.md](checks.md) for the repository's check routing.
 
-For Google, endpoint identity is also routing identity: `ENDPOINT_SOURCES` in `server/tools/research.ts` maps `gmail`, `calendar` and `drive` to the corresponding research source. A new endpoint name is not interchangeable with one of those names.
+For Google, Gmail, Calendar and Drive retain distinct endpoint identities. The helper mapping in `server/tasks/connectors.ts` selects an approved capability; a sign-in to one family is not permission to use another.
 
 ## Capability differences are visible
 
@@ -89,7 +71,4 @@ or `failed`. No endpoint URL or error message enters this fact or event. Discove
 failures also log a closed exception class when known: refused, DNS, TLS, timeout,
 HTTP status family or transport; otherwise unknown. Recovery spacing is unchanged.
 
-A late connector recovery does not change an open call's fixed tool snapshot.
-Supporting that later needs a provider-supported tool-schema update plus refreshed
-capability facts and authority checks, or an explicit next-call boundary. It must
-not silently make live reconnects more aggressive.
+A late connector recovery does not itself grant access. A later task still uses the host's configured bindings and approved capabilities. Connector recovery must not make voice stall recovery more aggressive.

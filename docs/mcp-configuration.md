@@ -50,11 +50,7 @@ Mattermost also uses the installed archive helper's account flow. A missing sess
 
 ## Project names, the owner's own setting
 
-`researchProjects` is an optional array of the owner's own project names in the same `mcp.json`. At host start the
-names become the knowledge search hint set: a question that says one of them out loud matches on that project, and
-the search runs exactly as before. It is never shipped in the public tree and it defaults to empty, so a catalog
-without the key has no hint at all. Each name is a string of at most 80 characters, and a key that is not a list of
-names is refused as `invalid_profile` rather than half-applied.
+`researchProjects` remains an optional catalog field accepted by `server/config/mcp.ts` for compatibility. It defaults to no names. It is not a task routing rule or permission to read another project. Do not put private project names in this public repository.
 
 ## Approval modes and changes
 

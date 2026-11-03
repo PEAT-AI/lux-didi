@@ -69,7 +69,7 @@ The model decides queries. Mail and chat windows are query operators; calendar h
 candidates are labelled exact or neighbour by normalized full-title equality with the query. No-match opens nothing.
 Opened documents carry up to 24,000 characters per result and an explicit character cursor; search items stay concise.
 `clean.ts` contains shared structural mail cleaning. `tools/live-shape.ts` retains its legacy voice limits,
-calendar and attendee formatting, search projections, omission annotations and research compatibility exports until C-VOICE.
+calendar and attendee formatting, search projections, omission annotations and source compatibility exports until C-VOICE.
 
 Task migrations belong to `runtime/task-schema.ts` and are applied by `Store` only. Owner words, arguments,
 results and final answers use the host content-capture gate; metadata and delivery attempts remain recorded.

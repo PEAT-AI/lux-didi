@@ -1,3 +1,4 @@
+import type { ToolResult } from '../tasks/results.js';
 import type { Store } from '../runtime/store.js';
 import type { ToolsOwner } from '../tools/types.js';
 import { hostTaskFactory } from '../tasks/host.js';
@@ -10,6 +11,8 @@ export function canonicalTaskFixture(store: Store, owner: ToolsOwner, runId: str
     bindings: () => owner.taskBindings(connectionIds), executors: () => owner.taskExecutors(runId), contentAllowed: () => false, timeZone,
     effectCheck: async () => true, infer: async () => { throw Error('The test calls the shared tool registry, not a second inference.'); },
   })(runId, { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} });
+  const results: ToolResult[] = [], runTool = runtime.runTool.bind(runtime);
+  runtime.runTool = async (...args) => { const result = await runTool(...args); results.push(result); return result; };
   const revision = runtime.begin(ownerWords, 1, 1);
-  return { runtime, revision, tools: taskDefinitions(runtime, revision.identity, owner, runId), close: () => runtime.close() };
+  return { runtime, revision, results, tools: taskDefinitions(runtime, revision.identity, owner, runId), close: () => runtime.close() };
 }

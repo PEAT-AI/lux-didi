@@ -434,7 +434,7 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       assert.equal(outcome.status, 'completed');
       const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
       const response = JSON.parse(String(row?.result_json)).response;
-      assert.match(JSON.stringify(response), /Synthetic subject line/);
+      assert.match(JSON.stringify(response), /Synthetic subject line/, JSON.stringify(task.results));
       assert.equal(response.status, 'ok');
     } finally { task.close(); }
   } finally {

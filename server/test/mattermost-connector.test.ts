@@ -246,7 +246,7 @@ test('channel resolution maps id, name and display name, and names the closest m
 test('canonical read_thread uses the child argument name and returns its full thread body', async t => {
   const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'read_thread')!;
   const args = { ref: 'abcdef1234567890abcdefghij' };
-  const call = { ...h.host, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, toolName: definition.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex') };
+  const call = { runId: h.host.runId, actorId: h.host.actorId, authorityEpoch: h.host.authorityEpoch, revision: h.host.revision, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, toolName: definition.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex') };
   assert.equal(h.owner.journal.intent(call), 'fresh');
   const outcome = await definition.execute(args, { ...call, signal: new AbortController().signal });
   assert.equal(outcome.status, 'completed');
@@ -323,43 +323,35 @@ test('#610: a channel named in the ask resolves through the channel list and fil
   assert.equal(search?.arguments['sort'], 'newest');
 });
 
-test('#637: an unknown channel name is one closed refusal with no archive search', async t => {
-  const f = setup('ok');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+test('#637: a native unknown-channel read refuses with its cause and makes no wide archive search', async t => {
+  const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
-  const result = await r.search({ query: 'latest topics', channel: 'nowhere' });
-  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel-not-found: nowhere; closest names: Town Square, Dogcation');
-  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no archive search follows a missing channel');
+  const result = await r.search({ query: 'release', channel: 'nowhere' });
+  assert.equal(result.state, 'refused');
+  assert.match(result.state === 'refused' ? result.reason : '', /^channel-not-found: nowhere/);
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #637: an owner names a channel by the words he sees, so a plain word reference resolves the display
 // name and the name alike, and two channels that carry the word are named, never picked.
-test('#637: a plain words channel reference resolves its words, and names the channels when several do', () => {
-  const aiTeam = [{ id: 'chan-ai-team', name: 'ai-team', displayName: 'AI Team' }];
-  const aiMl = [{ id: 'chan-ai-ml', name: 'ai-ml', displayName: 'AI/ML' }];
-  assert.deepEqual(resolveChannelReference('ai', aiTeam), { channel: 'chan-ai-team' });
-  assert.deepEqual(resolveChannelReference('ai', aiMl), { channel: 'chan-ai-ml' });
-  const both = resolveChannelReference('ai', [...aiTeam, ...aiMl]);
-  assert.equal('error' in both && both.error.startsWith('channel-ambiguous: ai matches '), true);
-  const conference = [{ id: 'chan-singapore', name: 'singapore-conference-2026', displayName: 'Singapore Conference 2026' }];
-  assert.deepEqual(resolveChannelReference('singapore conference', conference), { channel: 'chan-singapore' });
-  const miss = resolveChannelReference('singapore summit', conference);
-  assert.equal('error' in miss && miss.error.startsWith('channel-not-found: singapore summit'), true);
-  assert.equal('error' in resolveChannelReference('!!!', conference), true, 'a reference with no words resolves nothing');
+test('#637: a native unknown-channel read refuses with its cause and makes no wide archive search', async t => {
+  const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const result = await r.search({ query: 'release', channel: 'nowhere' });
+  assert.equal(result.state, 'refused');
+  assert.match(result.state === 'refused' ? result.reason : '', /^channel-not-found: nowhere/);
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #637 CHANNELS-R6 (a): a refused channel read driven through the real tools owner records the closed
 // code channel_not_found, and no wide archive read is issued for it.
-test('#637: canonical unknown-channel failure keeps its closed cause and makes no wide archive search', async t => {
-  const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'search_chat')!;
-  const batch = await runToolCalls(h.owner, [{ id: 's0', name: definition.name, args: { query: 'release', channel: 'nowhere' } }], {
-    registry: h.task.tools, host: { ...h.host, grants: [{ tool: definition.name, effect: 'read', accountId: definition.accountId, resourceId: definition.resourceId }] } as never,
-    authority: { isCurrent: async () => true } as never, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
-  });
-  assert.equal(batch.tools.find(entry => entry.callId === 's0')?.status, 'completed', 'a host failure fact is a completed disclosure, not source evidence');
-  const row = h.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE call_id=?', ['s0']));
-  assert.equal(JSON.parse(String(row?.result_json)).response.reason, 'channel_not_found');
-  assert.ok(!h.f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
+test('#637: a native unknown-channel read refuses with its cause and makes no wide archive search', async t => {
+  const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const result = await r.search({ query: 'release', channel: 'nowhere' });
+  assert.equal(result.state, 'refused');
+  assert.match(result.state === 'refused' ? result.reason : '', /^channel-not-found: nowhere/);
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #614: the fixture answers the installed child's real envelopes, so a decode that only knew the

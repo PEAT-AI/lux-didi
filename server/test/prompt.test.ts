@@ -344,7 +344,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
   // VOICE-R1: waiting behaviour is one persona rule, and no section tells the model to speak before every lookup.
   assert.equal(NAYA_VOICE_TOOLS.includes("Silence while you look something up is fine."), false, 'C-LIVE: silence while looking is no longer licensed');
-  assert.ok(NAYA_VOICE_TOOLS.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
+  assert.ok(NAYA_VOICE_TOOLS.includes('Do not announce work instead of doing it'), 'work is never announced in place of the call');
   // C-OPENER 10.9: the field calls said a waiting phrase with no call behind them, once after a direct ask.
   // The licence to announce a wait is gone; the rule names the two situations instead of a line to say.
   assert.equal(NAYA_VOICE_TOOLS.includes('need a moment'), false, 'no text invites a wait with no call behind it');

@@ -375,8 +375,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-PROMISE 10.10: the announcement sentence is replaced in place, so the voice tools block is re-pinned.
   assert.equal(sha(NAYA_VOICE_TOOLS), '8c554b93c488a5fdcdd6cac8d5bef419b6c8d4d31eb0bec3f6198c49a3139bcc');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
-  // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), 'dfdc3e2eebf54889228c2809474385a857bdfd5021ce8466db0837f5ffc8706b');
+  // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it. C-PROMISE 10.10:
+  // the replaced announcement rule reaches this block too, so it is re-pinned with the voice tools pin.
+  assert.equal(sha(NAYA_TOOLS), 'ebf0f82970464531125be07c6a4eed1f10b979a48682b2420f5efea1f0226c22');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));

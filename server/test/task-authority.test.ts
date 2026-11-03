@@ -119,7 +119,7 @@ test('timeout signal fails open and logs without a clock wait or provider call',
   assert.deepEqual(fake.events, ['effect_check_failed']);
 });
 
-const refusalCodes: RefusalCode[] = ['invalid_arguments', 'unknown_tool', 'source_unavailable', 'not_owner_asked', 'confirmation_required', 'egress_blocked', 'cancelled', 'superseded', 'deadline_exceeded', 'write_failed', 'outcome_unknown'];
+const refusalCodes: RefusalCode[] = ['invalid_arguments', 'unknown_tool', 'source_unavailable', 'not_owner_asked', 'confirmation_required', 'confirmation_unavailable', 'egress_blocked', 'cancelled', 'superseded', 'deadline_exceeded', 'write_failed', 'outcome_unknown'];
 test('closed refusal vocabulary has no legacy phrase, expiry or research codes', () => {
   assert.deepEqual(Object.keys(REPAIRS).sort(), [...refusalCodes].sort());
 });

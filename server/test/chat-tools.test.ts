@@ -695,7 +695,7 @@ test('real chat turn reads a local reminder and commits a task note through cano
     return { status: 'complete', text: call ? '' : 'Synthetic turn finished.', providerContent: { role: 'model', parts: call ? [{ functionCall: call }] : [{ text: 'Synthetic turn finished.' }] },
       reason: 'complete', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
   } };
-  const f = await fixture(t, ['ordinary', 'private'], { model });
+  const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: 40000, contextChars: 12000, historyChars: 12000 }, sources: [] } });
   f.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", ['synthetic-reminder', Date.UTC(2030, 0, 2), 'UTC', 'Known reminder label', 'synthetic-journal']));
   const sessionId = f.session(), accepted = f.chat.accept({ sessionId, text: 'List my reminders and keep this note: Synthetic task note body', idempotencyKey: randomUUID() }, f.context);
   let outcome: string | null = null;

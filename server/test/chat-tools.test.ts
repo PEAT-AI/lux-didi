@@ -141,7 +141,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
 
 test('real chat declares approved reads, journals execution, and discloses only gated evidence', async t => {
   const f = await fixture(t); f.canonicalSource(); const run = await f.turn(f.session());
-  t.diagnostic(`real-owner outcome=${run.outcome}; model requests=${f.requests.length}; connector executions=${f.executions()}`);
+  t.diagnostic(JSON.stringify({ outcome: run.outcome, requests: f.requests.length, executions: f.executions(), declarations: f.requests.map(request => request.declarations?.map(tool => tool.name)) }));
   assert.ok(f.requests[0]?.declarations?.some(d => d.name === 'search_knowledge'), 'approved read declaration must reach text chat');
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));

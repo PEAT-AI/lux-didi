@@ -29,7 +29,7 @@ import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
-import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
+import { VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
@@ -678,9 +678,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         .map(row => String(row['connection_id']))
         .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } })
         .filter(id => configured === undefined || configured.includes(id));
-    },,,,
+    },
   };
   ownerBindings.set(owner, { store, registry, ownerId });
-  transactionDefinitions.set(owner, owner.definitions);
   return owner;
 }

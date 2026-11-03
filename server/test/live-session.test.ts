@@ -1,3 +1,4 @@
+import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
 import './tasks-store.test.js';
 import './task-vault.test.js';
@@ -67,7 +68,7 @@ import type { Transaction } from '../contracts/storage.js';
 import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureSettled, options, pcm } from './live-voice-fixture.js';
 import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
-import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { admissionBlocked } from '../tools/research.js';
@@ -829,19 +830,20 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
+  let taskStarted = false;
   let finish!: () => void;
   const work = new Promise<void>(resolve => { finish = resolve; });
   t.after(() => finish());
   // Only the detach countdown is under test: the idle, session and call ceilings stay far away.
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 },
-    ...(openDelegation ? { tools: true, beforeTool: () => work } : {}) });
+    ...(openDelegation ? { taskInfer: async () => { taskStarted = true; await work; return { text: '', calls: [], no_action: true }; } } : {}) });
   const { attachment } = await attached(h);
   if (openDelegation) {
     await ownerSpoke(h);
-    h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'delegate', args: { request: 'Synthetic owner request' } }] } });
     // Bounded, so a refused call fails here instead of spinning past the test timeout and holding the file open.
-    for (let i = 0; i < 2000 && !h.calls.length; i++) await tick();
-    assert.equal(h.calls.length, 1, 'the delegation is open: its tool started and has not returned');
+    await fixtureUntil(() => taskStarted, 'pending helper task');
+    assert.equal(taskStarted, true, 'the delegation is open while controlled inference is pending');
   }
   // A response is streaming into the socket the app already cancelled.
   h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
@@ -1621,7 +1623,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
-    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
+    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, traceMigrations, taskMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
 test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
@@ -3166,9 +3168,9 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
     'metadata only: no audio bytes, text, device label or provider payload');
 });
 test('a finalized request produces one task answer without a provider tool batch', async t => {
-  const p = progressPort(); let inferences = 0;
+  const p = progressPort(), finish = deferred<void>(); let inferences = 0;
   const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async () => {
-    inferences++; return { text: 'Synthetic records were checked.', calls: [] };
+    inferences++; await finish.promise; return { text: 'Synthetic records were checked.', calls: [] };
   } });
   const { attachment } = await openPort(h, 'helper-answer');
   consumeTaskPort(t, attachment);
@@ -3176,7 +3178,7 @@ test('a finalized request produces one task answer without a provider tool batch
   await settlePort();
   assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
   p.emit({ type: 'delegation', delegationId: 'binding-answer' });
-  await settlePort();
+  await settlePort(); finish.resolve(); await settlePort();
   assert.equal(inferences, 1, 'a provider delegation attaches to current work, not a second inference');
   assert.equal(p.taskAnswers.length, 1);
   assert.equal(p.taskAnswers[0]?.delegationId, 'binding-answer');
@@ -3607,7 +3609,7 @@ test('Q5-R4: a fresh call carries the previous opener assembled from its fragmen
   assert.equal(text.split('Earlier opener topic classes').length - 1, 1, 'the context appears once');
 });
 
-test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the shared voice conduct', async t => {
+test('composeLive uses client delegation and keeps worker procedure out of both voice sessions', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-backend-procedure-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
@@ -3633,8 +3635,7 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
   openAi.send({ type: 'session.started', session: { id: 'sess_fake' } });
   await openAiAttachment.ready;
   const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
-  const responses = (start.session['delegation'] as { responses: Record<string, unknown> }).responses;
-  assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${NAYA_BACKEND_PROCEDURE}`, 'the OpenAI backend instructions are the template, the brevity rule and the lookup procedure');
+  assert.deepEqual(start.session['delegation'], { type: 'client' }, 'the helper owns inference, not a provider responses backend');
   assert.equal(String(start.session['instructions']).includes(NAYA_BACKEND_PROCEDURE), false, 'the OpenAI voice instructions never carry the procedure');
 
   const gemini = await fixture(t);
@@ -5463,7 +5464,7 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
   await advanceUntil(h.advance, scheduler, () => p.sessionsOpened === 2);
   assert.equal(p.sessionsOpened, 2);
   p.emit({ type: 'delegation', delegationId: 'fresh-binding' });
-  release.resolve(); await settlePort();
+  await settlePort(); release.resolve(); await settlePort();
   assert.equal(inferences, 1, 'socket rebuild must not redispatch a task or an effect');
   assert.equal(p.taskAnswers.length, 1);
   assert.equal(p.taskAnswers[0]?.delegationId, 'fresh-binding');

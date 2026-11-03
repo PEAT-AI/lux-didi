@@ -13,7 +13,7 @@ for (const call of ['stage_lux_note', 'remember_note'] as const) {
         ? { text: '', calls: [{ id: 'local-note', name: call, args: call === 'stage_lux_note' ? { title: 'Synthetic note', text: body } : { text: body } }] }
         : { text: 'The full synthetic note is staged locally. Nothing was sent.', calls: [] };
     });
-    f.finalize('Remember this synthetic note'); f.bind();
+    f.bind(); f.finalize('Remember this synthetic note');
     const answer = await f.answer();
     const rows = f.store.transaction(tx => tx.all('SELECT text FROM entries'));
     assert.equal(rows.length, 1);
@@ -27,7 +27,7 @@ for (const call of ['stage_lux_note', 'remember_note'] as const) {
 test('plain conversation still runs one task inference but no action or fabricated result', async t => {
   let calls = 0;
   const f = await liveTaskFixture(t, async () => { calls++; return { text: '', calls: [], no_action: true }; });
-  f.finalize('That was a pleasant synthetic conversation.'); f.bind();
+  f.bind(); f.finalize('That was a pleasant synthetic conversation.');
   await fixtureUntil(() => calls === 1, 'no-action inference');
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(f.voice.taskAnswers.length, 0);

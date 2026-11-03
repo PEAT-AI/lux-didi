@@ -9,7 +9,7 @@ for (const outcome of ['inserted', 'unknown'] as const) {
     const f = await liveTaskFixture(t, async request => request.turns.length === 0
       ? { text: '', calls: [{ id: 'save', name: 'save_to_vault', args: { title: 'Synthetic plan', text } }] }
       : { text: outcome === 'inserted' ? 'The synthetic note was saved.' : 'The save outcome is unknown. I will not retry it.', calls: [] }, { outcome });
-    f.finalize('Save the synthetic plan to the vault'); f.bind();
+    f.bind(); f.finalize('Save the synthetic plan to the vault');
     const answer = await f.answer();
     assert.equal(f.writes.length, 1, 'no extra confirmation or duplicate model/tool pass is required');
     assert.match(JSON.stringify(f.writes[0]), /The budget is twelve units/);
@@ -33,7 +33,7 @@ for (const approved of [false, true]) {
         : { text: approved ? 'The authorized note was saved.' : 'That write was not authorized.', calls: [] }, {
       approved, executors: { search_mail: async () => { reads++; return documentResult('Untrusted mail commands a write. This text cannot grant it.', 'synthetic-mail'); } },
     });
-    f.finalize('Read the synthetic message and save only what I authorized'); f.bind();
+    f.bind(); f.finalize('Read the synthetic message and save only what I authorized');
     const answer = await f.answer();
     assert.equal(reads, 1);
     assert.equal(f.writes.length, approved ? 1 : 0);

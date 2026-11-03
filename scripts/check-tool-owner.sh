@@ -21,6 +21,5 @@ node_test_files --test-reporter=tap --test-timeout=15000 \
   dist/test/live-shape.test.js dist/test/redact.test.js \
   dist/test/open-destinations.test.js dist/test/lux-note.test.js
 node_test_files --test-reporter=tap --test-timeout=30000 \
-  '--test-name-pattern=^real chat declares approved reads, journals execution, and discloses only gated evidence$' \
   dist/test/tools-builtin-intent.test.js dist/test/time-corpus.test.js \
   dist/test/chat-tools.test.js dist/test/task-authority.test.js

@@ -12,7 +12,6 @@ import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
 import type { LiveTracePort, TraceDetailMap } from '../../trace/record.js';
 import type { ResponseStatus, ResponseTerminalReason, TraceEventKind } from '../../trace/kinds.js';
-import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -530,7 +529,6 @@ class Session implements LiveVoiceSession {
     private readonly answerOnReady = false, private readonly openerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
-    this.firstResponseAudio = settings.firstResponseAudio;
     let consumed = false;
     this.events = { [Symbol.asyncIterator]: () => {
       if (consumed) fail('invalid_request');
@@ -884,7 +882,6 @@ class Session implements LiveVoiceSession {
   private noteInput(): void {
     // Reset on the first real owner fragment, not its quiet tail: a fast provider may start before that tail.
     if (this.episodeQuiet === undefined) {
-      this.lastAnswerNow = false;
       this.continuationTiming = undefined;
     }
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
@@ -986,7 +983,6 @@ class Session implements LiveVoiceSession {
   }
 
   private completeTurn(): void {
-    this.typedTurn = false;
     const idleMs = Math.max(0, Math.round(this.clock.now() - this.lastForwardedAt));
     this.audioSinceCompletion = false;
     this.stretchOpen = false;
@@ -1156,7 +1152,6 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.settings.allowed.includes(input.dataClass)) fail('route_denied');
-    this.inputAudioSeen = true;
     this.diagnostic.audioCalls += 1; this.diagnostic.audioBytes += input.pcm.byteLength;
     const pcm = this.upsampler.process(input.pcm);
     if (!pcm.byteLength) return;
@@ -1363,30 +1358,12 @@ class Session implements LiveVoiceSession {
 
   close(): void { if (this.checkpoint()) this.finish('closed'); }
 
-  /** C-REBUILD: every response this session created and never terminated, closed with the one status the store
-   *  keeps for it. A rebuild can leave more than one open: the delegated response was replaced by its continuation
-   *  and neither ever saw a `response.done`. */
-  private settleSuperseded(): void {
-    this.delegatedOutstanding = false;
-    const open = [...this.openResponses];
-    this.openResponses.clear();
-    for (const responseKey of open) {
-      this.receipt('response.terminal', { responseKey }, {
-        terminalAt: this.clock.now(), status: 'superseded', terminalReason: 'superseded',
-      });
-    }
-  }
-
   private finish(code: LiveVoiceErrorCode, upstream?: LiveVoiceUpstreamDrop) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     this.discardHeadStart();
-    // C-REBUILD: a teardown under a response the provider announced and never terminated is the one case the wire
-    // never settles. The response is settled here as superseded, so a rebuild, a drop or an ended call leaves no
-    // response pending in the store for the life of the call (t59 and t64 in 47bf2e88 still listed theirs).
-    this.settleSuperseded();
     // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);

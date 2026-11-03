@@ -25,7 +25,7 @@ async function fixture(t: TestContext) {
     sendTaskAnswer: ({ text }) => { appended.push(text); return `synthetic-command-${appended.length}`; },
   }) };
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
-  const profile = validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'cedar',
+  const profile = validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'cedar', keyReference: 'synthetic-reference',
     audio: { inputRate: 8000, outputRate: 24000 }, route: { dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic task voice', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
   const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC',

@@ -125,3 +125,18 @@ test('no hop cap and the revision deadline is independent of individual call dea
     infer: async () => { clock.advance(11000); return { text: '', calls: [{ id: String(++hops), name: 'read_mail', args: { id: 'm', cursor: null } }] }; } });
   assert.equal(expired.status, 'incomplete'); assert.equal(hops, 4); assert.match(expired.text, /verified/);
 });
+
+test('controller captures host owner turn and immediately preceding task words', () => {
+  const delivery = new FakeDelivery(); let ids = 0;
+  const controller = new TaskController(delivery, () => `t${++ids}`);
+  const first = controller.finalize('Read the synthetic note', 1, 10);
+  assert.equal(first.ownerTurn, 10);
+  controller.complete(first.identity, { status: 'complete', text: 'Read.', findings: [] });
+  const second = controller.finalize('Save it', 1, 11);
+  assert.equal(second.precedingOwnerWords, 'Read the synthetic note');
+  assert.equal(second.ownerTurn, 11);
+  const revised = controller.finalize('Use the other title', 1, 12);
+  assert.equal(revised.precedingOwnerWords, 'Read the synthetic note');
+  assert.equal(revised.ownerTurn, 12);
+  assert.equal(controller.taskContext(second.identity.task_id)?.ownerWords, 'Save it\nUse the other title');
+});

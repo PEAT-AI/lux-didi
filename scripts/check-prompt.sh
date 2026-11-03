@@ -94,8 +94,23 @@ for (const text of [voice, worker]) {
 }
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
-assert.doesNotMatch(voice, /research|[\u2013\u2014]|\b(?:open_web|draft_email|stage_lux_note)\b/i);
-assert.doesNotMatch(voice, /["“][^"”]+["”]/);
+const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
+function assertVoicePolicy(text) {
+  assert.doesNotMatch(text, /research|[\u2013\u2014]|\b(?:open_web|draft_email|stage_lux_note)\b/i);
+  assert.doesNotMatch(text, /["“][^"”]+["”]/);
+}
+assertVoicePolicy(voice);
+for (const quote of ["Say 'I have the result.'", "Say 'I'm ready.'", 'Say ‘I have the result.’']) {
+  assert.throws(() => assertVoicePolicy(`${voice}\n\n${quote}`), { name: 'AssertionError' }, `recitation rejected: ${quote}`);
+}
+assert.ok(TASK_TOOL_NAMES.size > 0);
+for (const name of TASK_TOOL_NAMES) {
+  assert.throws(() => assertVoicePolicy(`${voice}\n\nCall ${name}.`), { name: 'AssertionError' }, `registered tool rejected: ${name}`);
+}
+for (const prose of ["It's the owner's choice; don't invent facts.", "I'm listening, and I won't guess.", "The owners' plans aren't final.", 'She’s listening; it isn’t settled.', "An opened door isn't a tool call."]) {
+  assert.doesNotThrow(() => assertVoicePolicy(`${voice}\n\n${prose}`), `ordinary prose accepted: ${prose}`);
+}
+console.log(JSON.stringify({ case: 'voice_policy_guard_fixtures', registeredTools: TASK_TOOL_NAMES.size, quotedRecitations: 3, ordinaryProse: 5 }));
 const composed = persona.composeLiveInstruction({ base: persona.NAYA_LIVE_BASE });
 assert.ok(composed.text.includes(voice));
 assert.equal(composed.sections.find(section => section.id === 'tools').chars, voice.length);

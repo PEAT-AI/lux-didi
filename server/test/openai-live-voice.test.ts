@@ -2849,3 +2849,23 @@ test('client delegation starts without session tools or Responses configuration'
   assert.deepEqual(start?.session.delegation, { type: 'client' });
   assert.equal(start?.session.tools, undefined);
 });
+
+test('client delegation carries task answers on its latest id with separate acknowledgments', async t => {
+  const f = await fakeReady(t);
+  assert.equal(f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: 'missing' }), undefined);
+  f.socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd1' } });
+  f.socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd2' } });
+  assert.equal(f.session.sendTaskAnswer?.({ text: 'Old answer.', delegationId: 'd1' }), undefined);
+  const command = f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: 'd2' });
+  assert.equal(typeof command, 'string');
+  const frame = JSON.parse(f.socket.sent.at(-1)! as string);
+  assert.deepEqual(frame, { type: 'session.commentary.append', event_id: command, delegation_id: 'd2', content: 'Synthetic answer.' });
+  f.socket.deliver({ type: 'session.commentary.appended', client_event_id: command });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(f.captured.events.some(event => event.type === 'commentaryAccepted' && event.commandId === command));
+  const rejected = f.session.sendTaskAnswer?.({ text: 'Another answer.', delegationId: 'd2' });
+  f.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_delegation', client_event_id: rejected } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(f.captured.events.some(event => event.type === 'commentaryRejected' && event.commandId === rejected));
+  assert.equal(f.socket.sent.some(sent => JSON.parse(sent as string).type === 'response.create'), false);
+});

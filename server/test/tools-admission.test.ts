@@ -183,7 +183,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const classDenied = await h.read(sensitive, classRun.host, ['lux-knowledge']);
   assert(classRun.acceptance.connectionIds.includes('lux-knowledge'));
   assert.equal(h.counts.get('lux-knowledge'), beforeClass); assert.equal(classDenied.seen.length, 2); assert(!classDenied.seen[1]!.dataClasses.includes('sensitive'), 'the repair continuation contains no tightened source evidence');
-  assert.notEqual(classDenied.outcome.status, 'complete');
+  assert.equal(classDenied.outcome.status, 'complete', 'class denial is a repair fact, never sensitive evidence');
   assert(Number(generations().find(r => r.connection_id === 'lux-knowledge')!.generation) > Number(unchanged.find(r => r.connection_id === 'lux-knowledge')!.generation));
   const lower = await h.start();
   assert.equal(lower.status().endpoints.find(e => e.id === 'lux-knowledge')?.configurationError, 'owner-approval-required');

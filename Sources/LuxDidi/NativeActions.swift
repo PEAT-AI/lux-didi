@@ -250,7 +250,7 @@ public actor NativeActions: NativeActionExecuting {
     public func appURL(_ target: String) -> URL? {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("/"), !name.hasPrefix(".") else { return nil }
-        let base = name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+        let base = name.lowercased().hasSuffix(".app") ? String(name.dropLast(4)) : name
         guard !base.isEmpty else { return nil }
         for folder in [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications"), URL(fileURLWithPath: "/System/Applications")] {
             let candidate = folder.appendingPathComponent(base + ".app").resolvingSymlinksInPath().standardizedFileURL

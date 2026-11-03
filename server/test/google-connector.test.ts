@@ -455,7 +455,8 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
   const command = process.execPath;
-  const args = [child, 'flaky', pidFile];
+  // A canonical calendar read covers every visible calendar. Keep this credential lifecycle fixture to one source, so a sibling success cannot repair the failure inside the same call.
+  const args = [child, 'flaky', pidFile, 'single-calendar'];
   const entry = { id: 'calendar', transport: 'stdio', command, args, env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
   let live: LiveAuthority | null = null;

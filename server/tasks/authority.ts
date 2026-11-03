@@ -166,7 +166,12 @@ export class Authority {
         this.#confirmations.set(key, checked);
       }
       const confirmed = await checked;
-      return confirmed === undefined ? refusal('confirmation_unavailable') : confirmed ? { allow: true } : refusal('confirmation_required');
+      if (this.#deletion !== staged) return refusal('confirmation_required');
+      if (confirmed === undefined) return refusal('confirmation_unavailable');
+      if (!confirmed) return refusal('confirmation_required');
+      // No await between identity validation and consumption: one confirmation admits one deletion.
+      this.#deletion = undefined;
+      return { allow: true };
     }
 
     const exposed = this.#exposed.has(request.task.id);

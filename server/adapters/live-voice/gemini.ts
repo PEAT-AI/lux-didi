@@ -422,7 +422,7 @@ class Session implements LiveVoiceSession {
         this.pendingCalls = structuredClone(calls) as LiveToolCall[];
         for (const call of this.pendingCalls) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
         this.emit({ type: 'modelTurnStarted' });
-        if (admitted.length) this.emit({ type: 'toolCall', calls: structuredClone(admitted) });
+        if (this.pendingCalls.length) this.emit({ type: 'toolCall', calls: structuredClone(admitted) });
       }
       if ('toolCallCancellation' in message) {
         if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
@@ -641,8 +641,6 @@ class Session implements LiveVoiceSession {
     const delivered = this.write(frame);
     for (const call of input.responses) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
     if (!delivered) return 'failed';
-    for (const { id, response } of input.responses) {
-    }
     this.pendingCalls = [];
     return 'sent';
   }

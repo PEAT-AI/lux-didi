@@ -6,5 +6,4 @@ export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/../server"
 npm run build
 node_test_files --test-reporter=tap --test-timeout=30000 \
-  '--test-name-pattern=^Live revocation invalidates authority and discards an in-flight result$' \
   dist/test/live-session.test.js

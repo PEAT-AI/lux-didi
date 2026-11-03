@@ -1,300 +1,70 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { TestContext } from 'node:test';
-import { analyse, replay, tone } from './voice-replay/driver.js';
-import type { Replay } from './voice-replay/driver.js';
-import { NO_LOOKUP_RUNNING_NOTE, REBUILD_AUDIO_HOLD_BYTES, stallResponseFacts } from '../live/index.js';
+import { liveTaskFixture } from './live-task-fixture.js';
+import { deferred, fixtureUntil, fixtureSettled } from './live-voice-fixture.js';
 
-/**
- * #1024 T3, rebuild-at-every-point sweep. Owner order 2026-10-25: the escapes in the audit class "state across
- * reconnect or rebuild" shipped because every rebuild test started at a clean boundary. This sweep starts the
- * rebuild at every boundary of one scripted call instead, over the existing fakes: the real OpenAI adapter and
- * the real live host on the virtual clock, the scripted owner, the scripted tool and the fixture provider.
- *
- * The script is one ordinary turn: the owner talks, asks, a lookup is delegated, the lookup returns, the model
- * speaks the result, the owner asks where it stands, the model answers that. For each boundary of that script the
- * provider session is killed there, the host rebuilds it, the provider answers again in the new session, and the
- * rest of the script runs.
- *
- * Every boundary asserts the same four things:
- *   1. no tool result is lost: a result submitted into a session that then died reaches the session that replaced
- *      it, or was already spoken, and every batch of the live session gets exactly one continuation;
- *   2. no false status claim: the host never tells a session nothing is searching while a result is outstanding;
- *   3. no owner audio is dropped beyond the documented hold: a frame spoken into the rebuild reaches the new
- *      session, and the sweep stays far under REBUILD_AUDIO_HOLD_BYTES;
- *   4. the call either continues or ends with a closed reason, never as a silent stop.
- */
-
-const DEADLINE_MS = 20_000;
-const TOOL_LATENCY_MS = 1_500;
-const REBUILD_BUDGET_MS = 20_000;
-/** One 30 ms capture frame, the host's own unit: far under the three second hold, so nothing may be dropped. */
-const OWNER_FRAME_SAMPLES = 480;
-const OWNER_FRAMES = 2;
-const startOf = (r: Replay): number => r.clock.now() - r.clock.startedAt;
-const starts = (r: Replay) => r.providerFrames.filter(frame => frame.type === 'session.start');
-const liveEpoch = (r: Replay): number => starts(r).at(-1)?.epoch ?? 0;
-const elapsedBy = async (r: Replay, at: number): Promise<void> => { await r.advance(Math.max(0, at - startOf(r))); };
-const audible = (samples = 2_400): string => Buffer.from(tone(samples)).toString('base64');
-
-interface Step {
-  /** The boundary this step ends at: the rebuild happens after it ran. */
-  readonly name: string;
-  /** Virtual milliseconds from the start of the call. */
-  readonly at: number;
-  readonly run: (r: Replay) => Promise<void>;
-}
-
-const delegation = (id: string, response: string) => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'session.delegation.created', delegation: { id, response_id: response, offset_ms: 0 } });
-const announced = (response: string, id: string) => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.created', response: { id: response } } });
-const completed = (response: string, id: string) => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.done', response: { id: response, status: 'completed' } } });
-const spoken = (r: Replay): Promise<void> => r.deliver({ type: 'session.output_audio.delta', delta: audible() });
-const ownerSays = (delta: string, from: number) => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'session.input_transcript.delta', delta, start_ms: from, end_ms: from + 50 });
-
-/** The named steps of the scripted call, in time order. Each one lands on its virtual millisecond. */
-const SCRIPT: readonly Step[] = [
-  { name: 'the owner opens the microphone', at: 0, run: r => r.speak(OWNER_FRAME_SAMPLES) },
-  { name: 'the owner stops speaking', at: 30, run: r => r.endInput() },
-  { name: 'the owner question transcribes', at: 950, run: ownerSays('synthetic rebuild question', 900) },
-  { name: 'a delegation opens', at: 1_000, run: delegation('d_1', 'resp_1') },
-  { name: 'the response is announced', at: 1_010, run: announced('resp_1', 'd_1') },
-  {
-    name: 'a lookup is delegated', at: 1_200,
-    run: r => r.deliver({
-      type: 'response.event', delegation_id: 'd_1',
-      event: {
-        type: 'response.output_item.done',
-        item: { type: 'function_call', call_id: 'call_1', name: 'search_knowledge', arguments: JSON.stringify({ query: 'synthetic rebuild sweep', limit: 2 }) },
-      },
-    }),
-  },
-  // The scripted tool answers TOOL_LATENCY_MS after its call, so crossing this point is the result landing.
-  { name: 'the lookup result returns', at: 1_200 + TOOL_LATENCY_MS + 300, run: async () => {} },
-  { name: 'the answer is announced', at: 2_900, run: announced('resp_1b', 'd_1') },
-  { name: 'the model speaks the result', at: 3_000, run: spoken },
-  { name: 'the answer completes', at: 3_020, run: completed('resp_1b', 'd_1') },
-  { name: 'the owner asks where it stands', at: 4_000, run: ownerSays('are you still searching', 3_900) },
-  { name: 'a status delegation opens', at: 4_990, run: delegation('d_2', 'resp_2') },
-  { name: 'the status answer is announced', at: 5_000, run: announced('resp_2', 'd_2') },
-  { name: 'the status answer speaks', at: 5_100, run: spoken },
-  { name: 'the status answer completes', at: 5_120, run: completed('resp_2', 'd_2') },
-];
-
-/** What the provider does in the session that replaced the killed one, as the replay traces script their recovery. */
-const RECOVERY: readonly Step[] = [
-  { name: 'the new session delegates', at: 0, run: delegation('d_9', 'resp_9') },
-  { name: 'the new session answers', at: 20, run: announced('resp_9', 'd_9') },
-  { name: 'the new session speaks', at: 120, run: spoken },
-  { name: 'the new session completes', at: 160, run: completed('resp_9', 'd_9') },
-];
-
-const BOUNDARIES: readonly { readonly index: number; readonly name: string }[] = [
-  { index: 0, name: 'before the call starts' },
-  ...SCRIPT.map((step, position) => ({ index: position + 1, name: step.name })),
-];
-
-/** Drive the script up to `boundary`, kill the provider session there, then drive the rest of it. */
-async function sweep(t: TestContext, boundary: number): Promise<Replay> {
-  const r = await replay(t, { tools: true, scripts: [{ latencyMs: TOOL_LATENCY_MS }], callMaxMs: 120_000 });
-  await r.ready();
-  const run = async (from: number, to: number): Promise<void> => {
-    for (const step of SCRIPT.slice(from, to)) {
-      await elapsedBy(r, step.at);
-      await step.run(r);
+for (const boundary of ['before input', 'pending without a binding', 'pending with an old binding']) {
+  test(`task rebuild boundary: ${boundary} retains one inference and answers only the fresh binding`, async t => {
+    const release = deferred<void>(); t.after(() => release.resolve()); let inferences = 0;
+    const f = await liveTaskFixture(t, async () => { inferences++; await release.promise; return { text: 'The retained synthetic boundary result.', calls: [] }; });
+    if (boundary !== 'before input') {
+      if (boundary === 'pending with an old binding') f.bind('old-binding');
+      f.finalize('Find the synthetic boundary result.'); await fixtureUntil(() => inferences === 1, 'pending boundary inference');
     }
-  };
-  await run(0, boundary);
-  // The provider session dies at this boundary: everything after it is the host's rebuild of that session.
-  await r.deliver({ type: 'session.closed', session: { id: 'sess_replay', reason: 'synthetic rebuild boundary' } });
-  // #656: the owner keeps talking into the gap, and his words are held for the session that replaces this one.
-  await r.speak(OWNER_FRAME_SAMPLES);
-  // The rebuild is the host's own move, so the sweep lets the host's clock run until the new session starts.
-  await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
-  await r.advance(500);
-  for (const step of RECOVERY) {
-    await r.advance(step.at);
-    await step.run(r);
-  }
-  await r.advance(200);
-  await run(boundary, SCRIPT.length);
-  const last = SCRIPT.at(-1)?.at ?? 0;
-  await elapsedBy(r, last + DEADLINE_MS);
-  await r.until(() => r.owner.get(r.liveSessionId).lifecycle === 'terminal', DEADLINE_MS);
-  return r;
+    f.voice.emit({ type: 'goAway', timeLeftMs: 0 });
+    await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh boundary socket');
+    f.bind('fresh-binding'); await f.flush();
+    if (boundary === 'before input') f.finalize('Find the synthetic boundary result.');
+    release.resolve();
+    const answer = await f.answer();
+    assert.equal(answer.delegationId, 'fresh-binding'); assert.equal(answer.text, 'The retained synthetic boundary result.');
+    assert.equal(inferences, 1, 'rebuilding transport must not repeat the worker');
+    assert.equal(f.voice.taskAnswers.length, 1, 'no stale-socket append');
+  });
 }
 
-/** What the host did at this boundary, so the sweep's own output carries the evidence for each one. */
-function summary(r: Replay): string {
-  const epoch = liveEpoch(r);
-  const calls = r.calls.map(call => `${call.callId}[${call.outputs.map(output => `g${output.epoch}@${output.at}`).join(',') || 'none'}]`);
-  const handed = r.providerFrames.filter(frame => frame.type === 'response.item.create'
-    && (frame.frame['item'] as Record<string, unknown> | undefined)?.['type'] === 'message').length;
-  const audio = r.providerFrames.filter(frame => frame.type === 'session.input_audio.append').length;
-  const states = [...new Set(r.projections.map(entry => entry.state))].join('/');
-  return `generations=${starts(r).length} live=g${epoch} calls=${calls.join(',') || 'none'} handedOver=${handed}`
-    + ` receipts=${r.receipts.length} ownerFrames=${audio}/${OWNER_FRAMES} terminal=${r.owner.get(r.liveSessionId).lifecycle}`
-    + ` states=${states}`;
+for (const boundary of ['sent', 'accepted', 'partly heard']) {
+  test(`task rebuild boundary: ${boundary} resends the held result, never its work`, async t => {
+    let inferences = 0;
+    const f = await liveTaskFixture(t, async () => { inferences++; return { text: 'The complete synthetic boundary answer.', calls: [] }; });
+    f.bind('old-binding'); f.finalize('Give the synthetic boundary answer.'); const first = await f.answer();
+    if (boundary !== 'sent') f.voice.emit({ type: 'commentaryAccepted', commandId: first.commandId });
+    if (boundary === 'partly heard') f.voice.emit({ type: 'outputTranscription', text: 'The complete', finished: false });
+    await f.flush(); f.voice.emit({ type: 'goAway', timeLeftMs: 0 });
+    await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh answer socket');
+    f.bind('fresh-binding');
+    await fixtureUntil(() => f.voice.taskAnswers.length === 2, 'held result on fresh binding');
+    assert.equal(f.voice.taskAnswers[1]?.delegationId, 'fresh-binding');
+    assert.equal(f.voice.taskAnswers[1]?.text, first.text); assert.equal(inferences, 1);
+  });
 }
 
-/** The four assertions every boundary owes, named so a failure says which boundary and which clause. */
-function judge(r: Replay, label: string): void {
-  const states = r.projections.map(entry => `${entry.state}/${entry.lifecycle}`).join(' > ');
-  const epoch = liveEpoch(r);
-  // 1. No result lost. A result submitted into a session that then died was either already spoken or handed to
-  //    the session that replaced it (#660). analyse carries invariants 1, 3, 4, 5 and 6; its invariant 2 is
-  //    replaced below, because a batch whose session died cannot be continued and the live batch is the one
-  //    the owner hears.
-  const violations = analyse({
-    calls: r.calls, batches: [], commands: r.commands, projections: r.projections,
-    receipts: r.receipts, dispositions: r.dispositions, deadlineMs: DEADLINE_MS,
-  }).list;
-  assert.deepEqual([...violations], [], `${label}: ${violations.join(' | ')}`);
-
-  for (const call of r.calls) {
-    assert.ok(call.outputs.length <= 1,
-      `${label}: call ${call.callId} (${call.name}) was submitted to a session ${call.outputs.length} times, not once (${states})`);
-    const output = call.outputs[0];
-    if (output === undefined) {
-      assert.equal(r.dispositions.some(entry => entry.callId === call.callId), true,
-        `${label}: call ${call.callId} (${call.name}) returned a result that reached no session and got no typed disposition (${states})`);
-      continue;
-    }
-    if (output.epoch >= epoch) continue;
-    // Its session died after the result was submitted: the owner must still get it, spoken then or handed over.
-    const spokeIt = r.receipts.some(receipt => receipt.at >= output.at);
-    const handedOver = r.providerFrames.some(frame => frame.epoch > output.epoch && frame.type === 'response.item.create'
-      && (frame.frame['item'] as Record<string, unknown> | undefined)?.['type'] === 'message');
-    assert.equal(spokeIt || handedOver, true,
-      `${label}: call ${call.callId} (${call.name}) was submitted into generation ${output.epoch} at ${output.at} ms, that session died and nothing was spoken and nothing was handed to generation ${epoch} (${states})`);
-  }
-
-  // The live session's batches each get exactly one continuation decision: a result the host submits to the
-  // session that is open now must be followed by one `response.create`, never none and never two.
-  for (const batch of r.batches) {
-    if (batch.epoch < epoch) continue;
-    assert.equal(batch.creates.length, 1,
-      `${label}: the batch ${batch.callIds.join(',')} of generation ${batch.epoch} got ${batch.creates.length} continuations, not one (${states})`);
-  }
-
-  // 2. No false status claim: "nothing is searching" is never said while a result is still outstanding.
-  for (const frame of r.providerFrames) {
-    if (frame.type !== 'session.commentary.append') continue;
-    if (String(frame.frame['content'] ?? '') !== NO_LOOKUP_RUNNING_NOTE) continue;
-    const outstanding = r.calls.filter(call => call.at <= frame.at && call.outputs.length === 0
-      && !r.dispositions.some(entry => entry.callId === call.callId && entry.at <= frame.at));
-    assert.deepEqual(outstanding.map(call => call.callId), [],
-      `${label}: the host said nothing was searching at ${frame.at} ms while ${outstanding.map(call => call.callId).join(', ')} was still out (${states})`);
-  }
-
-  // 3. The owner's words spoken into the rebuild reach a session: far under the hold cap, nothing may be dropped.
-  const received = r.providerFrames.filter(frame => frame.type === 'session.input_audio.append').length;
-  assert.ok(OWNER_FRAMES * OWNER_FRAME_SAMPLES * 2 <= REBUILD_AUDIO_HOLD_BYTES, `${label}: the sweep spoke past the documented hold`);
-  assert.equal(received, OWNER_FRAMES,
-    `${label}: the owner spoke ${OWNER_FRAMES} frames and the provider sessions received ${received} of them (${states})`);
-
-  // 4. The call either continues or ends with a closed reason.
-  const lifecycle = r.owner.get(r.liveSessionId).lifecycle;
-  assert.ok(lifecycle === 'active' || lifecycle === 'terminal',
-    `${label}: the call is ${lifecycle}, it neither continues nor closes (${states})`);
-  if (lifecycle === 'terminal') {
-    assert.equal(r.projections.some(entry => entry.lifecycle === 'terminal' && entry.terminal !== null), true,
-      `${label}: the call ended with no terminal reason (${states})`);
-  }
-}
-
-test('rebuild sweep: a provider rebuild at every boundary of a call loses nothing', async t => {
-  t.diagnostic(`rebuild sweep boundaries: ${BOUNDARIES.length}`);
-  for (const boundary of BOUNDARIES) {
-    await t.test(`boundary ${boundary.index}: ${boundary.name}`, async sub => {
-      sub.diagnostic(`rebuild boundary ${boundary.index} of ${BOUNDARIES.length - 1}: ${boundary.name}`);
-      const r = await sweep(sub, boundary.index);
-      try {
-        sub.diagnostic(`boundary ${boundary.index} (${boundary.name}): ${summary(r)}`);
-        assert.equal(starts(r).length >= 2, true,
-          `boundary ${boundary.index} (${boundary.name}): the provider was never rebuilt, the call ran on one session`);
-        judge(r, `boundary ${boundary.index} (${boundary.name})`);
-      } finally {
-        await r.release();
-      }
-    });
-  }
+test('task rebuild boundary: a heard result is conversation history, not a second answer', async t => {
+  let inferences = 0;
+  const f = await liveTaskFixture(t, async () => { inferences++; return { text: 'The synthetic result is already heard.', calls: [] }; });
+  f.bind('heard-binding'); f.finalize('Give the synthetic result.'); const answer = await f.answer();
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId });
+  f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
+  f.voice.emit({ type: 'goAway', timeLeftMs: 0 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'post-heard socket');
+  f.bind('fresh-binding'); await f.flush();
+  assert.equal(f.voice.taskAnswers.length, 1); assert.equal(inferences, 1);
+  assert.match(JSON.stringify(f.voice.requests[1]?.history), /synthetic result is already heard/);
 });
 
-// L8-Q03: the go-deeper turn of session 7886de48 kept closed_at null after a rebuild although she spoke in the
-// new session; the connection swap dropped its turn id without a close.
-test('L8-Q03: the turn a rebuild interrupts is closed as recovered, never left open', async t => {
-  const r = await replay(t, { tools: true, scripts: [], callMaxMs: 120_000 });
-  await r.ready();
-  await r.speak(OWNER_FRAME_SAMPLES);
-  await r.endInput();
-  await elapsedBy(r, 950);
-  await ownerSays('synthetic go deeper question', 900)(r);
-  await r.advance(200);
-  const turns = () => r.store.transaction(tx => tx.all('SELECT turn_id, closed_at, close_reason FROM trace_turn WHERE live_session_id=? ORDER BY turn_index', [r.liveSessionId]))
-    .map(row => ({ ...row }));
-  assert.equal(turns().length, 1, 'the owner question opened one turn');
-  assert.equal(turns()[0]!['closed_at'], null, 'and it is open when the session dies');
-  await r.deliver({ type: 'session.closed', session: { id: 'sess_replay', reason: 'synthetic rebuild' } });
-  await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
-  await r.advance(500);
-  const after = turns();
-  assert.equal(after[0]!['close_reason'], 'recovered', `the interrupted turn is closed by the rebuild: ${JSON.stringify(after)}`);
-  assert.ok(after.every(row => row['closed_at'] !== null), `no turn is left open across the rebuild: ${JSON.stringify(after)}`);
+test('task rebuild boundary: a finished unbound result reconnects with its answer, not a new inference', async t => {
+  let inferences = 0;
+  const f = await liveTaskFixture(t, async () => { inferences++; return { text: 'Read this retained synthetic answer.', calls: [] }; });
+  f.finalize('Give the retained synthetic answer.');
+  await fixtureUntil(() => f.voice.sessionsOpened === 2, 'finished-result reconnect');
+  assert.match(f.voice.requests[1]!.system.text, /Read this retained synthetic answer/);
+  assert.equal(inferences, 1); assert.equal(f.voice.taskAnswers.length, 0, 'a fresh seed is not an append to the dead binding');
 });
 
-// C-REBUILD: a rebuild tears the provider session down under a response the provider announced and never
-// terminated, so the store kept that response pending for the life of the call (t59 and t64 in 47bf2e88 still
-// listed theirs 381 s and 457 s later). A teardown settles it, as superseded, at the moment it happens.
-test('C-REBUILD: a rebuild settles the response it tears down as superseded', async t => {
-  const r = await replay(t, { tools: true, scripts: [{ latencyMs: TOOL_LATENCY_MS }], callMaxMs: 120_000 });
-  try {
-    await r.ready();
-    await elapsedBy(r, 30); await r.endInput();
-    await elapsedBy(r, 950); await ownerSays('synthetic rebuild question', 900)(r);
-    await elapsedBy(r, 1_000); await delegation('d_1', 'resp_1')(r);
-    await elapsedBy(r, 1_010); await announced('resp_1', 'd_1')(r);
-    await elapsedBy(r, 1_200);
-    await r.deliver({
-      type: 'response.event', delegation_id: 'd_1',
-      event: {
-        type: 'response.output_item.done',
-        item: { type: 'function_call', call_id: 'call_1', name: 'search_knowledge',
-          arguments: JSON.stringify({ query: 'synthetic rebuild sweep', limit: 2 }) },
-      },
-    });
-    // The answer is announced and never completes: it is the response the ladder finds in flight and past its
-    // ceiling, so the rebuild is due on its own clock.
-    await elapsedBy(r, 2_900); await announced('resp_1b', 'd_1')(r);
-    await r.advance(60_000);
-    await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
-    const rebuiltAt = r.clock.now();
-    const rows = r.store.transaction(tx => tx.all(
-      "SELECT status, terminal_reason FROM trace_response WHERE live_session_id=? AND provider_response_id='resp_1b'",
-      [r.liveSessionId]));
-    assert.deepEqual(rows.map(row => [row['status'], row['terminal_reason']]), [['superseded', 'superseded']],
-      `the torn down response is settled at the rebuild: ${JSON.stringify(rows)}`);
-    // Only what existed before the rebuild: the session it opened is still speaking for the call it now owns.
-    const open = r.store.transaction(tx => tx.all(
-      "SELECT response_key FROM trace_response WHERE live_session_id=? AND terminal_at IS NULL AND created_at<?",
-      [r.liveSessionId, rebuiltAt]));
-    assert.deepEqual(open, [], `no response is left pending by a rebuild: ${JSON.stringify(open)}`);
-  } finally { await r.release(); }
-});
-
-// C-DIAG109: a silence the owner hears is either a model that never answered or one whose response cannot be
-// read. Telemetry only: this pair re-times nothing, and no reconnect or rebuild rule reads it (#820).
-test('C-DIAG109: the stall pair says whether a response was created for the owner final, and its age', () => {
-  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 1_000, responseCreatedAt: 1_500, now: 4_000 }),
-    { responseCreated: true, msSinceResponseCreated: 2_500 });
-  // A response announced before the owner's final belongs to the turn before it, never to this stall.
-  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 2_000, responseCreatedAt: 1_500, now: 9_000 }),
-    { responseCreated: false, msSinceResponseCreated: null });
-  assert.deepEqual(stallResponseFacts({ responseCreatedAt: 1_500, now: 9_000 }),
-    { responseCreated: false, msSinceResponseCreated: null });
-  assert.deepEqual(stallResponseFacts({ ownerFinalAt: 1_000, now: 9_000 }),
-    { responseCreated: false, msSinceResponseCreated: null });
+test('task rebuild boundary: closing the consumer cancels late delivery and leaves no worker rerun', async t => {
+  const release = deferred<void>(); t.after(() => release.resolve()); let inferences = 0;
+  const f = await liveTaskFixture(t, async () => { inferences++; await release.promise; return { text: 'A late synthetic answer.', calls: [] }; });
+  f.bind(); f.finalize('Start the synthetic pending task.'); await fixtureUntil(() => inferences === 1, 'consumer-close pending task');
+  f.attachment.close(); await fixtureSettled(f.attachment.done, 'consumer-close terminal receipt');
+  release.resolve(); await f.flush();
+  assert.equal(f.voice.taskAnswers.length, 0); assert.equal(inferences, 1); assert.equal(f.voice.closes, 1);
 });

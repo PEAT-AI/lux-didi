@@ -16,11 +16,12 @@ import { fixtureUntil } from './live-voice-fixture.js';
 
 /** Real host, Store, task worker and authority, with only model and external transport controlled. */
 export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
-  approved?: boolean; outcome?: 'inserted' | 'unknown'; executors?: ExistingExecutors;
+  clock?: boolean; approved?: boolean; outcome?: 'inserted' | 'unknown'; executors?: ExistingExecutors;
 } = {}) {
+  if (options.clock) t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   const dir = mkdtempSync(join(tmpdir(), 'synthetic-live-task-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
-  const voice = fakeLiveVoicePort({ provider: 'openai' });
+  const voice = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true });
   const writes: unknown[] = [];
   const vault = new VaultWriter({ store, now: () => 1000, log: () => {}, transport: { save: async input => {
     writes.push(input);
@@ -45,6 +46,7 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   return { store, owner, voice, writes, chunks, session, attachment, context,
     finalize(text: string) { voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); },
     bind(id = 'synthetic-binding') { voice.emit({ type: 'delegation', delegationId: id }); },
+    async flush() { for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve)); },
     async answer() { await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer'); return voice.taskAnswers.at(-1)!; },
   };
 }

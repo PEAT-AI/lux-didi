@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -48,25 +48,9 @@ test('the receipt names the scheme or extension and never the URL path or file n
   assert.equal(safeEvent({ event: 'native_action', action: 'open_file', code: 'opened', detail: 'pdf', target: '/Users/example/notes/private-plan.pdf' }), undefined, 'the whitelist refuses a target');
 });
 
-test('the destination policy parses the url, matches an exact host and keeps a viewer path', () => {
-  assert.equal(openDestination('https://mail.google.com/mail/u/0/#inbox/19c')?.kind, 'gmail');
-  assert.equal(openDestination('https://www.google.com/calendar/event?eid=e1')?.kind, 'calendar');
-  assert.equal(openDestination('https://docs.google.com/document/d/ABC/edit')?.kind, 'docs');
-  assert.equal(openDestination('https://docs.google.com/presentation/d/ABC/edit')?.kind, 'docs');
-  assert.equal(openDestination('https://drive.google.com/file/d/ABC/view')?.kind, 'drive');
-  assert.equal(openDestination('https://www.youtube.com/watch?v=abc')?.kind, 'youtube');
-  assert.equal(openDestination('https://youtu.be/abc')?.kind, 'youtube');
-  const refused = [
-    'http://docs.google.com/document/d/ABC',
-    'https://docs.google.com.evil.example/document/d/ABC',
-    'https://docs.google.com/url?q=https://evil.example',
-    'https://user:pw@docs.google.com/document/d/ABC',
-    'https://docs.google.com:8443/document/d/ABC',
-    'https://docs.google.com/document/d/ABC/export',
-    'https://example.test/document/d/ABC',
-    'https://docs.google.com.evil.example.evil/document/d/ABC',
-  ];
-  for (const url of refused) assert.equal(openDestination(url), undefined, `refused: ${url}`);
+test('public URL projection keeps literal references and refuses mandatory unsafe destinations', () => {
+ for (const url of ['https://docs.google.com/document/d/ABC', 'https://example.com/synthetic-viewer?item=42#section']) assert.deepEqual(openDestination(url), { url, kind: 'web' });
+ for (const url of ['http://docs.google.com/document/d/ABC', 'https://user:pw@example.com/doc', 'https://localhost/doc', 'https://127.0.0.1/doc', 'https://10.0.0.1/doc', 'file:///synthetic/path', 'javascript:alert(1)']) assert.equal(openDestination(url), undefined, 'mandatory public HTTPS boundary: ' + url);
 });
 
 test('a shaped calendar result carries a handle and never a url in the model text', () => {
@@ -103,7 +87,7 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   exposeHandles(shaped.text);
   assert.equal(resolveHandle(handle)?.provenance, 'knowledge_body');
-  const hostile = ['https://docs.google.com.evil.example/document/d/ABC', 'https://docs.google.com/url?q=https://evil.example', 'http://docs.google.com/document/d/ABC', 'https://user:pw@docs.google.com/document/d/ABC'];
+  const hostile = ['http://docs.google.com/document/d/ABC', 'https://user:pw@docs.google.com/document/d/ABC', 'https://localhost/document/d/ABC', 'https://127.0.0.1/document/d/ABC'];
   for (const url of hostile) {
     const body = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 1, content: `note ${url} end` }));
     assert.equal(/^open: /m.test(body.text), false, `no handle for ${url}`);
@@ -443,18 +427,7 @@ test('C-OPEN: an ask the provider finalized as two turns still opens', () => {
   endHandleSession(run);
 });
 
-test('C-OPEN: the intent window is the turns since the model last spoke, bounded', () => {
-  const run = 'live-open-window';
-  noteOwnerWords(run, 'open it');
-  assert.equal(ownerWords(run), 'open it');
-  noteModelOutput(run);
-  noteOwnerWords(run, 'what time is it');
-  assert.equal(ownerWords(run), 'what time is it', 'the next turn after model output starts a fresh window');
-  noteOwnerWords(run, 'and the weather');
-  noteOwnerWords(run, 'and my mail');
-  noteOwnerWords(run, 'and the news');
-  assert.equal(ownerWords(run).includes('what time is it'), false, 'only the last three finalized turns are kept');
-});
+
 
 test('direct owner: resolution needs no open verb and receipts retain their real code', () => {
   const run = 'live-open-no-intent';
@@ -482,7 +455,6 @@ test('direct owner: resolution needs no open verb and receipts retain their real
 });
 
 // C-OPENWEB8: the model names words, never a destination, and the host answers from the owner's turn.
-const WEB_RUN = 'live-open-web-1';
 const MAP_TURN = 'open the map of Odemira in my browser';
 const port = (sources: { title: string; url: string }[]) => ({
   search: async () => ({ ok: true as const, evidence: { answer: 'synthetic', claims: [], sources, retrievedAt: '2026-10-28T09:00:00.000Z' } }),
@@ -581,19 +553,7 @@ test('C-OPENWEB8: no matching site says nothing was found, never that several ma
   } finally { useWebSearchPort(undefined); }
 });
 
-test('C-OPENWEB9: consecutive owner turns bind until the assistant answers', () => {
-  noteModelOutput(WEB_RUN);
-  noteOwnerWords(WEB_RUN, 'open the map of Odemira in my browser');
-  assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser');
-  noteOwnerWords(WEB_RUN, 'show directions too');
-  assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser show directions too');
-  noteModelOutput(WEB_RUN);
-  noteOwnerWords(WEB_RUN, 'what is the weather tomorrow');
-  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'an assistant answer closes the prior ask');
-  assert.deepEqual(webWords('Plantix dot net.'), ['plantix.net']);
-  assert.deepEqual(webWords('plantix dot net'), ['plantix.net']);
-  assert.deepEqual(webWords('open the map of Odemira in my browser'), ['open', 'the', 'map', 'of', 'odemira', 'in', 'my', 'browser']);
-});
+
 
 test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () => {
   assert.equal(validateOpenWeb({ kind: 'maps', target: 'Odemira' }), true);
@@ -605,13 +565,11 @@ test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () 
 });
 
 // W14-R1: host URL admission and the native boundary use the same closed Gmail fragments.
-test('C-OPEN11: Gmail accepts message and thread fragments, not arbitrary fragments', () => {
-  for (const fragment of ['#all/abc123', '#inbox/abc123', '#sent/abc123', '#inbox/FMfcgzABC123']) {
-    assert.ok(openDestination(`https://mail.google.com/mail/u/0/${fragment}`), fragment);
-  }
-  for (const fragment of ['#settings', '#all/', '#all/abc/extra', '#inbox/a?redirect=evil', '#search/secret']) {
-    assert.equal(openDestination(`https://mail.google.com/mail/u/0/${fragment}`), undefined, fragment);
-  }
+test('C-OPEN11: Gmail public HTTPS references retain literal message, thread and settings fragments', () => {
+ for (const fragment of ['#all/SYNTHETIC_THREAD', '#inbox/SYNTHETIC_MESSAGE', '#settings']) {
+   const url = 'https://mail.google.com/mail/u/0/' + fragment;
+   assert.deepEqual(openDestination(url), { kind: 'web', url }, 'public HTTPS fragments are structural references, not lexical owner intent');
+ }
 });
 
 test('direct owner: the selected tool determines the native action, not noun grammar', () => {

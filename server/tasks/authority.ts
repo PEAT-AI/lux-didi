@@ -13,7 +13,7 @@ export class FakeAuthority implements AuthorityPort {
     if (signal.aborted) return { status: 'failed', text: '', references: [], next_cursor: null, coverage: 'Not admitted.', repair: 'Use the current revision.' };
     this.requests.push(request);
     const result = await execute();
-    return { ...result, receipt: { operation_id: request.operation_id, state: result.status === 'failed' ? 'failed' : 'committed' } };
+    return { ...result, receipt: { operation_id: request.operation_id, state: result.receipt?.state ?? (result.status === 'failed' ? 'failed' : 'committed') } };
   }
 }
 
@@ -252,6 +252,6 @@ export function createTaskAuthority(authority: Authority, context: TaskAuthority
     const committed = await authority.commit(`${task.id}:${tool.name}:${canonical(args)}`, execute);
     if (!committed.allow) return failed(committed.repair);
     const result = committed.value as ToolResult;
-    return { ...result, receipt: { operation_id: request.operation_id, state: result.status === 'failed' ? 'failed' : 'committed' } };
+    return { ...result, receipt: { operation_id: request.operation_id, state: result.receipt?.state ?? (result.status === 'failed' ? 'failed' : 'committed') } };
   } };
 }

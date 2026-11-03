@@ -1,3 +1,4 @@
+import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
 import type { Store } from '../runtime/store.js';
 import type { Credentials } from '../adapters/model/types.js';
@@ -18,6 +19,7 @@ export interface HostTaskOptions {
   timeZone: string;
   executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
+  vault?: VaultWriter;
   infer?: Infer;
   effectCheck?: AuthorityPorts['checkEffect'];
   log?(event: Record<string, unknown>): void;
@@ -45,6 +47,12 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
             labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'private' }, now);
             return { status: 'ok', text: name === 'draft_chat' ? 'Draft saved locally. Nothing was sent.' : name === 'stage_lux_note' ? 'Knowledge note staged locally. Not sent to the vault.' : 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
           });
+        }
+        if (name === 'save_to_vault') {
+          if (!options.vault || !identity) return failed('The vault write port or task identity is unavailable. Nothing was saved.');
+          const receipt = await options.vault.saveTask({ sessionId, identity, content: String(args.text), title: String(args.title), outsideTextSeen: exposed ?? false });
+          if (receipt.saved) return documentResult(JSON.stringify(receipt), 'vault-receipt');
+          return { ...failed(receipt.guidance ?? 'The vault did not confirm this save.'), receipt: { operation_id: identity.operation_id, state: receipt.code === 'outcome_unknown' ? 'unknown' : 'failed' } };
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
         if (name === 'read_memory') {

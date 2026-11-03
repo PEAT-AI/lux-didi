@@ -547,6 +547,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return result;
       };
       const executors: ExistingExecutors = {
+        people_lookup: async args => project('people_lookup', peopleLookupResult(args)),
         alarm_create: async (args, _signal, context) => alarm('create', args, context),
         alarm_update: async (args, _signal, context) => alarm('update', args, context),
         alarm_cancel: async (args, _signal, context) => alarm('cancel', args, context),

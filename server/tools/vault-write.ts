@@ -1,3 +1,5 @@
+import type { Identity } from '../tasks/authority.js';
+import { freezeNote } from './lux-note.js';
 import { randomUUID } from 'node:crypto';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -222,6 +224,17 @@ export class VaultWriter {
   }
 
   /** Called inside the journal transaction of a final owner transcription. */
+  /** Task admission is owned by Authority; this boundary only validates and atomically claims its exact payload. */
+  async saveTask(input: { sessionId: string; identity: Identity; content: string; title: string; outsideTextSeen: boolean }): Promise<VaultReceipt> {
+    const frozen = freezeNote({ title: input.title, body: input.content, externalContextPresent: input.outsideTextSeen });
+    if (frozen.state !== 'frozen') return { saved: false, code: 'write_failed', guidance: 'The note payload was invalid. Nothing was written.' };
+    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: input.sessionId,
+      stageId: `task:${input.identity.task_id}:${input.identity.operation_id}`, content: input.content.trim(), title: input.title.trim(),
+      externalContextPresent: input.outsideTextSeen, payloadSha: frozen.payloadSha, now: this.#now() }));
+    if (claim.state === 'dispatch') return this.dispatch(claim);
+    this.#attempt(claim.receipt, 0); return claim.receipt;
+  }
+
   observe(tx: Transaction, liveSessionId: string, utteranceId: string, text: string, priorText?: string): void {
     mintVaultAuthorization(tx, { liveSessionId, utteranceId, text, ...(priorText === undefined ? {} : { priorText }), now: this.#now() });
   }

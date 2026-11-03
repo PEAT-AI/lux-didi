@@ -1,3 +1,5 @@
+import { VaultWriter } from '../tools/vault-write.js';
+import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { hostTaskFactory } from '../tasks/host.js';
 import { loadTaskModels } from '../config/tasks.js';
 import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from './provider-binding.js';
@@ -200,7 +202,8 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
-  const createTaskRuntime = hostTaskFactory({ store, models: loadTaskModels(configDir),
+  const vault = new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) });
+  const createTaskRuntime = hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     contentAllowed: () => boundProfile.route.dataClasses.includes('private'), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,

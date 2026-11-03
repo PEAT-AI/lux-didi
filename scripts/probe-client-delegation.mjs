@@ -9,19 +9,19 @@ import WebSocket from '../server/node_modules/ws/index.js';
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 if (args.includes('--help')) {
-  console.log('node scripts/probe-client-delegation.mjs --env-file PATH --scenario A1..A8|B1..B5 --report PATH --frames PATH [--count N] [--length 2000|5000] [--pace quiet] [--variant NAME]');
+  console.log('node scripts/probe-client-delegation.mjs --env-file PATH --scenario A1..A8|B1..B5|C1..C4 --report PATH --frames PATH [--count N] [--length 2000|5000] [--pace quiet] [--variant NAME]');
   process.exit(0);
 }
 const scenario = option('--scenario');
-if (!/^(A[1-8]|B[1-5])$/.test(scenario ?? '')) throw Error('Expected --scenario A1..A8 or B1..B5');
+if (!/^(A[1-8]|B[1-5]|C[1-4])$/.test(scenario ?? '')) throw Error('Expected --scenario A1..A8, B1..B5 or C1..C4');
 const report = option('--report');
 const frames = option('--frames');
 if (!report || !frames) throw Error('--report and --frames required');
-const count = Number(option('--count', ({ A1: 5, A2: 3, A3: 3, A4: 2, A5: 3, A6: 2, A7: 2, A8: 10 })[scenario] ?? 3));
+const count = Number(option('--count', ({ A1: 5, A2: 3, A3: 3, A4: 2, A5: 3, A6: 2, A7: 2, A8: 10, C1: 3, C2: 2, C3: 3, C4: 2 })[scenario] ?? 3));
 const length = Number(option('--length', scenario === 'A2' ? 2000 : 300));
 const variant = option('--variant', 'default');
 const paced = option('--pace') === 'quiet';
-if (!Number.isInteger(count) || count < 1 || count > 10 || ![300, 2000, 5000].includes(length)) throw Error('Invalid count or length');
+if (!Number.isInteger(count) || count < 1 || count > 10 || ![300, 1200, 2000, 5000].includes(length)) throw Error('Invalid count or length');
 function key() {
   if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
   let text;
@@ -41,8 +41,8 @@ let serial = 0;
 let active;
 const sockets = new Set();
 const textRate = 30 / 1_000_000 / 3;
-const cap = 3;
-const budgetError = () => Error('BUDGET_STOP: additional USD 3 estimate ceiling');
+const cap = scenario.startsWith('C') ? 4 : 3;
+const budgetError = () => Error(`BUDGET_STOP: cumulative second/third pass USD ${cap} estimate ceiling`);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const note = text => { appendFileSync(frames, `${text}\n`); };
 const clean = value => JSON.stringify(value).replaceAll('|', '\\|');
@@ -85,7 +85,7 @@ function resultText(size) {
   return `${head} ${final.padEnd(left, 'x').slice(0, left - 1)}.`;
 }
 function chunks(text) {
-  const sentences = text.match(/[^.!?]+[.!?]+\s*/g) ?? [text];
+  const sentences = text.match(/[^.!?]*[.!?]+\s*/g) ?? [text];
   const out = []; let current = '';
   for (const sentence of sentences) {
     // ASCII chunk length <= 450 also bounds tokens below 500 even at one token/char.
@@ -97,7 +97,17 @@ function chunks(text) {
   if (out.join('') !== text) throw Error('Chunking lost content');
   return out;
 }
-async function open(run, seed = []) {
+const openingResult = 'The synthetic harbor code is blue nine. The count is seven.';
+const openingInstructions = variant === 'seed' ? `${instructions} A finished host lookup result has just arrived in the seeded conversation. Tell the listener that finished result first, now. Do not look it up again.` : `${instructions} A finished host lookup result has just arrived. Tell the listener this finished result first, now: ${openingResult}`;
+const naturalInstructions = 'Synthetic voice test. Every lookup question MUST delegate to the host lookup service. Results arrive as commentary. Say them in your own short words, keep station names, codes, counts and times exact. Do not read the whole result verbatim. Never invent facts.';
+function naturalResult(size) {
+  const facts = 'At synthetic Amber Station, code AX7, inventory is 42 blue crates and 17 green crates. The next shuttle leaves at 14:35 from platform 6. The synthetic harbor code is BN9. ';
+  const filler = 'These synthetic test facts are confirmed for this experiment and no additional lookup is needed. ';
+  let text = facts;
+  while (text.length + filler.length < size) text += filler;
+  return text.padEnd(size - 1, ' ') + '.';
+}
+async function open(run, seed = [], voiceInstructions = instructions) {
   if (spent > cap - 0.10) throw budgetError();
   const isResponses = scenario.startsWith('B');
   const ws = new WebSocket('wss://api.openai.com/v1/live/sessions', { headers: { Authorization: `Bearer ${credential}` } });
@@ -125,7 +135,7 @@ async function open(run, seed = []) {
   };
   s.close = () => {
     clearInterval(s.pump); clearTimeout(s.deadline);
-    if (!s.accounted) { spent = s.estimate(); s.accounted = true; note(`ESTIMATE2_USD=${spent.toFixed(6)} voice_rate=0.05_per_minute text_rate=30_per_million_tokens assumed_chars_per_token=3`); console.log(`${scenario}/${run} running estimate USD ${spent.toFixed(4)} / additional 3.00`); }
+    if (!s.accounted) { spent = s.estimate(); s.accounted = true; note(`ESTIMATE2_USD=${spent.toFixed(6)} voice_rate=0.05_per_minute text_rate=30_per_million_tokens assumed_chars_per_token=3`); console.log(`${scenario}/${run} running estimate USD ${spent.toFixed(4)} / cumulative cap ${cap.toFixed(2)}`); }
     ws.close(); sockets.delete(s);
   };
   s.deadline = setTimeout(() => { s.log('local', { type: 'window_limit', seconds: 250 }); s.close(); }, 250000);
@@ -152,7 +162,7 @@ async function open(run, seed = []) {
   ws.on('close', code => { s.log('receive', { type: 'socket.close', code }); s.live = false; s.close(); });
   await new Promise(done => { ws.once('open', done); ws.once('error', done); setTimeout(done, 5000); });
   s.send({ type: 'session.start', session: {
-    model: 'gpt-live-1', instructions,
+    model: 'gpt-live-1', instructions: voiceInstructions,
     audio: { format: { type: 'audio/pcm', rate: 24000 }, output: { voice: 'marin' } },
     ...(seed.length ? { input: seed } : {}),
     delegation: isResponses ? { type: 'responses', responses: { model: 'gpt-6-luna', instructions: backend, tools: [tool], tool_choice: 'auto', parallel_tool_calls: true, ...(scenario === 'B5' ? { service_tier: 'priority' } : {}) } } : { type: 'client' },
@@ -217,10 +227,19 @@ appendFileSync(report, `\n## WIRE-R2 ${scenario}, ${length} chars, ${variant}, $
 try {
   for (let index = 1; index <= count; index++) {
     const run = index + Number(option('--run-offset', 0));
-    let s = await open(run); let details = {};
+    const opening = scenario === 'C1' || scenario === 'C2';
+    let s = await open(run, opening && variant === 'seed' ? seedItems(openingResult) : [], opening ? openingInstructions : scenario === 'C3' ? naturalInstructions : instructions); let details = {};
     if (!s.live) { summary(s, { note: 'session failed to start' }); s.close(); continue; }
     const text = resultText(length);
-    if (scenario === 'A4') {
+    if (scenario === 'C1' || scenario === 'C2') {
+      details = { appendAt: s.ms(), note: 'No speech input for opening, paced silence only', openingResult };
+      await quiet(s, 12000, 25000);
+      details.openingTranscript = s.transcripts.map(t => t.text).join('');
+      if (scenario === 'C2') {
+        details.followUp = await ask(s, prompts[0]);
+        if (details.followUp.id) details.followUpAppendAt = await output(s, details.followUp.id, 'The synthetic observatory code is amber seven.');
+      }
+    } else if (scenario === 'A4') {
       details = await ask(s, prompts[0]);
       if (!details.id) { summary(s, { ...details, note: 'No delegation; prerequisite failed' }); s.close(); continue; }
       await output(s, details.id, 'The synthetic observatory code is amber seven.');
@@ -239,7 +258,14 @@ try {
     } else {
       details = await ask(s, scenario === 'A8' ? prompts[run - 1] : prompts[0]);
       if (!details.id) { summary(s, { ...details, note: 'No delegation; no open-id experiment performed' }); s.close(); continue; }
-      if (scenario === 'A1' || scenario === 'A2') details.appendAt = await output(s, details.id, scenario === 'A1' ? 'The synthetic observatory code is amber seven.' : text);
+      if (scenario === 'A1' || scenario === 'A2' || scenario === 'C3') details.appendAt = await output(s, details.id, scenario === 'A1' ? 'The synthetic observatory code is amber seven.' : scenario === 'C3' ? naturalResult(length) : text);
+      if (scenario === 'C4') {
+        await output(s, details.id, 'The synthetic observatory code is amber seven.');
+        details.storyAsk = await ask(s, 'Tell a thirty second synthetic story about a kite in three long sentences. Do not look anything up.', false);
+        details.transcriptBeforeInterruption = s.transcripts.map(t => t.text).join('');
+        details.appendAt = content(s, details.id, 'Host update: the synthetic harbor code is blue nine.');
+        await quiet(s, 10000, 35000);
+      }
       if (scenario === 'A3') {
         const first = details.id;
         details.second = await ask(s, 'Correction: look up the current synthetic harbor code instead of the observatory code.');

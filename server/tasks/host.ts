@@ -8,7 +8,7 @@ import { Authority, type AuthorityPorts } from './authority.js';
 import type { Delivery } from './controller.js';
 import { connectorExecutor, configuredCompanyTools, type BoundConnector, type ExistingExecutors } from './connectors.js';
 import { createEffectRole, createModelPort, type RoleModels } from './model.js';
-import { documentResult, failed, type ToolResult } from './results.js';
+import { documentResult, failed } from './results.js';
 import { TaskRuntime } from './runtime.js';
 import { canonical, type Infer } from './worker.js';
 export interface HostTaskOptions {

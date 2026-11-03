@@ -111,6 +111,7 @@ export interface ResearchProgressView {
   sourcesDone: string[]; sourcesPending: string[]; elapsedMs: number;
 }
 export interface LiveOwnerConfig {
+  readonly createTaskRuntime: (sessionId: string, delivery: import('../tasks/controller.js').Delivery) => import('../tasks/runtime.js').TaskRuntime;
   readonly tools?: LiveToolsComposition;
   /** Optional public web read for the research loop; absent means the web source is not offered. */
   readonly researchWeb?: WebSearchPort;

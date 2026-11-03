@@ -1,3 +1,5 @@
+import { hostTaskFactory } from '../tasks/host.js';
+import { loadTaskModels } from '../config/tasks.js';
 import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from './provider-binding.js';
 import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
@@ -198,7 +200,12 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
-  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { researchWeb } : {}), ...(now ? { now } : {}) });
+  const createTaskRuntime = hostTaskFactory({ store, models: loadTaskModels(configDir),
+    credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
+    contentAllowed: () => boundProfile.route.dataClasses.includes('private'), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
+  });
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

@@ -1,3 +1,4 @@
+import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -868,6 +869,17 @@ function stepActionOf(name: string): string {
 }
 
 interface ActiveSession {
+  tasks?: TaskCall;
+  taskWords?: string;
+  taskOutputQuiet?: boolean;
+  taskOwnerOpen?: boolean;
+  taskMicAt?: number;
+  taskSilenceTimer?: ReturnType<JobTimer>;
+  taskWorkAt?: number | undefined;
+  taskDebtPlan?: { at: number; step: 'rung' | 'rebuild'; generation: number };
+  taskWatchdogPlan?: { at: number; step: 'nudge' | 'recover'; generation: number };
+  taskPausedDebt?: { remaining: number; step: 'rung' | 'rebuild'; generation: number } | undefined;
+  taskPausedWatchdog?: { remaining: number; step: 'nudge' | 'recover'; generation: number } | undefined;
   /** F2: the session kind is fixed at creation, so a shutdown never has to ask a possibly closed store. */
   sessionKind?: LiveSessionKind;
   inputFinal?: boolean;
@@ -1616,6 +1628,7 @@ export class LiveSessionOwner {
   /** C-LOGS11: when each turn's owner final landed, so a later native receipt can close that turn's
    *  final-to-audible latency. Session-scoped and pruned with the turn it belongs to. */
   readonly #turnOwnerFinal = new Map<string, number>();
+  readonly #createTaskRuntime: LiveOwnerConfig['createTaskRuntime'];
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
@@ -1741,6 +1754,7 @@ export class LiveSessionOwner {
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
+    this.#createTaskRuntime = config.createTaskRuntime;
     this.#store = config.store;
     this.#voice = config.voice;
     this.#researchWeb = config.researchWeb;
@@ -2381,6 +2395,14 @@ export class LiveSessionOwner {
     }, () => {});
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
+    handle.tasks = new TaskCall({ provider: this.#profile.provider, createRuntime: delivery => this.#createTaskRuntime(liveSessionId, delivery),
+      append: (generation, delegationId, text) => generation === handle.generation ? handle.session.sendTaskAnswer?.({ delegationId, text }) : undefined,
+      respond: (generation, responses) => generation === handle.generation ? handle.session.sendToolResponse({ responses }) : 'failed',
+      reconnect: () => { void this.#taskReconnect(handle); return true; },
+      state: (identity, state, chunk) => hostLogEvent({ event: 'task_delivery', state, taskId: identity.task_id, revision: identity.task_revision, generation: handle.generation, chunk }),
+      working: active => this.#taskWorking(handle, active),
+    });
+    handle.tasks.socket(handle.generation);
     this.#active.set(liveSessionId, handle);
     this.#armAlarm(handle);
     handle.openedAt = openedAt;
@@ -2679,6 +2701,8 @@ export class LiveSessionOwner {
   }
 
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
+    handle.taskDebtPlan = { at: this.#now() + delayMs, step, generation: handle.generation };
+    if (handle.taskWorkAt !== undefined) { handle.taskPausedDebt = { remaining: delayMs, step, generation: handle.generation }; return; }
     handle.debtTimer?.cancel();
     handle.debtStep = step;
     const generation = handle.generation;
@@ -3024,6 +3048,8 @@ export class LiveSessionOwner {
   }
 
   #scheduleWatchdog(handle: ActiveSession, delayMs: number, generation: number, step: 'nudge' | 'recover'): void {
+    handle.taskWatchdogPlan = { at: this.#now() + delayMs, step, generation };
+    if (handle.taskWorkAt !== undefined) { handle.taskPausedWatchdog = { remaining: delayMs, step, generation }; return; }
     handle.watchdogTimer = this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
@@ -4002,6 +4028,7 @@ export class LiveSessionOwner {
     this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
   }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
+    handle.taskMicAt = this.#now();
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
     // A late mic frame after the session settled is dropped and counted, never thrown:
     // throwing here makes the HTTP layer close the socket generic 1002 before the typed terminal frame.
@@ -4193,6 +4220,7 @@ export class LiveSessionOwner {
         if ((event.type === 'audio' && event.audible !== false) || event.type === 'outputTranscription' || event.type === 'modelText') {
           handle.stopWords = []; handle.stopInputAt = undefined;
         }
+        this.#taskEvent(handle, event);
         this.#watchdogEvent(handle, event);
         if (event.type === 'modelText' || event.type === 'outputTranscription') handle.modelTextSinceOpen = true;
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
@@ -4275,39 +4303,9 @@ export class LiveSessionOwner {
           if (resetBy !== undefined) this.#armIdle(handle, this.#profile.limits.idleMs, resetBy);
         }
         if (ownerTurnFinalized(handle, event)) handle.researchAdmission.ownerTurn();
-        if (event.type === 'toolCall') {
-          await this.#replayRecordedCalls(handle, event);
-          if (!event.calls.length) continue;
-          handle.toolCalls += event.calls.length;
-          // C-REBUILD C: the owner turn did ask for tool work, so its silences stay the ladder's to recover.
-          handle.turnToolCalls = (handle.turnToolCalls ?? 0) + event.calls.length;
-          // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
-          handle.hostStatusNote = false;
-          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
-            ...researchCallFacts(event.calls) });
-          handle.turnAfterTool = true;
-          // C-TURN8: the call arrived, so the announcement before it answered for itself.
-          handle.claimToolSeen = true;
-          handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-          handle.claimText = '';
-          handle.thinking = true;
-          for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
-          for (const call of event.calls) if (/^(?:research$|search_|list_|read_)/u.test(call.name)) this.#armStillSearching(handle, call.id);
-          this.#openSteps(handle, event.calls);
-                // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
-          this.#noteState(handle, 'tool');
-          void this.#toolBatch(handle, event, generation).catch(() => {
-            if (this.#settled(handle) || generation !== handle.generation) return;
-            const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
-            let outcome: LiveToolSendOutcome = 'failed';
-            try { if (responses.length) { exposeToolResults(responses); outcome = handle.session.sendToolResponse({ responses }); } } catch { /* transport may have terminated */ }
-            for (const call of event.calls) handle.pendingCallIds.delete(call.id);
-            if (responses.length) this.#armDeadAir(handle, responses, outcome);
-            handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
-            this.#noteState(handle, 'tool');
-          }); continue;
-        }
+        if (event.type === 'toolCall') { handle.tasks?.functions(event.calls); continue; }
         if (event.type === 'toolCallCancellation') {
+          handle.tasks?.cancelFunctions(event.ids);
           // A provider cancellation (after a barge-in) drops exactly the cancelled ids: their in-flight
           // reads are aborted and no response is sent for them. A plain interrupted is different: those
           // ids stay in pendingCallIds, so their response is still answered once, marked after_barge_in.
@@ -4491,6 +4489,10 @@ export class LiveSessionOwner {
         }
         if (event.type === 'inputTranscription') {
           handle.inputJournalId = persisted;
+          if (event.text.length) {
+            handle.taskWords = (handle.taskWords ?? '') + event.text; handle.taskOwnerOpen = true;
+            handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: true });
+          }
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
@@ -5507,6 +5509,54 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     return journalSequence;
   }
 
+  #taskEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
+    const tasks = handle.tasks; if (!tasks) return;
+    if (event.type === 'delegation') tasks.delegation(event.delegationId);
+    if (event.type === 'commentaryAccepted') tasks.delivery.accepted(event.commandId);
+    if (event.type === 'commentaryRejected') tasks.delivery.rejected(event.commandId);
+    if (event.type === 'outputTranscription') tasks.delivery.transcript(event.text);
+    if (event.type === 'audio' && event.audible) { handle.taskOutputQuiet = false; handle.taskSilenceTimer?.cancel(); }
+    if (event.type === 'turnComplete' || event.type === 'interrupted') handle.taskOutputQuiet = true;
+    if (event.type === 'interrupted') handle.taskOwnerOpen = true;
+    tasks.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: handle.taskOwnerOpen === true });
+  }
+  #taskWorking(handle: ActiveSession, active: boolean): void {
+    const now = this.#now();
+    if (active) {
+      if (handle.taskWorkAt !== undefined) return;
+      handle.taskWorkAt = now;
+      if (handle.debtTimer && handle.taskDebtPlan) handle.taskPausedDebt = { remaining: Math.max(0, handle.taskDebtPlan.at - now), step: handle.taskDebtPlan.step, generation: handle.taskDebtPlan.generation };
+      if (handle.watchdogTimer && handle.taskWatchdogPlan) handle.taskPausedWatchdog = { remaining: Math.max(0, handle.taskWatchdogPlan.at - now), step: handle.taskWatchdogPlan.step, generation: handle.taskWatchdogPlan.generation };
+      handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+      handle.watchdogTimer?.cancel(); handle.watchdogTimer = undefined;
+      return;
+    }
+    const start = handle.taskWorkAt; if (start === undefined) return;
+    handle.taskWorkAt = undefined;
+    for (const key of ['debtSince', 'watchdogSince', 'heardSince'] as const) if (handle[key] !== undefined) handle[key] += now - Math.max(start, handle[key]);
+    const debt = handle.taskPausedDebt, watchdog = handle.taskPausedWatchdog;
+    handle.taskPausedDebt = undefined; handle.taskPausedWatchdog = undefined;
+    if (debt && debt.generation === handle.generation) this.#scheduleDebt(handle, debt.remaining, debt.step);
+    if (watchdog && watchdog.generation === handle.generation) this.#scheduleWatchdog(handle, watchdog.remaining, watchdog.generation, watchdog.step);
+  }
+  async #taskReconnect(handle: ActiveSession): Promise<boolean> {
+    if (this.#settled(handle) || handle.rebuilding) return false;
+    const remaining = handle.deadlineAt - this.#now(), idle = this.#profile.limits.idleMs;
+    if (remaining <= 0) return false;
+    return this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, this.#profile.limits.handshakeMs, { turns: [], chars: 0 }, 'task_delivery');
+  }
+  #paceTaskSilence(handle: ActiveSession, generation: number): void {
+    handle.taskSilenceTimer?.cancel();
+    const until = this.#now() + 20_000;
+    const pace = (): void => {
+      if (this.#settled(handle) || generation !== handle.generation || this.#now() >= until || handle.taskOwnerOpen || handle.taskOutputQuiet === false) return;
+      if (this.#now() - (handle.taskMicAt ?? 0) >= 40) {
+        try { handle.session.sendAudio({ pcm: new Uint8Array(640) }); } catch { return; }
+      }
+      handle.taskSilenceTimer = this.#schedule(pace, 20); handle.taskSilenceTimer.unref();
+    };
+    handle.taskSilenceTimer = this.#schedule(pace, 20); handle.taskSilenceTimer.unref();
+  }
   #settled(handle: ActiveSession): boolean { return handle.terminal || handle.invalidated; }
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
@@ -5519,6 +5569,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     handle.lateHeld = [];
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
+    handle.taskSilenceTimer?.cancel(); handle.tasks?.close();
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();
     this.#alarmSessions.delete(handle.liveSessionId);
     handle.terminalOutcome = outcome;
@@ -5573,6 +5624,13 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
    * native acts on, the session's own terminal.
    */
   #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
+    if (!handle.terminal && generation === handle.generation && handle.taskWords?.trim()) {
+      const words = handle.taskWords; handle.taskWords = ''; handle.taskOwnerOpen = false;
+      handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
+      void handle.tasks?.input(words, Number(handle.inputJournalId ?? 0)).catch(() => {
+        hostLogEvent({ event: 'task_effect_check', code: 'task_failed' });
+      });
+    }
     if (handle.stopFinalJournalId === handle.inputJournalId || handle.terminal || generation !== handle.generation) return;
     handle.stopFinalJournalId = handle.inputJournalId;
     if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;

@@ -507,9 +507,6 @@ class Session implements LiveVoiceSession {
   private cleaned = false;
   private creatingSocket = false;
   private readonly upsampler = new Pcm16Upsampler();
-  private pendingCalls: LiveToolCall[] = [];
-  /** Answers already received for the pending calls of the current delegated turn, by call id. */
-  private readonly answeredCalls = new Map<string, JsonObject>();
   /** Generation counter: bumped by every interruption and every new backend response. */
   private generation = 0;
   /** The generation the owner cut off; its remaining audio deltas are dropped until a new response starts. */
@@ -535,45 +532,14 @@ class Session implements LiveVoiceSession {
   private idleQuiet: unknown;
   /** True between a delegated `response.created` and its `response.done`. */
   private delegatedOutstanding = false;
-  /** Response ids already opened and already ended: a repeated lifecycle event is the same response, not a new one. */
-  private readonly openedResponses = new Set<string>();
-  private readonly endedResponses = new Set<string>();
   /** The response this turn is answering, for the receipts that name it (S5). */
   private currentResponse: string | undefined;
-  /** Calls whose `function_call_output` is already on the wire: no call is ever answered twice (3r B). */
-  private readonly outputSent = new Set<string>();
-  /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
-   *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
-  private continuationOwed = false;
   /** C-POSTTOOL switch a as the session is running it: off from the start unless the provider config asks for
    *  it, and off for the rest of the session once the provider refuses the field. */
   private firstResponseAudio: boolean;
-  /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
-  private continuationsSent = 0;
-  /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
-  private continuationCalls = 0;
-  /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
-  private batchAnswers = 0;
-  private researchCalls = 0;
-  private researchAdmissions = new Set<string>();
-  private toolRounds = 0;
-  private silentRescueUsed = false;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
-  private noItemTimer: unknown;
-
-  /** LAT-1022: every response, the first one included, reports its first output-item envelope and its first
-   *  audible PCM against the `response.create` that asked for it, so a first response is decomposed the way a
-   *  continuation already was. An audio-first response delivers the PCM before the item envelope, so both
-   *  instants are written as measured and neither is clamped: the pair is a real ordering, never an assertion. */
-  private firstResponseTiming: { kind: 'first' | 'continuation'; createdAt: number; responseKey?: string; firstItemAt: number | null; firstAudioAt: number | null } | undefined;
 
   private lastAnswerNow = false;
-  /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
-  private lastContinuationCalls = 0;
-  /** Which delegation carried a call id, so an output can be attributed to it (3r D4). */
-  private readonly callDelegation = new Map<string, string>();
-  /** Open delegations from `session.delegation.created`, by provider delegation id (3r D4). */
-  private readonly delegations = new Map<string, Delegation>();
   private commandSequence = 0;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();

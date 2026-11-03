@@ -47,7 +47,7 @@ test('VOICE-R12: final correction invalidates a speech-held old answer before re
   await f.emit({ type: 'delegation', delegationId: 'synthetic-delegation' });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic request A', finished: true, finalOrigin: 'provider' });
   assert.equal(f.inference.length, 1);
-  await f.emit({ type: 'modelTurnStarted' });
+  await f.emit({ type: 'audio', pcm: new Uint8Array(480), rate: 24000, audible: true });
   f.inference[0]!({ text: 'Synthetic answer A.', calls: [] }); await flush(); assert.deepEqual(f.appended, []);
   await f.emit({ type: 'inputTranscription', text: 'Synthetic correction B', finished: false });
   await f.emit({ type: 'turnComplete' });
@@ -58,7 +58,7 @@ test('VOICE-R12 paired valid: a current speech-held answer is released and heard
   const f = await fixture(t);
   await f.emit({ type: 'delegation', delegationId: 'synthetic-delegation' });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic current request', finished: true, finalOrigin: 'provider' });
-  await f.emit({ type: 'modelTurnStarted' });
+  await f.emit({ type: 'audio', pcm: new Uint8Array(480), rate: 24000, audible: true });
   f.inference[0]!({ text: 'Synthetic current answer.', calls: [] }); await flush(); assert.deepEqual(f.appended, []);
   await f.emit({ type: 'interrupted' });
   await f.emit({ type: 'turnComplete' });

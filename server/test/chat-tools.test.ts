@@ -65,7 +65,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     return result(request, 'complete', 'Answer from evidence');
   } };
   const f = openFixture(dir, model, { now: Date.now, route: { provider: 'gemini', model: 'fixture', available: true, allows: classes => classes.every(c => routeClasses.includes(c)), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: routeClasses } }, undefined, toolsMigrations);
-  t.after(() => { f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let taskChat: ChatService | undefined;
+  t.after(() => { taskChat?.shutdown(); f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
   const endpoint = { id: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
@@ -103,21 +104,11 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const taskFactory = syntheticTaskFactory(f.store, composition);
-  const diagnosedTaskFactory: typeof taskFactory = (...args) => {
-    const runtime = taskFactory(...args), runTool = runtime.runTool.bind(runtime);
-    let reported = false;
-    runtime.runTool = async (...parameters) => {
-      try { console.error('CHAT_TASK_CALLED', parameters[0]); const result = await runTool(...parameters); console.error('CHAT_TASK_RESULT', result.status, result.repair); return result; }
-      catch (error) { if (!reported) { reported = true; console.error('CHAT_TASK_EXECUTION', String(error)); } throw error; }
-    };
-    return runtime;
-  };
-  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: diagnosedTaskFactory, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
-  t.after(() => chat.shutdown());
+  taskChat = chat;
   const session = () => chat.enroll({ title: 'Tools', timeZone: 'UTC', idempotencyKey: randomUUID() }, f.context).sessionId;
   const turn = async (sessionId: string) => {
     const accepted = chat.accept({ sessionId, text: 'Which emails arrived?', idempotencyKey: randomUUID() }, f.context);

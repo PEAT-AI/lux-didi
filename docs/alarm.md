@@ -24,7 +24,7 @@ The shell immediately plays a short chime through the existing cached connecting
 
 ### Alarm speech, release 10.4
 
-A due alarm uses Naya's normal live persona, memory, calendar digest and research tools, with an alarm block appended to the normal instructions. She opens with the owner's name, the time and the reminder in her own words first ("Rob, it is 10:30, time for sport"), and gives a short day overview when the reminder asks for a brief, briefing, overview, rundown, check-in or what's on. The label comes from the owner's own words: "remind me to go to sport" stores `go to sport`, "brief me" and "give me a briefing" store a brief, and "check in with me in an hour about the deck" stores `the deck` on a relative alarm. An alarm does not receive the normal fresh-opening direction.
+A due alarm uses Naya's normal live persona with an alarm block appended to the instructions. She gives the time and reminder before continuing. The helper remains the owner of source work; an alarm does not restore voice-directed source tools or the normal fresh-opening direction.
 
 With no live call, the shell starts an alarm call. During an existing call it routes the alarm into that call immediately as a host note, with no competing chime. When an alarm call becomes live, any fallback chime stops. The notification fallback has the default sound, and the app asks for notification sound permission with the alert permission. No sleeping-Mac guarantee is made.
 

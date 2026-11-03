@@ -56,7 +56,7 @@ bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applicat
 bash scripts/smoke.sh
 ```
 
-`scripts/install-macos-app.sh` replaces only the app and keeps the previous one beside it until the new one validates. `scripts/smoke.sh` is the real-path smoke: it runs the host the way the native app does (`--supervised`, the app's environment, a staged copy of its configuration), holds its stdout to the native rule, and drives the operator's path: every configured connector, one text turn that must call tools, one Live turn that must call and keep the session open, and one Live voice turn that must run the research loop. Run it after every install and before every release. It is a manual run after an install; the gate carries the narrower `scripts/check-install-smoke.sh`, which runs the install research smoke against the repo build with every fetch intercepted and starts no host.
+`scripts/install-macos-app.sh` replaces the app and retains a rollback copy. `scripts/smoke.sh` is a real-path probe that can contact configured connectors and providers; obtain explicit authorization before running it or exercising an installed app. It is not an offline documentation check. The narrower `scripts/check-install-smoke.sh` uses synthetic mail and intercepted transport against the packaged source-read path; its legacy implementation filename does not define the current helper tools.
 
 A release is done when the gate passed at the merged head, the installer put the bundle in place, the smoke passed against the installed app, and the release row is in `implementation-status.md`.
 

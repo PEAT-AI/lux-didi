@@ -376,9 +376,9 @@ for (const provider of ['openai', 'gemini'] as const) {
     const base = composeLiveInstruction({ base: NAYA_LIVE_BASE });
     const accepted = composeLiveSessionInstruction({ text: base.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
     const session = adapter.open({ system: { text: accepted.text, dataClass: 'ordinary' }, dataClasses: ['ordinary'], tools: [], opening: 'user_first' },
-      { signal: new AbortController().signal, deadlineMs: clock.now() + 60_000 });
+      { signal: new AbortController().signal, deadlineMs: Date.now() + 60_000 });
     t.after(() => session.close());
-    await firstFrame;
+    await Promise.race([firstFrame, session.ready.then(() => { assert.ok(socket.sent.length > 0); })]);
     const frame = JSON.parse(socket.sent[0]!) as {
       session?: { instructions: string };
       setup?: { systemInstruction: { parts: { text: string }[] } };

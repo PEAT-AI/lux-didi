@@ -199,7 +199,8 @@ test('E5: an empty retry says how it searched, naming the window it used', async
   // SEARCH-110: a person search widens down the ladder, one read per step and never a loop.
   assert.deepEqual(sent, ['from:dana OR to:dana invoice', 'from:dana OR to:dana', 'dana'], 'the ladder stops when the steps run out');
   const note = String(reply['note'] ?? '');
-  assert.match(note, /I searched your mail with a keyword filter and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
+  // SEARCH-110: the last step of the ladder is the word it really searched for, and the reply says so.
+  assert.match(note, /I searched your mail for "dana" and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
 });
 
 test('E5: the host log accepts the mail shape only as counts and closed tokens, never words', () => {

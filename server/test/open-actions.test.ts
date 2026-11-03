@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openTarget, ownerWords, receiptDetail } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openTarget, ownerWords, receiptDetail } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 

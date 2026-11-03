@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolOutcomeOf } from '../live/tool-outcome.js';
-import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, REFUSAL_CAUSES, refusalCauseOf } from '../tools/refusal-cause.js';
+import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, refusalCauseOf } from '../tools/refusal-cause.js';
 
 const cases = [
   [{ status: 'refused', code: 'no_owner_request' }, 'refused', 'no_owner_request'],

@@ -182,7 +182,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const classRun = await h.accept(sensitive); const beforeClass = h.counts.get('lux-knowledge')!;
   const classDenied = await h.read(sensitive, classRun.host, ['lux-knowledge']);
   assert(classRun.acceptance.connectionIds.includes('lux-knowledge'));
-  assert.equal(h.counts.get('lux-knowledge'), beforeClass); assert.equal(classDenied.seen.length, 1);
+  assert.equal(h.counts.get('lux-knowledge'), beforeClass); assert.equal(classDenied.seen.length, 2); assert(!classDenied.seen[1]!.dataClasses.includes('sensitive'), 'the repair continuation contains no tightened source evidence');
   assert.notEqual(classDenied.outcome.status, 'complete');
   assert(Number(generations().find(r => r.connection_id === 'lux-knowledge')!.generation) > Number(unchanged.find(r => r.connection_id === 'lux-knowledge')!.generation));
   const lower = await h.start();
@@ -196,8 +196,10 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
     lower.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy });
   });
   const revoked = await h.read(lower, inFlightRun.host, ['gmail']); h.setDispatch(undefined);
-  assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 1);
-  assert.notEqual(revoked.outcome.status, 'complete');
+  assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 2);
+  assert.equal(revoked.outcome.status, 'complete', 'a source-free repair can continue from accepted owner context');
+  assert(!JSON.stringify(revoked.seen[1]).includes('synthetic gmail read'), 'revoked raw content never enters the continuation');
+  assert(!revoked.seen[1]!.dataClasses.includes('private')); 
   const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
   assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
 

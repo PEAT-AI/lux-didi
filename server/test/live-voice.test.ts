@@ -966,7 +966,7 @@ test('Gemini exposes only the blocking delegate request function', async t => {
 
 for (const accepted of [false, true]) {
   test(`Gemini exposes only helper delegation and carries its answer; accepted=${accepted}`, async t => {
-    const { f, session, captured } = await ready(t);
+    const { f, session, captured } = await providerReady(t);
     const setup = f.frames[0] as { setup: { tools: { functionDeclarations: { name: string }[] }[] } };
     assert.deepEqual(setup.setup.tools.flatMap(tool => tool.functionDeclarations.map(call => call.name)), ['delegate']);
     f.send({ toolCall: { functionCalls: [{ id: 'synthetic-call', name: accepted ? 'delegate' : 'legacy_research', args: { request: 'Synthetic owner request' } }] } });

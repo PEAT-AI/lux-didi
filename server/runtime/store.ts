@@ -192,8 +192,8 @@ export class Store {
     });
   }
   finishTask(identity: TaskRecord, status: string, answer: unknown, contentAllowed: boolean, now = Date.now()): boolean {
-    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=?,updated_at=? WHERE task_id=? AND current_revision=?',
-      [status, contentAllowed ? JSON.stringify(answer) : null, now, identity.task_id, identity.task_revision]) === 1);
+    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=?,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
+      [status, contentAllowed ? JSON.stringify(answer) : null, now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
   }
   saveTaskDelivery(identity: TaskRecord, attemptId: string, state: 'attached' | 'pending' | 'delivered' | 'closed' | 'failed', now = Date.now()): void {
     this.transaction(tx => { tx.run(`INSERT INTO task_deliveries(attempt_id,task_id,task_revision,connection_generation,state,updated_at) VALUES (?,?,?,?,?,?)

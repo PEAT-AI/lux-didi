@@ -17,7 +17,7 @@ export interface InferRequest {
   tools: TaskTool[]; model: string; effort: string;
 }
 export type Infer = (request: InferRequest, signal: AbortSignal) => Promise<Inference>;
-export interface WorkerResult { status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[] }
+export interface WorkerResult { status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; receipts?: ToolResult[] }
 export interface Clock {
   now(): number;
   timer(callback: () => void, ms: number): () => void;
@@ -50,9 +50,10 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
   const pending = new Map<string, Promise<ToolResult>>();
+  const receipts: ToolResult[] = [];
   const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
-  const finish = (): WorkerResult => ({ status: expired ? 'incomplete' : 'cancelled', text: findings.map(item => item.text).filter(Boolean).join('\n'), findings });
+  const finish = (): WorkerResult => ({ status: expired ? 'incomplete' : 'cancelled', text: findings.map(item => item.text).filter(Boolean).join('\n'), findings, receipts });
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
     const local = new AbortController();
@@ -76,7 +77,11 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
       try { result = await bounded(signal => tool.run(call.args as Record<string, unknown>, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
-      catch { result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.'); }
+      catch {
+        result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.');
+        if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
+      }
+      if (result.receipt) receipts.push(result);
       options.operation?.(identity, tool.name, validation.args, result);
       if (result.status !== 'failed') {
         findings.push(result);
@@ -105,7 +110,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete' }; }
       if (!current()) return finish();
       turns.push(inference);
-      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings };
+      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const completed = await Promise.all(inference.calls.map(call));
       if (completed.some(output => output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text)) outsideTextSeen = true;

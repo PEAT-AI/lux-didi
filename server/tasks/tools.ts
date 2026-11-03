@@ -68,6 +68,10 @@ const definitions: Definition[] = [
   { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString }, effect: 'local', outside: false },
   { name: 'open', description: 'Open a specific configured target in the native surface.', fields: { kind: { type: 'string', enum: ['mail', 'calendar', 'chat', 'web', 'document'] }, target: string }, effect: 'local', outside: false },
 ];
+function integerSchema(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isInteger(value);
+  return !value || typeof value !== 'object' || Object.values(value).every(integerSchema);
+}
 export function createRegistry(ports: ToolPorts, configured: readonly Definition[] = []): Map<string, TaskTool> {
   const registry = new Map<string, TaskTool>();
   for (const definition of [...definitions, ...configured]) {
@@ -82,6 +86,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
         return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
       },
     };
+    if (!integerSchema(tool.parameters)) throw new Error(`Non-integer numeric schema literal in ${tool.name}`);
     if (registry.has(tool.name)) throw new Error(`Duplicate task tool ${tool.name}`);
     registry.set(tool.name, tool);
   }

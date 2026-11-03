@@ -124,3 +124,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
   assert.equal(neighbour.status, 'no_match'); assert.equal(neighbour.text, '');
 });
+
+test('configured schemas reject floats but accept integer bounds', () => {
+  const ports = { execute: async () => documentResult('fixture', 'f'), authority: new FakeAuthority() };
+  assert.throws(() => createRegistry(ports, [{ name: 'fixture_float', description: 'fixture', fields: { value: { type: 'number', minimum: 0.1 } } }]), /Non-integer/);
+  assert.ok(createRegistry(ports, [{ name: 'fixture_integer', description: 'fixture', fields: { value: { type: 'integer', minimum: 1 } } }]).has('fixture_integer'));
+});

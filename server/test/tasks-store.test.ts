@@ -20,6 +20,7 @@ test('task content gating, receipts, final answer, delivery and pruning use Stor
     store.saveTaskOperation({ ...operation, state: 'committed', result: { status: 'ok' } }, true, now);
     assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_receipts'))?.state, 'committed');
     assert.equal(store.finishTask(identity, 'complete', 'stale', true, now), false);
+    assert.equal(store.finishTask({ ...second, connection_generation: 99 }, 'complete', 'stale generation', true, now), false);
     assert.equal(store.finishTask(second, 'complete', 'synthetic answer', true, now), true);
     store.saveTaskDelivery(second, 'binding', 'delivered', now);
     assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'delivered');

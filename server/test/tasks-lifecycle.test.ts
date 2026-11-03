@@ -101,6 +101,7 @@ test('ambiguous write is not replayed by the worker', async () => {
       assert.match(JSON.stringify(request.outputs), /Reconcile/); return { text: 'Outcome unverified', calls: [] };
     } });
   assert.equal(writes, 1); assert.equal(final.text, 'Outcome unverified');
+  assert.equal(final.receipts?.[0]?.receipt?.state, 'unknown');
 });
 
 test('outside text is tracked by the host across inference turns', async () => {

@@ -36,3 +36,19 @@ test('task log allowlist refuses bodies and queries but accepts a closed event',
   assert.equal(safeEvent({ ...valid, query: 'secret synthetic query' }), undefined);
   assert.equal(safeEvent({ ...valid, body: 'synthetic body' }), undefined);
 });
+
+test('host runtime persists a real synthetic worker revision and delivery attempt', async () => {
+  const { TaskRuntime } = await import('../tasks/runtime.js');
+  const { FakeDelivery } = await import('../tasks/controller.js');
+  const directory = mkdtempSync(join(tmpdir(), 'task-runtime-fixture-'));
+  const store = new Store(directory), delivery = new FakeDelivery();
+  try {
+    const runtime = new TaskRuntime({ store, delivery, registry: new Map(), contentAllowed: () => true, infer: async () => ({ text: 'synthetic final', calls: [] }) });
+    const { result } = runtime.finalize('synthetic input', 1);
+    assert.equal((await result).status, 'complete');
+    assert.equal(delivery.answers.length, 1);
+    assert.match(String(store.transaction(tx => tx.get('SELECT final_answer FROM tasks'))?.final_answer), /synthetic final/);
+    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'delivered');
+    runtime.close();
+  } finally { store.close(); rmSync(directory, { recursive: true }); }
+});

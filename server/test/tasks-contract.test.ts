@@ -92,3 +92,23 @@ test('connector projection is structural and no_match never opens a neighbour', 
   assert.equal(projectTaskPayload('search_mail', { unexpected: 'x' }, { query: 'x' }).status, 'failed');
   assert.equal(projectTaskPayload('search_mail', { messages: [] }, { query: 'x' }).status, 'empty');
 });
+
+test('provider continuations retain encrypted reasoning and Gemini thought signatures', async () => {
+  const { createModelPort } = await import('../tasks/model.js');
+  const { runWorker } = await import('../tasks/worker.js');
+  for (const provider of ['openai', 'gemini'] as const) {
+    let hop = 0;
+    const registry = createRegistry({ execute: async () => documentResult('verified', 'm'), authority: new FakeAuthority() });
+    const infer = createModelPort({ role: { provider, model: 'fixture-model', effort: 'low', keyReference: 'fixture' }, credentials: { resolve: async () => 'fixture-key' }, transport: async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      if (hop++ === 1) {
+        assert.match(JSON.stringify(body), provider === 'openai' ? /encrypted-fixture/ : /thought-fixture/);
+        return new Response(JSON.stringify(provider === 'openai' ? { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"status":"no_action"}' }] }] } : { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"status":"no_action"}' }] } }] }));
+      }
+      return new Response(JSON.stringify(provider === 'openai'
+        ? { status: 'completed', output: [{ type: 'reasoning', encrypted_content: 'encrypted-fixture' }, { type: 'function_call', call_id: 'call', name: 'read_mail', arguments: '{"id":"m","cursor":null}' }] }
+        : { candidates: [{ finishReason: 'STOP', content: { parts: [{ thoughtSignature: 'thought-fixture', functionCall: { name: 'read_mail', args: { id: 'm', cursor: null } } }] } }] }));
+    } });
+    assert.equal((await runWorker({ registry, infer, identity: { task_id: 't', task_revision: 1, connection_generation: 1 }, input: 'fixture', signal: new AbortController().signal })).status, 'no_action');
+  }
+});

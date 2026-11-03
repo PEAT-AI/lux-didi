@@ -12,6 +12,7 @@ export class FakeAuthority implements Authority {
   async authorize(request: AuthorizationRequest, execute: () => Promise<ToolResult>, signal: AbortSignal): Promise<ToolResult> {
     if (signal.aborted) return { status: 'failed', text: '', references: [], next_cursor: null, coverage: 'Not admitted.', repair: 'Use the current revision.' };
     this.requests.push(request);
-    return execute();
+    const result = await execute();
+    return { ...result, receipt: { operation_id: request.operation_id, state: result.status === 'failed' ? 'failed' : 'committed' } };
   }
 }

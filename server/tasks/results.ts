@@ -8,6 +8,7 @@ export interface ToolResult {
   next_cursor: string | null;
   coverage: string;
   repair: string | null;
+  receipt?: { operation_id: string; state: 'committed' | 'failed' | 'unknown' };
 }
 export const DOCUMENT_CHARS = 24000;
 export function failed(repair: string): ToolResult {

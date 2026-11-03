@@ -8,7 +8,7 @@ import type { TaskRuntime } from './runtime.js';
 import { validateArguments, TASK_ACCOUNT, TASK_RESOURCE } from './tools.js';
 export { TASK_ACCOUNT, TASK_RESOURCE } from './tools.js';
 /** The chat model uses the same task registry, schemas, captured evidence and Authority as voice. */
-export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity, owner: Pick<ToolsOwner, 'complete' | 'taskIntent' | 'runTask' | 'taskVisible'>, runId?: string): ToolDefinition[] {
+export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity, owner: Pick<ToolsOwner, 'complete' | 'taskIntent' | 'runTask' | 'taskVisible'> & { journal: Pick<ToolsOwner['journal'], 'fail'> }, runId?: string): ToolDefinition[] {
   return [...runtime.registry.values()].filter(tool => !runId || owner.taskVisible(runId, tool.name)).map(tool => ({
     name: tool.name, description: tool.description, parameters: tool.parameters as ToolDefinition['parameters'],
     effect: tool.effect === 'none' ? 'read' : 'write', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE,
@@ -18,7 +18,7 @@ export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity
       const { signal } = context;
       return owner.runTask(call, args, async () => {
         const result = await runtime.runTool(tool.name, args, { ...identity, operation_id: context.executionId }, signal);
-        if (result.status === 'failed' && isConnectorTaskRead(tool.name)) return { status: 'failed' as const };
+        if (result.status === 'failed' && isConnectorTaskRead(tool.name)) return { status: 'completed' as const, result: owner.journal.fail(call, 'failed', 'task_read_failed') };
         // Reads are conservatively private except host-owned alarm/roster metadata and public web evidence.
         const dataClasses: readonly DataClass[] = result.dataClasses ?? (result.status === 'failed' || tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private']);
         const snapshot = result[TASK_DISCLOSURE];

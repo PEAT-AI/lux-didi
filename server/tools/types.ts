@@ -134,6 +134,7 @@ export interface OwnerRequestPort {
 }
 
 export interface ToolsOwner {
+  taskIntent(context: import('../adapters/model/types.js').ExecutionContext, name: string, args: JsonObject): ToolCallIntent;
   taskExecutors(sessionId: string): import('../tasks/connectors.js').ExistingExecutors;
   closeTaskCall(sessionId: string): void;
   taskBindings(connectionIds: readonly string[]): { connector: string; reader: import('../connectors/index.js').ConnectorReader; policy: ConnectionPolicy }[];

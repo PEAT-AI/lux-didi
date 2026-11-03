@@ -529,6 +529,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
+    taskIntent(context, name, args) {
+      return store.transaction(tx => {
+        const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+        if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+        const call = storedCall(tx, row), { signal: _signal, ...execution } = context;
+        const expected = { ...execution, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+        if (!TASK_TOOL_NAMES.has(name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+        const snapshot = validateCallRun(tx, call); target(snapshot, call, tx);
+        return call as ToolCallIntent;
+      });
+    },
     closeTaskCall(sessionId) { options.trello?.end(sessionId); },
     taskExecutors(sessionId) {
       const project = (name: string, value: JsonObject) => value.ok === false

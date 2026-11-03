@@ -12,7 +12,7 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed', 'browser_not_running'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
-export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout'] as const;
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout', 'egress_blocked'] as const;
 export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
@@ -22,6 +22,7 @@ export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent
   not_allowed: 'I cannot open that target.',
   // F6b: Chrome is never launched for her; she asks the owner to open it.
   browser_not_running: 'Chrome is not open, could you open it for me?',
+  egress_blocked: 'I need you to provide or select the exact public link before I open it.',
   no_open_intent: 'I did not hear an open request, so nothing is open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
@@ -405,6 +406,10 @@ export function openWebFailure(code: string): { code: string; fixNotForSpeech: s
 }
 
 export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
+  egress_blocked: {
+    fixNotForSpeech: 'Ask the owner to provide or select the exact public link. Do not rewrite the URL.',
+    say: 'I need you to provide or select the exact public link before I open it.',
+  },
   no_open_intent: {
     fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I did not hear an open request, so nothing is open.',

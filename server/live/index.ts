@@ -112,15 +112,9 @@ interface ActiveSession {
   /** Whether this turn followed tool work and whether the owner cut it off. */
   turnAfterTool: boolean; turnInterrupted: boolean;
   /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
-  claimText: string; claimTimer?: { cancel: () => void } | undefined;
-  claimToolSeen: boolean; claimCorrected: boolean;
   /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
    *  provider opens a model turn, which can arrive after the transcript in the same batch. */
   answeredWords?: string | undefined;
-  /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
-  claimWriteRefused: boolean;
-  /** C-ARGS: a lookup this owner turn was rejected on or failed, so an empty-result claim has nothing behind it. */
-  claimLookupFailed: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -846,7 +840,6 @@ export const ANSWER_AUDIO_HOLD_MS = 3_000;
  * the same one beat this file already treats as a turn's pause (ANSWER_AUDIO_HOLD_MS), so a claim followed
  * by a call in the same breath is never corrected.
  */
-const CLAIM_WITHOUT_CALL_MS = 3_000;
 /**
  * C-TURN8, C-CLAIMS9 outcome 1: the class of first-person lookup announcements, not a list of exact sentences.
  * "let me", "let's", "I'll", "I'm going to" or "I'm" plus a lookup verb is a promise to act, and so is the
@@ -2128,7 +2121,6 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()), contextToolChars: 0,
-      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false, claimLookupFailed: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2597,7 +2589,7 @@ export class LiveSessionOwner {
     handle.answerAt = undefined;
     this.#cancelTimers(handle);
     // C-TURN8: a failed turn earns no correction for what it never said.
-    this.#resetClaimCheck(handle);
+    handle.answeredWords = undefined;
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
     if (typeof handle.session.sendCommentary === 'function') {
@@ -2614,36 +2606,6 @@ export class LiveSessionOwner {
 
   #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
-  }
-
-  /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
-  #resetClaimCheck(handle: ActiveSession): void {
-    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false; handle.claimLookupFailed = false;
-    handle.answeredWords = undefined;
-  }
-
-  /**
-   * C-TURN8: a response that announced a lookup completes, so its call has CLAIM_WITHOUT_CALL_MS to start. A
-   * call anywhere in this owner turn silences it, as does a correction already sent, the mute, and the
-   * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
-   */
-  #armClaimCheck(handle: ActiveSession, sequence: number): void {
-    // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
-    // and the call it names did run, so the toolSeen silence does not apply to it.
-    const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
-    const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
-    handle.claimText = '';
-    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    if (!(emptyResult || claim) || handle.claimCorrected || handle.muted || (handle.claimToolSeen && !emptyResult)) return;
-    handle.claimTimer = this.#schedule(() => {
-      handle.claimTimer = undefined;
-      if (this.#settled(handle) || handle.inputFinal === false || handle.muted) return;
-      if (handle.claimToolSeen && !emptyResult) return;
-      handle.claimCorrected = true;
-      hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
-      try { handle.session.sendText({ text: hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
-    }, CLAIM_WITHOUT_CALL_MS);
   }
 
   /** D6: the adapter's 500 ms output-silence model reports waitingForInput between her sentences. That is
@@ -2982,7 +2944,7 @@ export class LiveSessionOwner {
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
     // C-TURN8: a new owner turn is a fresh correction budget.
-    this.#resetClaimCheck(handle);
+    handle.answeredWords = undefined;
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
@@ -3924,7 +3886,7 @@ export class LiveSessionOwner {
           clearOpenLedger(handle.liveSessionId);
           // Owner authority survives a model interruption.
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
-          this.#resetClaimCheck(handle);
+          handle.answeredWords = undefined;
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,

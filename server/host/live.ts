@@ -10,7 +10,6 @@ import { entryAndParentOrdinary } from '../domain/labels.js';
 import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
-import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { credentialsFor, loadProviderConfig, seedScope, slotKeyPresent } from '../config/index.js';
 import { loadLiveConfig, saveLiveSelection, currentLivePlaybackRate, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
@@ -193,8 +192,6 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
       sessionMs: boundProfile.limits.sessionMs, closeMs: boundProfile.limits.closeMs,
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
-    // S4b: only the delegated backend executes the lookups; a direct-tool provider has no backend to instruct.
-    ...(boundProfile.provider === 'openai' ? { backendProcedure: NAYA_BACKEND_PROCEDURE } : {}),
     });
     const initial = create(); voice = { capabilities: initial.capabilities, open: (request, control) => create().open(request, control) };
   } catch (error) {

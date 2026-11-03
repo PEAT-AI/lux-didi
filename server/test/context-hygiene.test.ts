@@ -42,9 +42,14 @@ test('each finalized helper ask receives a fresh host clock and the owner time z
     inputs.push(JSON.parse(request.input) as typeof inputs[number]);
     return { text: 'Synthetic clock answer.', calls: [] };
   }, { timeZone: 'Asia/Tokyo', now: () => now });
+  await f.emit({ type: 'delegation', delegationId: 'synthetic-clock-delegation' });
   await f.emit({ type: 'inputTranscription', text: 'What is today in my time zone?', finished: true, finalOrigin: 'provider' });
   assert.equal(inputs.length, 1);
   assert.deepEqual(inputs[0]!.time_context, { now_utc: '2031-01-02T23:45:00.000Z', owner_time_zone: 'Asia/Tokyo' });
+  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  await f.emit({ type: 'outputTranscription', text: 'Synthetic clock answer.', finished: true });
+  await f.emit({ type: 'goAway', timeLeftMs: 10000 });
+  assert.equal(f.requests.length, 2);
   now += 60000;
   await f.emit({ type: 'inputTranscription', text: 'And now?', finished: true, finalOrigin: 'provider' });
   assert.equal(inputs.length, 2);

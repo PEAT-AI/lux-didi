@@ -74,7 +74,7 @@ export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   /** The zone the host resolves wall times in; the process zone when unset. */
   timezone?: string;
-  log?: (event: ToolFailureEvent) => void;
+  log?: (event: ToolFailureEvent | { event: 'tool_redaction'; tool: string; count: number }) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;

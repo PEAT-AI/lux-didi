@@ -79,6 +79,27 @@ test('a natural save request cannot bypass staging through a legacy dictated-con
   assert.equal(r.store.transaction(tx => tx.all('SELECT * FROM vault_writes WHERE live_session_id=?', [r.sessionId])).length, 0);
 });
 
+test('C-FREEDOM: a paraphrase of his dictated note saves, the exact words are not the permission', async t => {
+  // He said the note and asked for the vault; her save carries the same note in her own words, and the
+  // literal content match is not a second permission: a wrong local write is a cost he can correct.
+  const fake = await fakeLux(t, 'inserted', 'insight-42');
+  const r = await replay(t);
+  await r.speak('save to my vault: the mint meeting moved to friday');
+  const result = await claimAndSave(r.store, fake.url, r.sessionId, 'Mint meeting is on friday');
+  assert.equal(result.saved, true, 'a paraphrase of his dictated note saves');
+  assert.equal(result.insightId, 'insight-42');
+  assert.equal(fake.calls.length, 1, 'one save reached the vault');
+});
+
+test('C-FREEDOM: a vault save with no ask in the session is still refused', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const r = await replay(t);
+  const result = await claimAndSave(r.store, fake.url, r.sessionId, NOTE);
+  assert.equal(result.saved, false);
+  assert.equal(result.code, 'not_owner_requested');
+  assert.equal(fake.calls.length, 0);
+});
+
 test('natural save variants do not mint a legacy write authorization', async t => {
   for (const ask of ['put that in my knowledge', 'remember this in lux', 'save to my vault']) {
     const fake = await fakeLux(t, 'inserted');

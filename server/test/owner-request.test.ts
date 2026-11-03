@@ -20,7 +20,18 @@ test('direct102 authority: finals alone grant compound effects, consumed once wi
   assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'allowed');
   assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'idempotent');
   now += 120001;
-  assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'request_expired');
+  // C-FREEDOM: a free write does not expire inside the session; only a guarded kind does.
+  assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'idempotent');
+});
+
+test('C-FREEDOM: a free write does not expire in the session, a guarded one still does', () => {
+  let now = 0;
+  const requests = new OwnerRequests(() => now);
+  requests.observe('s', 'j1', 'remember the mint is friday and cancel the dentist appointment');
+  now += 30 * 60 * 1000;
+  assert.equal(requests.authorize('s', 'create_event', 'mint').code, 'allowed', 'a note waits for no two minutes');
+  assert.equal(requests.authorize('s', 'set_alarm', 'friday').code, 'allowed', 'an alarm waits for no two minutes');
+  assert.equal(requests.authorize('s', 'delete_event', 'dentist').code, 'request_expired', 'a deletion still expires');
 });
 
 for (const [words, kind] of [

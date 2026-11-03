@@ -204,6 +204,23 @@ test('a note stitched across a completed answer is refused', async t => {
     { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
 });
 
+test('C-FREEDOM: a paraphrase of his own words saves', async t => {
+  // One content word is his, the rest are her own words for the same thing: the note is kept, because
+  // a refused note costs him more than a loose one he can correct.
+  const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword', finished: true }]);
+  const result = await remember(store, 'The owner starts the morning with tea and a crossword puzzle');
+  assert.equal(result.remembered, true, 'a paraphrase of his own words saves');
+});
+
+test('C-FREEDOM: a note saying "it" reads his previous turn and saves', async t => {
+  const store = liveSession(t, [
+    { text: 'the signed lease is in the blue folder', finished: true },
+    { text: 'move it before friday', finished: true },
+  ]);
+  const result = await remember(store, 'remind me to take it out before friday');
+  assert.equal(result.remembered, true, 'the pronoun reads his previous turn instead of asking');
+});
+
 test('a note that turns the owner\'s love into hate is refused', async t => {
   // The polarity verb is the word the note must be supported by, so it cannot be framing.
   const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);

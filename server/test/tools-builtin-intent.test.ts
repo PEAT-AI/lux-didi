@@ -19,7 +19,7 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
+import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, ownerWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { LIVE_NOT_MODEL_FACING, runToolCalls } from '../tools/declarations.js';
@@ -600,4 +600,16 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   assert.deepEqual(own.dropped, [], 'and nothing is dropped without a rule of the tool to say so');
   // The one tool that calls an undeclared key unknown has it dropped, and the count is on the closed event.
   assert.deepEqual(normalizeArguments(declaration, { intent: 'overview', query: 'synthetic', wider: 'x' }).dropped, ['wider:undeclared']);
+});
+
+test('C-FREEDOM: her own sentence never clears the open she was asked for', () => {
+  // C-OPEN built the window as "the turns since the model last spoke", so her own answer to him threw
+  // the ask away and a later open needed him to repeat it. The session keeps the ask instead.
+  const run = 'freedom-open-window';
+  noteOwnerWords(run, 'open my inbox in the browser');
+  noteModelOutput(run);
+  assert.equal(ownerWords(run), 'open my inbox in the browser', 'her sentence leaves the ask in place');
+  noteOwnerWords(run, 'and the second folder too');
+  noteModelOutput(run);
+  assert.match(ownerWords(run), /open my inbox in the browser/, 'a session long ask still opens');
 });

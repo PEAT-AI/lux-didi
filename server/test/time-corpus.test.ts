@@ -142,16 +142,15 @@ test('C-TIME shape8-cancel: settles the one alarm that is armed and lists severa
   const second = await h.dispatch('set_alarm', {}, 'wake me at 7 pm');
   assert.equal(first.reply.status, 'set');
   assert.equal(second.reply.status, 'set');
-  const listed = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
-  assert.equal(listed.reply.status, 'clarify', 'several armed alarms are listed, not guessed');
-  assert.equal(listed.reply.reason, 'several_alarms');
-  const alarms = listed.reply.alarms as Array<Record<string, unknown>>;
-  assert.equal(alarms.length, 2, 'both alarms are named with id, time and label');
-  for (const alarm of alarms) { assert.ok(alarm.id); assert.match(String(alarm.local_time), /^\d{2}:\d{2}$/); assert.ok('label' in alarm); }
-  const byId = await h.dispatch('cancel_alarm', { id: alarms[0]!.id }, 'cancel that one');
-  assert.equal(byId.reply.status, 'cancelled');
-  assert.equal(byId.reply.id, alarms[0]!.id);
-  assert.match(String(byId.reply.say), /^Cancelled the \w+day/);
+  // C-FREEDOM: several armed alarms never become a question: the soonest is cancelled and the
+  // read-back says which one it was.
+  const soonest = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
+  assert.equal(soonest.reply.status, 'cancelled', 'several armed alarms act on the soonest');
+  assert.match(String(soonest.reply.say), /^Cancelled the \w+day \d{1,2} \w+ at 18:00/, 'the read-back names the one it cancelled');
+  const left = await h.dispatch('list_alarms', {}, 'list my alarms');
+  const remaining = left.reply.alarms as Array<Record<string, unknown>>;
+  assert.equal(remaining.length, 1, 'one alarm is left');
+  assert.equal(remaining[0]!.local_time, '19:00', 'the later one is still armed');
   // A missing id with exactly one armed alarm cancels that one.
   const lone = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
   assert.equal(lone.reply.status, 'cancelled');
@@ -240,4 +239,20 @@ test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {
   assert.equal(reading.unique + reading.partial + reading.inconclusive, corpus.length);
   // Pinned counts: a change here is a checker change and must be deliberate, not a drift.
   assert.deepEqual(reading, { unique: 49, partial: 7, inconclusive: 10 }, JSON.stringify(reading));
+});
+
+test('C-FREEDOM: with several alarms armed, his words pick the one', async t => {
+  // The words "bins" name the second alarm, so the first one stays armed and the read-back says which.
+  const h = await alarmHarness(t);
+  h.options.timezone = 'Europe/Berlin';
+  h.clock.now = Date.parse('2026-03-05T09:30:00Z');
+  await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
+  await h.dispatch('set_alarm', { label: 'take the bins out' }, 'wake me at 7 pm to take the bins out');
+  const named = await h.dispatch('cancel_alarm', {}, 'cancel the bins alarm');
+  assert.equal(named.reply.status, 'cancelled', 'the alarm his words name is the one cancelled');
+  assert.match(String(named.reply.say), /19:00/, 'the read-back says which one it was');
+  const left = await h.dispatch('list_alarms', {}, 'list my alarms');
+  const remaining = left.reply.alarms as Array<Record<string, unknown>>;
+  assert.equal(remaining.length, 1, 'the alarm his words did not name is still armed');
+  assert.equal(remaining[0]!.local_time, '18:00', 'the named alarm went, not the soonest');
 });

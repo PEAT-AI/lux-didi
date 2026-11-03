@@ -104,7 +104,7 @@ test('commit journals before execution and a duplicate resolves without another 
 
 test('configured client receives only owner words and closed effect, never worker context', async () => {
   let sent: ModelRequest | undefined;
-  const model = { generate: async (input: ModelRequest) => { sent = input; return { status: 'complete', text: 'yes' }; } } as ModelPort;
+  const model: ModelPort = { generate: async (input: ModelRequest) => { sent = input; return { status: 'complete', text: 'yes', providerContent: { role: 'model', parts: [{ text: 'yes' }] }, reason: '', prompt: { version: 'fake', hash: 'fake', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } }; } };
   const check = configuredEffectCheck(model);
   assert.equal(await check({ ownerWords: 'Read and draft', effect: 'draft_email' }), true);
   assert.deepEqual(sent?.context, { items: [], selectedIds: [], maxChars: 0 });

@@ -187,7 +187,7 @@ public struct BrowserState: Sendable, Equatable {
     public init(installed: Bool, running: Bool) { self.installed = installed; self.running = running }
 }
 
-/// The native boundary. It re-checks the allowlist itself and never trusts the host's argument shape.
+/// Mechanical native opening boundary. Task authority belongs to the host.
 public actor NativeActions: NativeActionExecuting {
     public typealias Opener = @Sendable (URL, Bool) async -> Bool
 
@@ -240,9 +240,7 @@ public actor NativeActions: NativeActionExecuting {
     public static func browserOpener(_ workspace: BrowserWorkspace) -> Opener {
         { url, isApplication in
             if isApplication { return await workspace.openApplication(at: url) }
-            guard url.scheme?.lowercased() == "https", let chrome = workspace.applicationURL(bundleIdentifier: chromeBundleIdentifier)
-            else { return workspace.open(url) }
-            return await workspace.open(url, withApplicationAt: chrome)
+            return workspace.open(url)
         }
     }
 
@@ -274,16 +272,12 @@ public actor NativeActions: NativeActionExecuting {
             // Deliberately before URL resolution, workspace calls and focus-changing code.
             return receipt(action, .opened, "canary_ack")
         case .openURL:
-            guard let destination = OpenDestination.of(target, mattermostHost: mattermostHost), let url = URL(string: target)
+            guard let parts = URLComponents(string: target),
+                  ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+                  parts.user == nil, parts.password == nil,
+                  let host = parts.host, !host.isEmpty, let url = parts.url
             else { return receipt(action, .notAllowed, "none") }
-            // F6b: a link opens in Chrome, and Chrome is only opened in a profile it is already running in.
-            // Opening a stopped Chrome would start it in a remembered profile, which is a guess about the owner.
-            let browser = browserState()
-            if browser.installed && !browser.running {
-                log.notice("native action open_url browser_not_running guidance=\(NativeActions.browserNotRunningGuidance, privacy: .public)")
-                return receipt(action, .browserNotRunning, "browser")
-            }
-            return await open(url, isApplication: false, action: action, detail: destination.kind)
+            return await open(url, isApplication: false, action: action, detail: "web")
         case .openFile:
             guard let url = fileURL(target) else { return receipt(action, .notAllowed, extensionOf(target)) }
             guard FileManager.default.fileExists(atPath: url.path) else { return receipt(action, .notFound, extensionOf(target)) }
@@ -301,17 +295,17 @@ public actor NativeActions: NativeActionExecuting {
         else if target.hasPrefix("~/") { expanded = home.path + String(target.dropFirst(1)) }
         else if target.hasPrefix("/") { expanded = target }
         else { return nil }
-        guard !expanded.contains("/../") else { return nil }
         let resolved = URL(fileURLWithPath: expanded).resolvingSymlinksInPath().standardizedFileURL
-        return isInsideHome(resolved) ? resolved : nil
+        return resolved
     }
 
-    /// A bundle inside one of the three application folders, by name only.
+    /// Installed application by name through Launch Services, with standard-folder fallback.
     public func appURL(_ target: String) -> URL? {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("/"), !name.hasPrefix(".") else { return nil }
         let base = name.hasSuffix(".app") ? String(name.dropLast(4)) : name
         guard !base.isEmpty else { return nil }
+        if let path = NSWorkspace.shared.fullPath(forApplication: base) { return URL(fileURLWithPath: path) }
         for folder in [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications"), URL(fileURLWithPath: "/System/Applications")] {
             let candidate = folder.appendingPathComponent(base + ".app").resolvingSymlinksInPath().standardizedFileURL
             guard candidate.path.hasPrefix(folder.resolvingSymlinksInPath().standardizedFileURL.path + "/") else { continue }
@@ -331,10 +325,6 @@ public actor NativeActions: NativeActionExecuting {
     }
 
     private func open(_ url: URL, isApplication: Bool, action: NativeActionFrame.Action, detail: String) async -> NativeActionResult {
-        let now = clock()
-        opened = opened.filter { now.timeIntervalSince($0) < NativeActions.windowSeconds }
-        guard opened.count < NativeActions.openLimit else { return receipt(action, .notAllowed, detail) }
-        opened.append(now)
         let didOpen = await opener(url, isApplication)
         return receipt(action, didOpen ? .opened : .failed, detail)
     }

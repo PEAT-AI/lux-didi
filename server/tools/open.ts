@@ -48,7 +48,7 @@ export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string
   return { type: 'object', properties: { [tool.parameter]: shape }, required: [tool.parameter], additionalProperties: false };
 }
 
-/** Exactly one string argument, shaped like the action's target; the native side re-checks the allowlist. */
+/** Exactly one string argument, shaped like the action's target; the native side validates the action frame. */
 export function validateOpen(args: unknown, tool: (typeof OPEN_TOOLS)[number]): args is Record<string, string> {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const keys = Object.keys(args);
@@ -475,3 +475,54 @@ export const OPEN_TOOL_GUIDANCE = [
   ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.guidance}.`),
   `${OPEN_WEB_NAME}: site/map/search.`,
 ].join('\n');
+
+/** Worker-facing 10.10 schema. Authority is enforced by the task owner, not this executor. */
+export const OPEN_SCHEMA = {
+  name: 'open',
+  description: 'Open a web URL or named site, installed app, local file or shown source handle. Only opens; never types, clicks, sends or edits.',
+  parameters: { type: 'object', properties: { kind: { type: 'string', enum: ['web', 'app', 'file', 'source'] }, target: { type: 'string' } }, required: ['kind', 'target'], additionalProperties: false },
+} as const;
+
+export async function executeOpen(bus: NativeActionBus, runId: string, args: unknown): Promise<{ code: OpenReceiptCode }> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return { code: 'not_allowed' };
+  const value = args as Record<string, unknown>;
+  if (Object.keys(value).sort().join(',') !== 'kind,target' || typeof value.target !== 'string' || !value.target.trim()) return { code: 'not_allowed' };
+  let target = value.target.trim();
+  let action: NativeAction;
+  switch (value.kind) {
+    case 'source': {
+      const source = openTarget('open_source', { handle: target });
+      if (!('target' in source)) return { code: 'not_found' };
+      action = source.target.action;
+      target = source.target.target;
+      break;
+    }
+    case 'web': {
+      if (!/^https?:\/\//i.test(target)) {
+        // Named sites use the same search resolver as web lookup, not a host allowlist.
+        if (!/^[\w.-]+\.[a-z]{2,}(?:[/:?#].*)?$/i.test(target)) {
+          const port = webPort?.();
+          if (!port) return { code: 'not_found' };
+          const outcome = await port.search({ query: target, signal: new AbortController().signal });
+          if (!outcome.ok) return { code: 'not_found' };
+          const picked = pickSiteDomain(target, outcome.evidence.sources);
+          if (!('domain' in picked)) return { code: 'not_found' };
+          target = picked.domain;
+        }
+        target = `https://${target}`;
+      }
+      try {
+        const url = new URL(target);
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !url.hostname) return { code: 'not_allowed' };
+      } catch { return { code: 'not_allowed' }; }
+      action = 'open_url';
+      break;
+    }
+    case 'app': action = 'open_app'; break;
+    case 'file': action = 'open_file'; break;
+    default: return { code: 'not_allowed' };
+  }
+  const code = await bus.dispatch(runId, action, target);
+  nativeActionReceipt(action, code, receiptDetail(action, target));
+  return { code };
+}

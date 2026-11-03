@@ -437,7 +437,7 @@ export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not
 
 /** Compare exact owner tokens, never a substring in a retrieved passage or another URL. */
 export function ownerContainsURL(words: string, target: string): boolean {
-  return words.split(/\s+/u).some(word => word.replace(/^[('"<]+|[)'">,;.!?]+$/gu, '') === target);
+  return words.split(/\s+/u).some(word => word === target || word.replace(/^[('"<]+|[)'">,;.!?]+$/gu, '') === target);
 }
 
 export function publicOpenURL(target: string): boolean {
@@ -445,8 +445,8 @@ export function publicOpenURL(target: string): boolean {
     const url = new URL(target);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return false;
     const host = url.hostname.toLowerCase().replace(/\.$/u, '');
+    if (host.startsWith('[')) return /^\[[23][0-9a-f]{3}:/u.test(host) && !/^\[(?:2001:(?:db8|0):|2002:)/u.test(host);
     if (!host.includes('.') || /(?:^|\.)(?:localhost|local|internal|home|lan)$/u.test(host)) return false;
-    if (host.startsWith('[')) return /^\[[23][0-9a-f]{3}:/u.test(host) && !host.startsWith('[2001:db8:');
     if (/^\d+(?:\.\d+){3}$/u.test(host)) {
       const [a = 0, b = 0] = host.split('.').map(Number);
       if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))) return false;

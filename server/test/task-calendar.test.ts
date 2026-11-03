@@ -15,7 +15,7 @@ test('calendar_create_event dispatch has no attendees and requests no updates ev
   const calls: { toolName: string; arguments: Record<string, unknown> }[] = [];
   const port = { call: async (request: typeof calls[number]) => { calls.push(request); return { state: 'refused', reason: 'synthetic-capture' }; } } as unknown as McpPort;
   const reader = createGoogleReader({ port, registry, config: { endpointId, account: 'synthetic', resource: 'synthetic', schemaDigest: digest, generation: 1, family: 'calendar_write' } });
-  await reader.calendarCreateEvent({ summary: 'Synthetic work block', start: '2026-11-03T10:00:00Z', end: '2026-11-03T11:00:00Z', clientRequestId: 'synthetic-action', ...{ attendees: ['synthetic@example.com'], sendUpdates: 'all' } });
+  await reader.calendarCreateEvent({ summary: 'Synthetic work block', start: '2026-11-03T10:00:00Z', end: '2026-11-03T11:00:00Z', clientRequestId: 'synthetic-action', timeZone: 'UTC', ...{ attendees: ['synthetic@example.com'], sendUpdates: 'all' } });
   assert.equal(calls.length, 1, 'must exercise actual connector dispatch');
   assert.equal(calls[0]?.toolName, 'calendar_create_event');
   assert.equal(calls[0]?.arguments.attendees, undefined);

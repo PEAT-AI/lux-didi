@@ -1872,10 +1872,18 @@ test('current deadline query plan measures unrelated terminal history without a 
     measurements.push({ history, elapsedMs: performance.now() - start, ...result });
   };
   measure(0);
-  for (let i = 0; i < 1000; i++) {
-    const row = h.owner.create({ idempotencyKey: `history-${i}`, inputClass: 'ordinary' }, h.ctx);
-    h.owner.revoke(row.liveSessionId);
-    if (i === 99 || i === 999) measure(i + 1);
+  const terminal = h.owner.create({ idempotencyKey: 'history-template', inputClass: 'ordinary' }, h.ctx);
+  h.owner.revoke(terminal.liveSessionId);
+  // Build unrelated history in one fixture transaction, not 1000 prompt compilations and revocations.
+  const columns = h.store.transaction(tx => tx.all('PRAGMA table_info(live_sessions)').map(row => String(row['name'])));
+  const projection = columns.map(name => name === 'live_session_id' || name === 'idempotency_key' ? '?' : `"${name}"`).join(',');
+  for (const target of [100, 1000]) {
+    const start = target === 100 ? 1 : 100;
+    h.store.transaction(tx => {
+      for (let i = start; i < target; i++) tx.run(`INSERT INTO live_sessions SELECT ${projection} FROM live_sessions WHERE live_session_id=?`,
+        [`history-${i}`, `history-${i}`, terminal.liveSessionId]);
+    });
+    measure(target);
   }
   const accepted = h.owner.create({ idempotencyKey: 'plan-accepted', inputClass: 'ordinary' }, h.ctx);
   const plans = h.store.transaction(tx => ({
@@ -3533,20 +3541,22 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
   assert.deepEqual(Object.keys(record).sort(), ['event', 'liveSessionId', 'msSinceLastModelAudio', 'turnCompleteSeen'],
     'metadata only: no audio bytes, text, device label or provider payload');
 });
-test('an intent call answers with one model tool call from one host-side fan-out', async t => {
-  const h = await harness(t, { tools: true });
-  await attached(h, 'intent-search');
-  // C-TURN8: an owner-data tool answers the owner's turn, so the turn exists before the call.
-  await ownerSpoke(h, 'what do we know about lux didi');
-  h.f.send({ toolCall: { functionCalls: [{ id: 'i1', name: 'search', args: { query: 'lux didi' } }] } });
-  while (toolResponseCount(h) === 0) await tick();
-  assert.equal(toolResponseCount(h), 1, 'exactly one response for the one intent call');
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
-  assert.equal(response.toolResponse.functionResponses.length, 1);
-  assert.equal(response.toolResponse.functionResponses[0]!.id, 'i1');
-  assert.equal(response.toolResponse.functionResponses[0]!.name, 'search');
-  assert.match(response.toolResponse.functionResponses[0]!.response.text, /Synthetic insight/);
-  assert.deepEqual(h.calls.map(call => call.name), ['search_knowledge'], 'the intent expands to the internal read');
+test('a finalized request produces one task answer without a provider tool batch', async t => {
+  const p = progressPort(); let inferences = 0;
+  const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async () => {
+    inferences++; return { text: 'Synthetic records were checked.', calls: [] };
+  } });
+  await openPort(h, 'helper-answer');
+  p.emit({ type: 'inputTranscription', text: 'Check the synthetic records', finished: true, finalOrigin: 'provider' });
+  await settlePort();
+  assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
+  p.emit({ type: 'delegation', delegationId: 'binding-answer' });
+  await settlePort();
+  assert.equal(inferences, 1, 'a provider delegation attaches to current work, not a second inference');
+  assert.equal(p.taskAnswers.length, 1);
+  assert.equal(p.taskAnswers[0]?.delegationId, 'binding-answer');
+  assert.equal(p.taskAnswers[0]?.text, 'Synthetic records were checked.');
+  assert.equal(p.toolResponses.length, 0, 'client mode has no function-call output carrier');
 });
 
 test('a provider cancellation drops exactly the cancelled id and logs tool_cancelled', async t => {

@@ -1,3 +1,4 @@
+import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
 import './context-hygiene.test.js';
 import './host-log.test.js';

@@ -2,7 +2,7 @@ import { taskDefinitions, TASK_ACCOUNT } from '../tasks/chat.js';
 import type { TaskRuntime } from '../tasks/runtime.js';
 import type { RevisionIdentity } from '../tasks/controller.js';
 import { activateDiagnosticContext, closeDiagnosticContext, captureDiagnosticContext, diagnosticWithheld, initialDiagnosticContext, protectDiagnosticTrace, sealDiagnosticTrace, withholdDiagnostics } from '../trace/diagnostic-context.js';
-import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyCoverage } from '../tools/received-body.js';
+import { receivedBodyCoverage } from '../tools/received-body.js';
 import { historyEvidenceCurrent, type HistoryEvidence, type HistorySourceRef } from '../domain/history-reader.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { createHash, randomUUID } from 'node:crypto';

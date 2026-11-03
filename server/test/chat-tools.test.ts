@@ -1,5 +1,4 @@
 import { syntheticTaskFactory } from './synthetic-task.js';
-import type { ModelPort } from '../adapters/model/types.js';
 import { test, type TestContext } from 'node:test';
 import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
 import type { ChatStepEvent } from '../chat/types.js';

@@ -54,3 +54,22 @@ test('host runtime persists a real synthetic worker revision and delivery attemp
     runtime.close();
   } finally { store.close(); rmSync(directory, { recursive: true }); }
 });
+
+test('runtime retains outside exposure and host result URLs across a following task', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-context-fixture-'));
+  const store = new Store(directory); let inferred = 0;
+  try {
+    const runtime = new TaskRuntime({ store, delivery: new FakeDelivery(), contentAllowed: () => true,
+      authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: { get: async () => undefined, put: async () => {} } }),
+      execute: async () => ({ status: 'ok', text: 'Synthetic https://example.test/body', references: [{ id: 'mail', url: 'https://example.test/canonical' }], next_cursor: null, coverage: 'Whole.', repair: null }),
+      infer: async () => ++inferred === 1 ? { text: '', calls: [{ id: 'read', name: 'read_mail', args: { id: 'synthetic', cursor: null } }] } : { text: 'Read.', calls: [] },
+    });
+    const first = runtime.finalize('Read the synthetic mail', 1, 1); await first.result;
+    assert.ok(runtime.taskContext(first.revision.identity.task_id)?.exposures.length);
+    assert.deepEqual([...runtime.hostUrls(first.revision.identity.task_id)].sort(), ['https://example.test/body', 'https://example.test/canonical']);
+    const second = runtime.finalize('Save it', 1, 2); await second.result;
+    assert.ok(runtime.taskContext(second.revision.identity.task_id)?.exposures.length);
+    assert.deepEqual(runtime.hostUrls(second.revision.identity.task_id), runtime.hostUrls(first.revision.identity.task_id));
+    assert.equal(runtime.taskContext(second.revision.identity.task_id)?.ownerTurn, 2);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

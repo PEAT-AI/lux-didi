@@ -213,3 +213,25 @@ test('worker commit identity deduplicates revisions but not different arguments'
   await f.port.authorize({ ...f.request, args: { text: 'Different note' } }, f.execute, signal);
   assert.equal(f.executed(), 2);
 });
+
+test('abortion during admission cannot reach commit, paired with unaborted write', async () => {
+  const abort = new AbortController(); let executed = 0;
+  const permission = new Authority({ checkEffect: async () => { abort.abort(); return true; }, log: () => {}, journal: { get: async () => undefined, put: async () => {} } });
+  const port = createTaskAuthority(permission, { isCurrent: () => true,
+    taskContext: () => ({ id: 't', revision: 1, ownerWords: 'Save this note', ownerTurn: 1, exposures: ['mail'] }),
+    hostUrls: () => [], registry: () => registry });
+  const registry = createRegistry({ authority: port, execute: async () => portResult });
+  const request = portFixture().request;
+  const result = await port.authorize(request, async () => { executed++; return portResult; }, abort.signal);
+  assert.equal(result.repair, REPAIRS.cancelled); assert.equal(executed, 0);
+  const valid = portFixture(); await valid.port.authorize(valid.request, valid.execute, new AbortController().signal); assert.equal(valid.executed(), 1);
+});
+
+import { TASK_EFFECTS } from '../tasks/authority.js';
+test('each registry write has a closed effect mapping and accepted open schema replaces old kinds', () => {
+  const f = portFixture();
+  const registry = createRegistry({ authority: f.port, execute: async () => portResult });
+  for (const tool of registry.values()) if (tool.effect !== 'none') assert.ok(TASK_EFFECTS[tool.name], tool.name);
+  assert.ok(registry.has('find_file'));
+  assert.deepEqual((registry.get('open')!.parameters.properties as Record<string, { enum?: string[] }>).kind!.enum, ['web', 'app', 'file', 'source']);
+});

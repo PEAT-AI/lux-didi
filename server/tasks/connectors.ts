@@ -83,7 +83,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy));
   if (!capabilities.length) return [];
-  return [{ name: 'query_company', description: 'Query a configured company resource with its declared filters.', fields: {
+  return [{ outside: true, name: 'query_company', description: 'Query a configured company resource with its declared filters.', fields: {
     resource: { type: 'string', enum: [...new Set(capabilities.map(item => item.name))] },
     filters: { anyOf: capabilities.map(item => strictSchema(item.parameters)) },
   }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];

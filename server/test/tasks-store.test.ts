@@ -1,3 +1,5 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { FakeDelivery } from '../tasks/controller.js';
 import { Authority } from '../tasks/authority.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';

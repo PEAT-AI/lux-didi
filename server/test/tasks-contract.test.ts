@@ -127,8 +127,8 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
 
 test('configured schemas reject floats but accept integer bounds', () => {
   const ports = { execute: async () => documentResult('fixture', 'f'), authority: new FakeAuthority() };
-  assert.throws(() => createRegistry(ports, [{ name: 'fixture_float', description: 'fixture', fields: { value: { type: 'number', minimum: 0.1 } } }]), /Non-integer/);
-  assert.ok(createRegistry(ports, [{ name: 'fixture_integer', description: 'fixture', fields: { value: { type: 'integer', minimum: 1 } } }]).has('fixture_integer'));
+  assert.throws(() => createRegistry(ports, [{ outside: false, name: 'fixture_float', description: 'fixture', fields: { value: { type: 'number', minimum: 0.1 } } }]), /Non-integer/);
+  assert.ok(createRegistry(ports, [{ outside: false, name: 'fixture_integer', description: 'fixture', fields: { value: { type: 'integer', minimum: 1 } } }]).has('fixture_integer'));
 });
 
 test('configured connector executor forwards query operators and whole read bodies', async () => {

@@ -52,7 +52,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const receipts: ToolResult[] = [];
   const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
-  const finish = (): WorkerResult => ({ status: expired ? 'incomplete' : 'cancelled', text: findings.map(item => item.text).filter(Boolean).join('\n'), findings, receipts });
+  const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
+  const finish = (): WorkerResult => ({ status: expired ? 'incomplete' : 'cancelled', text: expired ? failureText : '', findings, receipts });
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
     const local = new AbortController();
@@ -106,7 +107,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: WORKER_INSTRUCTIONS, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete' }; }
+      } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete', text: failureText }; }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };

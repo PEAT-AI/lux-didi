@@ -601,7 +601,7 @@ function fixtureFile(name: string): string {
   return existsSync(adjacent) ? adjacent : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', name);
 }
 const PEOPLE_CHILD = fixtureFile('stdio-mattermost-people-child.mjs');
-const ECHO_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+const ECHO_CHILD = fixtureFile('stdio-mcp-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   let store = new Store(join(dir, 'data'), toolsMigrations);
@@ -781,7 +781,7 @@ async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: s
 // missing probe name is red there rather than at the first draft he asks for.
 test('W1030: each recorded write family discovers, preflights and probes with google_identity only', async t => {
   const recording = JSON.parse(readFileSync(fixtureFile('google-tools-list.json'), 'utf8'));
-  const writeChild = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-write-child.mjs');
+  const writeChild = fixtureFile('google-write-child.mjs');
   for (const [family, didiFamily] of [['gmail_draft', 'compose'], ['calendar_write', 'calendar_write']] as const) {
     const { dir, pidFile } = scratch();
     t.after(() => rmSync(dir, { recursive: true, force: true }));

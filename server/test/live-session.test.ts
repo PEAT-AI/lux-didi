@@ -5485,13 +5485,13 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
     taskInfer: async request => { inferences++; assert.match(request.input, /synthetic wire question/); return { text: 'The exact synthetic wire answer.', calls: [] }; },
   });
   const session = h.owner.create({ idempotencyKey: 'real-openai-task-wire', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach(session.liveSessionId, h.ctx); consumeTaskPort(t, attachment);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx); consumeTaskPort(t, attachment);
   await h.f.frame(1); h.f.send({ type: 'session.started', session: { id: 'synthetic-wire-session' } });
   await fixtureSettled(attachment.ready, 'real OpenAI session started');
   assert.deepEqual((h.f.frames[0] as unknown as { session: { delegation: unknown } }).session.delegation, { type: 'client' });
   h.f.send({ type: 'session.delegation.created', delegation: { id: 'synthetic-wire-binding' } });
   h.f.send({ type: 'session.input_transcript.delta', delta: 'Answer the synthetic wire question.' });
-  await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_events WHERE kind='inputTranscription'")?.n)) > 0, 'owner transcript on real wire');
+  await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='inputTranscription'")?.n)) > 0, 'owner transcript on real wire');
   // The actual adapter's ordinary sentence-ending quiet window is 700 ms, advanced virtually.
   clock.advance(700);
   await fixtureUntil(() => h.f.frames.some(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append'), 'real OpenAI helper answer');
@@ -5500,5 +5500,5 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   assert.equal(h.f.frames.some(frame => /^response\./.test(String((frame as unknown as { type?: string }).type))), false);
   h.f.send({ type: 'session.commentary.appended', client_event_id: command['event_id'] });
   h.f.send({ type: 'session.output_transcript.delta', delta: 'The exact synthetic wire answer.' });
-  await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_events WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
+  await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
 });

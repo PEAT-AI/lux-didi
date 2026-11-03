@@ -58,6 +58,25 @@ test('query exposure removes invented URL and site operator but preserves owner 
   assert.equal(searchQueryAfterExposure('https://evil.example', 'Find releases', true), '');
 });
 
+for (const expression of ['site:example.com', 'https://example.com/a']) {
+  for (const [left, right] of [['(', ')'], ['[', ']'], ['"', '"'], ["'", "'"]] as const) {
+    test(`F1 exposed search strips punctuated invented expression and preserves owner-authorized expression: ${left}${expression}${right}`, () => {
+      const query = `release ${left}${expression}${right}`;
+      assert.equal(searchQueryAfterExposure(query, 'Find release notes', true), 'release');
+      assert.equal(searchQueryAfterExposure(query, `Find release notes ${expression}`, true), query);
+      assert.equal(searchQueryAfterExposure(`release ${expression}`, `Find release notes ${left}${expression}${right}`, true), `release ${expression}`);
+      assert.equal(searchQueryAfterExposure(query, 'Find release notes', false), query);
+      assert.equal(searchQueryAfterExposure(query, `Find release notes ${expression}/different`, true), 'release');
+    });
+  }
+}
+
+test('F1 search recognizes expressions attached to ordinary punctuation without losing adjacent words', () => {
+  assert.equal(searchQueryAfterExposure('release,(site:evil.example)', 'Find release notes', true), 'release,');
+  assert.equal(searchQueryAfterExposure('release,(https://evil.example/a)', 'Find release notes', true), 'release,');
+  assert.equal(searchQueryAfterExposure('website:examples release', 'Find release notes', true), 'website:examples release');
+});
+
 test('Trello strips mentions and never retains a member assignment', () => {
   const result = normalizeTrelloWrite({ action: 'create', list: 'Inbox', name: 'Review @board release', description: 'Ask @synthetic-person about this', idMembers: ['synthetic-member'] });
   assert.equal(result.args.name, 'Review release');

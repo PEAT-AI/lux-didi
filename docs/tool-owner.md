@@ -165,3 +165,35 @@ Gmail search accepts a required nullable `cursor`: use null for the first page, 
 page tokens participate in read-cache identity. Other source search and merged multi-calendar results
 that cannot consume an upstream cursor stay partial, expose no `next_cursor`, and explicitly state
 that paging is not exposed rather than instructing an impossible continuation.
+## Task permission integration (10.10)
+
+The new authority module returns `allow`, or a closed refusal code with repair text.
+The controller owns argument validation, exposure declarations on every read tool,
+finalized owner turns, effect classification and stable journal action identity.
+`configuredEffectCheck` adapts the configured model client to the isolated boolean
+check. It must receive the same configured model port used by the task core, with
+its fastest current model selected for this role. No model identifier belongs in
+a tool or an authority test.
+
+The web search port accepts host-owned exposure state. Clean tasks are untouched.
+After exposure, split on whitespace and remove each whole token containing a
+scheme separator (`://`), `www.` or `site:`, in any case or punctuation. There is
+no owner-word comparison or exemption. Ordinary exposed questions still pass;
+private pasted-passage protections remain.
+
+Calendar creation constructs a closed dispatch object with no attendees and no
+update fields, even if surplus input has such fields. Trello write shapes do not
+offer member assignment, and normalization drops supplied member fields and strips
+mentions from text. Atlassian documents that mentions notify users in
+[commenting on cards](https://support.atlassian.com/trello/docs/commenting-on-cards/).
+Trello watchers can also receive service-generated activity notifications; stripping
+mentions is not a promise that shared-board activity is silent.
+
+`assertRegistryExposure(registry)` validates declared exposure for every read entry
+(`effect: null`). C-VOICE calls it on the actual registry once that registry exists.
+`Authority.authorize` accepts host-owned `webTarget`, `toolResultURLs` and
+`canonicalURLs` for web opens. Clean spoken tasks may open any public HTTPS URL
+without credentials or private addresses. After exposure, both the owner effect
+check and byte-exact result/canonical provenance apply. Worker arguments must never
+be used as provenance. The legacy open implementation and fixtures stay at base
+behavior. C-VOICE owns removal of the vault speech grammar with its caller bridge.

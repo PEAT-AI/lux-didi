@@ -71,3 +71,39 @@ Never publish real credentials, private profiles, board names, account content, 
 Same-user process separation is not an operating-system sandbox. Data-class enforcement is routing policy, not perfect sensitivity detection. Prompt-injection immunity, forensic erasure, guaranteed notification delivery and universal provider availability are not claimed. Future policy belongs in [roadmap.md](roadmap.md), not in descriptions of the installed release.
 
 Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.
+
+## Task authority port (10.10)
+
+`server/tasks/authority.ts` provides `Authority.authorize(request)` and a separate
+journaled `commit(identity, execute)` boundary. The task controller supplies validated
+arguments, finalized owner words and host-owned task/revision identity. An action
+identity must be stable across retries and distinct for different actions. The journal
+adapter must durably persist records before resolving its writes. A pending outcome
+is not permission to execute a second time.
+
+Outside mail, chat, web, drive and company bodies, including their retained memory
+evidence, expose a task. Calendar, alarms and purely local memory do not. After
+exposure an isolated effect check sees only finalized owner words, the immediately
+preceding owner task for a short follow-up, and a closed effect kind. It never sees
+targets, payloads or worker history. The host caches one check per task revision and
+effect kind. A failed or timed-out check allows the local effect and logs failure,
+following the explicit product tradeoff. No send tool is introduced.
+
+The configured effect client is injected through the model port. Deployment selects
+one provider and its fastest current model for this role, never a 6.0 model. The
+authority module does not select or hardcode a provider or model identifier. Tests
+use fakes, never a provider. Delete confirmation binds the exact staged calendar
+event to a later finalized owner turn.
+
+The old live authority remains until the task adapter switches. Callers of the web
+search port must pass the host-owned `exposed` state. After outside reads the
+query is split on whitespace and every whole token containing `://`, `www.` or
+`site:` is removed, case-insensitively and regardless of punctuation. There is no
+owner-word URL exemption. Clean tasks are untouched. `publicQueryOf` still
+keeps addresses, long digit sequences, markup and pasted passages out of queries;
+ordinary short questions remain valid. On clean tasks any public HTTPS URL may open, without a URL in spoken owner words.
+Credentials, localhost and private ranges are refused. After outside exposure, open
+is an effect under the same isolated check. Its URL must also be byte-exact to a
+string in a tool result or a connector canonical link. Synthesized or extended
+URLs are rejected rather than rewritten. The legacy live open path stays unchanged
+until C-VOICE wires the task authority.

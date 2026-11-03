@@ -108,7 +108,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     const runtime = taskFactory(...args), runTool = runtime.runTool.bind(runtime);
     let reported = false;
     runtime.runTool = async (...parameters) => {
-      try { return await runTool(...parameters); }
+      try { console.error('CHAT_TASK_CALLED', parameters[0]); const result = await runTool(...parameters); console.error('CHAT_TASK_RESULT', result.status, result.repair); return result; }
       catch (error) { if (!reported) { reported = true; console.error('CHAT_TASK_EXECUTION', String(error)); } throw error; }
     };
     return runtime;

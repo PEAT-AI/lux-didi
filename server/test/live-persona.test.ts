@@ -1410,9 +1410,9 @@ test('client-mode composition retains work and spoken delivery without declared 
 });
 
 test('work policy survives over-target composition, memory and runtime yield with sizes logged', () => {
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE });
-  const overlay = { schemaVersion: 1 as const, text: 'O'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - baseline.text.length + 100) };
-  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay,
+  const overlay = validatePersonaOverlay({ schemaVersion: 1, text: 'O'.repeat(12_000) });
+  const ownerProfile = syntheticOwner('S'.repeat(16_000), 'L'.repeat(10_000));
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, ownerProfile,
     memory: 'M'.repeat(MEMORY_SECTION_CHAR_LIMIT), runtimeContext: 'R'.repeat(1000), tools: [] });
   assert.ok(composed.text.length > LIVE_INSTRUCTION_TARGET_CHARS);
   assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT);

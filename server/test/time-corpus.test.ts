@@ -17,6 +17,7 @@ import type { ToolCallIntent } from '../adapters/model/types.js';
 import { fixture } from './live-voice-fixture.js';
 import { eventWindow, namedOthers } from '../tools/compose.js';
 import { checkOwnerTime } from '../tools/time-check.js';
+import { parseAlarmTime } from '../tools/alarm.js';
 
 interface CorpusRow {
   id: string; words: string; now: string; tz: string; args: Record<string, unknown>;

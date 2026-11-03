@@ -112,3 +112,15 @@ test('provider continuations retain encrypted reasoning and Gemini thought signa
     assert.equal((await runWorker({ registry, infer, identity: { task_id: 't', task_revision: 1, connection_generation: 1 }, input: 'fixture', signal: new AbortController().signal })).status, 'no_action');
   }
 });
+
+test('real connector wire shapes retain thread bodies, event times and ranked Markdown labels', async () => {
+  const { projectTaskPayload } = await import('../tasks/connectors.js');
+  const thread = projectTaskPayload('read_thread', { posts: { p: { id: 'p', user_id: 'u', message: 'whole thread body', create_at: '2026-01-01' } }, order: ['p'] }, { ref: 'p' });
+  assert.match(thread.text, /whole thread body/);
+  const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
+  assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
+  const ranked = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
+  assert.equal(ranked.references[0]?.match, 'exact');
+  const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
+  assert.equal(neighbour.status, 'no_match'); assert.equal(neighbour.text, '');
+});

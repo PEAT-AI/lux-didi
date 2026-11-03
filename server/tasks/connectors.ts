@@ -34,24 +34,47 @@ function payload(value: unknown): unknown {
   }
   return root.data !== undefined ? root.data : value;
 }
+function posts(root: Record<string, unknown>): Record<string, unknown>[] {
+  if (Array.isArray(root.posts)) return root.posts.map(record);
+  if (root.posts && typeof root.posts === 'object') {
+    const map = record(root.posts), order = Array.isArray(root.order) ? root.order : Object.keys(map);
+    return order.map(id => record(map[String(id)]));
+  }
+  return [root.root, ...(Array.isArray(root.replies) ? root.replies : [])].filter(Boolean).map(record);
+}
+/** The knowledge service's Markdown row header is a structural wire format, not query interpretation. */
+function rankedText(raw: string): RankedItem[] {
+  return raw.split('\n').flatMap(line => {
+    const match = /^\*\*#(\d+)\*\*\s+(?:\[[^\]]+\]\s+)?(.+)$/.exec(line);
+    return match ? [{ id: match[1]!, title: match[2]!.trim() }] : [];
+  });
+}
+function eventTime(value: unknown): string {
+  return typeof value === 'string' ? value : text(record(value).dateTime ?? record(value).date);
+}
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
+  if ((name === 'search_knowledge' || name === 'search_company') && typeof data === 'string') {
+    const rows = rankedText(data);
+    return rows.length ? rankedResult(text(args.query), rows) : failed('The source returned no structured ranked candidates. Try a broader query; this is not proof of absence.');
+  }
   if (name.startsWith('read_')) {
-    const body = typeof data === 'string' ? data : text(root.body ?? root.text ?? root.content);
+    const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
+    const body = typeof data === 'string' ? data : thread || text(root.body ?? root.text ?? root.content);
     if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.');
     return documentResult(name === 'read_mail' ? cleanMailBody(body) : body, id, text(args.cursor) || '0');
   }
-  const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray);
+  const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
   if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String(item.id ?? item.ref ?? item.file_id ?? '');
     if (!itemId) return [];
-    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject), text: text(item.snippet ?? item.excerpt ?? item.text).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
+    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
   if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
-  return { status: next ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: next || null,
+  return { status: next || root.sourceIncomplete === true ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: next || null,
     coverage: `${items.length} returned items.${next ? ' More results exist; continue with the returned cursor.' : ' Connector returned no continuation.'}`, repair: null };
 }
 /** Capability-specific query tools avoid a free-form filters blob. Every field comes from configuration. */

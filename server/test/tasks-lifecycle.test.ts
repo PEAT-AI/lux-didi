@@ -112,3 +112,15 @@ test('outside text is tracked by the host across inference turns', async () => {
   } });
   assert.equal(authority.requests[0]?.outside_text, true);
 });
+
+test('no hop cap and the revision deadline is independent of individual call deadlines', async () => {
+  let hops = 0;
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => documentResult('verified', 'm') });
+  const complete = await runWorker({ registry, identity, input: 'fixture', signal: new AbortController().signal,
+    infer: async () => ++hops > 30 ? { text: 'thirty hops complete', calls: [] } : { text: '', calls: [{ id: String(hops), name: 'read_mail', args: { id: 'm', cursor: null } }] } });
+  assert.equal(complete.status, 'complete'); assert.equal(hops, 31);
+  const clock = new FakeClock(); hops = 0;
+  const expired = await runWorker({ registry, identity, input: 'fixture', signal: new AbortController().signal, clock,
+    infer: async () => { clock.advance(11000); return { text: '', calls: [{ id: String(++hops), name: 'read_mail', args: { id: 'm', cursor: null } }] }; } });
+  assert.equal(expired.status, 'incomplete'); assert.equal(hops, 4); assert.match(expired.text, /verified/);
+});

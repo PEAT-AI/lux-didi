@@ -1,4 +1,3 @@
-import type { LiveRunConnections } from '../tools/index.js';
 import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
@@ -115,7 +114,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       acceptance = store.transaction(tx => JSON.parse(String(tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])!.acceptance_json)) as RunAcceptance);
     } else {
       // T8-FIX-R1: public owner API until W-U supplies the real ChatService builder.
-      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: store.transaction(tx => (runtime.owner as typeof runtime.owner & LiveRunConnections).durableConnectionIds?.(tx) ?? runtime.connectionIds()) };
+      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: runtime.connectionIds().filter(id => (runtime.registry.currentGrant(id)?.toolNames.length ?? 0) > 0) };
       const hash = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance).sha256);
       chatAuthorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
     }
@@ -155,7 +154,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);
-  assert.match(JSON.stringify(responses), /synthetic lux-knowledge read/);
+  assert.match(JSON.stringify(responses), /Synthetic result/);
   assert.match(JSON.stringify(responses), /Synthetic mail/);
   assert(!JSON.stringify(responses).includes('synthetic mattermost read'));
   const rows = h.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
@@ -214,7 +213,7 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   const result = JSON.parse(String(rows[0]!.result_json));
   assert.equal(result.response.reason, expected);
   assert.equal(rows[0]!.state, 'unknown', 'SDK-rejected result preserves the existing unknown-outcome contract');
-  assert.equal(observed.outcome.reason, expected);
+  assert.equal(observed.outcome.status, 'complete'); assert.equal(observed.outcome.reason, 'stop', 'the helper can continue after a verified connector failure');
   const logs = h.logRows(); assert.equal(logs.length, 1);
   assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
   assert.equal(logs[0]!['tool'], 'search_knowledge'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
@@ -235,7 +234,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   const observed = await h.read(runtime, run.host, ['lux-knowledge']);
   assert.equal(observed.outcome.status, 'complete');
   const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
-  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
+  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'no_match', 'ranked neighbours are not exact title matches');
   const saved = JSON.parse(String(rows[0]!.result_json));
   assert.equal(saved.response.status, 'completed');
   assert.match(saved.response.text, /knowledge results: 1/);

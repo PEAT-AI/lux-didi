@@ -589,6 +589,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const nativeReader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
         const reader = { ...nativeReader, call: async (...args: Parameters<typeof nativeReader.call>) => {
           const evidence = await nativeReader.call(...args);
+          if ('reason' in evidence && isToolFailureCode(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);

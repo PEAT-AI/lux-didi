@@ -13,7 +13,6 @@ import { declarationsFor } from '../tools/declarations.js';
 import { chatCapabilities } from '../chat/context.js';
 import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
 import { createHash } from 'node:crypto';
-import type { ConnectionPolicy } from '../tools/types.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 
 const accepted = new Set(['type', 'properties', 'required', 'description', 'enum', 'nullable']);

@@ -46,6 +46,7 @@ export class TaskDelivery implements Delivery {
   }
   seedReconnect(): void {
     const pending = this.#current(); if (!pending) return;
+    if (!pending.reconnect) this.ports.state(pending.identity, 'reconnect', pending.chunk);
     this.#stopTimer(); pending.reconnect = true; pending.seeded = true;
     pending.command = undefined; pending.transcript = ''; pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
   }
@@ -91,7 +92,7 @@ export class TaskDelivery implements Delivery {
   rejected(command: string): void {
     const pending = this.#current();
     if (pending?.command !== command) return;
-    this.ports.state(pending.identity, 'rejected', pending.chunk); this.#fallback();
+    this.#fallback();
   }
   transcript(text: string): void {
     const pending = this.#current(); if (!pending) return;

@@ -60,7 +60,7 @@ import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
 import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
-import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
+import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
@@ -2045,7 +2045,7 @@ test('Live keeps no background tool job and never delivers a result to an ended 
   const { session } = await attached(h);
   await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  while (!h.calls.length) await tick();
+  await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
   h.owner.revoke(session.liveSessionId);
   finish();
   await tick(); await tick();
@@ -2062,7 +2062,7 @@ test('Live awaits a slow tool call inline and never creates a background job', a
   await ownerSpoke(h);
   assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  while (!h.calls.length) await tick();
+  await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 0, 'Live never defers a tool call');
   finish();
   await h.f.frame(2);
@@ -2133,7 +2133,7 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  while (!h.calls.length) await tick();
+  await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
   h.f.send({ serverContent: { interrupted: true } });
   let sawInterrupted = false;
   while (!sawInterrupted) {
@@ -2290,7 +2290,7 @@ test('Live revocation invalidates authority and discards an in-flight result', a
   const { session, attachment } = await attached(h);
   await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'late', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  await started.promise; assert.equal(h.owner.current().state, 'thinking');
+  await fixtureSettled(started.promise, 'started task callback'); assert.equal(h.owner.current().state, 'thinking');
   h.owner.revoke(session.liveSessionId); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   finish.resolve(); await attachment.done;
   assert.equal(h.f.frames.length, 1);
@@ -2499,7 +2499,7 @@ test('pending tool call at the resume cut gets one lost result and never dispatc
   await ownerSpoke(h);
   const acceptance = h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId]));
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-tool-resumption-secret' }, toolCall: { functionCalls: [{ id: 'lost-call', name: 'lux_search_knowledge', args: { query: 'test', limit: 1 } }] } });
-  await entered.promise;
+  await fixtureSettled(entered.promise, 'entered task callback');
   assert.equal(h.calls.length, 0);
   h.f.send({ goAway: { timeLeft: '10s' } });
   await h.f.frame(2);
@@ -3232,7 +3232,7 @@ test('a pending tool call is never answered on the rebuilt socket', async t => {
   for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ toolCall: { functionCalls: [{ id: 'keep1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  while (!h.calls.length) await tick();
+  await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
   failUpstream(sockets[0]);
   attachment.sendAudio({ pcm });
   await continuity(output, 'rebuilding');
@@ -3554,7 +3554,7 @@ test('a provider cancellation drops exactly the cancelled id and logs tool_cance
       { id: 'keep', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
       { id: 'drop', name: 'search_knowledge', args: { query: 'y', limit: 1 } },
     ] } });
-    while (!h.calls.length) await tick();
+    await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
     h.f.send({ toolCallCancellation: { ids: ['drop'] } });
     for (let i = 0; i < 40 && !events.some(entry => entry.event === 'tool_cancelled'); i++) await tick();
     release();
@@ -3671,7 +3671,7 @@ test('F4: a barge-in keeps THINKING while the call is still in flight, and her a
   const { session, attachment } = await attached(h, 'f4-barge');
   await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  await started.promise;
+  await fixtureSettled(started.promise, 'started task callback');
   assert.equal(h.owner.current().state, 'thinking');
   h.f.send({ serverContent: { interrupted: true } });
   await drain(h, session.liveSessionId, 3);
@@ -3972,7 +3972,7 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   } });
   t.after(detach);
   h.f.send({ toolCall: { functionCalls: [{ id: 'watchdog1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  while (!h.calls.length) await tick();
+  await fixtureUntil(() => h.calls.length > 0, 'host tool dispatch');
   h.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
   scheduler.runDue(); await tick();
   const fired = receipts.filter(record => record.event === 'live_watchdog' && record['phase'] !== 'armed').map(record => record['phase']);
@@ -5618,7 +5618,7 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
       { id: 'cached-calendar-small', name: 'calendar_list_calendars', args: { maxResults: 1 } },
       { id: 'slow', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
     ] } });
-    await started.promise;
+    await fixtureSettled(started.promise, 'started task callback');
     if (boundary === 'revoke') h.toolRegistry!.revoke('calendar');
     if (boundary === 'suspend') h.toolRegistry!.suspend('calendar');
     finish.resolve();

@@ -1782,7 +1782,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
         assert.equal(Boolean(read), recoveredAt !== Infinity, 'the frozen canonical read capability follows recovered native publication');
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).reference_id, { type: 'string' });
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string' });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));

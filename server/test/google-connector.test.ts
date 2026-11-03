@@ -385,7 +385,7 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
   }
 });
 
-test('the canonical search_email reaches the approved Google fixture and returns structured evidence', async () => {
+test('the canonical search_mail reaches the approved Google fixture and returns structured evidence', async () => {
   noteGmailAccount(undefined);
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
   const { dir: childDir, pidFile } = scratch();
@@ -423,13 +423,13 @@ test('the canonical search_email reaches the approved Google fixture and returns
 
     const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic Google mail');
     try {
-      assert.ok(task.tools.some(tool => tool.name === 'search_email'));
+      assert.ok(task.tools.some(tool => tool.name === 'search_mail'));
       assert.equal(task.tools.some(tool => tool.name === 'gmail_search_messages'), false, 'native names are not a second model catalog');
       assert.equal(task.tools.some(tool => tool.name === 'gmail_send'), false);
-      const definition = task.tools.find(tool => tool.name === 'search_email')!;
-      const callArgs = { query: 'synthetic' };
+      const definition = task.tools.find(tool => tool.name === 'search_mail')!;
+      const callArgs = { query: 'synthetic', cursor: null };
       const intent = owner.taskIntent({ ...live!, executionId: 'run:1:0', callId: 'synthetic-call',
-        accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, 'search_email', callArgs);
+        accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, 'search_mail', callArgs);
       assert.equal(owner.journal.intent(intent), 'fresh');
       const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
       assert.equal(outcome.status, 'completed');

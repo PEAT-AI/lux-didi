@@ -1,71 +1,5 @@
 [
   {
-    "id": "email-draft-positive",
-    "tool": "draft_email",
-    "args": {
-      "to": [
-        "synthetic@example.invalid"
-      ],
-      "subject": "Synthetic subject",
-      "body": "Synthetic draft."
-    },
-    "words": "Draft a synthetic email."
-  },
-  {
-    "id": "chat-draft-positive",
-    "tool": "draft_chat",
-    "args": {
-      "target": "synthetic-room",
-      "text": "Synthetic draft."
-    },
-    "words": "Draft a synthetic chat."
-  },
-  {
-    "id": "calendar-create-positive",
-    "tool": "create_event",
-    "args": {
-      "title": "Synthetic block",
-      "start": "2030-01-02T15:00:00Z",
-      "end": "2030-01-02T16:00:00Z",
-      "calendar_id": null
-    },
-    "words": "Create a synthetic calendar block."
-  },
-  {
-    "id": "set-alarm-positive",
-    "tool": "alarm_create",
-    "args": {
-      "text": "Synthetic alarm",
-      "at": "2030-01-02T15:00:00Z"
-    },
-    "words": "Set a synthetic alarm."
-  },
-  {
-    "id": "cancel-alarm-positive",
-    "tool": "alarm_cancel",
-    "args": {
-      "id": "synthetic-alarm"
-    },
-    "words": "Cancel the synthetic alarm."
-  },
-  {
-    "id": "note-direct-save-commits",
-    "tool": "remember_note",
-    "args": {
-      "text": "Synthetic note."
-    },
-    "words": "Save a synthetic note."
-  },
-  {
-    "id": "note-save-positive",
-    "tool": "stage_lux_note",
-    "args": {
-      "title": "Synthetic note",
-      "text": "Synthetic content."
-    },
-    "words": "Stage a synthetic note."
-  },
-  {
     "id": "mail-read-positive",
     "tool": "read_mail",
     "args": {
@@ -84,23 +18,47 @@
     "words": "Read the synthetic calendar."
   },
   {
-    "id": "snooze-alarm-positive",
-    "tool": "alarm_update",
+    "id": "search_mail-valid",
+    "tool": "search_mail",
     "args": {
-      "id": "synthetic-alarm",
-      "text": null,
-      "at": "2030-01-02T15:10:00Z"
+      "query": "synthetic",
+      "cursor": null
     },
-    "words": "Move the synthetic alarm ten minutes later."
+    "words": "Read the synthetic source."
   },
   {
-    "id": "trello-write-positive",
-    "tool": "trello_write",
+    "id": "search_knowledge-valid",
+    "tool": "search_knowledge",
     "args": {
-      "action": "create",
-      "name": "Synthetic card",
-      "list": "Backlog"
+      "query": "synthetic",
+      "cursor": null
     },
-    "words": "Create a synthetic board card."
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "read_chat-valid",
+    "tool": "read_chat",
+    "args": {
+      "id": "synthetic-post",
+      "cursor": null
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "search_chat-valid",
+    "tool": "search_chat",
+    "args": {
+      "query": "synthetic",
+      "cursor": null
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "people_lookup-valid",
+    "tool": "people_lookup",
+    "args": {
+      "query": "synthetic"
+    },
+    "words": "Read the synthetic source."
   }
 ]

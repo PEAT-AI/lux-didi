@@ -859,3 +859,45 @@ test('task audit distinguishes no tasks, missing schema and reader errors', asyn
   assert.match(buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }).coverage, /unavailable/);
   assert.throws(() => buildTaskAudit({ all: () => { throw new Error('synthetic I/O failure'); } }), /synthetic I\/O failure/);
 });
+
+test('task audit reads lifecycle and delivery host events without content', async () => {
+  const { createRequire } = await import('node:module');
+  const { readFileSync } = await import('node:fs');
+  const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const events = readFileSync(new URL('../../test/fixtures/live-boundary/task-events.jsonl', import.meta.url), 'utf8').trim().split('\n').map(text => ({ stream: 'host', callId: 'synthetic-call', record: JSON.parse(text) }));
+  const audit = buildTaskAudit({ all: () => [] }, events, { callId: 'synthetic-call' });
+  assert.deepEqual(audit.lifecycle.map((value: { phase: string }) => value.phase), ['start', 'revision']);
+  assert.equal(audit.lifecycle[1].connectionGeneration, 2);
+  assert.deepEqual(audit.deliveryEvents.map((value: { state: string }) => value.state), ['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
+  assert.deepEqual(audit.deliveryStates, { sent: 1, accepted: 1, heard: 1 });
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.match(audit.gaps.join(' '), /Promises.*unavailable/);
+  assert.equal(JSON.stringify(audit).includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+  const unrelated = buildTaskAudit({ all: () => [] }, events, { callId: 'another-call' });
+  assert.equal(unrelated.deliveryEvents.length, 0);
+  assert.equal(unrelated.unjoinedTaskEvents, 8);
+  assert.equal(unrelated.deliveryStates.heard, null);
+  const missingStore = buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }, events);
+  assert.equal(missingStore.deliveryStates.heard, 1);
+  const invalid = buildTaskAudit({ all: () => [] }, [
+    { stream: 'native', record: events[0]!.record },
+    { record: { event: 'task_delivery', task_id: 'synthetic-task', revision: 1, state: 'delivered' } },
+    { record: { event: 'task_lifecycle', task_id: 'synthetic-task', revision: -1, connection_generation: 1, phase: 'start' } },
+  ]);
+  assert.equal(invalid.lifecycle.length, 0); assert.equal(invalid.deliveryEvents.length, 0);
+});
+
+test('task audit CLI reads only synthetic host-log metadata', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url)), 'task-log',
+    fileURLToPath(new URL('../../test/fixtures/live-boundary/task-events.jsonl', import.meta.url)), '--json',
+  ], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  const audit = JSON.parse(result.stdout);
+  assert.equal(audit.lifecycle.length, 2);
+  assert.equal(audit.deliveryStates.heard, 1);
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.equal(result.stdout.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+});

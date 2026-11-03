@@ -1,18 +1,41 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { cases, setMutation, dispatchScenario } from './harness.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { cases, setMutation, dispatchScenario, historyScenario, multiReadScenario, injectedScenario, invalidReadScenario } from './harness.js';
 
-const scenarios = JSON.parse(readFileSync(new URL('../../../test/fixtures/live-boundary/tasks.json', import.meta.url), 'utf8')) as string[];
-const dispatch = JSON.parse(readFileSync(new URL('../../../test/fixtures/live-boundary/dispatch.json', import.meta.url), 'utf8')) as { id: string; tool: string; args: Record<string, unknown>; words: string }[];
-for (const scenario of dispatch) { scenarios.push(scenario.id); cases[scenario.id] = () => dispatchScenario(scenario); }
+const directory = new URL('../../../test/fixtures/live-boundary/', import.meta.url);
+type Scenario = { id: string; case: string; tool: string; args: Record<string, unknown>; words: string | string[]; count: number; source: string; allowed: boolean; completeArguments?: boolean };
+const scenarios: { name: string; run: () => Promise<void> }[] = [];
+for (const file of readdirSync(directory).filter(name => name.endsWith('.json')).sort()) {
+  const data = JSON.parse(readFileSync(new URL(file, directory), 'utf8'));
+  if (file === 'tasks.json') {
+    for (const name of data as string[]) {
+      const run = cases[name]; assert.ok(run, `No executable scenario: ${name}`); scenarios.push({ name, run });
+    }
+    continue;
+  }
+  const entries = (Array.isArray(data) ? data : data.scenarios) as Scenario[];
+  assert.ok(Array.isArray(entries), `Fixture has no scenarios: ${file}`);
+  for (const scenario of entries) {
+    let run: () => Promise<void>;
+    switch (scenario.case ?? 'dispatch') {
+      case 'dispatch': run = () => dispatchScenario({ ...scenario, words: scenario.words as string }); break;
+      case 'history': run = () => historyScenario(scenario.words as string[]); break;
+      case 'multi-read': run = () => multiReadScenario(scenario.count); break;
+      case 'injected': run = () => injectedScenario(scenario.source, scenario.allowed); break;
+      case 'invalid-read': run = () => invalidReadScenario(scenario.tool); break;
+      default: {
+        const execute = cases[scenario.case]; assert.ok(execute, `No executable scenario: ${scenario.case}`); run = execute;
+      }
+    }
+    scenarios.push({ name: scenario.id, run });
+  }
+}
+assert.equal(new Set(scenarios.map(s => s.name)).size, scenarios.length, 'Scenario ids must be unique');
 let failures = 0;
-for (const name of scenarios) {
-  const run = cases[name];
-  if (!run) { console.error(`FAIL ${name}: no executable scenario`); failures++; continue; }
+for (const { name, run } of scenarios) {
   try {
     await run(); console.log(`PASS ${name}`);
-    // Change the first concrete equality expectation, then restore it. A non-assertion
-    // failure is not proof that the scenario detected the broken expectation.
+    // Invert one concrete equality expectation and observe red, then restore.
     setMutation(true);
     let red = false;
     try { await run(); } catch (error) {

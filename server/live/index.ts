@@ -1313,10 +1313,10 @@ const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensi
 // speech is 64 rows: the window is ten minutes, capped so one session cannot grow it without bound.
 const MEMORY_WINDOW_MS = 10 * 60 * 1000;
 const MEMORY_WINDOW_ROWS = 2_000;
-// C-FREEDOM: a paraphrase of his own words is a note, so one content word in five is enough
-// support and the note saves. A note that shares no content word with him is invention, and the
-// polarity check below still refuses the opposite claim.
-const MEMORY_SUPPORT_RATIO = 0.2;
+// C-FREEDOM: a paraphrase of his own words is a note, and a paraphrase may share no content word at
+// all ("I am exhausted" is "Owner feels tired"). So no shared word refuses nothing here: a span that
+// does share one is the better source, otherwise his latest turn is, and the polarity check below is
+// the only refusal on this path. A note he can correct costs him less than a refusal.
 const MEMORY_STOP_WORDS = new Set(['i', 'my', 'me', 'a', 'an', 'to', 'on', 'is', 'of', 'rather', 'the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
   'had', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'about', 'into', 'than', 'then', 'they', 'them', 'there',
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
@@ -1440,7 +1440,8 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
       for (let index = first; index <= end; index++) for (const word of turnTokens[index]!) spoken.add(word);
       const supported = words.filter(word => spoken.has(word));
       const ratio = words.length ? supported.length / words.length : 0;
-      if (ratio < MEMORY_SUPPORT_RATIO) continue;
+      // A shared content word is the better source for the note, never the condition that lets it save.
+      if (!supported.length) continue;
       ask = { turn: turns[end]!, ratio, supported: supported.length,
         request: turns.slice(first, end + 1).map(turn => turn.text).join(' '),
         feels: feel(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
@@ -1464,6 +1465,15 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     const previous = turns[turns.length - 1];
     if (previous) ask = { turn: previous, ratio: 1, supported: words.length, request: previous.text,
       feels: feel(dominantClause(previous.text, wordSet)) };
+  }
+  if (!ask) {
+    // C-FREEDOM: a paraphrase can share no content word with him, so his latest turn is its source.
+    // Only polarity refuses from here, so this is the ask the note is written against.
+    const latest = turns[turns.length - 1];
+    if (latest) {
+      ask = { turn: latest, ratio: 0, supported: 0, request: latest.text,
+        feels: feel(dominantClause(latest.text, wordSet)) };
+    }
   }
   if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner

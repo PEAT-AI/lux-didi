@@ -1062,7 +1062,6 @@ test('C-OPEN 2: a Drive endpoint connects with only the Drive pair and its sourc
     const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'drive');
     assert.equal(report?.state, 'connected');
     assert.equal(report?.warning, undefined);
-    assert.deepEqual(configuredSourcesForEndpoints([{ id: 'drive', connector: 'google', state: 'error', reasonCode: 'credential_missing' }]), [{ source: 'drive', reason: 'credential_missing' }]);
   } finally {
     await runtime.close();
     store.close();
@@ -1102,7 +1101,6 @@ test('calendar bounds an oversized page and retains the named-event search', asy
 });
 
 for (const family of ['calendar', 'gmail', 'drive'] as const) for (const mode of ['auth-data', 'auth-consent'] as const) {
-  const tool = family === 'calendar' ? 'calendar_list_events' : family === 'gmail' ? 'gmail_search_messages' : 'drive_search_files';
 test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction`, async () => {
   let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));

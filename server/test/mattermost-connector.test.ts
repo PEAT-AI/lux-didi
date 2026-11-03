@@ -12,13 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { CompletedResult, EndpointConfig, McpPort } from '../adapters/mcp/port.js';
+import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { runToolCalls } from '../tools/declarations.js';
 import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));

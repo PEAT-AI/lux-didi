@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_VOICE_TOOLS, NAYA_BACKEND_PROCEDURE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_WORK_DELIVERY, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -330,28 +330,18 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 
 // N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
-test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
-  const { NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  // W5-R1: #453 folded the cut-short rule into one enumeration of outcome types. Timeout sits beside no
-  // match in that one sentence, so an empty read and a cut read stay apart without a second rule.
-  const outcomes = 'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.';
-  assert.ok(NAYA_VOICE_TOOLS.includes(outcomes), 'a cut read is named separately from a no match in one sentence');
-  assert.ok(NAYA_VOICE_TOOLS.indexOf('timeout') > NAYA_VOICE_TOOLS.indexOf('no match'), 'the cut read is stated after the no match, so neither is read as the other');
-  assert.ok(NAYA_TOOLS.includes(outcomes), 'the direct-tool conduct keeps the same distinction');
-});
-
 test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
   // VOICE-R1: waiting behaviour is one persona rule, and no section tells the model to speak before every lookup.
-  assert.equal(NAYA_VOICE_TOOLS.includes("Silence while you look something up is fine."), false, 'C-LIVE: silence while looking is no longer licensed');
-  assert.ok(NAYA_VOICE_TOOLS.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
+  assert.equal(NAYA_WORK_DELIVERY.includes("Silence while you look something up is fine."), false, 'C-LIVE: silence while looking is no longer licensed');
+  assert.ok(NAYA_WORK_DELIVERY.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
   // C-OPENER 10.9: the field calls said a waiting phrase with no call behind them, once after a direct ask.
   // The licence to announce a wait is gone; the rule names the two situations instead of a line to say.
-  assert.equal(NAYA_VOICE_TOOLS.includes('need a moment'), false, 'no text invites a wait with no call behind it');
-  assert.ok(NAYA_VOICE_TOOLS.includes('A wait belongs only to a response that really makes a call'), 'a wait is tied to a response that makes the call');
-  assert.ok(NAYA_VOICE_TOOLS.includes('a direct ask gets the call, not an announcement of it'), 'a direct ask gets the call, not an announcement');
+  assert.equal(NAYA_WORK_DELIVERY.includes('need a moment'), false, 'no text invites a wait with no call behind it');
+  assert.ok(NAYA_WORK_DELIVERY.includes('A wait belongs only to a response that really makes a call'), 'a wait is tied to a response that makes the call');
+  assert.ok(NAYA_WORK_DELIVERY.includes('a direct ask gets the call, not an announcement of it'), 'a direct ask gets the call, not an announcement');
   for (const banned of ['never go silent', 'say one short line', 'Nothing has been sent or booked', 'Before an actual lookup']) {
-    assert.equal((NAYA_LIVE_BASE + NAYA_VOICE_TOOLS + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
+    assert.equal((NAYA_LIVE_BASE + NAYA_WORK_DELIVERY + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
   }
   // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
   assert.ok(instruction.includes('Answer from these instructions without a lookup when they already answer it.'), 'the no-lookup answer rule sits beside the cue');
@@ -365,8 +355,8 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
   for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
   }
-  assert.equal((NAYA_VOICE_TOOLS + instruction).split('never use a stock waiting line').length - 1, 1, 'the waiting rule is stated once');
-  assert.ok(NAYA_VOICE_TOOLS.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
+  assert.equal((NAYA_WORK_DELIVERY + instruction).split('never use a stock waiting line').length - 1, 1, 'the waiting rule is stated once');
+  assert.ok(NAYA_WORK_DELIVERY.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
 });
 
 // --- W5: the four audit rules reach the Gemini voice instruction too, and nothing they replaced returns --
@@ -392,9 +382,16 @@ test('#665: the research procedure answers with what it has instead of chasing a
   assert.equal(instruction.split(rule).length - 1, 1, 'and the compiled instruction carries it once');
 });
 
-test('direct102 public procedure acts on direct asks and states the enforced one-operation budget', () => {
-  assert.match(NAYA_VOICE_TOOLS, /direct asks without asking permission/i);
-  assert.match(NAYA_VOICE_TOOLS, /never send him to his own device/i);
-  assert.doesNotMatch(NAYA_VOICE_TOOLS, /two research operations|retain confirmation/i);
-  assert.match(NAYA_BACKEND_PROCEDURE, /One owner turn allows one research operation/);
+test('public voice and worker policies contain judgments, not lines to recite', async () => {
+  const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
+  const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
+  assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
+  for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
+    assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
+    assert.doesNotMatch(text, /["“][^"”]+["”]/);
+  }
+  assert.doesNotMatch(NAYA_WORK_DELIVERY, /\b(?:open_web|draft_email|stage_lux_note|read_mail)\b/);
+  assert.match(NAYA_WORK_DELIVERY, /MUST be handed off in the same turn/);
+  assert.match(WORKER_INSTRUCTIONS, /speech recognition/i);
+  assert.equal(workerInstructions(), WORKER_INSTRUCTIONS);
 });

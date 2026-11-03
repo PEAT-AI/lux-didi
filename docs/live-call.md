@@ -148,3 +148,12 @@ The receipts are content free and truthful. The rebuild logs `live_rebuild trigg
 ## Verification
 
 [Checks](checks.md) names the focused Live, gateway, transport and native proofs. Offline fixtures do not prove real provider availability, microphone permission or audible hardware playback. Do not launch an installed owner app or make a real call without authorization. [Debugging](debugging.md) gives the evidence-first path for a real failure.
+
+### Spoken work delivery (10.10)
+
+The voice model talks and receives results; it has no source tools. The host-owned
+text helper does the work with typed tools. The spoken work policy is always
+included, even when the Live session declares no tools. Memory yields first,
+then runtime context; the work policy never yields and the hard limit still
+fails loudly. String checks prove instruction delivery, not model behaviour.
+The release owner runs the real-wire probe and synthetic replay separately.

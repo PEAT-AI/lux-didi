@@ -212,3 +212,12 @@ never confirms. A different id stages afresh, even if a different task is active
 The runtime includes the stage in verified worker status and clears it at call end.
 Ordinary effect checks always receive available immediately preceding owner task
 words as earlier context; no host short-follow-up classification is used.
+
+### Voice and helper instruction ownership (10.10)
+
+The voice model has no source tools. A host-owned text helper reads sources and
+performs authorized actions with typed tools; the voice receives its results.
+The shipped public helper policy lives in `server/tasks/instructions.ts` and is
+limited to 3,000 characters. The composed owner presentation style follows it
+at runtime when present. Owner lore is not added by the instruction builder.
+The offline synthetic replay reads this shipped policy, not a separate copy.

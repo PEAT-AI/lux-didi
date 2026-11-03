@@ -285,7 +285,7 @@ test('a dead connector classifies as a spawn failure, so its discovery is never 
 // paying a source deadline on reads that cannot reach it.
 test('canonical chat lookup without a configured connector returns an immediate repair', async () => {
   const reply = await connectorExecutor([])('search_chat', { query: 'standup' }, new AbortController().signal);
-  assert.equal(reply.status, 'failed'); assert.match(reply.text, /not configured/);
+  assert.equal(reply.status, 'failed'); assert.match(reply.repair ?? '', /not configured/);
 });
 
 // #581: a chat window written as an inline `After:` made the child rank the whole archive by relevance

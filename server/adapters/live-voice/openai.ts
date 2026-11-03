@@ -1,10 +1,10 @@
-import { toolOutcomeOf } from '../../live/tool-outcome.js';
+
 import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { JsonObject } from '../model/types.js';
-import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
+import type { DataClass, LiveSocketFactory, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
 import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
@@ -30,13 +30,6 @@ import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
  *   end event (guides/live-migration, "Track audio generation and response completion").
  */
 const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
-/** Delegation backend pinned by the docs ("Start with gpt-6-luna", guides/live-delegation). */
-
-/** Delegation probe 2026-10-18 (delegation-probe-1018.md): both fields are accepted by delegation.responses on
- *  gpt-live-1, and the final answer arrives 1.6 to 2.3 s sooner per tool turn than the default. `effort: none` is
- *  unreliable and `parallel_tool_calls: false` is the slowest, so the pair below is the pinned shape. */
-const DELEGATION_PARALLEL_TOOL_CALLS = true;
-const DELEGATION_REASONING_EFFORT = 'low';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
 /** The documented form of a prompt-designed custom voice (`POST /v1/audio/voices`, type prompt):
@@ -57,12 +50,8 @@ export const OPENAI_BACKEND_BREVITY = 'Telegraphic facts, at most about 120 word
 /** C-POSTTOOL switch b: a tighter brevity line for the same backend, so the response the voice model has to
  *  read is shorter. It changes the line only; no output token cap is set. */
 export const OPENAI_BACKEND_BREVITY_TIGHT = 'Telegraphic facts, at most about 60 words; the voice model elaborates.';
-/** The documented 500 token ceiling on a progress or thinking append, kept as a character bound. */
-const APPEND_CHAR_LIMIT = 2_000;
 /** S4a-R2 (d): the ledger keeps this many command ids, oldest dropped first. */
 const COMMAND_LEDGER_LIMIT = 64;
-/** Verbosity of the backend's own prose. Documented low setting, so the second leg stops writing essays. */
-const DELEGATION_TEXT_VERBOSITY = 'low';
 export function openAiBackendInstructions(procedure?: string, tight = false): string {
   const brevity = tight ? OPENAI_BACKEND_BREVITY_TIGHT : OPENAI_BACKEND_BREVITY;
   const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${brevity}`;
@@ -172,18 +161,6 @@ const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   ...liveVoiceTimerDefaults,
 });
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
-
-/** O1b-A: the provider's own terminal status, mapped onto the trace store's closed sets, never passed through. */
-const TERMINAL_STATUS: Readonly<Record<string, ResponseStatus>> = {
-  completed: 'completed', failed: 'failed', cancelled: 'cancelled', incomplete: 'interrupted', in_progress: 'streaming', queued: 'pending',
-};
-function terminalReasonOf(status: string | undefined): ResponseTerminalReason {
-  if (status === 'failed') return 'failed';
-  if (status === 'cancelled') return 'cancelled';
-  // The provider stopped it short of its end: the response is over, but not because it finished speaking.
-  if (status === 'incomplete') return 'superseded';
-  return 'completed';
-}
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 type ObjectValue = Record<string, unknown>;
 /** One event body: the union member without its sequence, so `emit` keeps each variant's own fields. */
@@ -255,16 +232,6 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/**
- * The provider's own word for why a backend response ended (S5): its error code when it sent one, else its
- * status. Bounded to the shape a metadata-only receipt may carry, so a provider string is never a free field.
- */
-function failureCode(status: string, error: unknown): string {
-  const code = object(error) && typeof error.code === 'string' && error.code.length ? error.code : undefined;
-  const word = code ?? status;
-  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(word) ? word : 'failed';
-}
-
 interface Settings {
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
@@ -274,15 +241,9 @@ interface Settings {
   /** O1b-A: the host's receipt door for this session and connection epoch. Absent, this adapter records nothing. */
   trace: LiveTracePort | undefined;
 }
-
-/** 3r D4: a delegation whose calls are all answered and whose outputs are upstream, but which has produced no
- *  delegated response within this window, is stalled. Detection only: the receipt names it, and the host's
- *  recovery is the one rescue, so this timer never sends a command of its own. */
-const DELEGATION_STALL_MS = 5_000;
 /** 3r F: what a provider error has to name before it counts as a speech cut, and the one rejection that means a
  *  response is still active (which is the retry the continuation gate is allowed). */
 const SPEECH_CUT_ERROR = /moderation|content_filter|interrupt|barge|response_cancel|cancel/i;
-const ACTIVE_RESPONSE_ERROR = /active[ _]response|response[ _](?:already[ _])?(?:active|in[ _]progress)|already[ _](?:active|in[ _]progress)/i;
 
 interface Delegation {
   readonly id: string;
@@ -496,7 +457,6 @@ class Session implements LiveVoiceSession {
   private handshakeStart = 0;
   private upstreamStallQueued = false;
   private sequence = 0;
-  private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
   private queueBytes = 0;
   private waiter: ((result: IteratorResult<LiveVoiceEvent>) => void) | undefined;
@@ -526,20 +486,10 @@ class Session implements LiveVoiceSession {
   private playbackUntil = 0;
   private lastForwardedAt = 0;
   private audioSinceCompletion = false;
-  /** Text terminal completion is safe only when this session has no microphone stream. */
-  private inputAudioSeen = false;
-  private typedTurn = false;
   private idleQuiet: unknown;
-  /** True between a delegated `response.created` and its `response.done`. */
-  private delegatedOutstanding = false;
   /** The response this turn is answering, for the receipts that name it (S5). */
   private currentResponse: string | undefined;
-  /** C-POSTTOOL switch a as the session is running it: off from the start unless the provider config asks for
-   *  it, and off for the rest of the session once the provider refuses the field. */
-  private firstResponseAudio: boolean;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
-
-  private lastAnswerNow = false;
   private commandSequence = 0;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
@@ -1082,10 +1032,6 @@ class Session implements LiveVoiceSession {
     this.latestDelegationId = delegation.id;
     this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
   }
-
-  private clearStall(delegation: Delegation): void {
-    if (delegation.stallTimer !== undefined) { this.clock.clearTimer(delegation.stallTimer); delegation.stallTimer = undefined; }
-  }
   private providerError(message: ObjectValue): void {
     const error = object(message.error) ? message.error : {};
     const type = typeof error.type === 'string' ? error.type : 'unknown';
@@ -1189,21 +1135,6 @@ class Session implements LiveVoiceSession {
    */
   private receipt<K extends TraceEventKind>(kind: K, ids: { responseKey?: string; callKey?: string }, detail: TraceDetailMap[K]): void {
     this.settings.trace?.receipt(kind, ids, detail);
-  }
-
-  /** The host key of a provider response, minted once per provider id so every receipt of it joins. */
-  private responseKeyOf(providerId: string | undefined): string {
-    if (providerId === undefined) return `r${this.responseKeySeq += 1}`;
-    const known = this.responseKeys.get(providerId);
-    if (known !== undefined) return known;
-    const minted = `r${this.responseKeySeq += 1}`;
-    this.responseKeys.set(providerId, minted);
-    return minted;
-  }
-
-  /** The key of the response answering now: a receipt about it can only name it when the provider named itself. */
-  private get currentResponseKey(): string | undefined {
-    return this.currentResponse === undefined ? undefined : this.responseKeys.get(this.currentResponse);
   }
 
   /** S4a-R2 (d): a small ledger of what was sent and when, so a correlation is read from the wire and never

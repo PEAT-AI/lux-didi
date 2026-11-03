@@ -106,10 +106,6 @@ const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', '
   'server_tool_error:unknown',
   // HTTP status is a bounded integer, never response text, a path or an account value.
   ...['tool_error', 'credential_revoked', 'rate_limited', 'unavailable'].flatMap(code => Array.from({ length: 200 }, (_, offset) => `server_${code}:http_${400 + offset}`))];
-/** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
-const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
-/** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
-const MAIL_WINDOW_TOKEN = /^(?:newer_than|older_than):\d{1,4}d$|^(?:after|before):\d{4}\/\d{2}\/\d{2}$/u;
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 /**
  * #689: the live owner stamps a research event's callKey with `scopedTraceKey`, `call:` plus the 64 lowercase hex
@@ -124,12 +120,6 @@ const isCallKey = (value: unknown): value is string => isSafeId(value) || (typeo
  * never the value.
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
-
-/**
- * C-FILLER: the closed property paths a normalisation may name, a top-level field or one lookup entry's field.
- * Names only: a value never rides this line, so an entry that carries one is dropped whole.
- */
-const NORMALIZED_PATH = /^(?:question|topic|researchId|sources|direction|cursor|pageCursor|lookups)(?:\[\d{1,2}\])?(?:\.(?:source|query|history|mail))?$/u;
 const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;

@@ -319,7 +319,6 @@ import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING } from '../tools/declarations.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
@@ -1420,8 +1419,6 @@ export class LiveSessionOwner {
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
   readonly #store: LiveStorePort;
-  /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
-  readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
   /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
   readonly #voice: LiveVoicePort;
@@ -1553,7 +1550,6 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
-    this.#luxWrite = config.vaultTransport ?? createLuxWriteTransport(luxWriteEndpoint());
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     memoryOwners.set(this.#store, this);

@@ -1,0 +1,10 @@
+{"event": "task_lifecycle", "task_id": "synthetic-task", "revision": 1, "connection_generation": 1, "phase": "start", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_lifecycle", "task_id": "synthetic-task", "revision": 2, "connection_generation": 2, "phase": "revision", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_lifecycle", "task_id": "synthetic-task", "revision": 2, "connection_generation": 2, "phase": "inference", "count": 1, "ms": 1}
+{"event": "task_lifecycle", "task_id": "synthetic-task", "revision": 2, "connection_generation": 2, "phase": "calls", "count": 2, "ms": 1}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "sent", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "accepted", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "heard", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "retry", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "reconnect", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}
+{"event": "task_delivery", "task_id": "synthetic-task", "revision": 2, "state": "undelivered", "text": "SYNTHETIC_CONTENT_NOT_METADATA"}

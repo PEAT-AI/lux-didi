@@ -1088,7 +1088,7 @@ for (const finalized of [false, true]) {
     if (finalized) h.f.send({ serverContent: { inputTranscription: { text: 'Check the synthetic gateway fact', finished: true } } });
     const delegateDelivered = once(h.f.clients[0]!, 'message');
     h.f.send({ toolCall: { functionCalls: [{ id: 'synthetic-delegate', name: 'delegate', args: { request: 'Check the synthetic gateway fact' } }] } });
-    await delegateDelivered; await fixtureSettled();
+    await fixtureSettled(delegateDelivered, 'gateway delegation received');
     if (finalized) {
       await fixtureUntil(() => h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'gateway helper answer');
       assert.equal(inputs.length, 1);

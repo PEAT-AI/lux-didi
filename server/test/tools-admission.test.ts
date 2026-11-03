@@ -54,7 +54,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const account = entry.connector === 'google' ? `${entry.id}@synthetic.invalid` : entry.id;
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: entry.id !== 'lux-knowledge' });
-    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 3 }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' }, query: { type: 'string' }, timeMin: { type: 'string' }, timeMax: { type: 'string' }, calendarId: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: entry.id === 'mattermost' ? { query: { type: 'string' } } : {}, additionalProperties: false } }, ...(identityTool ? [{ name: identityTool, inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] : [])] : [] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 3 }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' }, query: { type: 'string' }, timeMin: { type: 'string' }, timeMax: { type: 'string' }, calendarId: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: entry.id === 'mattermost' ? { query: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' }, from_date: { type: 'string' }, to_date: { type: 'string' } } : {}, additionalProperties: false } }, ...(identityTool ? [{ name: identityTool, inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] : [])] : [] }) as never);
     sdk.setRequestHandler('tools/call', async request => {
       const tool = request.params.name;
       if (tool === entry.tool) { counts.set(entry.id, counts.get(entry.id)! + 1); await dispatch?.(entry.id); }
@@ -167,7 +167,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify({ tools: allRead.outcome.tools, errors: allRead.errors, replies: allRead.seen[1]?.contents.flatMap(c => c.parts.filter(p => p.functionResponse?.name === 'search_chat')) }));
   const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(allResponses.length, 5);
-  for (const response of allResponses) assert(typeof response['text'] === 'string' && response['text'].length > 0, 'each admitted read releases nonempty model evidence');
+  for (const response of allResponses) assert(typeof response['text'] === 'string' && (response['text'].length > 0 || Array.isArray(response['references']) && response['references'].length > 0), 'each admitted read releases verified text or ranked references');
   const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
   const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
   // Missing or invalid class is a typed local error for only that connection.
@@ -237,7 +237,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
   const saved = JSON.parse(String(rows[0]!.result_json));
   assert.equal(saved.response.status, 'no_match', 'ranked neighbours are not exact title matches');
-  assert.match(saved.response.text, /Synthetic result/);
+  assert.equal(saved.response.text, ''); assert.equal(saved.response.references[0].title, 'Synthetic result', 'unopened neighbours remain references, not read evidence');
   const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));

@@ -75,8 +75,12 @@ const text = (value: unknown): string | undefined =>
 /** After outside evidence, invented URLs and site operators cannot carry local content out. */
 export function searchQueryAfterExposure(query: string, ownerWords: string, exposed: boolean): string {
   if (!exposed) return query;
-  const ownerTokens = new Set(ownerWords.split(/\s+/u));
-  return query.split(/\s+/u).filter(token => !/^(?:https?:\/\/|site:)/iu.test(token) || ownerTokens.has(token)).join(' ').trim();
+  // Search grouping/quotation punctuation does not stop an operator or URL from egressing.
+  // Compare the expression itself, preserving its original query punctuation only when authorized.
+  const expressions = /[([{'"“‘]*(\b(?:https?:\/\/|site:)[^\s()[\]{}'"“”‘’<>;,]+)[)\]}'"”’]*/giu;
+  const ownerExpressions = new Set([...ownerWords.matchAll(expressions)].map(match => match[1]));
+  return query.replace(expressions, (full: string, expression: string) => ownerExpressions.has(expression) ? full : '')
+    .replace(/\s+/gu, ' ').trim();
 }
 
 export function publicQueryOf(value: string): string | undefined {

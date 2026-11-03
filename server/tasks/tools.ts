@@ -76,6 +76,7 @@ function integerSchema(value: unknown): boolean {
   if (typeof value === 'number') return Number.isInteger(value);
   return !value || typeof value !== 'object' || Object.values(value).every(integerSchema);
 }
+export const TASK_TOOL_NAMES: ReadonlySet<string> = new Set([...definitions.map(tool => tool.name), 'query_company']);
 export function createRegistry(ports: ToolPorts, configured: readonly Definition[] = []): Map<string, TaskTool> {
   const registry = new Map<string, TaskTool>();
   for (const definition of [...definitions, ...configured]) {

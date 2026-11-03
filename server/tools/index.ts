@@ -1,6 +1,7 @@
+import { TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
+import { TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
-import { findFile } from './find-file.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
@@ -35,7 +36,7 @@ import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmNamedBy, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
 import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
-import { executeOpen, OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -222,6 +223,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   };
   // A run freezes admission, not a global conjunction of every connector's policy.
   const currentPolicies = (tx: Transaction, snapshot: RunSnapshot, id: string): boolean => {
+    if (id === TASK_ACCOUNT) return true;
     if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id);
     if (!bound || !snapshot.acceptance.connectionIds.includes(id)) return false;
@@ -230,6 +232,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(set => set.includes(c));
   };
   const currentProjection = (snapshot: RunSnapshot, id: string): boolean => {
+    if (id === TASK_ACCOUNT) return true;
     if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id); if (!bound) return false;
     const p = bound.policy;
@@ -262,6 +265,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   };
   const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+    if (TASK_TOOL_NAMES.has(call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
+      const validate = (tx: Transaction) => {
+        if (!snapshot.connections.every(binding => currentPolicies(tx, snapshot, binding.connectionId) && currentProjection(snapshot, binding.connectionId))) throw Error('task_source_policy_changed');
+        return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+      };
+      return transaction ? validate(transaction) : store.transaction(validate);
+    }
     if (call.toolName === RECEIVED_BODY.name && call.accountId === RECEIVED_BODY.accountId && call.resourceId === RECEIVED_BODY.resourceId) {
       const page = pageForCall(call); if (!page || !bodyConsumers.has(call.runId)) throw Error('body_cursor_unavailable');
       const resolve = (tx: Transaction) => target(snapshot, originalCall(tx, call.runId, page.parent), tx);
@@ -554,8 +564,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         alarm_list: async () => taskDocumentResult(JSON.stringify(store.transaction(tx => listPendingAlarms(tx))), 'local-alarms'),
         trello_read: async (args, signal) => options.trello ? project('trello_read', await options.trello.read(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
         trello_write: async (args, signal) => options.trello ? project('trello_write', await options.trello.writeTask(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
-        open: async args => { const receipt = await executeOpen(nativeActions, sessionId, args); return receipt.code === 'opened' ? taskDocumentResult('Opened.', 'open') : taskFailed(`Open was not acknowledged: ${receipt.code}. Nothing was reported as opened.`); },
-        find_file: async args => taskDocumentResult(JSON.stringify(await findFile(args)), 'local-files'),
       };
       return executors;
     },

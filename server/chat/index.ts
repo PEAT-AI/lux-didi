@@ -1,3 +1,6 @@
+import { taskDefinitions, TASK_ACCOUNT } from '../tasks/chat.js';
+import type { TaskRuntime } from '../tasks/runtime.js';
+import type { RevisionIdentity } from '../tasks/controller.js';
 import { activateDiagnosticContext, closeDiagnosticContext, captureDiagnosticContext, diagnosticWithheld, initialDiagnosticContext, protectDiagnosticTrace, sealDiagnosticTrace, withholdDiagnostics } from '../trace/diagnostic-context.js';
 import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyCoverage } from '../tools/received-body.js';
 import { historyEvidenceCurrent, type HistoryEvidence, type HistorySourceRef } from '../domain/history-reader.js';
@@ -10,7 +13,6 @@ import type { Content, DataClass, HostContext, ToolResultBinding, JsonObject, Lo
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
-import { definitionsInTransaction } from '../tools/index.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
 import { hostLogEvent } from '../tools/host-events.js';
 import { canonicalJSON } from '../tools/canonical.js';
@@ -86,6 +88,8 @@ export class ChatService implements ChatPort {
   #ready = false;
   readonly #config: ChatConfig;
   readonly #now: () => number;
+  readonly #taskCalls = new Map<string, { runtime: TaskRuntime; ownerTurn: number }>();
+  readonly #taskRuns = new Map<string, { runtime: TaskRuntime; identity: RevisionIdentity }>();
   readonly #workers = new Map<string, AbortController>();
   readonly #toolAuthorities = new Map<string, { context: DomainContext; authority: LiveAuthority; policyMatches: boolean }>();
   readonly #resultEvidence = new Map<string, { host: HostContext; bindings: ToolResultBinding[] }>();
@@ -123,11 +127,9 @@ export class ChatService implements ChatPort {
   }
 
   #toolRegistry(run: RunSnapshot, context: DomainContext): ToolDefinition[] {
-    const tools = this.#config.tools;
-    if (!tools) return [];
-    const permitted = this.conversation(run.sessionId, context).permittedClasses;
-    const routeIdentity = this.#identity();
-    return this.#config.store.transaction(tx => {
+    const tools = this.#config.tools; if (!tools) return [];
+    const permitted = this.conversation(run.sessionId, context).permittedClasses, routeIdentity = this.#identity();
+    const scope = this.#config.store.transaction(tx => {
       const frozen = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [run.sessionId]);
       if (frozen && (frozen.provider !== this.#config.route.provider || frozen.model !== this.#config.route.model
         || frozen.route_identity !== routeIdentity || frozen.permitted_classes !== canonicalJSON([...permitted].sort()))) throw new ContextFailure('unavailable');
@@ -148,17 +150,30 @@ export class ChatService implements ChatPort {
       const ownerRow = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [context.assistantId, run.runId])!;
       const ownerSnapshot = JSON.parse(String(ownerRow.snapshot_json)) as OwnerRunSnapshot;
       const policyIdentity = hash(canonicalJSON(ownerSnapshot.connections.map(c => ({ connectionId: c.connectionId, sha256: c.sha256 }))));
-      const registry = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
-      if (!frozen && registry.length) tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)',
-        [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()),
-          policyIdentity, canonicalJSON(registry.map(t => ({ name: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId }))), canonicalJSON(connectionIds)]);
-      this.#toolAuthorities.set(run.runId, { context, authority: { ...acceptance, acceptedRunHash: accepted.sha256 },
-        policyMatches: !frozen || frozen.policy_identity === policyIdentity });
-      if (!frozen) return registry;
-      const admitted = JSON.parse(String(frozen.capabilities_json)) as CapabilityIdentity[];
-      const allowed = admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
-      return allowed.some(tool => RECEIVED_BODY_TOOLS.has(tool.name)) ? allowed : allowed.filter(tool => tool.name !== RECEIVED_BODY.name);
+      this.#toolAuthorities.set(run.runId, { context, authority: { ...acceptance, acceptedRunHash: accepted.sha256 }, policyMatches: !frozen || frozen.policy_identity === policyIdentity });
+      return { frozen, connectionIds, policyIdentity };
     });
+    let call = this.#taskCalls.get(run.sessionId);
+    if (!call) {
+      call = { runtime: this.#config.createTaskRuntime(`chat:${run.sessionId}`, { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} }, scope.connectionIds), ownerTurn: 0 };
+      this.#taskCalls.set(run.sessionId, call);
+    }
+    const words = this.#config.store.transaction(tx => this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).entries.find(entry => entry.id === run.userEntryId)?.text);
+    if (words === undefined) throw new ContextFailure('unavailable');
+    const revision = call.runtime.begin(words, 1, ++call.ownerTurn);
+    call.runtime.bindCurrent(() => this.lookupAuthority(run.runId) !== null);
+    this.#taskRuns.set(run.runId, { runtime: call.runtime, identity: revision.identity });
+    const registry = taskDefinitions(call.runtime, revision.identity, tools.owner);
+    const identities = registry.map(tool => ({ name: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId }));
+    const frozen = scope.frozen;
+    if (!frozen) this.#config.store.transaction(tx => tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)', [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()), scope.policyIdentity, canonicalJSON(identities), canonicalJSON(scope.connectionIds)]));
+    else {
+      const admitted = JSON.parse(String(frozen.capabilities_json)) as CapabilityIdentity[];
+      if (admitted.every(tool => tool.accountId === TASK_ACCOUNT)) return admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
+      // One schema migration, retaining the frozen connection ids and consented route/classes.
+      this.#config.store.transaction(tx => tx.run('UPDATE chat_capability_acceptances SET capabilities_json=? WHERE session_id=?', [canonicalJSON(identities), run.sessionId]));
+    }
+    return registry;
   }
 
   /** Only the loop's gate-authorized continuation reaches this seam; never read raw tool_calls here. */
@@ -576,6 +591,8 @@ export class ChatService implements ChatPort {
     return label;
   }
   shutdown() {
+    for (const [sessionId, call] of this.#taskCalls) { call.runtime.close(); this.#config.tools?.owner.closeTaskCall(`chat:${sessionId}`); }
+    this.#taskCalls.clear(); this.#taskRuns.clear();
     this.#config.tools?.owner.releaseHistoryConversation();
     for (const [runId, controller] of this.#workers) {
       controller.abort();
@@ -873,7 +890,14 @@ export class ChatService implements ChatPort {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';
       try { this.#finish(accepted, context, outcome); }
       catch { this.#emit(accepted.runId, { type: 'resync_required', sequence: accepted.sequence, reason: 'storage_unavailable' }); }
-    } finally { if (diagnosticWithheld(context.assistantId, accepted.runId)) withholdDiagnostics(this.#config.store, context.assistantId, accepted.runId); if (timeout !== undefined) clearTimeout(timeout); this.#config.tools?.owner.releaseEvidence(accepted.runId); this.#resultEvidence.delete(accepted.runId); closeDiagnosticContext(context.assistantId, accepted.runId); this.#workers.delete(accepted.runId); }
+    } finally {
+      const task = this.#taskRuns.get(accepted.runId);
+      if (task) {
+        this.#taskRuns.delete(accepted.runId);
+        const outcome = this.#config.store.transaction(tx => tx.get('SELECT outcome FROM chat_runs WHERE run_id=?', [accepted.runId]))?.outcome;
+        task.runtime.settle(task.identity, { status: outcome === 'complete' ? 'complete' : 'incomplete', text: '', findings: [] });
+      }
+      if (diagnosticWithheld(context.assistantId, accepted.runId)) withholdDiagnostics(this.#config.store, context.assistantId, accepted.runId); if (timeout !== undefined) clearTimeout(timeout); this.#config.tools?.owner.releaseEvidence(accepted.runId); this.#resultEvidence.delete(accepted.runId); closeDiagnosticContext(context.assistantId, accepted.runId); this.#workers.delete(accepted.runId); }
   }
   #outcome(result: Pick<ModelResult, 'status' | 'text'>): Outcome { return result.status === 'complete' && !result.text.trim() ? 'empty' : result.status; }
 }

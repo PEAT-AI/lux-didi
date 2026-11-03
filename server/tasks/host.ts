@@ -24,16 +24,18 @@ export interface HostTaskOptions {
   effectCheck?: AuthorityPorts['checkEffect'];
   log?(event: Record<string, unknown>): void;
 }
+export type HostTaskFactory = (sessionId: string, delivery: Delivery, connectionIds?: readonly string[]) => TaskRuntime;
 /** Production task composition. Store is the only writer; connector readers keep their own configured boundary. */
-export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, delivery: Delivery) => TaskRuntime {
+export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
   const infer = options.infer ?? createModelPort({ role: options.models.worker, credentials: options.credentials });
   const checkEffect = options.effectCheck ?? createEffectRole({ role: options.models.effect_check, credentials: options.credentials });
-  return (sessionId, delivery) => {
+  return (sessionId, delivery, connectionIds) => {
+    const bindings = () => options.bindings().filter(binding => !connectionIds || connectionIds.includes(binding.policy.connectionId));
     const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(options.contentAllowed),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, delivery, authority, infer, contentAllowed: options.contentAllowed,
-      configuredTools: configuredCompanyTools(options.bindings()), ...(options.log ? { log: options.log } : {}),
+      configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
         if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });
@@ -59,7 +61,7 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
           const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
           return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
         }
-        const bindings = options.bindings();
+        const bound = bindings();
         const writes: Record<string, { tool: string; arguments: Record<string, unknown> }> = {
           draft_email: { tool: 'gmail_create_draft', arguments: { to: args.to, subject: args.subject, body: args.body } },
           create_event: { tool: 'calendar_create_event', arguments: { summary: args.title, start: args.start, end: args.end, timeZone: options.timeZone,
@@ -68,7 +70,7 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
         };
         const write = writes[name];
         if (write) {
-          const binding = bindings.find(item => item.connector === 'google' && item.policy.toolNames.includes(write.tool));
+          const binding = bound.find(item => item.connector === 'google' && item.policy.toolNames.includes(write.tool));
           if (!binding) return failed('This Google write capability is not configured. Nothing was written.');
           const result = await binding.reader.call(write.tool, write.arguments, signal);
           return result.state === 'completed' ? documentResult(JSON.stringify(result.decodedResult), name) : failed('The connector did not acknowledge this write. Report the unresolved outcome rather than retrying blindly.');
@@ -77,7 +79,7 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
           const result = await options.web.search({ query: String(args.query), signal, exposed: !!exposed });
           return documentResult(JSON.stringify(result), 'web');
         }
-        const execute = connectorExecutor(bindings, existing);
+        const execute = connectorExecutor(bound, existing);
         return execute(name, args, signal, exposed, identity);
       },
     });

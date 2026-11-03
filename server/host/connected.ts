@@ -1,3 +1,10 @@
+import { hostTaskFactory } from '../tasks/host.js';
+import { loadTaskModels } from '../config/tasks.js';
+import { credentialsFor } from '../config/index.js';
+import { createWebSearch } from '../tools/web-search.js';
+import { VaultWriter } from '../tools/vault-write.js';
+import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
+import { hostLogEvent } from './log.js';
 import { boundTextModel, type PinnedProviderBinding } from './provider-binding.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainPort } from '../contracts/domain.js';
@@ -23,7 +30,13 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     catch { ready = null; status = { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' }; }
   }
   const route = ready?.route;
-  const chat = new ChatService({
+  const credentials = testing?.credentials ?? credentialsFor(configDir);
+  const createTaskRuntime = hostTaskFactory({ store, models: loadTaskModels(configDir), credentials,
+    bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
+    contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    web: createWebSearch({ credentials }), vault: new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) }),
+  });
+  const chat = new ChatService({ createTaskRuntime,
     ...(tools ? { tools } : {}),
     ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,

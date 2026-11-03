@@ -82,68 +82,12 @@ public struct OpenDestination: Sendable, Equatable {
     public let kind: String
     public init(kind: String) { self.kind = kind }
 
-    private static let rejected = "(^|/)(url|redirect|export|download)(/|$)"
-
     public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
-        guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
-              parts.user == nil, parts.password == nil, parts.port == nil,
-              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected)
-        else { return nil }
-        // The raw path, as the host reads it: a %2F never becomes a separator here.
-        let path = parts.percentEncodedPath
-        let items = parts.queryItems ?? []
-        // C-OPENWEB8: exactly one shape carries `q`, a plain Google search. Every other shape refuses it
-        // as before, so a search phrase cannot ride the last-line allowlist on a mail, docs or video link.
-        let googleSearch = host == "www.google.com" && path == "/search" && names(items) == ["q"] && (value(items, "q") ?? "").isEmpty == false
-        if !googleSearch && items.contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" }) { return nil }
-        let eid = items.contains { $0.name == "eid" }
-        let video = items.first { $0.name == "v" }?.value?.isEmpty == false
-        switch host {
-        case "mail.google.com":
-            guard parts.percentEncodedFragment == nil || parts.percentEncodedFragment == "" || matches(parts.percentEncodedFragment!, "^(all|inbox|sent)/[A-Za-z0-9_-]{1,256}$") else { return nil }
-            return matches(path, "^/mail/u/([0-9]{1,2}|[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+)/?$") ? OpenDestination(kind: "gmail") : nil
-        case "calendar.google.com":
-            if path == "/" { return OpenDestination(kind: "calendar") }
-            return matches(path, "^/(calendar/)?event/?$") && eid ? OpenDestination(kind: "calendar") : nil
-        case "www.google.com":
-            // The link the Calendar API returns for an event, and the three web surfaces open_web builds:
-            // a maps search, directions and a plain Google search, each with exactly its own parameters.
-            if path == "/calendar/event" && eid { return OpenDestination(kind: "calendar") }
-            if googleSearch { return OpenDestination(kind: "web") }
-            if path == "/maps/search/" && names(items) == ["api", "query"] && value(items, "api") == "1" { return OpenDestination(kind: "web") }
-            if path == "/maps/dir/", value(items, "api") == "1",
-               ["api", "destination", "origin"].contains(names(items)), value(items, "destination")?.isEmpty == false {
-                return OpenDestination(kind: "web")
-            }
-            return nil
-        case "docs.google.com":
-            return matches(path, "^/(document|presentation|spreadsheets)/d/[A-Za-z0-9_-]{1,256}(/(edit|view))?/?$") ? OpenDestination(kind: "docs") : nil
-        case "drive.google.com":
-            return matches(path, "^/(file/d/[A-Za-z0-9_-]{1,256}|drive/folders/[A-Za-z0-9_-]{1,256})(/view)?/?$") ? OpenDestination(kind: "drive") : nil
-        case "www.youtube.com", "youtube.com":
-            return path == "/watch" && video ? OpenDestination(kind: "youtube") : nil
-        case "youtu.be":
-            return matches(path, "^/[A-Za-z0-9_-]{1,64}/?$") ? OpenDestination(kind: "youtube") : nil
-        default:
-            if let configured = mattermostHost?.lowercased(), host == configured {
-                return matches(path, "^/(t/)?[A-Za-z0-9._-]{1,64}/(pl|channels)/[A-Za-z0-9._-]{1,64}/?$") ? OpenDestination(kind: "mattermost") : nil
-            }
-            // C-OPENWEB8: a site root and nothing else, on a host none of the cases above claims.
-            return path == "/" && items.isEmpty && matches(host, "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
-                ? OpenDestination(kind: "web") : nil
-        }
-    }
-
-    private static func names(_ items: [URLQueryItem]) -> [String] {
-        items.map { $0.name }.sorted()
-    }
-
-    private static func value(_ items: [URLQueryItem], _ name: String) -> String? {
-        items.first { $0.name == name }?.value
-    }
-
-    private static func matches(_ text: String, _ pattern: String) -> Bool {
-        text.range(of: pattern, options: .regularExpression) != nil
+        guard let parts = URLComponents(string: target),
+              ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+              parts.user == nil, parts.password == nil,
+              let host = parts.host, !host.isEmpty, parts.url != nil else { return nil }
+        return OpenDestination(kind: "web")
     }
 }
 
@@ -187,15 +131,17 @@ public struct BrowserState: Sendable, Equatable {
     public init(installed: Bool, running: Bool) { self.installed = installed; self.running = running }
 }
 
-/// The native boundary. It re-checks the allowlist itself and never trusts the host's argument shape.
+/// Mechanical native opening boundary. Task authority belongs to the host.
 public actor NativeActions: NativeActionExecuting {
     public typealias Opener = @Sendable (URL, Bool) async -> Bool
+    public typealias AppSearch = @Sendable (String) -> [URL]
 
     public static let openLimit = 5
     public static let windowSeconds: TimeInterval = 60
 
     private let home: URL
     private let opener: Opener
+    private let appSearch: AppSearch
     private let browserState: @Sendable () -> BrowserState
     private let clock: @Sendable () -> Date
     private let log: Logger
@@ -206,9 +152,11 @@ public actor NativeActions: NativeActionExecuting {
                 opener: @escaping Opener = NativeActions.workspaceOpen,
                 browserState: @escaping @Sendable () -> BrowserState = NativeActions.systemBrowserState,
                 mattermostHost: String? = nil,
-                clock: @escaping @Sendable () -> Date = { Date() }) {
+                clock: @escaping @Sendable () -> Date = { Date() },
+                appSearch: @escaping AppSearch = NativeActions.spotlightApps) {
         self.home = home.resolvingSymlinksInPath().standardizedFileURL
         self.opener = opener
+        self.appSearch = appSearch
         self.browserState = browserState
         self.mattermostHost = mattermostHost
         self.clock = clock
@@ -240,9 +188,7 @@ public actor NativeActions: NativeActionExecuting {
     public static func browserOpener(_ workspace: BrowserWorkspace) -> Opener {
         { url, isApplication in
             if isApplication { return await workspace.openApplication(at: url) }
-            guard url.scheme?.lowercased() == "https", let chrome = workspace.applicationURL(bundleIdentifier: chromeBundleIdentifier)
-            else { return workspace.open(url) }
-            return await workspace.open(url, withApplicationAt: chrome)
+            return workspace.open(url)
         }
     }
 
@@ -253,7 +199,6 @@ public actor NativeActions: NativeActionExecuting {
     /// origin the host names is pinned for the life of this process; any other one is refused.
     public func adopt(mattermostOrigin raw: String) async -> Bool {
         guard let host = NativeActions.originHost(raw) else { return false }
-        if let pinned = mattermostHost { return pinned == host }
         mattermostHost = host
         return true
     }
@@ -274,19 +219,15 @@ public actor NativeActions: NativeActionExecuting {
             // Deliberately before URL resolution, workspace calls and focus-changing code.
             return receipt(action, .opened, "canary_ack")
         case .openURL:
-            guard let destination = OpenDestination.of(target, mattermostHost: mattermostHost), let url = URL(string: target)
+            guard let parts = URLComponents(string: target),
+                  ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+                  parts.user == nil, parts.password == nil,
+                  let host = parts.host, !host.isEmpty, let url = parts.url
             else { return receipt(action, .notAllowed, "none") }
-            // F6b: a link opens in Chrome, and Chrome is only opened in a profile it is already running in.
-            // Opening a stopped Chrome would start it in a remembered profile, which is a guess about the owner.
-            let browser = browserState()
-            if browser.installed && !browser.running {
-                log.notice("native action open_url browser_not_running guidance=\(NativeActions.browserNotRunningGuidance, privacy: .public)")
-                return receipt(action, .browserNotRunning, "browser")
-            }
-            return await open(url, isApplication: false, action: action, detail: destination.kind)
+            return await open(url, isApplication: false, action: action, detail: "web")
         case .openFile:
             guard let url = fileURL(target) else { return receipt(action, .notAllowed, extensionOf(target)) }
-            guard FileManager.default.fileExists(atPath: url.path) else { return receipt(action, .notFound, extensionOf(target)) }
+            guard FileManager.default.isReadableFile(atPath: url.path) else { return receipt(action, .notFound, extensionOf(target)) }
             return await open(url, isApplication: false, action: action, detail: extensionOf(target))
         case .openApp:
             guard let url = appURL(target) else { return receipt(action, target.contains("/") ? .notAllowed : .notFound, "app") }
@@ -301,27 +242,43 @@ public actor NativeActions: NativeActionExecuting {
         else if target.hasPrefix("~/") { expanded = home.path + String(target.dropFirst(1)) }
         else if target.hasPrefix("/") { expanded = target }
         else { return nil }
-        guard !expanded.contains("/../") else { return nil }
         let resolved = URL(fileURLWithPath: expanded).resolvingSymlinksInPath().standardizedFileURL
-        return isInsideHome(resolved) ? resolved : nil
+        return resolved
     }
 
-    /// A bundle inside one of the three application folders, by name only.
+    /// Installed application by name through Launch Services, with standard-folder fallback.
     public func appURL(_ target: String) -> URL? {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("/"), !name.hasPrefix(".") else { return nil }
-        let base = name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+        let base = name.lowercased().hasSuffix(".app") ? String(name.dropLast(4)) : name
         guard !base.isEmpty else { return nil }
         for folder in [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications"), URL(fileURLWithPath: "/System/Applications")] {
             let candidate = folder.appendingPathComponent(base + ".app").resolvingSymlinksInPath().standardizedFileURL
             guard candidate.path.hasPrefix(folder.resolvingSymlinksInPath().standardizedFileURL.path + "/") else { continue }
             if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Contents/Info.plist").path) { return candidate }
         }
-        return nil
+        // Launch Services has no supported name lookup. Spotlight finds other installed locations.
+        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "?", with: "\\?")
+        let query = "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == \"\(escaped).app\"cd"
+        return appSearch(query).first { $0.lastPathComponent.caseInsensitiveCompare(base + ".app") == .orderedSame }
     }
 
-    private func isInsideHome(_ url: URL) -> Bool {
-        url.path == home.path || url.path.hasPrefix(home.path + "/")
+    public static func spotlightApps(_ query: String) -> [URL] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = ["-0", query]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if process.terminationStatus == 0, let paths = String(data: data, encoding: .utf8) {
+                return paths.split(separator: "\0").map { URL(fileURLWithPath: String($0)) }
+            }
+        } catch { return [] }
+        return []
     }
 
     private func extensionOf(_ target: String) -> String {
@@ -331,10 +288,6 @@ public actor NativeActions: NativeActionExecuting {
     }
 
     private func open(_ url: URL, isApplication: Bool, action: NativeActionFrame.Action, detail: String) async -> NativeActionResult {
-        let now = clock()
-        opened = opened.filter { now.timeIntervalSince($0) < NativeActions.windowSeconds }
-        guard opened.count < NativeActions.openLimit else { return receipt(action, .notAllowed, detail) }
-        opened.append(now)
         let didOpen = await opener(url, isApplication)
         return receipt(action, didOpen ? .opened : .failed, detail)
     }

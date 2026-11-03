@@ -69,7 +69,7 @@ recurrence the model adds without his words for it is dropped and said in the re
 
 A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
 
-`Sources/LuxDidi/NativeActions.swift` still owns native destination enforcement and browser fallback. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
+`Sources/LuxDidi/NativeActions.swift` owns mechanical native opening and system default-browser behavior, not destination policy. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
 
 ## Local memory and Lux notes
 
@@ -197,3 +197,8 @@ without credentials or private addresses. After exposure, both the owner effect
 check and byte-exact result/canonical provenance apply. Worker arguments must never
 be used as provenance. The legacy open implementation and fixtures stay at base
 behavior. C-VOICE owns removal of the vault speech grammar with its caller bridge.
+## 10.10 task worker opening
+
+The worker surface is `open(kind, target)`, with `web`, `app`, `file` and `source` kinds. Its schema and executor are `OPEN_SCHEMA` and `executeOpen` in `server/tools/open.ts`. C-CORE registers those instead of the legacy live open family. Web targets accept HTTP(S) URLs or named sites; installed app names and readable paths are not allowlisted. URL credentials are refused; missing native targets are `not_found`. Only a native `opened` receipt means opened. No typing, clicking, sending or editing is added. The host task authority layer owns outside-text policy.
+
+C-CORE also registers `FIND_FILE_SCHEMA` and `findFile` from `server/tools/find-file.ts`. Spotlight receives literal argv predicates, never shell interpolation. Results contain paths, names, modified dates and `outsideText` provenance, capped at 20 and sorted newest first. Content-only matches are outside text; name matches are not. `empty` and `unavailable` are separate outcomes. There is no `find_app`: installed applications resolve by name in the native opener.

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, exposeHandles, gmailThreadUrl, homeDestination, noteGmailAccount, openDestination, registrableDomain, resolveHandle, siteRootUrl, spokenDomain, webDestination } from '../tools/open-handles.js';
+import { findFile } from '../tools/find-file.js';
 import { openTarget } from '../tools/open.js';
 import { DRIVE_CHOOSE_GUIDANCE, shapeDriveFile, shapeDriveSearch, shapeGcalList, shapeGmailList, shapeGmailRead } from '../tools/live-shape.js';
 import { renderGoogleTool } from '../tools/google.js';
@@ -25,21 +26,20 @@ const PPTX = { id: 'SyntheticPptx01', name: 'Harbour board.pptx', mimeType: 'app
 
 const handlesOf = (text: string): string[] => [...text.matchAll(/^open: (L\d+) = /gm)].map(match => match[1]!);
 
-test('C-OPEN 1: the host allowlist answers the shared destination table exactly', () => {
-  assert.ok(TABLE.cases.length >= 40, 'the table is the real one, not an empty stub');
-  for (const { url, kind } of TABLE.cases) assert.equal(openDestination(url)?.kind ?? null, kind, url);
+test('10.10 historical URL table now permits every HTTP(S) target without credentials', () => {
+  assert.ok(TABLE.cases.length >= 40);
+  for (const { url } of TABLE.cases) {
+    let parsed: URL | undefined;
+    try { parsed = new URL(url); } catch { /* invalid boundary input */ }
+    const valid = parsed && ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password && !!parsed.hostname;
+    assert.equal(!!openDestination(url), !!valid, url);
+  }
 });
 
-test('C-OPEN 1: the host and native allowlists name the same hosts', () => {
-  const host = fixture('parity-open-handles.ts');
-  const native = fixture('parity-NativeActions.swift');
-  const hostBody = host.slice(host.indexOf('export function openDestination'), host.indexOf('export function homeDestination'));
-  const nativeBody = native.slice(native.indexOf('public static func of('), native.indexOf('private static func matches('));
-  const hostHosts = new Set([...hostBody.matchAll(/host === '([a-z0-9.-]+)'/g)].map(match => match[1]!));
-  const nativeHosts = new Set([...nativeBody.matchAll(/"([a-z0-9-]+(?:\.[a-z0-9-]+)+)"/g)].map(match => match[1]!));
-  assert.deepEqual([...hostHosts].sort(), [...nativeHosts].sort());
-  assert.ok(hostHosts.has('www.google.com'), 'the real Calendar event host is on both lists');
-  assert.ok(hostHosts.size >= 8);
+test('10.10 credential refusal has a valid same-host pair', () => {
+  assert.equal(openDestination('https://user:pass@example.org/a'), undefined);
+  assert.ok(openDestination('https://example.org/a'));
+  assert.ok(openDestination('http://example.org/a'));
 });
 
 test('C-OPEN 1: a real-shaped Calendar event link mints a handle that opens', () => {
@@ -306,9 +306,9 @@ test('C-OPENWEB8: a domain is read back the way she says it, and a root is https
   assert.equal(siteRootUrl('plantix.net/private'), undefined);
 });
 
-test('C-OPENWEB8: the handle policy is unchanged, so no open: handle ever reaches a web surface', () => {
+test('10.10 shown web sources may open any public HTTP(S) surface', () => {
   for (const url of ['https://www.google.com/search?q=odemira', 'https://www.google.com/maps/search/?api=1&query=Odemira', 'https://plantix.net/']) {
-    assert.equal(openDestination(url), undefined, `open_source refuses ${url}`);
+    assert.ok(openDestination(url), `open_source accepts ${url}`);
   }
 });
 
@@ -325,4 +325,75 @@ test('C-OPENWEB8: the site he named is the one whose label matches, aggregators 
   for (const blocked of ['wikipedia.org', 'linkedin.com', 'youtube.com', 'x.com', 'bloomberg.com', 'zoominfo.com']) {
     assert.ok(SITE_BLOCKLIST.includes(blocked), `${blocked} is never the site he means`);
   }
+});
+
+// 10.10: the worker uses one typed open executor, with native receipts as facts.
+test('10.10 open dispatches all kinds and preserves native not_found', async () => {
+  const api = await import('../tools/open.js');
+  assert.equal(typeof (api as any).executeOpen, 'function');
+  const bus = new api.NativeActionBus();
+  const cases = [['web', 'https://example.org/a', 'open_url'], ['web', 'example.org', 'open_url'], ['app', 'Example Editor', 'open_app'], ['file', '/Volumes/Example/document.txt', 'open_file']] as const;
+  for (const code of ['opened', 'not_found'] as const) {
+    for (const [kind, target, action] of cases) {
+      let sent = false;
+      const unbind = bus.bind('synthetic-open', frame => {
+        sent = true;
+        assert.equal(frame.action, action);
+        assert.equal(frame.target, kind === 'web' && !target.startsWith('https:') ? `https://${target}` : target);
+        queueMicrotask(() => bus.settle('synthetic-open', { type: 'native_action_result', id: frame.id, code }));
+        return true;
+      });
+      assert.equal((await (api as any).executeOpen(bus, 'synthetic-open', { kind, target })).code, code);
+      assert.equal(sent, true);
+      unbind();
+    }
+  }
+  assert.equal((await (api as any).executeOpen(bus, 'synthetic-open', { kind: 'web', target: 'https://user:pass@example.org' })).code, 'not_allowed');
+});
+
+test('10.10 Spotlight passes literal quoted words as argv, returns paths only', async () => {
+  const api = { findFile };
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const result = await api.findFile({ query: 'project "blue" notes' }, {
+    run: async (command: string, args: readonly string[]) => { calls.push({ command, args }); return '/tmp/project blue.txt\0'; },
+    stat: async () => ({ mtime: new Date('2026-01-01T00:00:00Z') }),
+  });
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.command === '/usr/bin/mdfind' && call.args[0] === '-0' && call.args.length === 2));
+  assert.ok(calls[0]!.args[1]!.includes('\\"blue\\"'));
+  assert.equal(result.code, 'found');
+  assert.deepEqual(result.files, [{ path: '/tmp/project blue.txt', name: 'project blue.txt', modified: '2026-01-01T00:00:00.000Z', outsideText: false }]);
+  assert.equal((await api.findFile({ query: '' })).code, 'invalid_arguments');
+  assert.equal((await api.findFile({ query: 'missing' }, { run: async () => '' })).code, 'empty');
+  assert.equal((await api.findFile({ query: 'words' }, { run: async () => { throw new Error('unavailable'); } })).code, 'unavailable');
+});
+
+
+test('10.10 named sites use search, then actual dispatch, with no-result pair', async () => {
+  const { executeOpen, NativeActionBus, useWebSearchPort } = await import('../tools/open.js');
+  const bus = new NativeActionBus();
+  const unbind = bus.bind('synthetic-site', frame => {
+    assert.equal(frame.action, 'open_url');
+    assert.equal(frame.target, 'https://example.org');
+    queueMicrotask(() => bus.settle('synthetic-site', { type: 'native_action_result', id: frame.id, code: 'opened' }));
+    return true;
+  });
+  try {
+    useWebSearchPort(() => ({ search: async () => ({ ok: true, evidence: { answer: '', claims: [], retrievedAt: '2026-01-01T00:00:00Z', sources: [{ title: 'Example', url: 'https://example.org/' }] } }) }));
+    assert.equal((await executeOpen(bus, 'synthetic-site', { kind: 'web', target: 'Example' })).code, 'opened');
+    useWebSearchPort(() => ({ search: async () => ({ ok: false, code: 'web_insufficient', reason: 'empty' }) }));
+    assert.equal((await executeOpen(bus, 'synthetic-site', { kind: 'web', target: 'Missing Example' })).code, 'not_found');
+  } finally { useWebSearchPort(undefined); unbind(); }
+});
+
+test('10.10 Spotlight caps newest results and marks only content-only matches outside text', async () => {
+  let call = 0;
+  const paths = Array.from({ length: 25 }, (_, i) => `/tmp/synthetic-${i}.txt`);
+  const result = await findFile({ query: 'synthetic' }, {
+    run: async () => ++call === 1 ? paths[0]! + '\0' : paths.join('\0') + '\0',
+    stat: async path => ({ mtime: new Date(Date.UTC(2026, 0, Number(path.match(/-(\d+)/)![1]) + 1)) }),
+  });
+  assert.equal(result.files.length, 20);
+  assert.equal(result.files[0]!.path, paths[24]);
+  assert.ok(result.files.every(file => file.outsideText));
 });

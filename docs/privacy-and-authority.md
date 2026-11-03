@@ -107,3 +107,8 @@ is an effect under the same isolated check. Its URL must also be byte-exact to a
 string in a tool result or a connector canonical link. Synthesized or extended
 URLs are rejected rather than rewritten. The legacy live open path stays unchanged
 until C-VOICE wires the task authority.
+## 10.10 opening floor
+
+`open(kind, target)` opens a public HTTP or HTTPS address (or a named site), an installed application by name, any readable local path with its default application, or a shown source handle. There is no destination allowlist or home-folder restriction. URLs carrying a username or password are refused. A missing file or application returns `not_found`; native failures never imply success. Opening never types, clicks, sends or edits. Task authority, including the outside-text rule, belongs to the host task authority layer, not the native opener.
+
+`find_file(query)` uses local Spotlight name and content-word searches without a shell. It returns at most 20 paths, names and modification dates, newest first, never file bodies. Content-only matches are marked `outsideText`; a name match is not outside text. Empty results and an unavailable Spotlight are distinct outcomes.

@@ -5,7 +5,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('../tools/types.js').ModelSnapshot }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */

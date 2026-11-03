@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
 import { nativeTaskReadTool } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
@@ -560,7 +561,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const descriptor = connectorDescriptor(policy.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
-        return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => descriptor.project(evidence, dispatch.port, policy) };
+        return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
+          const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
+          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id),
+            recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
+        } };
       });
     },
     observeAlarmOwner: (_session, _journalId, words, _at) => {

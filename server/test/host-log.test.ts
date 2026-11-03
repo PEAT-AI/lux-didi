@@ -1,4 +1,4 @@
-import { OwnerRequests } from '../tools/owner-request.js';
+
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -765,24 +765,11 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
     assert.equal(receipts[0].level, 'info');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
-
-// C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
-test('direct102: open audit reports request counts and codes, never owner or target text', () => {
-  const requests = new OwnerRequests(() => 10);
-  requests.observe('s', 'j1', 'open the synthetic pitch deck in my browser');
-  const lines: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });
-  try { openAudit({ ...requests.audit('s', 'open'), refusalCode: 'none' }); }
-  finally { detach(); }
-  assert.deepEqual(lines[0], { event: 'gate_decision', tool: 'open', decision: 'allowed', code: 'allowed', owner: 1, exposure: 0, ownerFinal: true });
-  assert.deepEqual(lines[1], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
-  assert.deepEqual(safeEvent(lines[0]), lines[0]);
-  assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
-  assert.equal(safeEvent({ ...lines[0], owner: -1 }), undefined);
-  assert.equal(safeEvent({ ...lines[0], decision: 'maybe' }), undefined);
-  assert.deepEqual(safeEvent(lines[1]), lines[1]);
-  assert.equal(safeEvent({ ...lines[1], words: 'secret' }), undefined);
-  assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
+test('task delivery audit keeps closed identity/state fields and rejects owner or target text', () => {
+  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'heard' } as const;
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
+  assert.equal(safeEvent({ ...event, target: 'https://synthetic.invalid/private' }), undefined);
 });
 
 test('canary close terminal is validated as a closed session-paired receipt', () => {

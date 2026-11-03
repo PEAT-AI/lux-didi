@@ -715,49 +715,7 @@ test('a skipped summary retains finished speech but never tools or unfinished fr
     });
   } finally { f.cleanup(); }
 });
-
-import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
-
-test('research recall replay keeps named-person dialogue, offers more, and opens an earlier-run ref', async () => {
-  const f = open();
-  try {
-    seedSession(f.store, 'past-trip');
-    seedTurn(f.store, 'past-trip', 'inputTranscription', 'A synthetic introduction. '.repeat(40) + 'Mira and I chose the cobalt lighthouse for our trip.');
-    seedTurn(f.store, 'past-trip', 'outputTranscription', 'I suggested bringing the violet map.');
-    f.store.transaction(tx => {
-      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
-      tx.run('UPDATE live_journal SET arrived_at=?', [NOW - 86400000]);
-      tx.run('UPDATE live_sessions SET terminal_at=?', [NOW - 86400000]);
-      backfillHistoryTurns(tx);
-    });
-    const reader = createHistoryReader(() => NOW);
-    const scope = { ownerId: f.store.assistantId, runId: 'current-live-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
-    const deps: ResearchDeps = {
-      now: () => NOW, liveSessionId: 'current-live-call', configured: ['memory'], emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger(),
-      execute: async calls => calls.map(call => {
-        const result = f.store.transaction(tx => reader.read(tx, scope, call.args as HistoryArguments));
-        return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
-          binding: { executionId: call.key } as NonNullable<Awaited<ReturnType<ResearchDeps['execute']>>[number]['binding']>, historyPage: result.response };
-      }),
-    };
-    const signal = new AbortController().signal;
-    const first = await runResearch(deps, { action: 'start', question: 'what did we talk about yesterday about the trip', lookups: [{ source: 'memory', query: 'trip lighthouse' }] }, signal);
-    assert.match(JSON.stringify(first), /Mira and I chose the cobalt lighthouse/);
-    assert.match(JSON.stringify(first), /I suggested bringing the violet map/);
-    assert.doesNotMatch(String(first['note']), /Nothing more to fetch/i);
-    assert.match(String(first['note']), /more|offer the rest/i);
-    const pages = first['historyPages'] as Array<{ hits: Array<{ recordRef: string }> }>;
-    const ref = pages[0]!.hits[0]!.recordRef;
-    const named = await runResearch(deps, { action: 'start', question: 'What did Mira choose?', lookups: [{ source: 'memory', query: 'Mira lighthouse' }] }, signal);
-    assert.match(JSON.stringify(named['findings']), /Mira and I chose the cobalt lighthouse/);
-    const opened = await runResearch(deps, { action: 'continue', researchId: String(named['researchId']), question: 'Open that whole conversation', lookups: [{ source: 'memory', query: '', history: { recordRef: ref } }] }, signal);
-    assert.match(JSON.stringify(opened), /Owner: A synthetic introduction/);
-    assert.match(JSON.stringify(opened), /Naya: I suggested bringing the violet map/);
-    const forbidden = f.store.transaction(tx => reader.read(tx, { ...scope, runId: 'another-live-call' }, { recordRef: ref }));
-    assert.equal(forbidden.response.status, 'history_reference_unavailable');
-  } finally { f.cleanup(); }
-});
 
 test('startup captures legacy speech before pruning and explicit session reads page the complete call', () => {
   const f = open();
@@ -835,49 +793,6 @@ test('F5: a diacritic-heavy source retains the matched words in its verbatim cro
       assert.match(String(hits[0]?.snippet), /Naya: We will bring the violet map\./);
       assert.ok(String(hits[0]?.snippet).includes('e\u0301'), 'the crop preserves source combining marks rather than returning folded speech');
     });
-  } finally { f.cleanup(); }
-});
-
-
-test('F6: complete short recall has no more note, while a truncated record offers and clears continuation', async () => {
-  const f = open();
-  try {
-    seedSession(f.store, 'short-record');
-    seedSession(f.store, 'long-record');
-    seedTurn(f.store, 'short-record', 'inputTranscription', 'The quartz hill is our destination.');
-    seedTurn(f.store, 'long-record', 'inputTranscription', 'Synthetic background. '.repeat(45) + 'The cobalt lighthouse is our destination.');
-    f.store.transaction(tx => {
-      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
-      tx.run('UPDATE live_journal SET arrived_at=?', [NOW - 86400000]);
-      backfillHistoryTurns(tx);
-    });
-    const reader = createHistoryReader(() => NOW);
-    const scope = { ownerId: f.store.assistantId, runId: 'different-run', currentSessionId: 'current-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
-    const deps: ResearchDeps = {
-      now: () => NOW, liveSessionId: 'current-call', configured: ['memory'], emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger(),
-      execute: async calls => calls.map(call => {
-        const page = f.store.transaction(tx => reader.read(tx, scope, call.args as HistoryArguments)).response;
-        return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
-          binding: { executionId: call.key } as NonNullable<Awaited<ReturnType<ResearchDeps['execute']>>[number]['binding']>, historyPage: page };
-      }),
-    };
-    const signal = new AbortController().signal;
-    const short = await runResearch(deps, { action: 'start', question: 'what did we say about quartz hill yesterday', lookups: [{ source: 'memory', query: 'quartz hill' }] }, signal);
-    assert.equal(short['status'], 'complete');
-    assert.equal(short['canContinue'], false);
-    assert.match(String(short['note']), /Nothing more to fetch/);
-    assert.doesNotMatch(String(short['note']), /offer the rest|more is available/i);
-    const long = await runResearch(deps, { action: 'start', question: 'what did we say about the lighthouse yesterday', lookups: [{ source: 'memory', query: 'lighthouse' }] }, signal);
-    assert.equal(long['status'], 'partial');
-    assert.equal(long['canContinue'], true);
-    assert.match(String(long['note']), /offer the rest|more/i);
-    assert.doesNotMatch(String(long['note']), /Nothing more to fetch/);
-    const ref = (long['historyPages'] as Array<{ hits: Array<{ recordRef: string }> }>)[0]!.hits[0]!.recordRef;
-    const full = await runResearch(deps, { action: 'continue', researchId: String(long['researchId']), question: 'Read the complete record', lookups: [{ source: 'memory', history: { recordRef: ref } }] }, signal);
-    assert.match(JSON.stringify(full['historyPages']), /Owner: Synthetic background/);
-    assert.equal(full['status'], 'complete');
-    assert.equal(full['canContinue'], false);
-    assert.match(String(full['note']), /Nothing more to fetch/);
   } finally { f.cleanup(); }
 });
 

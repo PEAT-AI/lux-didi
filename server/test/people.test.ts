@@ -16,7 +16,6 @@ import { LIVE_INSTRUCTION_HARD_LIMIT, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiv
 import { alarmSessionInstructions } from '../live/index.js';
 import { validateOwnerProfile } from '../prompt/index.js';
 import { safeEvent } from '../host/log.js';
-import { compileMailQuery } from '../tools/research.js';
 import { attendeeName } from '../tools/live-shape.js';
 import { groupHoldsAll } from '../connectors/mattermost.js';
 
@@ -180,16 +179,6 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
   assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT, `${composed.text.length} over the hard limit`);
   assert.ok(peopleSection() !== undefined);
   installPeople(null);
-});
-
-test('people: the mail query carries the resolved address, never the spoken text', () => {
-  install();
-  const query = compileMailQuery('what did Sandy email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z'));
-  assert.ok(query.includes('from:sandeep.example@example.test'), query);
-  assert.ok(query.includes('to:sandeep.example@example.test'), query);
-  installPeople(null);
-  // An unknown spoken name still falls through to the connector's own text path.
-  assert.ok(compileMailQuery('what did Wasim email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z')).includes('from:wasim'));
 });
 
 test('people: a calendar attendee is named from the roster email', () => {

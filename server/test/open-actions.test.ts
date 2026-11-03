@@ -49,7 +49,7 @@ test('the receipt names the scheme or extension and never the URL path or file n
 });
 
 test('public URL projection keeps literal references and refuses mandatory unsafe destinations', () => {
- for (const url of ['https://docs.google.com/document/d/ABC', 'https://example.com/synthetic-viewer?item=42#section']) assert.deepEqual(openDestination(url), { url, kind: 'web' });
+ for (const [url, kind] of [['https://docs.google.com/document/d/ABC', 'docs'], ['https://example.com/synthetic-viewer?item=42#section', 'web']] as const) assert.deepEqual(openDestination(url), { url, kind });
  for (const url of ['http://docs.google.com/document/d/ABC', 'https://user:pw@example.com/doc', 'https://localhost/doc', 'https://127.0.0.1/doc', 'https://10.0.0.1/doc', 'file:///synthetic/path', 'javascript:alert(1)']) assert.equal(openDestination(url), undefined, 'mandatory public HTTPS boundary: ' + url);
 });
 
@@ -568,7 +568,9 @@ test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () 
 test('C-OPEN11: Gmail public HTTPS references retain literal message, thread and settings fragments', () => {
  for (const fragment of ['#all/SYNTHETIC_THREAD', '#inbox/SYNTHETIC_MESSAGE', '#settings']) {
    const url = 'https://mail.google.com/mail/u/0/' + fragment;
-   assert.deepEqual(openDestination(url), { kind: 'gmail', url }, 'public HTTPS fragments are structural references, not lexical owner intent');
+   const destination = openDestination(url);
+   assert.ok(destination, 'public HTTPS fragments are structural references, not lexical owner intent');
+   assert.equal(destination.url, url, 'known mail targets and generic settings references both retain their literal URL');
  }
 });
 

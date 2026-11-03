@@ -163,6 +163,7 @@ async function harness(t: TestContext, overrides: {
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  calendarDelete?: boolean;
   /**
    * W10 (behaviour 1): the calendar connection's policy is already durable, but the transport has not
    * come up when the call starts; `publishCalendar` brings it up 300 ms into the call.
@@ -287,6 +288,7 @@ async function harness(t: TestContext, overrides: {
     let calendarSdk: Server | undefined;
     let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const calendarSchemas = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }];
+    if (overrides.calendarDelete) calendarSchemas.push({ name: 'calendar_delete_event', inputSchema: { type: 'object' } });
     if (overrides.calendar) {
       calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
       registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
@@ -377,7 +379,7 @@ async function harness(t: TestContext, overrides: {
     if (overrides.calendar && calendarEndpoint) {
       const apply = (): void => {
         toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-          endpoint: { ...calendarEndpoint!, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
+          endpoint: { ...calendarEndpoint!, credentialRef: null }, toolNames: calendarSchemas.map(tool => tool.name), schemaDigest: canonicalToolDigest(calendarSchemas),
           sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
           route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
           bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -3388,7 +3390,7 @@ test('a model turn start enters THINKING and every live_state change is written 
   const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
   await settle();
   assert.deepEqual(transitions(), ['->listening@created'], 'the opening state is written at the start, with no poll');
-  fake.emit({ type: 'inputTranscription', text: 'plan my week', finished: true });
+  fake.emit({ type: 'inputTranscription', text: 'plan my week', finished: false });
   fake.emit({ type: 'modelTurnStarted' });
   await settle();
   assert.deepEqual(transitions(), ['->listening@created', 'listening>thinking@model_turn_start'], 'a generation start is the think time');
@@ -5386,15 +5388,20 @@ test('live deletion cannot confirm in its staging owner turn', async t => {
   await settlePort(); assert.equal(deletes, 0);
 });
 test('live deletion confirmation on a later finalized owner turn commits once', async t => {
-  let deletes = 0; const p = progressPort();
-  const h = await harness(t, { port: p.port, provider: 'openai',
-    taskExecutors: { delete_event: async () => { deletes++; return { status: 'ok', text: 'Deleted.', references: [], next_cursor: null, coverage: 'Synthetic deletion.', repair: null }; } },
+  const p = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true });
+  const h = await harness(t, { port: p.port, provider: 'openai', calendar: true, calendarDelete: true, grantMode: 'owner-trusted-reads',
+    calendarData: async () => ({ status: 'ok', deleted: true, id: 'synthetic-event' }),
     taskInfer: async request => request.turns.length === 0 ? { text: '', calls: [{ id: 'delete', name: 'delete_event', args: { id: 'synthetic-event' } }] } : { text: 'Synthetic task settled.', calls: [] },
   });
-  await openPort(h, 'task-later-turn'); p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
-  await settlePort(); assert.equal(deletes, 0);
+  const { attachment } = await openPort(h, 'task-later-turn'); consumeTaskPort(t, attachment);
+  p.emit({ type: 'delegation', delegationId: 'staging-binding' });
+  p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
+  await fixtureUntil(() => p.taskAnswers.length === 1, 'staged deletion reply');
+  assert.equal(h.calls.filter(call => call.name === 'calendar_delete_event').length, 0);
+  p.emit({ type: 'delegation', delegationId: 'confirmation-binding' });
   p.emit({ type: 'inputTranscription', text: 'Yes, delete it', finished: true, finalOrigin: 'provider' });
-  await settlePort(); assert.equal(deletes, 1);
+  await fixtureUntil(() => h.calls.some(call => call.name === 'calendar_delete_event'), 'confirmed deletion reaches the granted synthetic connector');
+  assert.equal(h.calls.filter(call => call.name === 'calendar_delete_event').length, 1);
 });
 
 test('a pending task owns silence without an old tool batch or background job', async t => {

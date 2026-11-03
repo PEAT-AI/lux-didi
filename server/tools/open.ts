@@ -17,7 +17,7 @@ export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
-export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' | 'browser_not_running', string> = {
+export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' | 'browser_not_running' | 'egress_blocked', string> = {
   not_found: 'The host could not resolve that shown item.',
   not_allowed: 'I cannot open that target.',
   // F6b: Chrome is never launched for her; she asks the owner to open it.
@@ -405,7 +405,7 @@ export function openWebFailure(code: string): { code: string; fixNotForSpeech: s
   return { code: reason, ...(guidance ?? { fixNotForSpeech: 'Nothing opened. Say the browser action failed; do not claim success.', say: 'I could not open that in your browser, so nothing is open.' }) };
 }
 
-export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
+export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed' | 'egress_blocked', NotForSpeech> = {
   egress_blocked: {
     fixNotForSpeech: 'Ask the owner to provide or select the exact public link. Do not rewrite the URL.',
     say: 'I need you to provide or select the exact public link before I open it.',

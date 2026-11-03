@@ -134,3 +134,25 @@ The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` 
 Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
 
 Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
+
+## Task permission integration (10.10)
+
+The new authority module returns `allow`, or a closed refusal code with repair text.
+The controller owns argument validation, exposure declarations on every read tool,
+finalized owner turns, effect classification and stable journal action identity.
+`configuredEffectCheck` adapts the configured model client to the isolated boolean
+check. It must receive the same configured model port used by the task core, with
+its fastest current model selected for this role. No model identifier belongs in
+a tool or an authority test.
+
+The web search port accepts host-owned exposure state and owner words. Clean
+ordinary questions are not locally refused. After exposure, invented raw URLs and
+`site:` operators are removed. Private pasted-passage protections remain.
+
+Calendar creation constructs a closed dispatch object with no attendees and no
+update fields, even if surplus input has such fields. Trello write shapes do not
+offer member assignment, and normalization drops supplied member fields and strips
+mentions from text. Atlassian documents that mentions notify users in
+[commenting on cards](https://support.atlassian.com/trello/docs/commenting-on-cards/).
+Trello watchers can also receive service-generated activity notifications; stripping
+mentions is not a promise that shared-board activity is silent.

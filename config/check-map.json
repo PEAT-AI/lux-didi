@@ -4,6 +4,19 @@
   "entries": [
     {
       "paths": [
+        "server/tasks/authority.ts",
+        "server/test/task-authority.test.ts",
+        "server/test/task-sinks.test.ts",
+        "server/test/task-calendar.test.ts",
+        "scripts/check-auth.sh"
+      ],
+      "checks": [
+        "scripts/check-auth.sh",
+        "scripts/check-tool-owner.sh"
+      ]
+    },
+    {
+      "paths": [
         "server/eval/**",
         "server/test/eval-release/**"
       ],

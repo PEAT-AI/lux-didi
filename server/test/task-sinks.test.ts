@@ -51,30 +51,28 @@ test('registry exposure completeness is parameterized and renamed read tools can
   assert.throws(() => assertRegistryExposure([{ name: 'unknown_read', effect: null, exposure: 'unknown' }]), /unknown_read/);
 });
 
-test('query exposure removes invented URL and site operator but preserves owner tokens', () => {
-  assert.equal(searchQueryAfterExposure('release https://evil.example/a site:evil.example', 'Find release notes', true), 'release');
-  assert.equal(searchQueryAfterExposure('release site:example.com', 'Search site:example.com for release', true), 'release site:example.com');
-  assert.equal(searchQueryAfterExposure('release site:example.com', 'Find releases', false), 'release site:example.com');
-  assert.equal(searchQueryAfterExposure('https://evil.example', 'Find releases', true), '');
-});
-
-for (const expression of ['site:example.com', 'https://example.com/a']) {
-  for (const [left, right] of [['(', ')'], ['[', ']'], ['"', '"'], ["'", "'"]] as const) {
-    test(`F1 exposed search strips punctuated invented expression and preserves owner-authorized expression: ${left}${expression}${right}`, () => {
-      const query = `release ${left}${expression}${right}`;
-      assert.equal(searchQueryAfterExposure(query, 'Find release notes', true), 'release');
-      assert.equal(searchQueryAfterExposure(query, `Find release notes ${expression}`, true), query);
-      assert.equal(searchQueryAfterExposure(`release ${expression}`, `Find release notes ${left}${expression}${right}`, true), `release ${expression}`);
-      assert.equal(searchQueryAfterExposure(query, 'Find release notes', false), query);
-      assert.equal(searchQueryAfterExposure(query, `Find release notes ${expression}/different`, true), 'release');
-    });
-  }
+// The temporary three-argument call below reproduces the returned implementation's behavior.
+// AUTH-R6 removes the unused owner-word parameter in the implementation commit.
+const searchAfterExposure = (query: string, exposed: boolean): string => searchQueryAfterExposure(query, '', exposed);
+for (const token of [
+  'https://example.com/a;outside', 'https://example.com/a,outside',
+  '(HTTPS://example.com/a)', '[ftp://example.com/a]', 'prefix(https://example.com/a)suffix',
+  'www.example.com', '(WWW.example.com/a)', 'prefix[www.example.com/a]suffix',
+  'site:example.com', '(SITE:example.com)', 'prefix[site:example.com]suffix',
+  '"site:example.com"', "'https://example.com/a'", 'arbitrary://value',
+]) {
+  test(`AUTH-R6 exposed search drops the entire unsafe token: ${token}`, () => {
+    assert.equal(searchAfterExposure(`release ${token} notes`, true), 'release notes');
+    assert.equal(searchAfterExposure(`release ${token} notes`, false), `release ${token} notes`);
+  });
 }
 
-test('F1 search recognizes expressions attached to ordinary punctuation without losing adjacent words', () => {
-  assert.equal(searchQueryAfterExposure('release,(site:evil.example)', 'Find release notes', true), 'release,');
-  assert.equal(searchQueryAfterExposure('release,(https://evil.example/a)', 'Find release notes', true), 'release,');
-  assert.equal(searchQueryAfterExposure('website:examples release', 'Find release notes', true), 'website:examples release');
+test('AUTH-R6 ordinary exposed question passes whole and clean task retains a site operator', () => {
+  const ordinary = 'What is the latest (stable) release of TypeScript?';
+  assert.equal(searchAfterExposure(ordinary, true), ordinary);
+  assert.equal(searchAfterExposure('release site:example.com', false), 'release site:example.com');
+  assert.equal(searchAfterExposure('  release (SITE:example.com)  ', false), '  release (SITE:example.com)  ');
+  assert.equal(searchAfterExposure('(site:example.com) https://example.com www.example.com', true), '');
 });
 
 test('Trello strips mentions and never retains a member assignment', () => {

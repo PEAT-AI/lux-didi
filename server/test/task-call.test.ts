@@ -28,7 +28,7 @@ function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = '
     reconnect: () => { reconnects++; return true; }, state: () => {},
   });
   call.socket(1); t.after(() => { call.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, sent, responses, reconnects: () => reconnects };
+  return { call, store, sent, responses, reconnects: () => reconnects };
 }
 function deferred() { let resolve!: (value: Inference) => void; const promise = new Promise<Inference>(done => { resolve = done; }); return { promise, resolve }; }
 test('delegation before final input and duplicates do not start a worker', async t => {
@@ -63,4 +63,20 @@ test('Gemini delegate attaches to the finalized task and carries its spoken answ
   assert.equal(inference, 0); await f.call.input('Actual finalized owner words', 1);
   assert.deepEqual(f.responses, [[{ id: 'fn1', name: 'delegate', response: { status: 'complete', text: 'Synthetic spoken answer.' } }]]);
   assert.equal(f.sent.length, 0); assert.equal(f.reconnects(), 0);
+});
+
+
+test('R24 EF5: a final inference answer is redacted in Store, delivery and recovery seed', async t => {
+  const secret = 'sk-syntheticFinalAnswerSecretOnly1234567890';
+  const f = fixture(t, async () => ({ text: `Ordinary verified answer ${secret}`, calls: [] }));
+  f.call.delegation('synthetic-final-secret');
+  await f.call.input('Give an ordinary synthetic answer', 1);
+  const rows = f.store.transaction(tx => tx.all('SELECT final_answer FROM tasks'));
+  assert.equal(rows.length, 1); assert.match(String(rows[0]!.final_answer), /Ordinary verified answer/);
+  assert(!JSON.stringify(rows).includes(secret), 'retained final answer contains no secret');
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0]!.text, /Ordinary verified answer/);
+  assert(!JSON.stringify(f.sent).includes(secret)); assert.match(f.sent[0]!.text, /\[redacted\]/);
+  const seed = f.call.reconnectAnswer(); assert(seed);
+  assert.match(seed.text, /Ordinary verified answer/); assert(!JSON.stringify(seed).includes(secret));
+  assert.match(seed.text, /\[redacted\]/);
 });

@@ -7,8 +7,9 @@ import { taskDefinitions } from '../tasks/chat.js';
 
 /** A real canonical tool turn, with explicit test approval and no inference/provider call. The caller closes it before its Store. */
 export function canonicalTaskFixture(store: Store, owner: ToolsOwner, runId: string, ownerWords: string, connectionIds: readonly string[], timeZone = 'UTC') {
+  const bindings = owner.taskBindings(connectionIds);
   const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-    bindings: () => owner.taskBindings(connectionIds), executors: () => owner.taskExecutors(runId), contentAllowed: () => false, timeZone,
+    bindings: () => bindings, executors: () => owner.taskExecutors(runId), contentAllowed: () => false, timeZone,
     effectCheck: async () => true, infer: async () => { throw Error('The test calls the shared tool registry, not a second inference.'); },
   })(runId, { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} });
   const results: ToolResult[] = [], runTool = runtime.runTool.bind(runtime);
@@ -19,5 +20,5 @@ export function canonicalTaskFixture(store: Store, owner: ToolsOwner, runId: str
     catch (error) { errors.push(error instanceof Error ? error.message : 'non_error'); throw error; }
   } };
   const revision = runtime.begin(ownerWords, 1, 1);
-  return { runtime, revision, results, errors, tools: taskDefinitions(runtime, revision.identity, scopedOwner, runId), close: () => runtime.close() };
+  return { runtime, revision, results, errors, bindings, tools: taskDefinitions(runtime, revision.identity, scopedOwner, runId), close: () => runtime.close() };
 }

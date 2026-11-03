@@ -554,7 +554,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const descriptor = connectorDescriptor(policy.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
-        return { connector: policy.connector, reader, policy };
+        return { connector: policy.connector, reader, policy, project: evidence => descriptor.project(evidence, dispatch.port, policy) };
       });
     },
     observeAlarmOwner: (_session, _journalId, words, _at) => {

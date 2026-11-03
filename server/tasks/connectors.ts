@@ -4,7 +4,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('../tools/types.js').ModelSnapshot }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -59,7 +59,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if ((name === 'search_knowledge' || name === 'search_company') && typeof data === 'string') {
     const rows = rankedText(data);
-    return rows.length ? rankedResult(text(args.query), rows) : failed('The source returned no structured ranked candidates. Try a broader query; this is not proof of absence.');
+    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
@@ -102,6 +102,13 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
     if (result.state !== 'completed') return failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.');
+    if (binding.project) {
+      try {
+        const snapshot = binding.project(result);
+        const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
+        return { ...shaped, dataClasses: snapshot.dataClasses };
+      } catch { return failed('The connector result could not be safely disclosed. Repair its source policy or use another approved source.'); }
+    }
     return projectTaskPayload(name, result.decodedResult, args);
   };
 }

@@ -15,7 +15,7 @@ export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity
       const { signal } = context;
       const result = await runtime.runTool(tool.name, args, { ...identity, operation_id: context.executionId }, signal);
       // Reads are conservatively private except host-owned alarm/roster metadata and public web evidence.
-      const dataClasses: DataClass[] = tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private'];
+      const dataClasses: readonly DataClass[] = result.dataClasses ?? (tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private']);
       return { status: 'completed', result: owner.complete(call, JSON.parse(JSON.stringify(result)) as JsonObject, dataClasses) };
     },
   }));

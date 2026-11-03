@@ -705,9 +705,10 @@ test('the unused legacy query-token audit kind is retired too', () => {
 });
 
 test('task delivery audit accepts closed metadata and refuses owner or target text', () => {
- const metadata = { event: 'task_delivery', state: 'sent', taskId: '11111111-1111-4111-8111-111111111111', revision: 1, chunk: 0 };
+ const metadata = { event: 'task_delivery', state: 'sent', taskId: '11111111-1111-4111-8111-111111111111', revision: 1 };
  assert.ok(safeEvent(metadata), 'the actual task delivery emitter has a host-log branch');
- assert.equal(safeEvent({ ...metadata, ownerWords: 'SYNTHETIC_PRIVATE_WORDS' }), null);
- assert.equal(safeEvent({ ...metadata, target: 'https://example.com/synthetic-private-target' }), null);
+ assert.equal(safeEvent({ ...metadata, chunk: 0 }), undefined, 'unknown metadata fields remain refused');
+ assert.equal(safeEvent({ ...metadata, ownerWords: 'SYNTHETIC_PRIVATE_WORDS' }), undefined);
+ assert.equal(safeEvent({ ...metadata, target: 'https://example.com/synthetic-private-target' }), undefined);
  assert.equal(JSON.stringify(safeEvent(metadata)).includes('SYNTHETIC_PRIVATE_WORDS'), false);
 });

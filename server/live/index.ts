@@ -1067,7 +1067,7 @@ export function turnScriptBucket(counts: { latinChars: number; devanagariChars: 
 function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number, sequence: number): LivePublicMarker {
   return {
     kind, sequence, journalSequence,
-    text: 'text' in event ? event.text : null,
+    text: 'text' in event ? stripNonLexicalTags(event.text) : null,
     finished: 'finished' in event && event.finished !== undefined ? event.finished : null,
     value: event.type === 'waitingForInput' ? event.value : null,
   };

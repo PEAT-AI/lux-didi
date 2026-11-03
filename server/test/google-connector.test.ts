@@ -427,8 +427,8 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       assert.equal(task.tools.some(tool => tool.name === 'gmail_send'), false);
       const definition = task.tools.find(tool => tool.name === 'search_mail')!;
       const callArgs = { query: 'synthetic', cursor: null };
-      const intent = owner.taskIntent({ ...live!, executionId: 'run:1:0',
-        accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, 'search_mail', callArgs);
+      const intent = { ...live!, executionId: 'run:1:0', callId: 'synthetic-call', toolName: 'search_mail',
+        accountId: definition.accountId, resourceId: definition.resourceId, argumentsHash: sha256(JSON.stringify(callArgs)) };
       assert.equal(owner.journal.intent(intent), 'fresh');
       const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
       assert.equal(outcome.status, 'completed');

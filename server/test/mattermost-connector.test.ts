@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import { connectorExecutor } from '../tasks/connectors.js';
 import { randomUUID } from 'node:crypto';
@@ -125,7 +126,7 @@ test('channel history projects Markdown with bounded fields and permalink source
   ]);
 });
 
-test('a message body is clipped to the per-post bound with an omission note', async t => {
+test('a full native message body reaches the projection without the removed spoken bound', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
@@ -134,9 +135,8 @@ test('a message body is clipped to the per-post bound with an omission note', as
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
-  assert.ok(projected.projection.text.includes('L'.repeat(250)), 'the bounded body reaches the model');
-  assert.equal(projected.projection.text.includes('L'.repeat(251)), false, 'a body over the 250-character bound is clipped');
-  assert.match(projected.projection.text, /\[omitted: \d+ characters; final/);
+  assert.ok(projected.projection.text.includes('L'.repeat(700)), 'the complete fixture body reaches the model');
+  assert.doesNotMatch(projected.projection.text, /\[omitted:/);
 });
 
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {
@@ -246,7 +246,7 @@ test('channel resolution maps id, name and display name, and names the closest m
 test('canonical read_thread uses the child argument name and returns its full thread body', async t => {
   const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'read_thread')!;
   const args = { ref: 'abcdef1234567890abcdefghij' };
-  const call = h.owner.taskIntent({ ...h.host, executionId: 'thread:0', accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, definition.name, args);
+  const call = { ...h.host, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, toolName: definition.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex') };
   assert.equal(h.owner.journal.intent(call), 'fresh');
   const outcome = await definition.execute(args, { ...call, signal: new AbortController().signal });
   assert.equal(outcome.status, 'completed');
@@ -352,7 +352,7 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 // code channel_not_found, and no wide archive read is issued for it.
 test('#637: canonical unknown-channel failure keeps its closed cause and makes no wide archive search', async t => {
   const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'search_chat')!;
-  const batch = await runToolCalls(h.owner, [{ id: 's0', name: definition.name, args: { query: 'in:nowhere release' } }], {
+  const batch = await runToolCalls(h.owner, [{ id: 's0', name: definition.name, args: { query: 'release', channel: 'nowhere' } }], {
     registry: h.task.tools, host: { ...h.host, grants: [{ tool: definition.name, effect: 'read', accountId: definition.accountId, resourceId: definition.resourceId }] } as never,
     authority: { isCurrent: async () => true } as never, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
   });

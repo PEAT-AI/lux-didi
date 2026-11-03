@@ -1189,12 +1189,15 @@ export function mailWidenLadder(question: string, q: string): string[] | undefin
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   if (person === undefined || isSourceNameWord(person)) return undefined;
   const window = mailQueryShape(q).window;
-  const said = question.split(/\s+/u).map(word => word.replace(/[^A-Za-z'’-]/gu, '')).filter(Boolean);
-  const at = said.findIndex(word => word.toLowerCase() === person);
-  const surname = said[at + 1]?.toLowerCase();
+  const words = question.split(/\s+/u);
+  const at = words.findIndex(word => word.replace(/[^A-Za-z'’-]/gu, '').toLowerCase() === person);
+  // The surname is the capitalised word the question puts right after the first name, never the filler
+  // that follows a one word name ("any mail from Acme this week" has no surname).
+  const next = words[at + 1]?.replace(/[^A-Za-z'’-]/gu, '') ?? '';
+  const surname = /^[A-Z][a-z'’-]+$/u.test(next) && !MAIL_FILLER.has(next.toLowerCase()) && !isSourceNameWord(next) ? next.toLowerCase() : undefined;
   const suffix = window === undefined ? '' : ` ${window}`;
   const steps = [`from:${person} OR to:${person}${suffix}`];
-  if (surname !== undefined && surname.length > 2 && !MAIL_FILLER.has(surname) && !isSourceNameWord(surname)) steps.push(`${surname}${suffix}`);
+  if (surname !== undefined) steps.push(`${surname}${suffix}`);
   steps.push(`${person}${suffix}`);
   return steps;
 }

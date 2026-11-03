@@ -79,9 +79,17 @@ test('ROUTE-1022 K6: a question with its own terms adds no implicit two weeks', 
 test('E4: an authored Gmail query is never rewritten, and compiling twice changes nothing', () => {
   const q = compileMailQuery('what did Dana send me about the invoice?', undefined, NOW, ZONE);
   assert.equal(compileMailQuery('what did Dana send me about the invoice?', q, NOW, ZONE), q, 'the compiled query is already Gmail syntax');
-  for (const operator of ['from:', 'to:', 'subject:', 'after:', 'before:', 'newer_than:', 'older_than:', 'is:', 'has:', 'label:']) {
+  // SEARCH-110: a sender clause names a person or an address, so `from:`/`to:` are authored from a word the
+  // question itself names; every other operator stays untouched whatever it carries.
+  for (const operator of ['subject:', 'after:', 'before:', 'newer_than:', 'older_than:', 'is:', 'has:', 'label:']) {
     const authored = `${operator}token newer_than:30d`;
     assert.equal(compileMailQuery('anything at all from the bank', authored, NOW, ZONE), authored, operator);
+  }
+  for (const operator of ['from:', 'to:']) {
+    const authored = `${operator}bank newer_than:30d`;
+    assert.equal(compileMailQuery('anything at all from the bank', authored, NOW, ZONE), authored, operator);
+    // A sender the question never names is the 10.9 junk: it goes, and the words it leaves still ask.
+    assert.equal(compileMailQuery('anything at all from the bank', `${operator}token newer_than:30d`, NOW, ZONE), 'bank newer_than:30d', operator);
   }
   assert.equal(compileMailQuery('board deck', 'subject:"board deck"', NOW, ZONE), 'subject:"board deck"', 'a quoted phrase survives untouched');
 });
@@ -188,7 +196,8 @@ test('E5: an empty retry says how it searched, naming the window it used', async
     action: 'start', question: 'What did Dana send me about the invoice?', topic: 'Dana invoice',
     lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
   }, new AbortController().signal);
-  assert.equal(sent.length, 2, 'exactly one retry, never a loop');
+  // SEARCH-110: a person search widens down the ladder, one read per step and never a loop.
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d', 'dana newer_than:14d'], 'the ladder stops when the steps run out');
   const note = String(reply['note'] ?? '');
   assert.match(note, /I searched your mail with a keyword filter and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
 });

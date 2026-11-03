@@ -342,7 +342,7 @@ test('a result rejected after connector execution cannot disclose its raw sentin
   f.rawRejectedResult(); f.setDispatchHook(() => { f.registry.revoke(f.endpoint.id); });
   const rejected = await f.turn(session);
   assert.equal(f.executions(), 2, 'rejected raw connector response must actually be produced');
-  assert.equal(rejected.outcome, 'complete', 'the owner still gets an answer from the accepted evidence');
+  assert.equal(rejected.outcome, 'complete', 'the owner still gets an answer from the accepted evidence: ' + JSON.stringify(rejected));
   assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(rejected), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(f.chat.get(rejected.runId, f.context)), /REJECTED/);

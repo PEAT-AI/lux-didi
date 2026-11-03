@@ -6,7 +6,7 @@ export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
-export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void };
+export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void; recordRedaction?(tool: string, count: number): void };
 export interface ToolResult {
   [TASK_DISCLOSURE]?: TaskDisclosure;
   dataClasses?: readonly import('../adapters/model/types.js').DataClass[];
@@ -43,7 +43,10 @@ export function rankedResult(query: string, items: readonly RankedItem[]): ToolR
 /** Redact before any task cache, journal, model or owner-facing projection. Host proofs stay host-only. */
 export function redactTaskResult(result: ToolResult, tool: string): ToolResult {
   const { value: safe, count } = redactSecretsWithCount(result), disclosure = result[TASK_DISCLOSURE];
-  if (count) hostLogEvent({ event: 'tool_redaction', tool, count });
+  if (count) {
+    if (disclosure?.recordRedaction) disclosure.recordRedaction(tool, count);
+    else hostLogEvent({ event: 'tool_redaction', tool, count });
+  }
   if (disclosure) {
     const snapshot = redactSecrets(disclosure), evidence = disclosure[HOST_EVIDENCE];
     if (evidence?.kind === 'remote-body') {

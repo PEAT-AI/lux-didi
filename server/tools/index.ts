@@ -586,6 +586,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
           return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id),
+            recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },
             recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
         } };
       });

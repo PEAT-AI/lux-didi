@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { chatMigrations } from '../chat/schema.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile } from '../live/index.js';
+import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveOutputChunk } from '../live/index.js';
 import { hostTaskFactory } from '../tasks/host.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
@@ -39,7 +39,7 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   const context = { clientId: 'synthetic-client', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   const session = owner.create({ idempotencyKey: 'synthetic-call', inputClass: 'ordinary' }, context);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, context);
-  const chunks: unknown[] = [];
+  const chunks: LiveOutputChunk[] = [];
   const drained = (async () => { for await (const chunk of attachment.output) chunks.push(chunk); })();
   t.after(() => drained);
   await attachment.ready;

@@ -66,7 +66,7 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
       emit = event => { pending.push({ ...event, sequence: ++sequence } as LiveVoiceEvent); wake(); };
       control.signal.addEventListener('abort', () => {
         if (closed) return;
-        closed = true; wake(); resolveDone({ status: 'cancelled', code: 'cancelled' });
+        closed = true; closes += 1; wake(); resolveDone({ status: 'cancelled', code: 'cancelled' });
       }, { once: true });
       let readySeen = false;
       const events: AsyncIterable<LiveVoiceEvent> = {

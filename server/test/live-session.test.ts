@@ -5449,7 +5449,7 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
 });
 
 test('a socket rebuild retains pending work and answers only the fresh delegation', async t => {
-  const p = progressPort(), scheduler = new DeadlineClock(), entered = deferred<void>(), release = deferred<void>();
+  const p = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true }), scheduler = new DeadlineClock(), entered = deferred<void>(), release = deferred<void>();
   let inferences = 0;
   const h = await harness(t, { port: p.port, provider: 'openai', scheduler,
     limits: { idleMs: 60000, sessionMs: 120000 }, taskInfer: async () => {

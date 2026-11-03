@@ -137,7 +137,7 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
   sdk.setRequestHandler('tools/call', async request => {
-    calls.push({ id: 'synthetic-requestparamsname',  name: request.params.name, args: request.params.arguments });
+    calls.push({ name: request.params.name, args: request.params.arguments });
     if (held !== undefined) await held;
     return { content: [{ type: 'text', text: 'synthetic knowledge answer' }] };
   });

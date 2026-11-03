@@ -88,8 +88,8 @@ for (const noAction of [false, true]) {
     let calls = 0;
     const f = await liveTaskFixture(t, async () => { calls++; if (!noAction) throw new Error('SYNTHETIC_RAW_PROVIDER_ERROR'); return { text: '', calls: [], no_action: true }; });
     f.bind(); f.finalize('Handle the synthetic request.');
-    if (noAction) { await fixtureUntil(() => calls === 1, 'no-action worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0); }
-    else { const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
+    if (noAction) { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0); }
+    else { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'incomplete', 'failed worker terminal disposition'); const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
     assert.equal(calls, 1);
     assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'incomplete');
   });

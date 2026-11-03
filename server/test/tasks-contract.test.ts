@@ -236,3 +236,12 @@ test('CORE-F1: unsupported calendar and search cursors are not offered', async (
   assert.equal(unsupported.status, 'partial'); assert.equal(unsupported.next_cursor, null);
   assert.match(unsupported.coverage, /not exposed/); assert.doesNotMatch(unsupported.coverage, /continue with/);
 });
+
+test('every read declares exposure and local calendar and memory stay clean', () => {
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => failed('fixture') });
+  for (const tool of registry.values()) if (tool.effect === 'none') assert.equal(typeof tool.outside_text, 'boolean', tool.name);
+  assert.equal(registry.get('calendar_events')!.outside_text, false);
+  assert.equal(registry.get('read_memory')!.outside_text, false);
+  assert.equal(registry.get('read_mail')!.outside_text, true);
+  assert.equal(registry.get('search_web')!.outside_text, true);
+});

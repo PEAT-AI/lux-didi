@@ -46,17 +46,17 @@ export function validateArguments(tool: TaskTool, value: unknown): { ok: true; a
   const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
   return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
-export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside?: boolean; validate?: (args: Record<string, unknown>) => boolean }
+export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 const definitions: Definition[] = [
-  { name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
+  { outside: true, name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
   { name: 'trello_write', description: 'Write the configured board.', fields: strictSchema(TRELLO_WRITE_PARAMETERS).properties as Record<string, Schema>, effect: 'external', outside: false, validate: validateTrelloWrite },
-  { name: 'search_mail', description: 'Search mail with time operators inside query. Use null cursor for the first page, then the returned next_cursor to continue the same query.', fields: { query: string, cursor: optionalString } },
-  ...['chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
-  ...['mail', 'knowledge', 'drive'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
-  ...['thread', 'company', 'memory'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { ref: string, cursor: optionalString } })),
-  { name: 'calendar_events', description: 'List events in the owner time window.', fields: { start: string, end: string } },
-  { name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
-  { name: 'search_web', description: 'Search the web.', fields: { query: string } },
+  { outside: true, name: 'search_mail', description: 'Search mail with time operators inside query. Use null cursor for the first page, then the returned next_cursor to continue the same query.', fields: { query: string, cursor: optionalString } },
+  ...['chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ outside: source !== 'memory', name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
+  ...['mail', 'knowledge', 'drive'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
+  ...['thread', 'company', 'memory'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { ref: string, cursor: optionalString } })),
+  { outside: false, name: 'calendar_events', description: 'List events in the owner time window.', fields: { start: string, end: string } },
+  { outside: false, name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
+  { outside: true, name: 'search_web', description: 'Search the web.', fields: { query: string } },
   { name: 'remember_note', description: 'Remember a local note.', fields: { text: string }, effect: 'local', outside: false },
   { name: 'stage_lux_note', description: 'Stage a local knowledge note.', fields: { title: string, text: string }, effect: 'local', outside: false },
   { name: 'save_to_vault', description: 'Save a local document.', fields: { title: string, text: string }, effect: 'local', outside: false },
@@ -81,7 +81,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside ?? true, ...(definition.validate ? { validate: definition.validate } : {}),
+      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) return failed(validation.repair);

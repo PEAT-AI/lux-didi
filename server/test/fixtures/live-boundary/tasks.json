@@ -8,5 +8,7 @@
   "mic-pause",
   "spoken-answer-chunked",
   "stale-result-suppressed",
-  "delivery-rejected"
+  "delivery-rejected",
+  "injected-mail-read-write-refused",
+  "injected-mail-read-write-valid"
 ]

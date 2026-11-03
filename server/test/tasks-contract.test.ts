@@ -185,3 +185,51 @@ test('review-owned worker instructions are short and preserve absence after wide
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /After widening, state absence plainly/);
 });
+
+test('CORE-F1: worker consumes a second Gmail page with a distinct read-cache key', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const { runWorker } = await import('../tasks/worker.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'google',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    toolNames: ['gmail_search_messages'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const dispatched: Record<string, unknown>[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (name, args) => {
+    assert.equal(name, 'gmail_search_messages'); dispatched.push(args);
+    const data = args.pageToken === 'page-2' ? { messages: [{ id: 'm2', subject: 'Second page' }] } : { messages: [{ id: 'm1', subject: 'First page' }], nextPageToken: 'page-2' };
+    return { state: 'completed', decodedResult: { data } } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor([{ connector: 'google', policy, reader }]) });
+  const tool = registry.get('search_mail')!;
+  assert.deepEqual(validateArguments(tool, { query: 'fixture', cursor: null }), { ok: true, args: { query: 'fixture' } });
+  let hop = 0;
+  const result = await runWorker({ registry, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'fixture', signal: new AbortController().signal,
+    infer: async request => {
+      if (++hop === 1) return { text: '', calls: ['a', 'b'].map(id => ({ id, name: 'search_mail', args: { query: 'fixture', cursor: null } })) };
+      if (hop === 2) {
+        assert.equal(request.outputs[0]?.result.status, 'partial');
+        assert.equal(request.outputs[0]?.result.references[0]?.id, 'm1');
+        return { text: '', calls: [{ id: 'c', name: 'search_mail', args: { query: 'fixture', cursor: request.outputs[0]?.result.next_cursor } }] };
+      }
+      assert.equal(request.outputs.filter(output => output.result.references.some(reference => reference.id === 'm2')).length, 1);
+      assert.equal(request.outputs[2]?.result.next_cursor, null);
+      return { text: 'Both pages verified', calls: [] };
+    } });
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(dispatched, [{ q: 'fixture' }, { q: 'fixture', pageToken: 'page-2' }]);
+  assert.equal(result.findings.filter(finding => finding.references.some(reference => reference.id === 'm2')).length, 1);
+});
+
+test('CORE-F1: calendar cursors are consumable and unsupported cursors are not offered', async () => {
+  const { projectTaskPayload, connectorExecutor } = await import('../tasks/connectors.js');
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor([]) });
+  const calendar = registry.get('calendar_events')!;
+  assert.deepEqual(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z', cursor: null }), { ok: true, args: { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z' } });
+  assert.equal(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z', cursor: 'page-2' }).ok, true);
+  const unsupported = projectTaskPayload('search_drive', { files: [{ id: 'f1', name: 'fixture' }], nextPageToken: 'page-2' }, { query: 'fixture' });
+  assert.equal(unsupported.status, 'partial'); assert.equal(unsupported.next_cursor, null);
+  assert.match(unsupported.coverage, /not exposed/); assert.doesNotMatch(unsupported.coverage, /continue with/);
+});

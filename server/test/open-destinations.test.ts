@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, exposeHandles, gmailThreadUrl, homeDestination, noteGmailAccount, openDestination, registrableDomain, resolveHandle, siteRootUrl, spokenDomain, webDestination } from '../tools/open-handles.js';
+import { findFile } from '../tools/find-file.js';
 import { openTarget } from '../tools/open.js';
 import { DRIVE_CHOOSE_GUIDANCE, shapeDriveFile, shapeDriveSearch, shapeGcalList, shapeGmailList, shapeGmailRead } from '../tools/live-shape.js';
 import { renderGoogleTool } from '../tools/google.js';
@@ -305,9 +306,9 @@ test('C-OPENWEB8: a domain is read back the way she says it, and a root is https
   assert.equal(siteRootUrl('plantix.net/private'), undefined);
 });
 
-test('C-OPENWEB8: the handle policy is unchanged, so no open: handle ever reaches a web surface', () => {
+test('10.10 shown web sources may open any public HTTP(S) surface', () => {
   for (const url of ['https://www.google.com/search?q=odemira', 'https://www.google.com/maps/search/?api=1&query=Odemira', 'https://plantix.net/']) {
-    assert.equal(openDestination(url), undefined, `open_source refuses ${url}`);
+    assert.ok(openDestination(url), `open_source accepts ${url}`);
   }
 });
 
@@ -351,7 +352,7 @@ test('10.10 open dispatches all kinds and preserves native not_found', async () 
 });
 
 test('10.10 Spotlight passes literal quoted words as argv, returns paths only', async () => {
-  const api = await import('../tools/' + 'find-file.js');
+  const api = { findFile };
   const calls: { command: string; args: readonly string[] }[] = [];
   const result = await api.findFile({ query: 'project "blue" notes' }, {
     run: async (command: string, args: readonly string[]) => { calls.push({ command, args }); return '/tmp/project blue.txt\0'; },

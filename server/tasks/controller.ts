@@ -18,7 +18,7 @@ export class FakeDelivery implements Delivery {
   closed(_identity: RevisionIdentity): void {}
 }
 export interface Revision {
-  identity: RevisionIdentity; signal: AbortSignal; ownerWords: string[];
+  identity: RevisionIdentity; signal: AbortSignal; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string;
   reads: Map<string, ToolResult>; receipts: ToolResult[]; evidence: ToolResult[];
 }
 /** Pure lifecycle decisions; IDs are injected for deterministic tests. No language inspection. */
@@ -30,18 +30,28 @@ export class TaskController {
   #retained: ToolResult[] = [];
   readonly #receipts: ToolResult[] = [];
   constructor(readonly delivery: Delivery, readonly newId: () => string = randomUUID) {}
-  finalize(words: string, connection_generation: number): Revision {
+  finalize(words: string, connection_generation: number, ownerTurn = 0): Revision {
     this.#abort?.abort();
     const previous = this.#revision;
     const revise = this.#running && previous !== undefined;
     this.#abort = new AbortController();
     this.#revision = {
       identity: { task_id: revise ? previous.identity.task_id : this.newId(), task_revision: revise ? previous.identity.task_revision + 1 : 1, connection_generation },
+      ownerTurn, precedingOwnerWords: revise ? previous.precedingOwnerWords : previous?.ownerWords.join("\n"),
       signal: this.#abort.signal, ownerWords: revise ? [...previous.ownerWords, words] : [words],
       reads: revise ? previous.reads : new Map(), receipts: [...this.#receipts], evidence: [...this.#retained],
     };
     this.#running = true; this.#held = false;
     return this.#revision;
+  }
+  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; ownerTurn: number; precedingOwnerWords?: string; shortFollowUp: boolean } | undefined {
+    const current = this.#revision;
+    if (!current || current.identity.task_id !== taskId) return undefined;
+    return { id: taskId, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), ownerTurn: current.ownerTurn,
+      precedingOwnerWords: current.precedingOwnerWords, shortFollowUp: current.precedingOwnerWords !== undefined };
+  }
+  isCurrentTask(taskId: string, revision: number): boolean {
+    return !!this.#revision && !this.#abort?.signal.aborted && this.#revision.identity.task_id === taskId && this.#revision.identity.task_revision === revision;
   }
   isCurrent(identity: RevisionIdentity): boolean {
     const current = this.#revision?.identity;

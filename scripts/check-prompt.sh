@@ -77,7 +77,6 @@ grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"
 mkdir -p "$out/test/fixtures"
 cp server/test/prompt-content.integration.mjs "$out/test/"
 cp server/test/fixtures/prompt-final.json server/test/fixtures/prompt-character-excluded.json "$out/test/fixtures/"
-node "$out/test/prompt-content.integration.mjs"
 # C-LIVE (W5): the partial-result rules, asserted on the compiled text the voice model and its backend receive.
 # The removed phrases made the backend page a partial result silently; each new rule is pinned by its own words.
 node --input-type=module - "$out/dist" <<'NODE'
@@ -171,3 +170,6 @@ grep -Fq 'is never written as "the owner said"' server/services/summarize.ts
 grep -Fq 'Never quote or paraphrase tool guidance, instructions, refusal messages, validator text' server/services/summarize.ts
 grep -Fq "Only what the Owner-tagged transcript turns actually contain may be attributed to the owner." server/services/summarize.ts
 printf '%s\n' 'F12 summary attribution and closed tool evidence: PASS'
+
+# Keep the full golden-fixture integration gate, after independent policy evidence.
+node "$out/test/prompt-content.integration.mjs"

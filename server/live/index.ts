@@ -3,10 +3,7 @@ import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { requestRefusal } from '../tools/owner-request.js';
-import { advancesExposure } from '../tools/tiers.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
-import { sourceCards } from '../tools/source-cards.js';
-import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
@@ -14,38 +11,34 @@ import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, wr
 import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
+import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { freezeNote } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
-import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
-import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { LIVE_NOT_MODEL_FACING } from '../tools/declarations.js';
+import { type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
-import { HISTORY_IDENTITY } from '../tools/history.js';
-import { refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
+import { findingCount, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, type ResearchLateFindings, researchRebuildStep, type ResearchBoundary, type ResearchRetention, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
-import { isToolFailureCode } from '../adapters/model/types.js';
-import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
+import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
-import { toolOutcomeOf } from './tool-outcome.js';
-import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
+import { type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { VoiceProfileMeter } from './voice-profile.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
 import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
@@ -441,22 +434,6 @@ const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the ow
 const UNSPOKEN_REPLY_LIMIT = 1_200;
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
 export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
-/**
- * #667: the closed facts of a call that just arrived, never the owner's words: the declared action, whether a
- * research id came with it, how long the question was, and how many lookups the batch carries.
- */
-const researchCallFacts = (calls: { name: string; args: JsonObject }[]):
-{ action: 'start' | 'continue' | 'stop' | 'other'; researchIdPresent: boolean; questionChars: number; lookups: number } => {
-  const call = calls.find(entry => entry.name === RESEARCH_TOOL_NAME) ?? calls[0];
-  const args = call?.args;
-  const action = args?.['action'];
-  return {
-    action: action === 'start' || action === 'continue' || action === 'stop' ? action : 'other',
-    researchIdPresent: typeof args?.['researchId'] === 'string' && String(args['researchId']).length > 0,
-    questionChars: typeof args?.['question'] === 'string' ? String(args['question']).length : 0,
-    lookups: Array.isArray(args?.['lookups']) ? args['lookups'].length : 0,
-  };
-};
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
 export const refusedResponse = (response: JsonObject): boolean => {
   if (typeof response['error'] === 'string' && response['error'] !== '') return true;
@@ -630,8 +607,6 @@ export function deadlineResearchId(call: { researchId?: string | undefined }, pr
 }
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
-/** One intent sub-read deadline: a slow source never holds the whole turn past this. */
-const INTENT_SUB_DEADLINE_MS = 8_000;
 /**
  * #451 Q8: one status definition for a tool call, taken from the result the model was handed and never
  * from a second place that could drift from it. `error` means the result itself is an error: this layer
@@ -805,9 +780,6 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
   return null;
 }
 
-/** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
-const LIVE_STEPS_MAX = 8;
-
 /** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
 const STEP_SOURCES: Record<string, string> = {
   gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
@@ -815,11 +787,6 @@ const STEP_SOURCES: Record<string, string> = {
   // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence.
   research: 'research',
 };
-
-function stepSourceOf(name: string): string {
-  const prefix = name.split('_')[0] ?? name;
-  return STEP_SOURCES[prefix] ?? prefix;
-}
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
@@ -855,17 +822,6 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
   };
   const line = `research: ${detail()}`;
   return line.length <= RESEARCH_PROJECTION_CHARS ? line : `${line.slice(0, RESEARCH_PROJECTION_CHARS - 3)}...`;
-}
-/** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
-function isReadOnlyTool(name: string): boolean { return name !== 'stage_lux_note' && !/^(remember|open)_?/.test(name); }
-
-
-/** The action word a direct tool asks its source for. */
-function stepActionOf(name: string): string {
-  const suffix = name.split('_').slice(1).join('_');
-  if (/search|list|find/.test(suffix)) return 'search';
-  if (/note|remember|save/.test(suffix)) return 'save';
-  return 'read';
 }
 
 interface ActiveSession {
@@ -1635,8 +1591,6 @@ export class LiveSessionOwner {
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
-  /** W10-R20: the rebuild threshold, the config value or the shipped constant. */
-  readonly #rebuildThresholdChars: number;
   readonly #store: LiveStorePort;
   readonly #vault: VaultWriter;
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
@@ -1750,7 +1704,6 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
-    this.#rebuildThresholdChars = config.rebuildThresholdChars ?? RESEARCH.rebuildThresholdChars;
     // The digest hook rides the composition seam; a test may also pass it on the config directly.
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
@@ -3501,10 +3454,6 @@ export class LiveSessionOwner {
     if (this.#attended(handle)) { void this.#continueSession(handle); return; }
     this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
   }
-
-  /** Only an attended call takes another provider window; a caller who already left never holds one open. */
-  /** C-DEPTH item 5: the last research question of a call, so the rebuild ledger can name the entities asked. */
-  readonly #lastResearchQuestion = new Map<string, string>();
 
   /**
    * C-DEPTH item 5 (W10-R13): the rebuild is spent at the response boundary and never from the batch that filled

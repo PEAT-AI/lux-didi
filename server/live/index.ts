@@ -1466,9 +1466,10 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     if (previous) ask = { turn: previous, ratio: 1, supported: words.length, request: previous.text,
       feels: feel(dominantClause(previous.text, wordSet)) };
   }
-  if (!ask) {
+  if (!ask && words.length) {
     // C-FREEDOM: a paraphrase can share no content word with him, so his latest turn is its source.
-    // Only polarity refuses from here, so this is the ask the note is written against.
+    // Only polarity refuses from here, so this is the ask the note is written against. A note with
+    // no content word at all still has nothing to keep.
     const latest = turns[turns.length - 1];
     if (latest) {
       ask = { turn: latest, ratio: 0, supported: 0, request: latest.text,

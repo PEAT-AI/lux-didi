@@ -88,15 +88,17 @@ test('a paraphrased note supported by a long delta-assembled owner turn is remem
 });
 
 test('C-FREEDOM: a note that shares no word with his turn saves, sourced from his turn and never from the output row', async t => {
+  // Her finished answer closes the window, so his own turn is the one after it: the note's words come
+  // from the output row and still save, and the source reference names his turn, never that row.
   const store = liveSession(t, [
-    { text: 'what is worth remembering here', finished: true },
     { kind: 'outputTranscription', text: 'The owner prefers short answers in the morning', finished: true },
+    { text: 'what is worth remembering here', finished: true },
   ]);
   const result = await remember(store, 'The owner prefers short answers in the morning');
   assert.equal(result.remembered, true, 'the only refusal left on this path is polarity, so a paraphrase saves');
   const stored = entry(store, result.entryId);
   assert.equal(stored.text, 'The owner prefers short answers in the morning');
-  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:1:[0-9a-f]{8}$`),
+  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:2:[0-9a-f]{8}$`),
     'his own turn is the source, not the output transcription row');
 });
 
@@ -288,9 +290,9 @@ test('the memory_note receipt is a closed shape of counts and no text', async ()
     'the window turn count is part of the receipt');
 });
 
-test('a mismatch says the note was not saved and asks for one sentence', async t => {
-  const store = liveSession(t, [{ text: 'i take tea with milk', finished: true }]);
-  const result = await remember(store, 'the dentist needs a passport in lisbon');
+test('a polarity mismatch says the note was not saved and asks for one sentence', async t => {
+  const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
+  const result = await remember(store, 'the owner hates brussels sprouts');
   assert.equal(result.remembered, false);
   assert.equal(result.code, 'owner_text_mismatch');
   assert.match(String(result.guidance), /not saved/i);
@@ -409,13 +411,14 @@ test('C-FREEDOM: a pronoun note reads his previous turn and saves', t => {
   assert.equal(remember(store, 'Call them.').remembered, true);
   assert.equal(remember(store, 'them').remembered, false);
 });
-test('meaning excludes the previous ask and tool-only content', t => {
+test('C-FREEDOM: an ask closed by her answer is outside the window, and his newest ask is the source', t => {
   const store = liveSession(t, [{ text: 'Remember my blue desk.' },
     { kind: 'outputTranscription', text: 'Saved.' }, { text: 'Remember my green chair.' }]);
   t.after(() => store.close());
   // Her completed answer closes the first ask, so that note has no support in the window; the note on
-  // his newest ask saves at the new floor instead of demanding every word he said (C-FREEDOM).
-  assert.equal(remember(store, 'My blue desk.').remembered, false);
+  // his newest ask saves at the new floor instead of demanding every word he said (C-FREEDOM), and a
+  // note whose words only she said is his latest turn's paraphrase, so it saves too.
+  assert.equal(remember(store, 'My blue desk.').remembered, true);
   assert.equal(remember(store, 'My green chair in Paris.').remembered, true);
 });
 

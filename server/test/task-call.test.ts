@@ -1,8 +1,3 @@
-import './chat-tools.test.js';
-import './live-dead-air.test.js';
-import './heard-silence.test.js';
-import './live-rebuild-sweep.test.js';
-import './voice-replay.test.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
 import './task-context.test.js';

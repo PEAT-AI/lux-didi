@@ -1,6 +1,6 @@
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
-import './context-hygiene.test.js';
+import './task-context.test.js';
 import './host-log.test.js';
 import './connector-publication.test.js';
 import './live-declarations.test.js';

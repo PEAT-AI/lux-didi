@@ -1,57 +1,62 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import * as memory from '../domain/memory.js';
-import type { Inference } from '../tasks/worker.js';
-import { taskLiveFixture, flushTaskLive } from './task-live-fixture.js';
-test('helper source text stays out of voice context across an in-flight ordinary provider rebuild', async t => {
-  const marker = 'SYNTHETIC_RAW_TOOL_ONLY_MARKER';
-  let calls = 0, finish: ((value: Inference) => void) | undefined;
-  const outputs: string[] = [];
-  const f = await taskLiveFixture(t, async request => {
-    calls++;
-    if (calls === 1) return { text: '', calls: [{ id: 'synthetic-memory-read', name: 'search_memory', args: { query: 'syntheticcontext' } }] };
-    outputs.push(JSON.stringify(request.outputs));
-    return new Promise<Inference>(resolve => { finish = resolve; });
-  });
-  const now = Date.now(), clock = { now: () => now };
-  f.store.transaction(tx => {
-    const session = memory.createSession(tx, { title: 'syntheticcontext', startedAt: now, timeZone: 'UTC' }, clock);
-    memory.appendEntry(tx, { sessionId: session.id, text: `syntheticcontext ${marker}`, capturedAt: now, timeZone: 'UTC',
-      source: { label: 'synthetic fixture', provider: 'unit-test', accountId: 'synthetic', externalId: 'synthetic-entry', sourceTimestamp: now, availability: 'present', note: 'kind:fact' } }, clock);
-  });
-  await f.emit({ type: 'inputTranscription', text: 'Find the syntheticcontext note.', finished: true, finalOrigin: 'provider' });
-  assert.equal(calls, 2); assert.ok(outputs[0]?.includes(marker), 'the helper actually read the populated source');
-  assert.deepEqual(f.appended, []);
-  await f.emit({ type: 'goAway', timeLeftMs: 10000 });
-  assert.equal(f.requests.length, 2, 'the transport rebuilt while the same helper work remained pending');
-  assert.equal(JSON.stringify(f.requests).includes(marker), false, 'raw tool evidence never becomes voice startup context');
-  await f.emit({ type: 'delegation', delegationId: 'synthetic-rebuilt-delegation' });
-  finish!({ text: 'Synthetic concise answer.', calls: [] }); await flushTaskLive();
-  assert.equal(calls, 2, 'a transport rebuild does not restart helper inference');
-  assert.deepEqual(f.appended, ['Synthetic concise answer.']);
-  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
-  await f.emit({ type: 'outputTranscription', text: 'Synthetic concise answer.', finished: true });
-  assert.ok(f.receipts.some(row => row.event === 'task_delivery' && row.state === 'heard'));
-  assert.equal(JSON.stringify(f.receipts).includes(marker), false, 'source bytes never enter the closed audit');
+import { liveTaskFixture } from './live-task-fixture.js';
+import { fixtureUntil, deferred } from './live-voice-fixture.js';
+import { documentResult } from '../tasks/results.js';
+
+// Retrieved work lives in the host task, not in a provider research-context byte counter.
+test('host task context carries captured evidence and continuation into the next worker step', async t => {
+  const inputs: string[] = [], outputs: string[] = [];
+  const f = await liveTaskFixture(t, async request => {
+    inputs.push(request.input); outputs.push(JSON.stringify(request.outputs));
+    return inputs.length === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic context' } }] }
+      : { text: 'The synthetic context is retained.', calls: [] };
+  }, { executors: { search_knowledge: async () => ({ ...documentResult('Synthetic captured context record.', 'synthetic-context'), next_cursor: 'synthetic-next-page' }) } });
+  f.bind(); f.finalize('Find the synthetic context record.');
+  assert.equal((await f.answer()).text, 'The synthetic context is retained.');
+  assert.equal(inputs.length, 2);
+  assert.match(outputs[1]!, /Synthetic captured context record/);
+  assert.equal(inputs[1]!.includes('Synthetic captured context record'), false, 'outside text stays in tool output, not owner instructions');
+  assert.match(outputs[1]!, /synthetic-next-page/);
+  assert.equal(f.voice.sessionsOpened, 1, 'the helper evidence does not manufacture a voice context rebuild');
 });
 
-test('each finalized helper ask receives a fresh host clock and the owner time zone, not model-guessed time', async t => {
-  let now = Date.UTC(2031, 0, 2, 23, 45);
-  const inputs: { time_context?: { now_utc: string; owner_time_zone: string } }[] = [];
-  const f = await taskLiveFixture(t, async request => {
-    inputs.push(JSON.parse(request.input) as typeof inputs[number]);
-    return { text: 'Synthetic clock answer.', calls: [] };
-  }, { timeZone: 'Asia/Tokyo', now: () => now });
-  await f.emit({ type: 'delegation', delegationId: 'synthetic-clock-delegation' });
-  await f.emit({ type: 'inputTranscription', text: 'What is today in my time zone?', finished: true, finalOrigin: 'provider' });
-  assert.equal(inputs.length, 1);
-  assert.deepEqual(inputs[0]!.time_context, { now_utc: '2031-01-02T23:45:00.000Z', owner_time_zone: 'Asia/Tokyo' });
-  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
-  await f.emit({ type: 'outputTranscription', text: 'Synthetic clock answer.', finished: true });
-  await f.emit({ type: 'goAway', timeLeftMs: 10000 });
-  assert.equal(f.requests.length, 2);
-  now += 60000;
-  await f.emit({ type: 'inputTranscription', text: 'And now?', finished: true, finalOrigin: 'provider' });
-  assert.equal(inputs.length, 2);
-  assert.deepEqual(inputs[1]!.time_context, { now_utc: '2031-01-02T23:46:00.000Z', owner_time_zone: 'Asia/Tokyo' });
+test('task persistence correlates the worker revision and each operation without provider call ids', async t => {
+  let steps = 0;
+  const f = await liveTaskFixture(t, async () => ++steps === 1
+    ? { text: '', calls: [{ id: 'synthetic-stage_lux_note',  name: 'stage_lux_note', args: { title: 'Synthetic context', text: 'Synthetic retained note.' } }] }
+    : { text: 'The synthetic note is staged locally.', calls: [] });
+  f.bind(); f.finalize('Stage a synthetic local note.'); await f.answer();
+  const operations = f.store.transaction(tx => tx.all('SELECT task_id,task_revision,operation_id,tool FROM task_operations'));
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0]?.tool, 'stage_lux_note');
+  assert.match(String(operations[0]?.task_id), /^[a-f0-9-]{36}$/);
+  assert.match(String(operations[0]?.operation_id), /^[a-f0-9-]{36}$/);
+  const revision = f.store.transaction(tx => tx.get('SELECT task_id,task_revision FROM task_revisions'));
+  assert.equal(operations[0]?.task_id, revision?.task_id);
+  assert.equal(operations[0]?.task_revision, revision?.task_revision);
+});
+
+test('a pending helper does not rebuild, emit progress filler or repeat inference at voice turn boundaries', async t => {
+  const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+  const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic work is complete.', calls: [] }; });
+  f.bind(); f.finalize('Do the synthetic work.'); await fixtureUntil(() => calls === 1, 'pending helper');
+  f.voice.emit({ type: 'generationComplete' }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.texts.length, 0);
+  release.resolve(); assert.equal((await f.answer()).text, 'The synthetic work is complete.'); assert.equal(calls, 1);
+});
+
+test('newer owner words supersede pending work while retaining their ordered context', async t => {
+  const release = deferred<void>(); t.after(() => release.resolve()); const inputs: string[] = [];
+  const f = await liveTaskFixture(t, async request => {
+    inputs.push(request.input);
+    if (inputs.length === 1) { await release.promise; return { text: 'The superseded synthetic result.', calls: [] }; }
+    return { text: 'The corrected synthetic result.', calls: [] };
+  });
+  f.bind('original'); f.finalize('Use the original synthetic selection.'); await fixtureUntil(() => inputs.length === 1, 'first owner revision');
+  f.bind('corrected'); f.finalize('Correction: use the second synthetic selection.');
+  await fixtureUntil(() => inputs.length === 2, 'corrected owner revision');
+  assert.ok(inputs[1]!.indexOf('original synthetic selection') < inputs[1]!.indexOf('second synthetic selection'));
+  release.resolve(); assert.equal((await f.answer()).text, 'The corrected synthetic result.'); await f.flush();
+  assert.equal(f.voice.taskAnswers.length, 1); assert.equal(f.voice.taskAnswers[0]?.delegationId, 'corrected');
 });

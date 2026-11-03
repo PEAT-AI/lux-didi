@@ -1,3 +1,6 @@
+import { liveTaskFixture } from './live-task-fixture.js';
+import { fixtureUntil } from './live-voice-fixture.js';
+import { documentResult } from '../tasks/results.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -326,109 +329,40 @@ test('#527/L18: a long healthy stretch starts a fresh recovery episode after the
   void attachment;
 });
 
-/** Wait until the host has answered the model this many times. */
-async function answered(h: Harness, count: number): Promise<void> {
-  for (let i = 0; i < 2000 && h.port.toolResponses.length < count; i++) await flush();
-  assert.equal(h.port.toolResponses.length, count, 'the host answered the model');
-}
 
-async function ownerSpoke(h: Harness, text = 'what do we know about the plan'): Promise<void> {
-  h.port.emit({ type: 'inputTranscription', text, finished: true, sequence: 0 } as LiveVoiceEvent);
-  await flush();
-}
 
-/** One lookup question per call, so a repeat never hits the session's answer cache instead of the loop. */
-const research = (id: string, question = 'what do we know about the plan'): LiveVoiceEvent => ({
-  type: 'toolCall', calls: [{ id, name: 'research', args: { action: 'start', question, topic: question } }], sequence: 0,
-}) as LiveVoiceEvent;
 
-test('F1: a research call after a rebuild reaches the connector instead of being denied', async t => {
-  const h = await harness(t);
-  const created = h.owner.create({ idempotencyKey: 'research-rebuild', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  const first = (await sessionAt(h, 0))!;
-  first.live();
-  await attachment.ready;
-  await flush();
-  await ownerSpoke(h);
-  // One lookup runs on generation 0, which is where the session's research scheduler is built.
-  h.port.emit(research('r0'));
-  await answered(h, 1);
-  // The socket dies and the host rebuilds it: the session is now generation 1.
-  first.die();
-  await flush();
-  const second = (await sessionAt(h, 1))!;
-  second.live();
-  await flush();
-  await ownerSpoke(h, 'what do we know about the budget');
-  h.port.emit(research('r1', 'what do we know about the budget'));
-  await answered(h, 2);
-  const reply = h.port.toolResponses[1]![0]!;
-  const seen = JSON.stringify({ reply: reply.response, connectorCalls: h.connectorCalls, receipts: h.receipts.filter(entry => String(entry['event']).startsWith('research')).slice(-6) });
-  assert.notEqual(reply.response['error'], 'tool_result_denied', `the rebuilt session runs its lookup: ${seen}`);
-  assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 2, `both lookups dispatched to the connector: ${seen}`);
+test('task recovery: a finalized request after rebuild reaches its read executor', async t => {
+let inferences = 0, reads = 0;
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
+f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'recovered task socket');
+f.bind('fresh'); f.finalize('Find the synthetic recovery evidence.');
+assert.equal((await f.answer()).delegationId, 'fresh'); assert.equal(reads, 1); assert.equal(inferences, 2);
 });
 
-test('F1: a lookup refused before the owner spoke never poisons the session', async t => {
-  const h = await harness(t);
-  const created = h.owner.create({ idempotencyKey: 'research-opener', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  (await sessionAt(h, 0))!.live();
-  await attachment.ready;
-  await flush();
-  h.port.emit(research('r0'));
-  await answered(h, 1);
-  assert.equal(h.port.toolResponses[0]![0]!.response['error'], 'opener_not_fetched', 'the opener lookup is refused, never dispatched');
-  assert.equal(h.connectorCalls.length, 0, 'the refused opener reached no connector');
-  await ownerSpoke(h, 'what do we know about the budget');
-  h.port.emit(research('r1', 'what do we know about the budget'));
-  await answered(h, 2);
-  const reply = h.port.toolResponses[1]![0]!;
-  const seen = JSON.stringify({ reply: reply.response, connectorCalls: h.connectorCalls, receipts: h.receipts.filter(entry => String(entry['event']).startsWith('research')).slice(-6) });
-  assert.notEqual(reply.response['error'], 'tool_result_denied', `the next lookup runs on the same session: ${seen}`);
-  assert.ok(h.connectorCalls.some(call => call.name === 'search_knowledge'), `the second lookup dispatched to the connector: ${seen}`);
+test('task recovery: early delegation cannot start work and cannot poison later owner input', async t => {
+let inferences = 0, reads = 0;
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
+f.bind('early'); await f.flush(); assert.equal(inferences, 0); assert.equal(reads, 0); assert.equal(f.voice.taskAnswers.length, 0);
+f.finalize('Find the synthetic recovery evidence.'); assert.equal((await f.answer()).text, 'The synthetic recovery answer.'); assert.equal(reads, 1);
 });
 
-test('F5/F3: tool_output_sent measures the span from the frame that asked for it', async t => {
-  const h = await harness(t);
-  const created = h.owner.create({ idempotencyKey: 'tool-latency', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  (await sessionAt(h, 0))!.live();
-  await attachment.ready;
-  await flush();
-  // The owner speaks first: a lookup before her first turn is refused at once and never measures a span.
-  await ownerSpoke(h);
-  h.holdTool();
-  h.port.emit({ type: 'toolCall', calls: [{ id: 'k1', name: 'search_knowledge', args: { query: 'plan', limit: 3 } }], sequence: 0 } as LiveVoiceEvent);
-  await flush();
-  await h.advance(1_200);
-  h.releaseTool();
-  await answered(h, 1);
-  const receipt = h.receipts.find(entry => entry['event'] === 'tool_output_sent');
-  assert.ok(receipt, 'the output write was receipted');
-  assert.equal(receipt['msSinceArrived'], 1_200, 'the span is measured from the call that arrived, not from a lost clock');
+test('task recovery: operation audit measures read elapsed time against its task identity', async t => {
+let inferences = 0;
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic latency' } }] } : { text: 'The synthetic timed answer.', calls: [] }, { clock: true, executors: { search_knowledge: async () => { t.mock.timers.tick(25); return documentResult('Synthetic timed evidence.', 'timed-evidence'); } } });
+f.bind(); f.finalize('Find the synthetic timed evidence.'); await f.answer();
+const operation = f.store.transaction(tx => tx.get('SELECT created_at,updated_at,operation_id FROM task_operations'));
+assert.equal(Number(operation?.updated_at) - Number(operation?.created_at), 25); assert.match(String(operation?.operation_id), /^[a-f0-9-]{36}$/);
 });
 
-test('F1: a lookup the gate denied never withholds the next allowed one', async t => {
-  const h = await harness(t);
-  const created = h.owner.create({ idempotencyKey: 'research-gate', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  (await sessionAt(h, 0))!.live();
-  await attachment.ready;
-  await flush();
-  await ownerSpoke(h);
-  // The delivery gate refuses every dispatch of this batch: the run answers with nothing fetched.
-  h.authority(false);
-  h.port.emit(research('r0'));
-  await answered(h, 1);
-  assert.equal(h.connectorCalls.length, 0, 'the refused batch reached no connector');
-  // The gate is healthy again, and the owner asks something new: this lookup must be able to dispatch.
-  h.authority(true);
-  await ownerSpoke(h, 'what do we know about the budget');
-  h.port.emit(research('r1', 'what do we know about the budget'));
-  await answered(h, 2);
-  assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 1,
-    'the allowed lookup dispatched even though the batch that built the scheduler was denied');
+test('task recovery: refused helper arguments cannot poison a later valid revision', async t => {
+let inferred = 0, reads = 0, valid = false;
+const f = await liveTaskFixture(t, async () => { inferred++; if (inferred === 1) return { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 77 } }] };
+if (valid) { valid = false; return { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'valid synthetic query' } }] }; }
+return reads ? { text: 'The valid synthetic answer.', calls: [] } : { text: '', calls: [], no_action: true };
+}, { executors: { search_knowledge: async () => { reads++; return documentResult('Valid synthetic evidence.', 'valid-evidence'); } } });
+f.bind('invalid'); f.finalize('Try the synthetic request.'); await fixtureUntil(() => inferred >= 2, 'invalid arguments refused'); await f.flush(); assert.equal(reads, 0);
+valid = true; f.bind('valid'); f.finalize('Now use the valid synthetic query.'); assert.equal((await f.answer()).text, 'The valid synthetic answer.'); assert.equal(reads, 1);
 });
 
 // C-LIVE R2: a recovery open that throws is logged by class and closed key, then gets one fresh open after a short

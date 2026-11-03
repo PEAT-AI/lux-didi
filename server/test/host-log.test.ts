@@ -1,4 +1,3 @@
-
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -100,6 +99,25 @@ test('research_subcall carries the calendar window kind as a closed enum', () =>
   assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
 });
 
+// #689: the live owner stamps a research event's callKey with the scoped trace key, `call:` plus 64 lowercase hex.
+// SAFE_ID refused it, so a completed run left no routed or subcall receipt at all.
+test('a research event keeps the scoped callKey and still drops a malformed one', () => {
+  const callKey = `call:${'a1'.repeat(32)}`;
+  const routed = { event: 'research_routed', researchId: 'r1', sources: ['calendar'], lookups: 1, ms: [12], outcomes: ['ok'] };
+  assert.deepEqual(safeEvent({ ...routed, callKey }), { ...routed, callKey }, 'the scoped callKey is kept');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'A1'.repeat(32)}` }), undefined, 'uppercase hex is refused');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'a1'.repeat(31)}` }), undefined, 'a short digest is refused');
+  assert.equal(safeEvent({ ...routed, callKey: 'call:the owners question' }), undefined, 'free text is refused');
+  assert.deepEqual(safeEvent({ ...routed, callKey: 'research-window' }), { ...routed, callKey: 'research-window' }, 'a plain safe id still passes');
+
+  const subcall = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'routed' };
+  assert.deepEqual(safeEvent({ ...subcall, callKey }), { ...subcall, callKey }, 'the subcall keeps it too');
+  assert.equal(safeEvent({ ...subcall, callKey: 'call: ' }), undefined, 'a malformed subcall key is dropped');
+
+  const progress = { event: 'research_progress', researchId: 'r1', phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: 3 };
+  assert.deepEqual(safeEvent({ ...progress, callKey }), { ...progress, callKey }, 'progress keeps it too');
+});
+
 test('conversation_summary events keep the session id, counts, ms and reason codes only', () => {
   const started = { event: 'conversation_summary_started', liveSessionId: 's-1', inputChars: 120, truncated: false };
   assert.deepEqual(safeEvent(started), started);
@@ -136,6 +154,12 @@ test('connector_failure admits bounded reason, exception, endpoint and attempt, 
   assert.equal(safeEvent({ ...base, endpointId: 'has space' }), undefined, 'a non-id endpoint is refused');
   assert.equal(safeEvent({ ...base, attempt: 'third-time' }), undefined, 'an out-of-vocabulary attempt is refused');
   assert.equal(safeEvent({ ...base, message: 'SECRET' }), undefined, 'an extra key fails closed');
+});
+
+test('research_joined carries the run id only', () => {
+  assert.deepEqual(safeEvent({ event: 'research_joined', researchId: 'r1' }), { event: 'research_joined', researchId: 'r1' });
+  assert.equal(safeEvent({ event: 'research_joined', researchId: 'r1', question: 'SECRET' }), undefined);
+  assert.deepEqual(safeEvent({ event: 'research_joined', researchId: 'has space' }), { event: 'research_id_rejected', kind: 'research_joined', field: 'researchId' }, 'Z1: the rejected id is reported, never silent');
 });
 
 test('research_subcall keeps a real error code but drops a free-text one', () => {
@@ -322,6 +346,14 @@ test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried
   assert.equal(safeEvent({ event: 'warm_prewarm', assembled: true }), undefined, 'both ages are always present');
 });
 
+test('Z1: a research line with an unsafe id reports the rejection instead of vanishing', () => {
+  const progress = { event: 'research_progress', researchId: '\u2014', phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: 3 };
+  assert.deepEqual(safeEvent(progress), { event: 'research_id_rejected', kind: 'research_progress', field: 'researchId' });
+  assert.equal(safeEvent({ event: 'research_joined', researchId: 'a.b' })?.event, 'research_id_rejected', 'every research line reports its own rejection');
+  assert.equal(JSON.stringify(safeEvent(progress)).includes('\u2014'), false, 'the line never carries the value');
+  assert.deepEqual(safeEvent({ ...progress, researchId: 'ok-id' }), { ...progress, researchId: 'ok-id' }, 'a safe id still writes its own line');
+});
+
 test('1022: the connector lifecycle lines carry closed fields and nothing else', () => {
   assert.deepEqual(safeEvent({ event: 'connector_connected', endpointId: 'gmail', connectMs: 2569 }),
     { event: 'connector_connected', endpointId: 'gmail', connectMs: 2569 });
@@ -346,6 +378,50 @@ test('C-R2: both skip reasons the summarizer already logs pass the sanitizer', (
       { event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason }, `C-R2: ${reason} reaches host.log`);
   }
   assert.equal(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason: 'free text reason' }), undefined, 'and the closed set still refuses anything else');
+});
+
+// MED-1022/T-R2: a knowledge receipt names the query's term count, whether the day filter was applied
+// and what became of the chat date operator, as counts and closed tokens, never the query text.
+test('MED-1022: the knowledge receipt keeps its counts and closed tokens and refuses anything else', () => {
+  const base = {
+    event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1,
+    knowledge: { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 7, dayFilter: 'past_window', chatDateOperator: 'compiled', deduped: 1 },
+  };
+  const kept = safeEvent(base);
+  assert.ok(kept !== undefined, 'a receipt with the three new fields is kept');
+  assert.deepEqual(kept!['knowledge'], base.knowledge, 'and every field survives unchanged');
+  const row = (patch: Record<string, unknown>): Record<string, unknown> => ({ ...base, knowledge: { ...base.knowledge, ...patch } });
+  const without = (key: string): Record<string, unknown> => {
+    const knowledge: Record<string, unknown> = { ...base.knowledge };
+    delete knowledge[key];
+    return { ...base, knowledge };
+  };
+  assert.equal(safeEvent(without('queryTerms')), undefined, 'a receipt missing the term count is refused');
+  assert.equal(safeEvent(without('deduped')), undefined, 'a receipt missing the dedup count is refused');
+  assert.equal(safeEvent(row({ queryTerms: -1 })), undefined, 'a negative term count is refused');
+  assert.equal(safeEvent(row({ queryTerms: 'seven' })), undefined, 'the term count is never text');
+  assert.equal(safeEvent(row({ dayFilter: 'yes' })), undefined, 'the day filter is a closed token, never a word');
+  for (const token of ['none', 'past_window', 'dropped_on_empty']) assert.ok(safeEvent(row({ dayFilter: token })) !== undefined, `${token} is a closed token`);
+  assert.equal(safeEvent(row({ deduped: -1 })), undefined, 'a negative dedup count is refused');
+  assert.equal(safeEvent(row({ chatDateOperator: 'after:2026-10-21' })), undefined, 'the date itself never rides the receipt');
+  for (const token of ['compiled', 'dropped', 'none']) assert.ok(safeEvent(row({ chatDateOperator: token })) !== undefined, `${token} is a closed token`);
+  assert.equal(safeEvent(row({ note: 'extra' })), undefined, 'an unknown field is refused');
+});
+
+// ROUTE-1022 K5: a receipt names the plan a brief actually ran, as one closed token and nothing else.
+test('ROUTE-1022: the brief plan token reaches the log only from its closed set', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  for (const plan of ['knowledge_only', 'named_sources']) {
+    assert.deepEqual(safeEvent({ ...source, plan }), { ...source, plan }, `${plan} reaches host.log`);
+  }
+  assert.equal(safeEvent({ ...source, plan: 'read everything' }), undefined, 'an unknown plan token is refused');
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, plan: 'knowledge_only' }), { ...run, plan: 'knowledge_only' }, 'the run receipt names the plan');
+  assert.equal(safeEvent({ ...run, plan: 'brief' }), undefined, 'and refuses a token outside it');
 });
 
 test('L2: a digest refresh receipt says which edge read it and how long, never a day', () => {
@@ -405,6 +481,26 @@ test('L12d: one host_resources receipt per sixty second window, on the host cloc
   assert.equal(sampler.sample(), false, 'a second read inside the same window stays silent');
   assert.equal(logged.length, 1);
 });
+
+// Release 4: a partial mail read carries a closed marker and a page count, and an unresolved window
+// reason is its own token, so neither reads as an outage.
+test('release 4: the partial source receipt and the window reason reach host.log', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'ok', ms: 730, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, partial: 'pages_failed', failedPages: 1 }), { ...source, partial: 'pages_failed', failedPages: 1 }, 'the partial marker and its count reach host.log');
+  assert.equal(safeEvent({ ...source, partial: 'lost everything', failedPages: 1 }), undefined, 'an unknown partial token is refused');
+  assert.equal(safeEvent({ ...source, partial: 'pages_failed' }), undefined, 'the marker never travels without its count');
+  const run = { event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered', ops: 1, sources: [] as Record<string, unknown>[], elapsedMs: 0, deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: 10, unchecked: ['calendar'], canContinue: true, findingChars: [] };
+  const row = { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'window_unparsed' };
+  assert.ok(safeEvent({ ...run, sources: [row] }) !== undefined, 'the window reason reaches host.log');
+  assert.equal(safeEvent({ ...run, sources: [{ ...row, reason: 'whatever' }] }), undefined, 'and the closed set still refuses anything else');
+});
+// L8-Q07: a failed read names its closed reason in host.log, and nothing outside the set passes.
+test('L8-Q07: a research_source receipt carries a closed failure reason', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'failed', ms: 0, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, reason: 'no_query' }), { ...source, reason: 'no_query' }, 'the reason reaches host.log');
+  assert.deepEqual(safeEvent({ ...source, reason: 'timed_out' }), { ...source, reason: 'timed_out' });
+  assert.equal(safeEvent({ ...source, reason: 'the mail server said no' }), undefined, 'a free text reason is refused');
+});
 test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
   const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
   assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');
@@ -425,6 +521,21 @@ test('vault_write keeps its closed shape: a state token, an insight id on a save
   assert.equal(safeEvent({ ...refused, note: 'the boat survey is on Tuesday' }), undefined, 'and the note still never crosses it');
 });
 
+test('LAT-1023: a run receipt carries the round cap and the compaction counts as closed values', () => {
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 2, perRound: [], stopReason: 'rounds_exhausted', status: 'partial',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: ['mail'], canContinue: true, findingChars: [10],
+  };
+  const admitted = safeEvent({ ...run, roundCapHit: 2, answerCompacted: { items: 4, chars: 400 } });
+  assert.deepEqual(admitted, { ...run, roundCapHit: 2, answerCompacted: { items: 4, chars: 400 } }, 'both closed counts reach host.log');
+  assert.equal(safeEvent({ ...run, roundCapHit: -1 }), undefined, 'a negative round count is refused');
+  assert.equal(safeEvent({ ...run, roundCapHit: 'two' }), undefined, 'a round count is never text');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 4 } }), undefined, 'a compaction needs both counts');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 4, chars: 400, text: 'the mail said' } }), undefined, 'and never carries content');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 1.5, chars: 400 } }), undefined, 'a count is a whole number');
+});
+
 test('#606 stop candidates carry only bounded alias ids, counts and flags', () => {
   const candidate = { event: 'voice_stop_candidate', aliasId: 1, windowWords: 10, matched: false, finished: false };
   assert.deepEqual(safeEvent(candidate), candidate);
@@ -432,6 +543,28 @@ test('#606 stop candidates carry only bounded alias ids, counts and flags', () =
   assert.equal(safeEvent({ ...candidate, aliasId: 'naya' }), undefined);
   assert.equal(safeEvent({ ...candidate, aliasId: 7 }), undefined);
   assert.equal(safeEvent({ ...candidate, windowWords: 11 }), undefined);
+});
+
+// F7 / #610: the chat read's own shape rides the receipt, so a slow chat search can be judged from
+// the log. Counts, operator names and closed tokens only; the query words never arrive.
+test('#610: the chat query shape reaches the log, and a stray key still refuses the receipt', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'chat', outcome: 'ok', ms: 4_800, deadlineMs: 12_000, coalesced: 1 };
+  const shape = { terms: 3, operators: ['in', 'after'], limit: 8, sort: 'newest' };
+  const admitted = safeEvent({ ...source, chat: shape });
+  assert.ok(admitted !== undefined, 'a chat receipt with its shape is admitted');
+  assert.deepEqual((admitted as { chat?: unknown }).chat, shape);
+  for (const bad of [{ ...shape, terms: -1 }, { ...shape, terms: 1.5 }, { ...shape, operators: ['subject'] }, { ...shape, limit: 0 }, { ...shape, sort: 'relevance-x' }, { ...shape, query: 'dogcation' }]) {
+    assert.equal(safeEvent({ ...source, chat: bad }), undefined, `a malformed chat shape is refused: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(safeEvent({ ...source, chat: 'terms=3' }), undefined, 'a string is never a chat shape');
+  // R3: a refused chat read records the reason it really failed with, as one closed token.
+  const refused = safeEvent({ ...source, outcome: 'failed', chat: { reason: 'credential-refresh-failed' } });
+  assert.equal((refused as { chat?: { reason?: string } } | undefined)?.chat?.reason, 'credential-refresh-failed', 'a refusal reason reaches the log');
+  assert.equal(safeEvent({ ...source, outcome: 'failed', chat: { reason: 'whatever_dana_said' } }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...source, chat: { ...shape, reason: 'tool-not-granted' } }), undefined, 'a reason never rides a search shape');
+  assert.equal(safeEvent({ ...source, note: 'extra' }), undefined, 'an unknown field beside a chat shape still refuses the receipt');
+  const serialized = JSON.stringify(admitted);
+  assert.ok(!serialized.includes('dogcation'), 'no query word reaches the log');
 });
 
 test('launch_kind carries the kind and its two flags, and nothing else', () => {
@@ -445,6 +578,13 @@ test('launch_kind carries the kind and its two flags, and nothing else', () => {
   assert.equal(safeEvent({ ...launch, autoConnects: 'yes' }), undefined, 'a flag is never text');
   assert.equal(safeEvent({ ...launch, windowShown: 1 }), undefined, 'a flag is never a count');
   assert.equal(safeEvent({ ...launch, windowTitle: 'Naya' }), undefined, 'no window text crosses this boundary');
+});
+
+// #639: the company read is a candidate like the others, so the run receipt that names it is kept rather
+// than refused by the closed set.
+test('#639: a research_run row naming the company search candidate is accepted', () => {
+  const run = { event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [{ candidates: [{ kind: 'company_search', pUseful: 0.4 }, { kind: 'knowledge_search', pUseful: 0.4 }], chosen: ['knowledge_search', 'company_search'] }], stopReason: 'answered', status: 'answered', ops: 2, sources: [{ kind: 'mongoose', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [] };
+  assert.deepEqual(safeEvent(run), run, 'the round names the company read and the receipt keeps it');
 });
 
 test('W1: every Mongoose sign-in hop keeps its closed content-free line, and nothing else gets through', () => {
@@ -485,8 +625,10 @@ test('C-LIVE: live_attach_rejected keeps its class, and a recovery failure keeps
   const failure = { event: 'live_recovery_failed', liveSessionId: id, generation: 2, mode: 'fresh_seeded', cause: 'model_mute', errorClass: 'TypeError', messageKey: 'synthetic_open_refused', attempt: 1 };
   assert.deepEqual(safeEvent(failure), failure);
   assert.equal(safeEvent({ ...failure, messageKey: 'free text from a provider' }), undefined, 'a free-text message never reaches the log');
-  assert.equal(safeEvent({ event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' }), undefined);
-  assert.equal(safeEvent({ event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 }), undefined);
+  assert.deepEqual(safeEvent({ event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' }),
+    { event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' });
+  assert.deepEqual(safeEvent({ event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 }),
+    { event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 });
 });
 
 test('W7: a Trello connector_call line keeps its closed shape and a Trello sign-in names its own row', () => {
@@ -527,9 +669,7 @@ test('every event handed to the host-log emitter has a safeEvent branch', () => 
       if (named?.[1] !== undefined) events.set(named[1], path.slice(root.length));
     }
   }
-  assert.ok(files.includes(join(root, 'live', 'index.js')), 'the compiled live emitter surface is present');
-  assert.ok(files.includes(join(root, 'tasks', 'runtime.js')), 'the compiled task runtime is present');
-  assert.ok(events.size > 0, 'the scan found actual emitters');
+  assert.ok(events.size > 60, `the scan found the emitters, got ${events.size}`);
   const log = readFileSync(join(root, 'host', 'log.js'), 'utf8');
   const missing = [...events.keys()].filter(event => !log.includes(`'${event}'`));
   assert.deepEqual(missing, [], `events handed to the emitter with no safeEvent branch: ${missing.join(', ')}`);
@@ -622,11 +762,14 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
     assert.equal(receipts[0].level, 'info');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
-test('task delivery audit keeps closed identity/state fields and rejects owner or target text', () => {
-  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'heard' } as const;
-  assert.deepEqual(safeEvent(event), event);
-  assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
-  assert.equal(safeEvent({ ...event, target: 'https://synthetic.invalid/private' }), undefined);
+
+// C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
+test('task delivery audit accepts closed metadata and refuses owner or target text', () => {
+ const metadata = { event: 'task_delivery', state: 'sent', taskId: '11111111-1111-4111-8111-111111111111', revision: 1, chunk: 0 };
+ assert.ok(safeEvent(metadata), 'the actual task delivery emitter has a host-log branch');
+ assert.equal(safeEvent({ ...metadata, ownerWords: 'SYNTHETIC_PRIVATE_WORDS' }), null);
+ assert.equal(safeEvent({ ...metadata, target: 'https://example.com/synthetic-private-target' }), null);
+ assert.equal(JSON.stringify(safeEvent(metadata)).includes('SYNTHETIC_PRIVATE_WORDS'), false);
 });
 
 test('canary close terminal is validated as a closed session-paired receipt', () => {
@@ -655,6 +798,29 @@ test('C-MICWATCH: live_input_dead keeps a closed shape of the session and its ge
   assert.equal(safeEvent({ ...dead, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...dead, generation: -1 }), undefined, 'a negative generation is refused');
   assert.equal(safeEvent({ ...dead, liveSessionId: 'not-a-session' }), undefined, 'a malformed session id is refused');
+});
+
+// LAT-1022: the company-numbers source is a real SourceKind, and the closed set here had lost it. One source
+// outside the set refused the whole line, so every run receipt naming an unread `data` source was dropped
+// silently while research_source kept firing: four days of run-level latency with no run line at all.
+test('LAT-1022: a run receipt naming the company-numbers source still reaches host.log', () => {
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, unchecked: ['data'] }), { ...run, unchecked: ['data'] }, 'an unread company-numbers source is a source');
+  const read = { ...run, sources: [{ kind: 'data', disposition: 'completed', latencyMs: 40 }] };
+  assert.deepEqual(safeEvent(read), read, 'a company-numbers read is named in the run receipt');
+});
+
+// LAT-1022: a source receipt carries its own start instant, so two reads of one run can be proven to overlap
+// from the log alone. A count only, on the clock its `ms` was measured on.
+test('LAT-1022: a research_source receipt carries its start instant', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, startedAt: 1_700_000_000_000 }), { ...source, startedAt: 1_700_000_000_000 }, 'the start instant is kept');
+  assert.equal(safeEvent({ ...source, startedAt: 12.5 }), undefined, 'a fractional instant is refused');
+  assert.equal(safeEvent({ ...source, startedAt: -1 }), undefined, 'a negative instant is refused');
 });
 
 // C-ALARMSPEECH: a spoken alarm that could not open is never silent, and never leaks the label.
@@ -689,6 +855,12 @@ test('C-DIAG109: a stall and a rebuild carry the owner final response pair', () 
   assert.equal(safeEvent({ ...stall, responseCreated: 'yes' }), undefined);
 });
 
+test('task delivery audit keeps closed identity/state fields and rejects owner or target text', () => {
+  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'heard' } as const;
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
+  assert.equal(safeEvent({ ...event, target: 'https://synthetic.invalid/private' }), undefined);
+});
 test('retired research audit event kinds are not accepted as current host events', () => {
   for (const event of ["research_blocked","research_id_rejected","research_joined","research_joined carries the run id only","research_operation_deadline","research_progress","research_routed","research_run","research_source","research_subcall"]) assert.equal(safeEvent({ event }), undefined);
 });

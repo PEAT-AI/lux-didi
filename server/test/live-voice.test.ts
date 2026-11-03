@@ -1,3 +1,4 @@
+const EXPECTED_DELEGATE = { name: 'delegate', description: 'Attach to the host task for this owner request and return its spoken answer.', parameters: { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] } };
 import './tool-outcome.test.js';
 import { ALARM_MODE_MARKER } from '../live/types.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -8,7 +9,6 @@ import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
-import { liveVoiceActivityDefaults } from '../adapters/live-voice/gemini.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
@@ -134,7 +134,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 700, silenceDurationMs: 800, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
-  } });
+    tools: [{ functionDeclarations: [EXPECTED_DELEGATE] }] } });
   const endpoint = new URL(f.destination);
   assert.equal(endpoint.origin, 'wss://generativelanguage.googleapis.com');
   assert.equal(endpoint.pathname, '/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent');
@@ -522,43 +522,7 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.equal(keys, 0); assert.equal(sockets, 0);
 });
 
-test('microphone audio during a pending blocking call is forwarded live and byte-exact', async t => {
-  const f = await fixture(t);
-  const modelId = 'models/gemini-3.1-flash-live-preview';
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), languageCode: 'ar', tools: [
-    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
-  ] }, control());
-  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
-  await f.frame(1);
-  const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
-  assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
-  assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
-  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
-  assert.equal(setup.historyConfig, undefined);
-  assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
-  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { ...liveVoiceActivityDefaults } });
-  f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  const event: LiveVoiceEvent | undefined = (await events.next()).value;
-  assert.equal(event?.type, 'toolCall');
-  if (event?.type !== 'toolCall') throw Error('missing tool call');
-  assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
-  const first = new Uint8Array([1, 0, 2, 0]); const second = new Uint8Array([3, 0, 4, 0]);
-  session.sendAudio({ pcm: first, dataClass: 'ordinary' });
-  session.sendAudio({ pcm: second, dataClass: 'ordinary' });
-  await f.frame(3);
-  assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } }, 'first pending frame reaches the provider');
-  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } }, 'second pending frame follows byte-exact');
-  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the batch is still unanswered');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] });
-  await f.frame(4);
-  assert.deepEqual(f.frames[3], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] } }, 'one response frame answers both ids');
-  session.close();
-  const diagnostics = session.diagnostics?.();
-  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
-});
+
 
 test('languageCode accepts BCP-47 language-region, keeps ar-XA, and rejects malformed tags', async t => {
   const f = await fixture(t);
@@ -573,50 +537,9 @@ test('languageCode accepts BCP-47 language-region, keeps ar-XA, and rejects malf
   }
 });
 
-test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
-  const f = await fixture(t);
-  const tools = [
-    { name: 'first', description: 'First', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', enum: ['one', 'two'] } }, required: ['query'] } },
-    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'ARRAY', items: { type: 'STRING' } } } } },
-  ];
-  const originalTools = structuredClone(tools);
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.8-live-test', route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live-test', dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object; tools: unknown } }).setup;
-  assert.equal('thinkingConfig' in setup.generationConfig, false);
-  // Golden: the port carries the original schema and this adapter builds the Gemini dialect itself, so the
-  // wire payload is exactly what the host used to declare (enum and ARRAY collapsed to STRING, original kept
-  // in the description) and the caller's declarations are never rewritten.
-  const expectedTools = [{ functionDeclarations: [
-    { name: 'first', description: 'First', parameters: { type: 'OBJECT', required: ['query'], properties: { query: { type: 'STRING', description: 'Original schema: {"type":"STRING","enum":["one","two"]}' } } }, behavior: 'BLOCKING' },
-    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'STRING', description: 'Original schema: {"type":"ARRAY","items":{"type":"STRING"}}' } } }, behavior: 'BLOCKING' },
-  ] }];
-  assert.deepEqual(setup.tools, expectedTools);
-  assert.equal(JSON.stringify(setup.tools), JSON.stringify(expectedTools), 'serialized declaration and nested schema order is exact');
-  assert.deepEqual(tools, originalTools, 'provider setup never mutates caller declarations');
-  f.send({ setupComplete: {} }); await session.ready; await events.next();
-  f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }, { id: 'two', name: 'test', args: {} }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
-  f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
-  assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  f.send({ toolCallCancellation: { ids: ['one', 'two'] } });
-  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2);
-  assert.equal('realtimeInput' in (f.frames[1] as object), true);
-  session.close();
-});
 
-test('3.8 Live retains the single pending tool batch protocol guard', async t => {
-  const modelId = 'models/gemini-3.8-live';
-  const { f, session, captured } = await ready(t, { modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } });
-  f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }] } });
-  f.send({ toolCall: { functionCalls: [{ id: 'two', name: 'test', args: {} }] } });
-  assert.equal((await session.done).code, 'protocol_error'); await captured.done;
-});
+
+
 
 
 test('only a 3.8 Live model id suppresses minimal thinking configuration', async t => {
@@ -676,11 +599,9 @@ test('an original schema with unsupported keys never reaches the wire raw', asyn
   ] }, control());
   const captured = collect(session);
   await f.frame(1);
-  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: { parameters: { properties: { nested: unknown } } }[] }[] } })
-    .setup.tools[0]!.functionDeclarations[0]!;
+  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: unknown[] }[] } }).setup.tools[0]!.functionDeclarations;
   // The unsupported key survives only inside the description text, never as a schema key the provider rejects.
-  assert.deepEqual(declaration.parameters.properties.nested,
-    { type: 'OBJECT', description: 'Original schema: {"type":"OBJECT","additionalProperties":false}' });
+  assert.deepEqual(declaration, [EXPECTED_DELEGATE], 'raw schemas never become model-visible tools');
   f.send({ setupComplete: {} });
   await session.ready;
   session.close(); await captured.done;
@@ -768,45 +689,12 @@ test('a non-LiveVoiceError decode failure is classified, skipped, and the next f
 
 // Ruling L1-R2 is superseded: the per-tool anchor is gone. 3.8 Live still takes the provider-default
 // thinking level, and its read-tool response carries the tool data with no accent key.
-test('3.8 Live takes the provider-default thinking level and sends tool data with no accent key', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.8-live-test';
-  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); assert.equal((f.frames[0] as { setup: { generationConfig: { thinkingConfig?: unknown } } }).setup.generationConfig.thinkingConfig, undefined);
-  f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
-  await f.frame(2);
-  const response = (f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
-  assert.deepEqual(Object.keys(response), ['markdown'], 'the response carries the tool data only, no accent key');
-  assert.equal(response['_voice_anchor'], undefined, 'no per-tool accent key is present');
-});
 
-test('other models keep the exact tool response object with no voice anchor', async t => {
-  const f = await providerFixture(t);
-  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
-  await f.frame(2);
-  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] } });
-});
+
+
 
 // Contract P1 (issue 1014): 800 ms silence window and only the memory save is non-blocking and silent.
-test('P1: 3.8 Live uses an 800 ms silence window and marks only the memory save NON_BLOCKING', async t => {
+test('P1: 3.8 Live keeps its 800 ms silence window and exposes only helper delegation', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
   const tools = [
@@ -822,92 +710,19 @@ test('P1: 3.8 Live uses an 800 ms silence window and marks only the memory save 
     tools: { functionDeclarations: { name: string; behavior?: string }[] }[];
   } }).setup;
   assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 800);
-  const declared = setup.tools[0]!.functionDeclarations;
-  assert.equal(declared.find(entry => entry.name === 'search_knowledge')?.behavior, 'BLOCKING', 'reads stay BLOCKING');
-  assert.equal(declared.find(entry => entry.name === 'remember_note')?.behavior, 'NON_BLOCKING', 'the memory save is NON_BLOCKING');
+
+
+
+assert.deepEqual(setup.tools[0]!.functionDeclarations, [{ ...EXPECTED_DELEGATE, behavior: 'BLOCKING' }]);
 });
 
-test('P1: the memory save response is scheduled SILENT', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.8-live-test';
-  const tools = [{ name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'remember_note', args: { text: 'x', kind: 'fact' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'r1', name: 'remember_note', response: { remembered: true } }] });
-  await f.frame(2);
-  const frame = (f.frames[1] as { toolResponse: { functionResponses: { scheduling?: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
-  assert.equal(frame.scheduling, 'SILENT', 'the memory save reply is scheduled SILENT');
-});
 
-test('P1: a read tool response carries no scheduling and only the tool data', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.8-live-test';
-  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
-  await f.frame(2);
-  const frame = (f.frames[1] as { toolResponse: { functionResponses: { scheduling?: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
-  assert.equal(frame.scheduling, undefined, 'a read response is not scheduled SILENT');
-  assert.deepEqual(Object.keys(frame.response), ['markdown'], 'the response carries the tool data only, no accent key');
-});
 
-test('P3: a tool response serialises only the tool data and a memory save is still scheduled SILENT', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.8-live-test';
-  const tools = [{ name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'remember_note', args: { text: 'x', kind: 'fact' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'r1', name: 'remember_note', response: { remembered: true } }] });
-  await f.frame(2);
-  const serialised = JSON.stringify(f.frames[1]);
-  const entry = JSON.parse(serialised).toolResponse.functionResponses[0] as { scheduling?: string; response: Record<string, unknown> };
-  assert.deepEqual(Object.keys(entry), ['id', 'name', 'scheduling', 'response'], 'scheduling sits before the response object');
-  assert.deepEqual(Object.keys(entry.response), ['remembered'], 'the response carries the tool data only, no accent key');
-  assert.equal(serialised.includes('_voice_anchor'), false, 'no per-tool accent key is serialised');
-  assert.equal(serialised.includes('Do not read raw text'), false, 'no accent text is serialised in a function response');
-});
 
-test('AC2: the adapter no longer reports a tool-anchor count, and a function response carries no accent key', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.8-live-test';
-  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
-  await f.frame(2);
-  assert.equal('toolAnchorChars' in (session.diagnostics?.() ?? {}), false, 'the tool-anchor diagnostic is gone');
-  const frame = (f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
-  assert.equal('_voice_anchor' in frame.response, false, 'the response carries no per-tool accent key');
-});
+
+
+
+
 
 test('the adapter declares its capabilities per model, never a name lookup at the wire', async t => {
   const f = await providerFixture(t);
@@ -1132,111 +947,41 @@ test('Gemini alarm mode speaks the alarm without the fresh-opening direction', a
 });
 
 
-test('SI-R3 Gemini: parallel research batch admits six and immediately answers the excess', async t => {
-  const { FakeSocket } = await import('./openai-live-voice-fixture.js');
-  const socket = new FakeSocket();
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (() => {
-    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
-    return socket as unknown as WebSocket;
-  }) })).open(request(), control());
-  t.after(() => session.close());
-  const captured = collect(session);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  socket.deliver({ setupComplete: {} });
-  await session.ready;
-  socket.deliver({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  const calls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
-  assert.equal(calls.length, 6);
-  const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
-  assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
-  assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
-  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
-  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
-  assert.match(JSON.stringify(responses().at(-1)), /research cap reached for this question/, 'the cap spans provider rounds');
-  socket.deliver({ voiceActivity: { type: 'ACTIVITY_START' } });
-  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-next-question', name: 'research', args: {} }] } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.ok(captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')), 'a new owner question resets the cap');
-});
 
-test('IN-R1 Gemini: cap outcomes are traced and parallel research batch admits six and immediately answers the excess', async t => {
-  const receipts: { kind: string; id?: string; detail: Record<string, unknown> }[] = [];
-  const trace: import('../trace/record.js').LiveTracePort = {
-    receipt: (kind, ids, detail) => { receipts.push({ kind, ...(ids.callKey ? { id: ids.callKey } : {}), detail: { ...detail } }); },
-  };
-  const { FakeSocket } = await import('./openai-live-voice-fixture.js');
-  const socket = new FakeSocket();
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (() => {
-    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
-    return socket as unknown as WebSocket;
-  }) })).open(request(), { ...control(), trace });
-  t.after(() => session.close());
-  const captured = collect(session);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  socket.deliver({ setupComplete: {} });
-  await session.ready;
-  socket.deliver({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  const calls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
-  assert.equal(calls.length, 6);
-  const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
-  assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
-  assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
-  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
-  assert.equal(responses().filter(frame => frame.toolResponse!.functionResponses.some(call => call.id === 'synthetic-cap-0')).length, 1, 'one admitted-batch response resumes the Gemini model exactly once');
-  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
-  const settled = receipts.filter(row => row.kind === 'call.output_written');
-  for (let i = 0; i < 8; i++) {
-    const row = settled.find(row => row.id === `synthetic-cap-${i}`);
-    assert.ok(row);
-    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
-    assert.equal(row.detail['delivered'], true);
-    if (i >= 6) {
-      assert.equal(row.detail['refusalCode'], 'research_cap_reached');
-      assert.equal(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id), false);
-    } else assert.ok(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id));
-  }
-  assert.match(JSON.stringify(responses().at(-1)), /research cap reached for this question/, 'the cap spans provider rounds');
-  socket.deliver({ voiceActivity: { type: 'ACTIVITY_START' } });
-  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-next-question', name: 'research', args: {} }] } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.ok(captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')), 'a new owner question resets the cap');
-});
+
+
 
 // F4 parity: Gemini already refuses only research at the cap, so a corrected retry of another connector read is
 // admitted even while the research cap is reached. This pins that, so a future lock cannot creep back in.
-test('F4 Gemini: the research cap never refuses a non-research tool', async t => {
-  const { FakeSocket } = await import('./openai-live-voice-fixture.js');
-  const socket = new FakeSocket();
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (() => {
-    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
-    return socket as unknown as WebSocket;
-  }) })).open(request(), control());
-  t.after(() => session.close());
-  const captured = collect(session);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  socket.deliver({ setupComplete: {} });
-  await session.ready;
-  socket.deliver({ toolCall: { functionCalls: Array.from({ length: 7 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  const admittedCalls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
-  assert.equal(admittedCalls.length, 6, 'the cap admits six research calls');
-  session.sendToolResponse({ responses: admittedCalls.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
-  socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-retry-call', name: 'mattermost_chat', args: {} }] } });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  const admittedIds = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []).map(call => call.id);
-  assert.ok(admittedIds.includes('synthetic-retry-call'), 'the corrected retry is admitted');
-  const responses = socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
-  assert.equal(JSON.stringify(responses).includes('"synthetic-retry-call"') && JSON.stringify(responses.at(-1)).includes('research_cap_reached'), false,
-    'and it is never answered with the research cap code');
-});
+
 
 test('Gemini exposes only the blocking delegate request function', async t => {
   const { f } = await providerReady(t);
   const setup = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string; behavior?: string; parameters: unknown }[] }[] } };
   const declarations = setup.setup?.tools?.flatMap(tool => tool.functionDeclarations);
   assert.deepEqual(declarations?.map(tool => tool.name), ['delegate']);
-  assert.equal(declarations?.[0]?.behavior, 'BLOCKING');
+  assert.equal(setup.setup!.tools![0]!.functionDeclarations[0]!.behavior, undefined, 'delegate uses the provider default blocking behavior');
   assert.deepEqual(declarations?.[0]?.parameters, { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] });
 });
+
+for (const accepted of [false, true]) {
+  test(`Gemini exposes only helper delegation and carries its answer; accepted=${accepted}`, async t => {
+    const { f, session, captured } = await providerReady(t);
+    const setup = f.frames[0] as { setup: { tools: { functionDeclarations: { name: string }[] }[] } };
+    assert.deepEqual(setup.setup.tools.flatMap(tool => tool.functionDeclarations.map(call => call.name)), ['delegate']);
+    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-call', name: accepted ? 'delegate' : 'legacy_research', args: { request: 'Synthetic owner request' } }] } });
+    if (!accepted) {
+      assert.equal((await session.done).code, 'protocol_error');
+      await captured.done;
+      assert.equal(captured.events.some(event => event.type === 'toolCall'), false);
+      return;
+    }
+    for (let turn = 0; turn < 1000 && !captured.events.some(event => event.type === 'toolCall'); turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(captured.events.some(event => event.type === 'toolCall'), true);
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'synthetic-call', name: 'delegate', response: { text: 'Exact synthetic answer.' } }] }), 'sent');
+    await f.frame(2);
+    const answer = f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: unknown }[] } };
+    assert.deepEqual(answer.toolResponse.functionResponses, [{ id: 'synthetic-call', name: 'delegate', response: { text: 'Exact synthetic answer.' } }]);
+    session.close(); await captured.done;
+  });
+}

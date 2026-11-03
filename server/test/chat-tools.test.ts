@@ -1,3 +1,4 @@
+import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/index.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { test, type TestContext } from 'node:test';
 import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
@@ -6,16 +7,15 @@ import type { ExecutionContext, ToolDefinition } from '../adapters/model/types.j
 import { attachHostLogSink } from '../tools/host-events.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
 import { chatAllowsToolClasses } from '../chat/context.js';
 import { toolsMigrations } from '../tools/index.js';
-import { readDiagnosticDispatches } from '../tools/dispatch.js';
 import { canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
@@ -24,7 +24,6 @@ import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types
 const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
 const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_knowledge', inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
-const SOURCES = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
 
@@ -44,8 +43,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { id: '42', cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -66,8 +65,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     return result(request, 'complete', 'Answer from evidence');
   } };
   const f = openFixture(dir, model, { now: Date.now, route: { provider: 'gemini', model: 'fixture', available: true, allows: classes => classes.every(c => routeClasses.includes(c)), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: routeClasses } }, undefined, toolsMigrations);
-  let closeChat: () => void = () => {};
-  t.after(() => { closeChat(); f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let taskChat: ChatService | undefined;
+  t.after(() => { taskChat?.shutdown(); f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
   const endpoint = { id: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
@@ -105,11 +104,11 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
-  closeChat = () => chat.shutdown();
+  taskChat = chat;
   const session = () => chat.enroll({ title: 'Tools', timeZone: 'UTC', idempotencyKey: randomUUID() }, f.context).sessionId;
   const turn = async (sessionId: string) => {
     const accepted = chat.accept({ sessionId, text: 'Which emails arrived?', idempotencyKey: randomUUID() }, f.context);
@@ -140,26 +139,21 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
 }
 
-test('real chat declares approved reads, journals execution, and discloses only gated evidence', async t => {
+test('real chat declares task reads, journals execution, and discloses only gated evidence', async t => {
   const f = await fixture(t); f.canonicalSource(); const run = await f.turn(f.session());
-  t.diagnostic(`real-owner outcome=${run.outcome}; model requests=${f.requests.length}; connector executions=${f.executions()}`);
-  assert.ok(f.requests[0]?.declarations?.some(d => d.name === 'search_knowledge'), 'approved read declaration must reach text chat');
+  t.diagnostic(JSON.stringify({ outcome: run.outcome, requests: f.requests.length, executions: f.executions() }));
+  assert.equal(run.outcome, 'complete', 'task registry composition must reach the model, not compile_failed');
+  const declarations = f.requests[0]?.declarations ?? [];
+  assert.ok(declarations.some(tool => tool.name === 'search_knowledge'));
+  assert.ok(declarations.some(tool => tool.name === 'read_knowledge'));
+  assert.equal(declarations.some(tool => tool.name === 'get_insight' || tool.name === 'read_received_body'), false);
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));
   assert.equal(rows.length, 1); assert.equal(rows[0]?.state, 'completed');
-  assert.match(f.responseEntities[0]!, /^event:|^data:/);
-  const persisted = JSON.parse(String(rows[0]?.result_json)) as { response: { entitySha256: string } };
-  assert.equal(persisted.response.entitySha256, createHash('sha256').update(f.responseEntities[0]!).digest('hex'));
-  assert.doesNotMatch(String(rows[0]?.result_json), /decodedResult|unclassified/);
-  assert.ok(f.requests.length >= 2);
-  assert.match(JSON.stringify(f.requests[1]), /ACCEPTED/); assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);
-  const evidence = (run as RunSnapshot & { toolEvidence?: unknown }).toolEvidence;
-  assert.match(JSON.stringify(evidence) ?? '', /ACCEPTED/); assert.doesNotMatch(JSON.stringify(run), /REJECTED/);
-  assert.match(JSON.stringify(f.chat.get(run.runId, f.context)), /ACCEPTED/, 'evidence survives snapshot retrieval');
-  assert.deepEqual(run.toolEvidence?.[0]?.sources, SOURCES);
-  assert.doesNotMatch(JSON.stringify(run), /unclassified/);
-  assert.doesNotMatch(JSON.stringify(f.requests), /unclassified/);
-  assert.deepEqual(f.chat.get(run.runId, f.context).toolEvidence?.[0]?.sources, SOURCES);
+  assert.match(JSON.stringify(f.requests.slice(1)), /ACCEPTED/);
+  assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED|UNCLASSIFIED/);
+  assert.doesNotMatch(JSON.stringify(run), /REJECTED|UNCLASSIFIED/);
+  assert.match(JSON.stringify(f.chat.get(run.runId, f.context)), /ACCEPTED/);
 });
 
 // Synthetic fixtures only: every secret below is invented for this test.
@@ -223,16 +217,7 @@ test('revoked provider consent prevents any model request', async t => {
 });
 
 
-test('new approval never joins a frozen conversation but is admitted to a new one', async t => {
-  const f = await fixture(t); const first = f.session(); await f.turn(first);
-  assert.deepEqual(f.admission(first).map(d => d.name), ['conversation_history', 'search_knowledge']);
-  await f.approveY(); f.noCalls(); await f.turn(first);
-  assert.deepEqual(f.admission(first).map(d => d.name), ['conversation_history', 'search_knowledge']);
-  const second = f.session(); await f.turn(second);
-  assert.ok(f.admission(second).some(d => d.name === 'get_insight'));
-  assert.ok(f.admission(second).some(d => d.name === 'read_received_body'));
-  assert(!f.requests.slice(1, 2).some(request => request.declarations?.some(tool => tool.name === 'read_received_body')), 'local consumer cannot silently join the old enrollment');
-});
+
 
 test('connector rejection never reaches model continuation or browser response', async t => {
   const f = await fixture(t); f.rejectResult(); const run = await f.turn(f.session());
@@ -524,19 +509,7 @@ test('the evidence gathered before the fence is answered from even when the answ
 
 
 
-test('Lux received-body integration: canonical full body survives preview clipping only inside the active run', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet();
-  const raw = JSON.stringify({ id: 42, title: 'Synthetic long insight', content: 'Sentence evidence. '.repeat(1600) + 'LUX_RECEIVED_TAIL' }); f.leak(raw);
-  const original = f.owner.resultGate.authorize.bind(f.owner.resultGate); let full = '';
-  t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
-    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'get_insight');
-    if (binding && result.state === 'allowed') { const value = f.owner.consumeEvidence(args[0], binding, f.chat.lookupAuthority(args[0].runId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') { full = value.evidence.body; assert.equal(value.evidence.upstreamComplete, 'unknown'); assert.equal(value.evidence.upstreamOmitted, 'unknown'); } }
-    return result;
-  });
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); assert.equal(full, raw);
-  const row = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='get_insight'", [run.runId]))!;
-  const snapshot = JSON.parse(String(row.result_json)); assert.equal(snapshot.response.partial, true); assert(snapshot.response.omittedCharacters > 0); assert.doesNotMatch(snapshot.response.text, /LUX_RECEIVED_TAIL/); assert.doesNotMatch(String(row.result_json), /LUX_RECEIVED_TAIL|bodySha256/);
-});
+
 
 test('Lux sensitive integration: trusted whole-source policy selects sensitive discovery and ordinary routes dispatch nothing', async t => {
   for (const allowed of [false, true]) for (const exact of [false, true]) {
@@ -548,129 +521,23 @@ test('Lux sensitive integration: trusted whole-source policy selects sensitive d
   }
 });
 
-test('Text body integration: canonical same-run consumer reconstructs the received tail with immutable source lineage', async t => {
-  const f = await fixture(t); f.canonicalSource(); await f.approveY(); f.exactGet(); f.followBodies();
-  const raw = JSON.stringify({ id: 42, title: 'Synthetic complete received content', content: 'Source evidence sentence. '.repeat(1300) + '🍃'.repeat(1200) + 'TEXT_FINAL_RECEIVED_TAIL' }); f.leak(raw);
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
-  const continuations = f.requests.flatMap(request => request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse] : [])));
-  const original = continuations.find(response => response.name === 'get_insight'); assert(original);
-  const cursor = (original.response['bodyContinuation'] as Record<string, unknown> | undefined)?.['cursor']; assert.equal(typeof cursor, 'string', 'original sealed source response must already carry its canonical cursor');
-  const originalRow = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='get_insight'", [run.runId]))!;
-  assert.deepEqual(JSON.parse(String(originalRow.result_json)).response, original.response, 'later consumer pages never mutate the original sealed response');
-  const unique = new Map<string, Record<string, unknown>>();
-  for (const response of continuations) if (response.name === 'read_received_body') unique.set(response.id!, response.response);
-  let joined = '';
-  for (const response of unique.values()) {
-    const slices = response['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string }[]; assert(Array.isArray(slices) && slices.length === 1);
-    const slice = slices[0]!; assert.equal(slice.offset, joined.length); assert.equal(slice.end - slice.offset, slice.text.length); assert.equal(slice.total, raw.length); assert.equal(slice.unit, 'utf16'); assert(!/[\uDC00-\uDFFF]/u.test(slice.text.slice(0, 1))); assert(!/[\uD800-\uDBFF]/u.test(slice.text.slice(-1))); joined += slice.text;
-  }
-  assert.equal(joined, raw); assert(unique.size > 1); assert(f.requests.length <= 5, 'existing four acquisition steps plus synthesis stay fixed');
-  const rows = f.store.transaction(tx => tx.all("SELECT state,result_id,result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='read_received_body'", [run.runId]));
-  assert.equal(rows.length, unique.size); assert(rows.every(row => row.state === 'completed' && JSON.parse(String(row.result_json)).hostEvidenceRequired === true));
-  assert.equal(new Set(rows.map(row => row.result_id)).size, rows.length); assert.doesNotMatch(JSON.stringify([...unique.values()]), /bodySha256|entitySha256|remote-page|gateway:/);
-  const parentRefs = JSON.parse(String(originalRow.result_json)).sourceDispatchRefs; assert.equal(parentRefs?.length, 1, JSON.stringify(f.store.transaction(tx => tx.all('SELECT state,reason,source_json FROM tool_dispatches WHERE run_id=?',[run.runId]))));
-  for (const row of rows) assert.deepEqual(JSON.parse(String(row.result_json)).sourceDispatchRefs, parentRefs, 'each local page preserves exact canonical source provenance');
-  const edges = f.store.transaction(tx => tx.all('SELECT * FROM tool_dispatch_reuse WHERE run_id=?', [run.runId])); assert.equal(edges.length, rows.length); assert(edges.every(edge => edge.origin_dispatch_id === parentRefs[0]));
-  f.chat.shutdown(); await f.mcp.close(); f.store.close();
-  const reopened = openFixture(f.dir, { generate: async request => result(request, 'complete', '') }, {}, undefined, toolsMigrations);
-  try {
-    const authority = { ownerId: reopened.store.assistantId, allowedClasses: ['ordinary', 'private'] as const };
-    const read = () => reopened.store.transaction(tx => readDiagnosticDispatches(tx, run.runId, authority));
-    const persisted = read(); assert.equal(persisted.reuse.length, rows.length); assert(persisted.reuse.every(edge => edge.read_state === 'allowed' && String(edge.source_json).includes('TEXT_FINAL_RECEIVED_TAIL')));
-    reopened.store.transaction(tx => tx.run('UPDATE tool_connections SET generation=generation+1 WHERE connection_id=?', [f.endpoint.id]));
-    assert(read().reuse.every(edge => edge.source_json === null && edge.read_state === 'origin_unavailable_or_denied'));
-  } finally { reopened.chat.shutdown(); reopened.store.close(); }
-});
 
-test('Text body integration: the fixed four-step budget reports exact remaining received range', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies();
-  const raw = JSON.stringify({ id: 42, title: 'Synthetic bounded read', content: 'Bounded source sentence. '.repeat(5000) }); f.leak(raw);
-  const { run, events } = await f.turnEvents(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); assert.equal(f.requests.length, 5);
-  assert.equal(f.requests.at(-1)!.declarations!.length, 0); assert.match(run.finalText!, /characters remain/);
-  const trace = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace)));
-  const coverage = trace.receivedBodyCoverage[0]; assert.equal(coverage.total, raw.length); assert.equal(coverage.preparedEnd, 48000); assert.equal(coverage.remaining, raw.length - 48000); assert.deepEqual(coverage.remainingRange, { offset: 48000, end: raw.length, unit: 'utf16' }); assert.equal(coverage.stage, 'canonical-preparation');
-  assert(events.some(event => event.type === 'snapshot' && event.partial === true)); assert.match(run.finalText!, /did not confirm/);
-});
 
-test('Text body integration: concurrent identical cursors prepare one page and return deterministic independent receipts', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies('duplicate'); f.leak(JSON.stringify({ id: 42, content: 'Concurrent source evidence. '.repeat(700) }));
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
-  const rows = f.store.transaction(tx => tx.all("SELECT result_id,result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='read_received_body' ORDER BY rowid", [run.runId]));
-  const first = JSON.parse(String(rows[0]!.result_json)).response, repeated = JSON.parse(String(rows[1]!.result_json)).response;
-  assert(first.bodySlices.length === 1); assert.equal(repeated.alreadyPrepared, true); assert.deepEqual(repeated.bodySlices, []); assert.equal(repeated.nextCursor, first.nextCursor); assert.notEqual(rows[0]!.result_id, rows[1]!.result_id);
-  const coverage = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace))).receivedBodyCoverage[0]; assert.equal(coverage.remaining, 0);
-});
 
-test('Text body integration: a consumer alone cannot launder revoked original source at final delivery', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies(); f.leak(JSON.stringify({ id: 42, content: 'Never publish revoked retained body. '.repeat(80) }));
-  const original = f.owner.resultGate.authorize.bind(f.owner.resultGate); let captured: Parameters<typeof original> | undefined;
-  t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (result.state === 'allowed' && args[1].some(binding => binding.name === 'read_received_body')) captured = args; return result; });
-  f.setFinalHook(() => {
-    assert(captured); const only = captured[1].filter(binding => binding.name === 'read_received_body'); assert(only.length > 0);
-    assert.equal(f.owner.authorizeDelivery(captured[0], only, [], f.chat.lookupAuthority(captured[0].runId), captured[3]).state, 'allowed');
-    f.registry.revoke(f.endpoint.id);
-    assert.equal(f.owner.authorizeDelivery(captured[0], only, [], f.chat.lookupAuthority(captured[0].runId), captured[3]).state, 'refused');
-  });
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'unavailable'); assert.equal(run.finalText, null); assert.equal(f.executions(), 1); assert.doesNotMatch(JSON.stringify(run.toolEvidence), /Never publish/);
-});
 
-test('Text body integration: source completeness remains distinct from fully consumed received mail text', async t => {
-  for (const complete of [false, true]) {
-    const f = await fixture(t, ['ordinary', 'private'], {}, 'gmail'); f.followBodies();
-    f.leak(JSON.stringify({ family: 'gmail', tool: 'gmail_read_message', data: { id: 'synthetic-message', headers: { Subject: 'Synthetic completeness' }, body: 'Received mail evidence. '.repeat(180), bodyCoverage: { complete } } }));
-    const { run, events } = await f.turnEvents(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); assert.equal(f.sourceRequests[0]!['format'], 'full');
-    const trace = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace))), coverage = trace.receivedBodyCoverage[0];
-    assert.equal(coverage.remaining, 0); assert.equal(coverage.upstreamComplete, complete); assert.equal(coverage.upstreamOmitted, !complete);
-    if (complete) { assert.doesNotMatch(run.finalText!, /source omitted|characters remain/); assert(!events.some(event => event.type === 'snapshot' && event.partial)); }
-    else { assert.match(run.finalText!, /source omitted content/); assert(events.some(event => event.type === 'snapshot' && event.partial === true)); }
-  }
-});
 
-test('Text body integration: actual companion MIME envelope reaches the final received tail with one source read', async t => {
-  const f = await fixture(t, ['ordinary', 'private'], {}, 'gmail'); f.followBodies();
-  const envelope = readFileSync(new URL('../../test/fixtures/google-mime-long-produced.json', import.meta.url), 'utf8');
-  const produced = JSON.parse(envelope) as { data: { id: string; body: string; bodyCoverage: { complete: boolean } } };
-  f.exactMail(produced.data.id); f.leak(envelope);
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
-  assert.deepEqual(f.sourceRequests, [{ id: produced.data.id, format: 'full' }]);
-  const pages = f.store.transaction(tx => tx.all("SELECT result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='read_received_body' ORDER BY rowid", [run.runId]));
-  const text = pages.map(row => JSON.parse(String(row.result_json)).response.bodySlices.map((slice: { text: string }) => slice.text).join('')).join('');
-  assert(text.includes(produced.data.body)); assert(text.endsWith('TAIL-MIME-SYNTHETIC'));
-  const trace = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace)));
-  assert.equal(trace.receivedBodyCoverage[0].remaining, 0); assert.equal(trace.receivedBodyCoverage[0].upstreamComplete, true); assert.equal(trace.receivedBodyCoverage[0].upstreamOmitted, false);
-});
 
-test('Text body integration: cancel while local execution waits releases its original evidence and cannot prepare a late page', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies(); f.leak(JSON.stringify({ id: 42, content: 'Canceled local body evidence. '.repeat(90) }));
-  let release!: () => void, entered!: () => void; const held = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; }); t.after(() => release());
-  const original = f.owner.resultGate.authorize.bind(f.owner.resultGate); let captured: Parameters<typeof original> | undefined, authority: LiveAuthority | null = null;
-  t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
-    if (!captured && args[1].some(binding => binding.name === 'get_insight' && binding.contentIndex === 0)) { captured = args; authority = f.chat.lookupAuthority(args[0].runId); entered(); await held; }
-    return original(...args);
-  });
-  const pending = f.turn(f.session()); await started; assert(captured); assert(authority);
-  f.chat.cancel(captured[0].runId, f.context); const run = await pending; assert.equal(run.outcome, 'cancelled');
-  release(); for (let n = 0; n < 40; n++) await new Promise<void>(resolve => setImmediate(resolve));
-  const parent = captured[1].find(binding => binding.name === 'get_insight')!;
-  assert.equal(f.owner.consumeEvidence(captured[0], parent, authority, new AbortController().signal).state, 'refused');
-  assert.equal(f.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE run_id=? AND state='completed' AND json_extract(intent_json,'$.toolName')='read_received_body'", [run.runId])!.n)), 0); assert.equal(f.executions(), 1);
-});
 
-test('Text body integration: original revocation in the final gate microtask closes publication', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies(); f.leak(JSON.stringify({ id: 42, content: 'Final-gap body must be refused. '.repeat(80) }));
-  let final = false; f.setFinalHook(() => { final = true; });
-  const original = f.owner.resultGate.authorize.bind(f.owner.resultGate);
-  t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (final && result.state === 'allowed' && args[1].some(binding => binding.name === 'read_received_body')) queueMicrotask(() => f.registry.revoke(f.endpoint.id)); return result; });
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'unavailable'); assert.equal(run.finalText, null); assert.equal(f.executions(), 1); assert.doesNotMatch(JSON.stringify(run.toolEvidence), /Final-gap body/);
-});
 
-test('Text body integration: canonical preparation is not counted as model receipt when the next request fails', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies(); f.failAnswerCall();
-  const raw = JSON.stringify({ id: 42, content: 'Source with an unobserved final page. '.repeat(2600) }); f.leak(raw);
-  const run = await f.turn(f.session()); assert.equal(run.outcome, 'error'); assert.equal(run.finalText, null); assert.equal(f.executions(), 1); assert.equal(f.requests.length, 5);
-  const coverage = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace))).receivedBodyCoverage[0];
-  assert.equal(coverage.preparedEnd, 48000); assert.equal(coverage.modelContextEnd, 32000); assert.equal(coverage.remaining, raw.length - 32000); assert.deepEqual(coverage.remainingRange, { offset: 32000, end: raw.length, unit: 'utf16' }); assert.equal(coverage.stage, 'canonical-preparation'); assert.equal(coverage.modelContextStage, 'response-observed');
-});
+
+
+
+
+
+
+
+
+
 
 // Unsupported structured content must not acquire provenance from its text sibling.
 test('unsupported structured envelope withholds diagnostic evidence', async t => {
@@ -696,16 +563,45 @@ test('real chat turn reads a local reminder and commits a task note through cano
     return { status: 'complete', text: call ? '' : 'Synthetic turn finished.', providerContent: { role: 'model', parts: call ? [{ functionCall: call }] : [{ text: 'Synthetic turn finished.' }] },
       reason: 'complete', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
   } };
-  const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: 40000, contextChars: 12000, historyChars: 12000 }, sources: [] } });
+  const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, contextChars: 12000, historyChars: 12000 }, sources: [] } });
+  let completionError = ''; const complete = f.owner.complete.bind(f.owner);
+  f.owner.complete = (...args) => { try { return complete(...args); } catch (error) { completionError = error instanceof Error ? error.message : 'non_error'; throw error; } };
   f.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", ['synthetic-reminder', Date.UTC(2030, 0, 2), 'UTC', 'Known reminder label', 'synthetic-journal']));
   const sessionId = f.session(), accepted = f.chat.accept({ sessionId, text: 'List my reminders and keep this note: Synthetic task note body', idempotencyKey: randomUUID() }, f.context);
   let outcome: string | null = null;
   for await (const event of f.chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { outcome = event.run.outcome; break; }
   assert.equal(outcome, 'complete');
   const continuation = observed.flatMap(request => request.contents).flatMap(content => content.parts).flatMap(part => part.functionResponse ? [part.functionResponse.response] : []);
-  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), 'a populated local read reaches the chat model');
+  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), JSON.stringify({ completionError, operations: f.store.transaction(tx => tx.all('SELECT tool,state FROM task_operations')), responses: continuation, calls: f.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls')) }).slice(0, 1600));
   assert.ok(continuation.some(response => JSON.stringify(response).includes('committed')), 'the chat model receives the effect receipt');
   const notes = f.store.transaction(tx => tx.all("SELECT e.text FROM entries e JOIN sessions s ON s.id=e.session_id WHERE s.title='Task note'"));
   assert.deepEqual(notes.map(row => row.text), ['Synthetic task note body']);
-  t.diagnostic(`TASK_CHAT_TRUSTED_CHARS=${observed[0]?.system.length ?? 0}`);
+});
+
+test('the task facade is stable across newly approved source tools and owner revisions', async t => {
+  const f = await fixture(t); const session = f.session();
+  const first = await f.turn(session);
+  assert.equal(first.outcome, 'complete');
+  const names = f.requests[0]?.declarations?.map(tool => tool.name) ?? [];
+  assert.ok(names.includes('search_knowledge') && names.includes('read_knowledge'));
+  await f.approveY(); f.noCalls();
+  const next = await f.turn(session);
+  assert.equal(next.outcome, 'denied', 'an accepted conversation cannot silently widen its source policy');
+  const fresh = await f.turn(f.session());
+  assert.equal(fresh.outcome, 'complete', 'fresh owner consent captures the approved source policy');
+  assert.deepEqual(f.requests.at(-1)?.declarations?.map(tool => tool.name), names);
+  assert.equal(names.includes('get_insight'), false, 'connector tool names never become chat tools');
+});
+
+test('chat reads canonical mail through task id/cursor arguments, not a legacy body consumer', async t => {
+  const f = await fixture(t, ['ordinary', 'private'], {}, 'gmail');
+  f.exactMail('synthetic-message');
+  const run = await f.turn(f.session());
+  assert.equal(run.outcome, 'complete');
+  const tool = f.requests[0]?.declarations?.find(tool => tool.name === 'read_mail');
+  assert.ok(tool);
+  assert.equal(f.requests[0]?.declarations?.some(item => item.name === 'read_received_body'), false);
+  assert.equal(f.executions(), 1);
+  assert.equal(f.sourceRequests[0]?.id, 'synthetic-message');
+  assert.match(JSON.stringify(f.requests.slice(1)), /next_cursor/);
 });

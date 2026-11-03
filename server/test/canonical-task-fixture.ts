@@ -13,6 +13,11 @@ export function canonicalTaskFixture(store: Store, owner: ToolsOwner, runId: str
   })(runId, { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} });
   const results: ToolResult[] = [], runTool = runtime.runTool.bind(runtime);
   runtime.runTool = async (...args) => { const result = await runTool(...args); results.push(result); return result; };
+  const errors: string[] = [];
+  const scopedOwner: ToolsOwner = { ...owner, runTask: async (call, args, body) => {
+    try { return await owner.runTask(call, args, body); }
+    catch (error) { errors.push(error instanceof Error ? error.message : 'non_error'); throw error; }
+  } };
   const revision = runtime.begin(ownerWords, 1, 1);
-  return { runtime, revision, results, tools: taskDefinitions(runtime, revision.identity, owner, runId), close: () => runtime.close() };
+  return { runtime, revision, results, errors, tools: taskDefinitions(runtime, revision.identity, scopedOwner, runId), close: () => runtime.close() };
 }

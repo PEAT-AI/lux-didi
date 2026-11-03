@@ -107,7 +107,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       acceptance = store.transaction(tx => JSON.parse(String(tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])!.acceptance_json)) as RunAcceptance);
     } else {
       // T8-FIX-R1: public owner API until W-U supplies the real ChatService builder.
-      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: runtime.connectionIds().filter(id => (runtime.registry.currentGrant(id)?.toolNames.length ?? 0) > 0) };
+      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: store.transaction(tx => runtime.owner.durableConnectionIds?.(tx) ?? runtime.connectionIds()) };
       const hash = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance).sha256);
       chatAuthorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
     }
@@ -120,7 +120,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const task = canonicalTaskFixture(store, runtime.owner, host.runId, 'Read the synthetic sources', host.connectionIds);
     try {
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: task.tools, host: { ...host, grants: task.tools.map(d => ({ tool: d.name, effect: d.effect, accountId: d.accountId, resourceId: d.resourceId })) }, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
-    return { outcome, seen };
+    return { outcome, seen, errors: task.errors };
     } finally { task.close(); }
   };
   return { logRows: () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
@@ -143,7 +143,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify(batch.outcome));
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify({ tools: batch.outcome.tools, errors: batch.errors }));
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);

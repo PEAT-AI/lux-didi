@@ -51,7 +51,15 @@ function hostOf(raw: string): string | undefined {
 }
 
 /** https, no userinfo, no explicit port, an exact host and a viewer path shape; never a redirect route. */
+/** Any HTTP(S) destination without credentials can be opened. Classification is not authority. */
 export function openDestination(raw: string): { url: string; kind: OpenKind } | undefined {
+  let url: URL;
+  try { url = new URL(raw); } catch { return undefined; }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !url.hostname) return undefined;
+  return classifiedDestination(raw) ?? { url: url.href, kind: 'web' };
+}
+
+function classifiedDestination(raw: string): { url: string; kind: OpenKind } | undefined {
   let url: URL;
   try { url = new URL(raw); } catch { return undefined; }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '') return undefined;

@@ -25,21 +25,20 @@ const PPTX = { id: 'SyntheticPptx01', name: 'Harbour board.pptx', mimeType: 'app
 
 const handlesOf = (text: string): string[] => [...text.matchAll(/^open: (L\d+) = /gm)].map(match => match[1]!);
 
-test('C-OPEN 1: the host allowlist answers the shared destination table exactly', () => {
-  assert.ok(TABLE.cases.length >= 40, 'the table is the real one, not an empty stub');
-  for (const { url, kind } of TABLE.cases) assert.equal(openDestination(url)?.kind ?? null, kind, url);
+test('10.10 historical URL table now permits every HTTP(S) target without credentials', () => {
+  assert.ok(TABLE.cases.length >= 40);
+  for (const { url } of TABLE.cases) {
+    let parsed: URL | undefined;
+    try { parsed = new URL(url); } catch { /* invalid boundary input */ }
+    const valid = parsed && ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password && !!parsed.hostname;
+    assert.equal(!!openDestination(url), !!valid, url);
+  }
 });
 
-test('C-OPEN 1: the host and native allowlists name the same hosts', () => {
-  const host = fixture('parity-open-handles.ts');
-  const native = fixture('parity-NativeActions.swift');
-  const hostBody = host.slice(host.indexOf('export function openDestination'), host.indexOf('export function homeDestination'));
-  const nativeBody = native.slice(native.indexOf('public static func of('), native.indexOf('private static func matches('));
-  const hostHosts = new Set([...hostBody.matchAll(/host === '([a-z0-9.-]+)'/g)].map(match => match[1]!));
-  const nativeHosts = new Set([...nativeBody.matchAll(/"([a-z0-9-]+(?:\.[a-z0-9-]+)+)"/g)].map(match => match[1]!));
-  assert.deepEqual([...hostHosts].sort(), [...nativeHosts].sort());
-  assert.ok(hostHosts.has('www.google.com'), 'the real Calendar event host is on both lists');
-  assert.ok(hostHosts.size >= 8);
+test('10.10 credential refusal has a valid same-host pair', () => {
+  assert.equal(openDestination('https://user:pass@example.org/a'), undefined);
+  assert.ok(openDestination('https://example.org/a'));
+  assert.ok(openDestination('http://example.org/a'));
 });
 
 test('C-OPEN 1: a real-shaped Calendar event link mints a handle that opens', () => {

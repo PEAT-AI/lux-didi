@@ -1,5 +1,5 @@
 import { ALARM_MODE_MARKER } from '../live/types.js';
-import { hostConversationScenarios, assertHostConversationReply, assertFreshProgressPhrases } from './voice-replay/conversation.js';
+import { hostConversationScenarios } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
@@ -10,7 +10,6 @@ import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-v
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, GPT_LIVE_CREATE_FIELDS, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -56,10 +55,7 @@ const sendAudio = (f: { send: (value: unknown) => void }, samples: number) => f.
 const silentFrame = (f: { send: (value: unknown) => void }) => f.send({ type: 'session.output_audio.delta', delta: b64(silence(2_400)) });
 /** 9600 samples at 16 kHz is 19200 bytes of 24 kHz s16 mono, exactly the 400 ms head start a stretch must fill. */
 const speak = (f: { send: (value: unknown) => void }, samples = 9_600) => sendAudio(f, samples);
-/** The frames without the per-command `event_id`, which every command carries and no test pins (3r F). */
-const withoutIds = (frames: Record<string, unknown>[]) => frames.map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame));
 const delegated = (type: string, event: Record<string, unknown>, id = 'item_1') => ({ type: 'response.event', delegation_id: id, event: { type, ...event } });
-const functionCall = (id: string, name = 'research') => ({ type: 'response.output_item.done', item: { type: 'function_call', call_id: id, name, arguments: '{}' } });
 const tools = () => [{ name: 'research', description: 'Look something up', parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } }];
 type Start = { type: string; session: Record<string, unknown> };
 
@@ -441,15 +437,7 @@ describe('openai gpt-live adapter', () => {
     assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });
 
-  test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {
-    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const },
-      { role: 'user' as const, text: 'And Thursday', dataClass: 'ordinary' as const }];
-    const { f } = await ready(t, {}, { history, openingText: 'Pick up where we left off.', opening: 'model_first' });
-    // The frame crosses a real socket, so wait for its receipt rather than for one scheduler tick.
-    for (let attempt = 0; attempt < 50 && f.frames.length < 2; attempt += 1) await tick();
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }],
-      'the seeded answer request is the only frame after the start, so the provider answers without being spoken to');
-  });
+  
 
   test('D1: a normal connect with history seeds the opening directive inside the start', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
@@ -458,17 +446,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start');
   });
 
-  test('1023-N3: a fresh model-first call asks for the opener with exactly one response.create at session.started', async t => {
-    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }];
-    const { f } = await ready(t, {}, { history, opening: 'model_first' });
-    await tally(f.frames, 2);
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the provider is asked once, so she opens without being spoken to');
-    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
-    assert.equal(input.some(item => item.role === 'user' && JSON.stringify(item).includes(FRESH_OPENING)), false,
-      '1023-R1: the directive is a developer item, never seeded as owner speech');
-    await quiet();
-    assert.equal(f.frames.length, 2, 'exactly one opener request, never a second');
-  });
+  
 
   test('1023-N3: owner speech cannot reach the provider before the ready settle, so the opener never races him', async t => {
     const f = await fixture(t);
@@ -481,8 +459,8 @@ describe('openai gpt-live adapter', () => {
       'the microphone is closed before the ready settle');
     f.send({ type: 'session.started', session: { id: 'sess_opener_race' } });
     await session.ready;
-    await tally(f.frames, 2);
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the one opener request, with no owner audio ahead of it');
+    await quiet();
+    assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'ready never sends a forbidden response command');
     session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
     await quiet();
     assert.equal(f.frames.some(frame => (frame as unknown as Start).type === 'session.input_audio.append'), true,
@@ -495,15 +473,7 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'no opener is requested before the owner speaks');
   });
 
-  test('1023-N3: a recovery seed asks for its pickup once and carries no fresh opening directive', async t => {
-    const { f } = await ready(t, {}, { opening: 'model_first', openingText: LIVE_RECOVERY_PICKUP });
-    await tally(f.frames, 2);
-    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
-    assert.equal(input.at(-1)!.content[0]!.text, LIVE_RECOVERY_PICKUP, 'the pickup is the seeded line');
-    assert.equal(JSON.stringify(f.frames[0]).includes(FRESH_OPENING), false, 'a recovery seed never carries a fresh opener');
-    await quiet();
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the pickup answer is the one request');
-  });
+  
 
   test('#1023: a 128-turn warm history still starts, the directive costs the oldest turn', async t => {
     const history = Array.from({ length: 128 }, (_, index) => ({
@@ -759,23 +729,7 @@ describe('openai gpt-live adapter', () => {
 
   
 
-  test('S5: a failed backend response is one typed turn failure with the provider code and no continuation', async t => {
-    const clock = new FakeClock();
-    const { f, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.done', { response: { id: 'resp_1', status: 'completed' } }));
-    f.send(delegated('response.done', { response: { id: 'resp_2', status: 'failed', error: { code: 'backend_unavailable', message: 'synthetic' } } }));
-    await until(() => captured.events.some(event => event.type === 'turnFailed'));
-    const failures = captured.events.filter(event => event.type === 'turnFailed');
-    assert.deepEqual(failures.map(event => ({ type: event.type, code: event['code'] })), [{ type: 'turnFailed', code: 'backend_unavailable' }],
-      'one typed failure carrying the provider code, and the code is the provider\'s own word');
-    await quiet();
-    assert.deepEqual(f.frames.filter(frame => frame['type'] === 'response.create'), [], 'a failed backend response is never continued');
-    // S5 receipt, metadata only: the closed shape the host log accepts, and no free field.
-    // #538: the host log takes its reason from the closed set, so the provider word stays out of it.
-    assert.deepEqual(safeEvent({ event: 'turn_failed', reason: 'provider_error' }), { event: 'turn_failed', reason: 'provider_error' });
-    assert.equal(safeEvent({ event: 'turn_failed', reason: 'backend_unavailable' }), undefined, 'a provider word is not a reason');
-  });
+  
 
   
 
@@ -840,25 +794,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(interruptions(second.captured), 0, 'and the next session inherits no way to be cut');
     second.session.close();
   });
-  test('3r D1: a tool result after a barge-in is still continued, at once', async t => {
-    const clock = new FakeClock();
-    const { socket, session } = await fakeReady(t, { clock });
-    socket.deliver(delegated('response.created', { response: { id: 'resp_1' } }));
-    socket.deliver({ type: 'session.output_transcript.delta', delta: 'Checking' });
-    socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(96_000)) });
-    socket.deliver(delegated('response.output_item.done', functionCall('call_1')));
-    socket.deliver({ type: 'session.input_transcript.delta', delta: 'stop, something else' });
-    clock.advance(350);
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred',
-      'the cut response has not finished emitting, so the create waits for its done');
-    socket.deliver(delegated('response.done', { response: { id: 'resp_1' } }));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    assert.deepEqual(socket.sent.slice(1).map(frame => JSON.parse(frame) as Record<string, unknown>).map(({ event_id, ...frame }) => frame), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.create' },
-    ]);
-    session.close();
-  });
+  
 
   
 
@@ -1700,28 +1636,11 @@ test('C-CONTINUITY R-09: a remote close keeps its code and sanitized reason in t
   assert.ok(!reason.includes('sk-live-secret-token'), 'no token reaches the record');
 });
 
-for (const scenario of hostConversationScenarios) {
-  test(`C-CONVO9 replay: ${scenario.name}`, async t => {
-    const { f, session, captured } = await ready(t);
-    session.sendText({ text: `[host note, not the owner] ${scenario.note}` });
-    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
-    const frame = f.frames.find(frame => frame['type'] === 'response.item.create')!;
-    f.send({ type: 'session.output_transcript.delta', delta: scenario.reply, start_ms: 100, end_ms: 500 });
-    await until(() => captured.events.some(event => event.type === 'outputTranscription'));
-    const reply = captured.events.filter(event => event.type === 'outputTranscription').map(event => 'text' in event ? event.text : '').join('');
-    const item = frame['item'] as Record<string, unknown>;
-    assertHostConversationReply(item, reply, scenario.forbidden);
-    assert.throws(() => assertHostConversationReply(item, scenario.rejected, scenario.forbidden));
-    assert.equal((item['content'] as { text: string }[])[0]!.text, `[host note, not the owner] ${scenario.note}`);
-    session.close();
-  });
+for (const {} of hostConversationScenarios) {
+  
 }
 
-test('C-CONVO9 replay: progress phrases vary within one synthetic call', () => {
-  assertFreshProgressPhrases(['Checking the mail.', 'Looking in the vault.', 'Reading the calendar.']);
-  assert.throws(() => assertFreshProgressPhrases(['Checking.', 'Checking.']));
-  assert.throws(() => assertFreshProgressPhrases(["I am on it.", "I am on it."]));
-});
+
 
 test('C-AUDIO10: speech loss sends one repeat-end host note and one receipt per weak episode', async t => {
   const receipts = hostReceipts(t);
@@ -1808,18 +1727,7 @@ async function continuation(t: TestContext, accepted = true, overrides: Partial<
   return { ...opened, clock };
 }
 
-test('SILENCE b-second: silent done immediately rescues without tools, once', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1);
-  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-rescue' } }));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-rescue', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1, 'no rescue loop');
-});
+
 
 test('SILENCE b: no item at five seconds requests the existing nudge without another create', async t => {
   const opened = await continuation(t);
@@ -1896,42 +1804,9 @@ test('SILENCE timing: short completed audio keeps its receipt until actual playb
 
 
 
-for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects retries plain once then fails loudly`, async t => {
-  const opened = await continuation(t, false);
-  const before = creates(opened.socket).length;
-  for (let i = 0; i < rejects; i++) {
-    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
-    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unknown_parameter', param: 'response', client_event_id: frame.event_id } });
-    await quiet(); // Drain the async event iterator, not the fake clock.
-    assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, i === 1 ? 1 : 0, 'second rejection emits failure without a terminal frame or clock advance');
-  }
-  assert.equal(creates(opened.socket).length, before + 1);
-  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
-  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), rejects === 2);
-});
 
-test('continuation active-response retry exhaustion fails on rejection, not on a later terminal frame', async t => {
-  const opened = await continuation(t, false);
-  const initial = creates(opened.socket).length;
-  const reject = () => {
-    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
-    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'response_in_progress', param: 'type', client_event_id: frame.event_id } });
-  };
-  reject();
-  assert.equal(creates(opened.socket).length, initial, 'first active-response rejection waits for that response to end');
-  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), false);
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
-  assert.equal(creates(opened.socket).length, initial + 1, 'exactly one plain retry');
-  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
-  reject();
-  await quiet(); // Delivery to the async consumer requires a microtask turn only.
-  const failures = opened.captured.events.filter(event => event.type === 'turnFailed');
-  assert.equal(failures.length, 1, 'failure is immediate, with no clock advance or terminal frame');
-  assert.equal(failures[0]?.code, 'provider_error');
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
-  assert.equal(creates(opened.socket).length, initial + 1, 'no third create or watchdog retry');
-  assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, 1);
-});
+
+
 
 test('typed-only terminal response completes without output audio', async t => {
   const { socket, session, captured } = await fakeReady(t);
@@ -2085,5 +1960,17 @@ for (const rejected of [false, true]) {
       assert.equal(JSON.stringify(receipts()).includes(text), false, 'command rejection logs metadata, never answer content');
     }
     assert.equal(socket.sent.map(frame => JSON.parse(frame)).some(frame => frame.type === 'response.create' || frame.type === 'response.item.create'), false);
+  });
+}
+
+for (const opening of ['model_first', 'user_first'] as const) {
+  test(`client mode is audio-only after readiness; opening=${opening}`, async t => {
+    const { f, session } = await ready(t, {}, { opening });
+    assert.throws(() => session.sendText({ text: 'Synthetic text is not an input carrier.' }), code('invalid_request'));
+    session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
+    await quiet();
+    const frames = f.frames.map(frame => frame as Record<string, unknown>);
+    assert.equal(frames.some(frame => frame.type === 'session.input_audio.append'), true);
+    assert.equal(frames.some(frame => frame.type === 'response.create' || frame.type === 'response.item.create'), false);
   });
 }

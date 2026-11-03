@@ -1,3 +1,7 @@
+import { hostTaskFactory } from '../tasks/host.js';
+import { resolveTaskModels } from '../config/tasks.js';
+import type { Infer } from '../tasks/worker.js';
+import { fixtureUntil } from './live-voice-fixture.js';
 import { pumpOutput } from '../http/live-upgrade.js';
 import type { LiveAttachment } from '../live/index.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -59,7 +63,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { realMcp?: boolean; failedMcp?: boolean; toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { infer?: Infer; realMcp?: boolean; failedMcp?: boolean; toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -125,7 +129,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     }
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
+  const { service: live } = composeLive(store, config, { createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], contentAllowed: () => true, timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -1066,3 +1070,37 @@ test('C-LIVE: provider_recovery_exhausted sends its terminal, then closes 1011, 
     assert.deepEqual(closes, [[1011, 'provider_recovery_exhausted']], `then the non-policy close (ready=${ready})`);
   }
 });
+
+for (const finalized of [false, true]) {
+  test(`gateway delegates finalized owner input to the helper without a legacy tool batch; finalized=${finalized}`, async t => {
+    const inputs: string[] = [];
+    const h = await harness(t, { config: configJson(true), infer: async request => {
+      inputs.push(request.input); return { text: 'Exact synthetic gateway answer.', calls: [] };
+    } });
+    const created = await createBody(h, `helper-gateway-${finalized}`);
+    const snapshot = created.body.data;
+    const ws = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${snapshot.liveSessionId}/audio`, { headers: { ...bearer(h), host: new URL(h.origin).host, 'x-didi-live-profile': snapshot.profileIdentity } });
+    t.after(() => ws.terminate());
+    const received: Record<string, unknown>[] = [];
+    ws.on('message', data => { if (typeof data.toString() === 'string') { try { received.push(JSON.parse(data.toString()) as Record<string, unknown>); } catch { /* binary audio is not JSON */ } } });
+    await once(ws, 'open'); await h.f.frame(1); h.f.send({ setupComplete: {} });
+    await fixtureUntil(() => received.some(frame => frame.type === 'ready'), 'gateway ready');
+    if (finalized) h.f.send({ serverContent: { inputTranscription: { text: 'Check the synthetic gateway fact', finished: true } } });
+    h.f.send({ toolCall: { functionCalls: [{ id: 'synthetic-delegate', name: 'delegate', args: { request: 'Check the synthetic gateway fact' } }] } });
+    if (finalized) {
+      await h.f.frame(2);
+      assert.equal(inputs.length, 1);
+      assert.match(inputs[0]!, /Check the synthetic gateway fact/);
+      const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
+      assert.equal(response.toolResponse.functionResponses[0]?.id, 'synthetic-delegate');
+      assert.equal(response.toolResponse.functionResponses[0]?.name, 'delegate');
+      assert.equal(response.toolResponse.functionResponses[0]?.response.text, 'Exact synthetic gateway answer.');
+    } else {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(inputs.length, 0, 'a delegation without owner input is not an instruction carrier');
+      assert.equal(h.f.frames.length, 1);
+    }
+    assert.equal(JSON.stringify(received).includes('owner_words_in_order'), false, 'worker input never reaches the browser');
+    ws.close(); await once(ws, 'close');
+  });
+}

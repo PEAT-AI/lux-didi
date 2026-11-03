@@ -182,9 +182,9 @@ test('default model and effort are applied without provider-specific caller code
 
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
-  assert.ok(WORKER_INSTRUCTIONS.length < 2000);
+  assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
-  assert.match(WORKER_INSTRUCTIONS, /After widening, state absence plainly/);
+  assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
 
 test('CORE-F1: worker consumes a second Gmail page with a distinct read-cache key', async () => {

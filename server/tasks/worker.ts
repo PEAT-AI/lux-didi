@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
 import { failed, type ToolResult } from './results.js';
 import { validateArguments, type TaskTool } from './tools.js';
-import { WORKER_INSTRUCTIONS } from './instructions.js';
+import { workerInstructions } from './instructions.js';
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
@@ -25,6 +26,7 @@ const realClock: Clock = { now: Date.now, timer: (callback, ms) => { const handl
 export interface WorkerOptions {
   registry: Map<string, TaskTool>; identity: Omit<Identity, 'operation_id'>; input: string; signal: AbortSignal; infer: Infer;
   model?: string; effort?: string; clock?: Clock;
+  profile?: OwnerProfileSnapshot;
   reads?: Map<string, ToolResult>;
   isCurrent?: () => boolean;
   outsideTextSeen?: boolean;
@@ -105,7 +107,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       let inference: Inference;
       try {
         options.event?.('inference', 1, clock.now() - start);
-        inference = await bounded(signal => options.infer({ instructions: WORKER_INSTRUCTIONS, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
+        inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
       } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete' }; }
       if (!current()) return finish();
       turns.push(inference);

@@ -242,7 +242,7 @@ test('connectionIds is empty while a connector is verifying', async t => {
 
 test('a Live acceptance snapshot taken while verifying never gains the connector', async t => {
   const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
-  const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+  
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
@@ -252,14 +252,14 @@ test('a Live acceptance snapshot taken while verifying never gains the connector
     allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
   };
   store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
-  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), false);
   fake.releaseProof(0, OWNER);
   await started;
   // The recorded acceptance snapshot is immutable: the same session still has no connector tool.
-  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), false);
   // A session accepted after readiness does carry the connector tools.
   store.transaction(tx => mcp.owner.snapshotRun(tx, { ...acceptance, runId: 'live-ready', connectionIds: [...mcp.connectionIds()] }));
-  assert.equal(mcp.owner.liveDefinitions('live-ready', remember).some(tool => tool.name.startsWith('gmail')), true);
+  assert.equal(mcp.owner.taskBindings([...mcp.connectionIds()]).some(binding => binding.connector === 'google'), true);
 });
 
 test('a slow identity proof inside the endpoint call deadline still publishes the connector', async t => {
@@ -267,7 +267,7 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
   // fixed bound. A healthy connector whose first identity call is slow under host load must be proven,
   // never wrongly marked unproven and fail-closed. The fake answers at 4.2 s, past the old 4 s bound.
   const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
-  const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+  
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
@@ -281,7 +281,7 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
     allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
   };
   store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
-  assert.equal(mcp.owner.liveDefinitions('live-slow-proof', remember).some(tool => tool.name.startsWith('gmail')), true);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), true);
 });
 
 test('a refresh suspends the ready grant before the replacement publishes and refuses old calls', async t => {

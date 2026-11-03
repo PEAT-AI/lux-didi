@@ -238,11 +238,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
     if (TASK_TOOL_NAMES.has(call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
-      const validate = (tx: Transaction) => {
-        if (!snapshot.connections.every(binding => currentPolicies(tx, snapshot, binding.connectionId) && currentProjection(snapshot, binding.connectionId))) throw Error('task_source_policy_changed');
-        return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
-      };
-      return transaction ? validate(transaction) : store.transaction(validate);
+      // Native source admission and completion bind the selected source in runTask/evidenceCurrent, not every unrelated connector.
+      return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
     }
     if (call.toolName === RECEIVED_BODY.name && call.accountId === RECEIVED_BODY.accountId && call.resourceId === RECEIVED_BODY.resourceId) {
       const page = pageForCall(call); if (!page || !bodyConsumers.has(call.runId)) throw Error('body_cursor_unavailable');

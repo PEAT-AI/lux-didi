@@ -1,3 +1,4 @@
+import { BlockList, isIP } from 'node:net';
 import type { ModelPort } from '../adapters/model/types.js';
 
 /** Task authority. Outside content is evidence, never permission. No executor here sends to a person. */
@@ -9,7 +10,7 @@ export const REPAIRS = {
   source_unavailable: 'Try the source again or use another available source.',
   not_owner_asked: 'The owner has not asked for this kind of action. Report that fact and ask what they want done.',
   confirmation_required: 'Describe the exact staged calendar event and ask the owner to confirm its deletion in a later turn.',
-  egress_blocked: 'Ask the owner to select the exact public link or provide it directly.',
+  egress_blocked: 'Use a public HTTPS link without credentials or private addresses. After outside reads, use an unchanged link from a tool result or connector; do not synthesize or extend it.',
   cancelled: 'The task was cancelled. Wait for a new owner request.',
   superseded: 'Use the current task revision instead.',
   deadline_exceeded: 'Report what finished and ask whether to continue.',
@@ -18,7 +19,7 @@ export const REPAIRS = {
 } as const;
 export type RefusalCode = keyof typeof REPAIRS;
 export type Decision = { allow: true } | { allow: false; code: RefusalCode; repair: string };
-const deny = (code: RefusalCode): Extract<Decision, { allow: false }> => ({ allow: false, code, repair: REPAIRS[code] });
+export const refusal = (code: RefusalCode): Extract<Decision, { allow: false }> => ({ allow: false, code, repair: REPAIRS[code] });
 export type Exposure = 'mail' | 'chat' | 'web' | 'drive' | 'company' | 'calendar' | 'alarms' | 'memory';
 const OUTSIDE = new Set<Exposure>(['mail', 'chat', 'web', 'drive', 'company']);
 export interface TaskIdentity {
@@ -36,6 +37,10 @@ export interface AuthorizationRequest {
   validate: (args: unknown) => boolean;
   eventId?: string;
   ownerTurn?: number;
+  /** Host-owned provenance, never copied from worker arguments. Omit for non-web opens. */
+  webTarget?: string;
+  toolResultURLs?: readonly string[];
+  canonicalURLs?: readonly string[];
 }
 export type JournalRecord = { status: 'pending' } | { status: 'succeeded'; value: unknown } | { status: 'failed' };
 export interface AuthorityPorts {
@@ -68,6 +73,37 @@ export function configuredEffectCheck(model: ModelPort, options: { timeoutMs?: n
   };
 }
 
+const EXPOSURES = new Set<string>(['none', 'mail', 'chat', 'web', 'drive', 'company', 'calendar', 'alarms', 'memory']);
+/** C-VOICE invokes this once against its registry, before offering any read tools. */
+export function assertRegistryExposure(registry: readonly { name: string; effect: EffectKind | null; exposure?: unknown }[]): void {
+  for (const tool of registry) {
+    if (tool.effect === null && (typeof tool.exposure !== 'string' || !EXPOSURES.has(tool.exposure))) throw new Error(`Missing or invalid read exposure: ${tool.name}`);
+  }
+}
+
+const PRIVATE_ADDRESSES = new BlockList();
+for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) PRIVATE_ADDRESSES.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]] as const) PRIVATE_ADDRESSES.addSubnet(address, prefix, 'ipv6');
+
+function publicHTTPS(target: string): boolean {
+  try {
+    const url = new URL(target);
+    if (url.protocol !== 'https:' || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase().replace(/\.$/u, '').replace(/^\[|\]$/gu, '');
+    if (!host || /(?:^|\.)(?:localhost|local|internal|home|lan)$/u.test(host)) return false;
+    const ip = isIP(host);
+    if (ip) return !PRIVATE_ADDRESSES.check(host, ip === 4 ? 'ipv4' : 'ipv6');
+    return true;
+  } catch { return false; }
+}
+
+/** AUTH-R2: clean spoken asks need no URL in the owner's words. Never rewrite the target. */
+export function authorizeWebOpen(request: { target: string; exposed: boolean; toolResultURLs?: readonly string[]; canonicalURLs?: readonly string[] }): Decision {
+  if (!publicHTTPS(request.target)) return refusal('egress_blocked');
+  if (request.exposed && !request.toolResultURLs?.includes(request.target) && !request.canonicalURLs?.includes(request.target)) return refusal('egress_blocked');
+  return { allow: true };
+}
+
 export type CommitDecision = Exclude<Decision, { allow: true }> | { allow: true; value: unknown; replay: boolean };
 
 export class Authority {
@@ -92,18 +128,20 @@ export class Authority {
   async authorize(request: AuthorizationRequest): Promise<Decision> {
     let valid = false;
     try { valid = request.validate(request.arguments); } catch { /* Invalid boundary input. */ }
-    if (!valid) return deny('invalid_arguments');
-    if (!(EFFECT_KINDS as readonly string[]).includes(request.effect)) return deny('unknown_tool');
+    if (!valid) return refusal('invalid_arguments');
+    if (!(EFFECT_KINDS as readonly string[]).includes(request.effect)) return refusal('unknown_tool');
     if (request.effect === 'delete_event') {
-      if (!request.eventId || request.ownerTurn === undefined) return deny('invalid_arguments');
+      if (!request.eventId || request.ownerTurn === undefined) return refusal('invalid_arguments');
       const staged = this.#deletions.get(request.task.id);
       if (!staged || staged.eventId !== request.eventId) {
         this.#deletions.set(request.task.id, { eventId: request.eventId, ownerTurn: request.ownerTurn, confirmed: false });
-        return deny('confirmation_required');
+        return refusal('confirmation_required');
       }
-      if (!staged.confirmed || request.ownerTurn <= staged.ownerTurn) return deny('confirmation_required');
+      if (!staged.confirmed || request.ownerTurn <= staged.ownerTurn) return refusal('confirmation_required');
     }
-    if (!this.#exposed.has(request.task.id)) return { allow: true };
+    const exposed = this.#exposed.has(request.task.id);
+    const sink = (): Decision => request.webTarget === undefined ? { allow: true } : authorizeWebOpen({ target: request.webTarget, exposed, ...(request.toolResultURLs === undefined ? {} : { toolResultURLs: request.toolResultURLs }), ...(request.canonicalURLs === undefined ? {} : { canonicalURLs: request.canonicalURLs }) });
+    if (!exposed) return sink();
     const key = JSON.stringify([request.task.id, request.task.revision, request.effect]);
     let decision = this.#decisions.get(key);
     if (!decision) {
@@ -115,7 +153,7 @@ export class Authority {
       }).catch(() => { this.#ports.log('effect_check_failed'); return true; });
       this.#decisions.set(key, decision);
     }
-    return await decision ? { allow: true } : deny('not_owner_asked');
+    return await decision ? sink() : refusal('not_owner_asked');
   }
 
   async commit(identity: string, execute: () => Promise<unknown>): Promise<CommitDecision> {
@@ -128,16 +166,16 @@ export class Authority {
 
   async #commit(identity: string, execute: () => Promise<unknown>): Promise<CommitDecision> {
     let prior: JournalRecord | undefined;
-    try { prior = await this.#ports.journal.get(identity); } catch { return deny('outcome_unknown'); }
+    try { prior = await this.#ports.journal.get(identity); } catch { return refusal('outcome_unknown'); }
     if (prior?.status === 'succeeded') return { allow: true, value: prior.value, replay: true };
-    if (prior) return deny(prior.status === 'pending' ? 'outcome_unknown' : 'write_failed');
-    try { await this.#ports.journal.put(identity, { status: 'pending' }); } catch { return deny('outcome_unknown'); }
+    if (prior) return refusal(prior.status === 'pending' ? 'outcome_unknown' : 'write_failed');
+    try { await this.#ports.journal.put(identity, { status: 'pending' }); } catch { return refusal('outcome_unknown'); }
     let value: unknown;
     try { value = await execute(); } catch {
       // A thrown connector may have completed its remote write. Keep pending, never retry blindly.
-      return deny('outcome_unknown');
+      return refusal('outcome_unknown');
     }
-    try { await this.#ports.journal.put(identity, { status: 'succeeded', value }); } catch { return deny('outcome_unknown'); }
+    try { await this.#ports.journal.put(identity, { status: 'succeeded', value }); } catch { return refusal('outcome_unknown'); }
     return { allow: true, value, replay: false };
   }
 }

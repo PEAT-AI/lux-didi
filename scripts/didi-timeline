@@ -178,7 +178,7 @@ function storeReader(database) {
 
 // Task records contain private columns. Select and project metadata explicitly, never SELECT *.
 function buildTaskAudit(read, lines = [], selection = {}) {
-  const lifecyclePhases = new Set(['start', 'revision', 'infer', 'tool', 'dedupe', 'complete', 'stale', 'cancelled', 'timeout']);
+  const lifecyclePhases = new Set(['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery']);
   const deliveryStates = new Set(['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
   const events = [];
   let unjoined = 0;
@@ -197,10 +197,13 @@ function buildTaskAudit(read, lines = [], selection = {}) {
     if (record.event === 'task_lifecycle' && (!lifecyclePhases.has(record.phase) || !Number.isInteger(generation) || generation < 0)) continue;
     if (record.event === 'task_delivery' && !deliveryStates.has(record.state)) continue;
     events.push({ event: record.event, taskId, revision,
-      ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation } : { state: record.state }) });
+      ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation,
+        ...(Number.isSafeInteger(record.count) && record.count >= 0 ? { count: record.count } : {}),
+        ...(Number.isFinite(record.ms) && record.ms >= 0 ? { ms: record.ms } : {}) } : { state: record.state }),
+      ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
   }
   const deliveryEvents = events.filter(event => event.event === 'task_delivery');
-  const logAudit = { lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
+  const logAudit = { helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
     deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
     deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
     unjoinedTaskEvents: unjoined, promisesWithoutTask: null,
@@ -314,7 +317,9 @@ function timelineOptions(read) {
 async function main() {
   if (options.command === 'task-log') {
     if (!options.session) fail('task-log requires a synthetic or authorized host-log JSONL path');
-    const lines = readFileSync(options.session, 'utf8').split('\n').filter(Boolean).map(text => ({ stream: 'host', record: JSON.parse(text) }));
+    let lines;
+    try { lines = readFileSync(options.session, 'utf8').split('\n').filter(Boolean).map(text => ({ stream: 'host', record: JSON.parse(text) })); }
+    catch { fail('task-log requires a readable host-log JSONL file with valid records; content omitted'); }
     const audit = buildTaskAudit({ all: () => [] }, lines);
     process.stdout.write(`${JSON.stringify(audit, null, 2)}\n`);
     return;

@@ -185,7 +185,12 @@ export async function dispatchScenario(scenario: { tool: string; args: Record<st
     f.call.delegation('d1'); await f.call.input(scenario.words, 1);
     equal(executed.length, 1, `Expected one connector execution after valid provider arguments; normalized revalidation=${validateArguments(f.call.runtime.registry.get(scenario.tool)!, pruneNulls(scenario.args)).ok}`);
     assert.deepEqual(executed, [{ name: scenario.tool, args: pruneNulls(scenario.args) }]);
-    assert.ok(f.operations.length > 0); equal(f.sent.length, 1);
+    assert.ok(f.operations.length > 0);
+    const operation = f.operations.at(-1)?.[0] as { effect: string; state: string; result?: { receipt?: { state: string } } };
+    if (operation.effect !== 'none') {
+      assert.equal(operation.state, 'committed'); assert.equal(operation.result?.receipt?.state, 'committed');
+    }
+    equal(f.sent.length, 1);
   } finally { f.call.close(); }
 }
 

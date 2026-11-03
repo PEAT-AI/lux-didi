@@ -1,3 +1,4 @@
+const EXPECTED_DELEGATE = { name: 'delegate', description: 'Attach to the host task for this owner request and return its spoken answer.', parameters: { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] } };
 import './tool-outcome.test.js';
 import { ALARM_MODE_MARKER } from '../live/types.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -133,7 +134,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 700, silenceDurationMs: 800, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
-  } });
+    tools: [{ functionDeclarations: [EXPECTED_DELEGATE] }] } });
   const endpoint = new URL(f.destination);
   assert.equal(endpoint.origin, 'wss://generativelanguage.googleapis.com');
   assert.equal(endpoint.pathname, '/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent');
@@ -598,11 +599,9 @@ test('an original schema with unsupported keys never reaches the wire raw', asyn
   ] }, control());
   const captured = collect(session);
   await f.frame(1);
-  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: { parameters: { properties: { nested: unknown } } }[] }[] } })
-    .setup.tools[0]!.functionDeclarations[0]!;
+  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: unknown[] }[] } }).setup.tools[0]!.functionDeclarations;
   // The unsupported key survives only inside the description text, never as a schema key the provider rejects.
-  assert.deepEqual(declaration.parameters.properties.nested,
-    { type: 'OBJECT', description: 'Original schema: {"type":"OBJECT","additionalProperties":false}' });
+  assert.deepEqual(declaration, [EXPECTED_DELEGATE], 'raw schemas never become model-visible tools');
   f.send({ setupComplete: {} });
   await session.ready;
   session.close(); await captured.done;
@@ -695,7 +694,7 @@ test('a non-LiveVoiceError decode failure is classified, skipped, and the next f
 
 
 // Contract P1 (issue 1014): 800 ms silence window and only the memory save is non-blocking and silent.
-test('P1: 3.8 Live uses an 800 ms silence window and marks only the memory save NON_BLOCKING', async t => {
+test('P1: 3.8 Live keeps its 800 ms silence window and exposes only helper delegation', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
   const tools = [
@@ -711,9 +710,10 @@ test('P1: 3.8 Live uses an 800 ms silence window and marks only the memory save 
     tools: { functionDeclarations: { name: string; behavior?: string }[] }[];
   } }).setup;
   assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 800);
-  const declared = setup.tools[0]!.functionDeclarations;
-  assert.equal(declared.find(entry => entry.name === 'search_knowledge')?.behavior, 'BLOCKING', 'reads stay BLOCKING');
-  assert.equal(declared.find(entry => entry.name === 'remember_note')?.behavior, 'NON_BLOCKING', 'the memory save is NON_BLOCKING');
+  
+  
+  
+assert.deepEqual(setup.tools[0]!.functionDeclarations, [EXPECTED_DELEGATE]);
 });
 
 
@@ -960,7 +960,7 @@ test('Gemini exposes only the blocking delegate request function', async t => {
   const setup = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string; behavior?: string; parameters: unknown }[] }[] } };
   const declarations = setup.setup?.tools?.flatMap(tool => tool.functionDeclarations);
   assert.deepEqual(declarations?.map(tool => tool.name), ['delegate']);
-  assert.equal(declarations?.[0]?.behavior, 'BLOCKING');
+  assert.equal(setup.tools[0]!.functionDeclarations[0]!.behavior, undefined, 'delegate uses the provider default blocking behavior');
   assert.deepEqual(declarations?.[0]?.parameters, { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] });
 });
 

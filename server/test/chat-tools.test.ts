@@ -102,7 +102,21 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const taskFactory = syntheticTaskFactory(f.store, composition);
+  const diagnosedTaskFactory: typeof taskFactory = (...args) => {
+    try {
+      const runtime = taskFactory(...args);
+      return new Proxy(runtime, { get(target, name) {
+        const value: unknown = Reflect.get(target, name, target);
+        if (typeof value !== 'function') return value;
+        return (...parameters: unknown[]) => {
+          try { return Reflect.apply(value, target, parameters); }
+          catch (error) { console.error('CHAT_TASK_SETUP', String(name), String(error)); throw error; }
+        };
+      } });
+    } catch (error) { console.error('CHAT_TASK_FACTORY', String(error)); throw error; }
+  };
+  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, createTaskRuntime: diagnosedTaskFactory, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);

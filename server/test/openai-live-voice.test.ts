@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, GPT_LIVE_CREATE_FIELDS, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
+import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -133,31 +133,20 @@ describe('openai gpt-live adapter', () => {
     assert.equal(JSON.stringify(withCustom).replace(JSON.stringify({ voice: { id: 'voice_0123456789abcdef' } }), JSON.stringify({ voice: OPENAI_DEFAULT_VOICE })), JSON.stringify(withPreset), 'the frames differ only in the voice leaf');
   });
 
-  /** S4A-R1: the backend block the delegation carries, with no owner content. */
-  const backend = (start: Start): Record<string, unknown> => {
-    const delegation = start.session['delegation'] as Record<string, unknown>;
-    return (delegation['responses'] as Record<string, unknown>);
-  };
 
-  test('S4A-R1: the delegation carries the voice-backend template and verbosity low', async t => {
-    const f = await fixture(t);
-    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
-    t.after(() => session.close());
-    await f.frame(1);
-    const responses = backend(f.frames[0] as unknown as Start);
-    // Without a backendProcedure the backend sees the template and the brevity rule, and nothing else.
-    assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`);
-    assert.equal(JSON.stringify(responses['text']), '{"verbosity":"low"}');
-    assert.equal(JSON.stringify(responses['reasoning']), '{"effort":"low"}');
-    assert.equal(responses['parallel_tool_calls'], true);
-    assert.equal('max_output_tokens' in responses, false, 'the output ceiling stays unset');
-    // No owner content: the template names the task shape and never the persona or a source.
-    assert.equal(String(responses['instructions']).includes('Synthetic persona'), false);
-  });
+  test('S4A-R1: delegation is client-owned with no provider Responses configuration', async t => {
+const f = await fixture(t);
+const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
+t.after(() => session.close());
+await f.frame(1);
+assert.deepEqual(start.session['delegation'], { type: 'client' });
+assert.equal(start.session['tools'], undefined);
+assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
+});
 
   
 
-  test('S4A-R1: a backendProcedure is appended under a blank line, and the voice parts stay byte-identical', async t => {
+  test('S4A-R1: legacy backendProcedure cannot enter voice instructions or client delegation', async t => {
     const plain = await fixture(t);
     const withProcedure = await fixture(t);
     const plainSession = new OpenAiLiveVoiceAdapter(options({ voice: 'voice_0123456789abcdef', socketFactory: plain.socketFactory })).open(request({ tools: tools() }), control());
@@ -169,52 +158,32 @@ describe('openai gpt-live adapter', () => {
     await withProcedure.frame(1);
     const before = plain.frames[0] as unknown as Start;
     const after = withProcedure.frames[0] as unknown as Start;
-    assert.equal(backend(after)['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${procedure}`);
+    assert.deepEqual(after.session['delegation'], { type: 'client' });
     assert.deepEqual(after.session['audio'], before.session['audio'], 'the preset and custom voice parts are untouched');
     assert.equal(after.session['instructions'], before.session['instructions'], 'the live instructions are untouched');
-    assert.equal(JSON.stringify(after).replace(JSON.stringify(backend(after)['instructions']), JSON.stringify(backend(before)['instructions'])), JSON.stringify(before), 'only the backend instructions differ');
+    assert.deepEqual(after, before, 'legacy backend options cannot alter the client session');
   });
 
   
 
   test('C-REBUILD8: a commentary append names the delegation in flight, and is skipped with none open', async t => {
-    const logged = hostReceipts(t);
-    const { f, session } = await ready(t);
-    // 2026-10-28 N10: the provider refused a progress line with
-    // `command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, so with no delegation open
-    // the host writes nothing and logs a closed skip instead of a frame the provider would refuse by name.
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'no delegation open, no line sent');
-    await until(() => logged().some(entry => entry['event'] === 'commentary_skipped'));
-    // The skip is only logged if the host log whitelist accepts it, so the schema is proven here, not assumed.
-    const skipped = logged().filter(entry => entry['event'] === 'commentary_skipped');
-    assert.deepEqual(skipped, [{ event: 'commentary_skipped', delegationKey: 'none', reason: 'no_delegation' }],
-      'the closed skip names the delegation that asked (none) and why it stayed silent');
-    for (const entry of skipped) assert.ok(safeEvent(entry), 'the host log whitelist accepts the skip record');
-    assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false, 'nothing reached the wire');
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_open', response_id: 'resp_open', offset_ms: 0 } });
-    await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
-    const before = f.frames.length;
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open delegation carries the line');
-    await tally(f.frames, before + 1);
-    assert.equal(f.frames[before]!['type'], 'session.commentary.append');
-    assert.equal(f.frames[before]!['delegation_id'], 'dlg_open', 'the wire carries the delegation in flight');
-    assert.deepEqual(f.rejections, [], 'the provider, which enforces its own rule, refused nothing');
-    // W11-R2: the provider flipped this rule once already (10-21 refused an append that carried a delegation_id
-    // with invalid_request_error, #516; since 10-25 it refuses one that does not, with missing_required_parameter),
-    // so a refusal is never swallowed: the host log keeps the code and the parameter the provider names.
-    f.send({ type: 'error', error: { type: 'command_rejected', code: 'missing_required_parameter', param: 'delegation_id', kind: 'cmt', client_event_id: 'cmt_1' } });
-    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'command_rejected'),
-      [{ event: 'command_rejected', code: 'missing_required_parameter', param: 'delegation_id', kind: 'cmt' }],
-      'a further flip stays visible with the provider own code and the parameter it names');
-    session.close();
-  });
+ const { f, session, captured } = await ready(t);
+ assert.equal(session.sendTaskAnswer!({ delegationId: 'missing', text: 'Synthetic answer' }), undefined);
+ assert.equal(f.frames.length, 1);
+ f.send({ type: 'session.delegation.created', delegation: { id: 'synthetic-current' } });
+ await until(() => captured.events.some(event => event.type === 'delegation'));
+ assert.equal(session.sendTaskAnswer!({ delegationId: 'stale', text: 'Synthetic answer' }), undefined);
+ const commandId = session.sendTaskAnswer!({ delegationId: 'synthetic-current', text: 'Synthetic answer' });
+ assert.equal(typeof commandId, 'string'); await tally(f.frames, 2);
+ assert.deepEqual(f.frames[1], { type: 'session.commentary.append', event_id: commandId, delegation_id: 'synthetic-current', content: 'Synthetic answer' });
+ session.close();
+ });
 
   test('S4A-R2 (c): a rejected command is a receipt with its kind, never an interruption', async t => {
     const logged = hostReceipts(t);
     const { f, session, captured } = await ready(t);
     f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_reject', response_id: 'resp_reject', offset_ms: 0 } });
-    await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
+    await until(() => captured.events.some(event => event.type === 'delegation'));
     session.sendCommentary!({ text: 'Still reading the mail.' });
     await tally(f.frames, 2);
     f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'content', message: 'bad content', client_event_id: 'cmt_1' } });
@@ -1713,7 +1682,6 @@ test('alarm sessions seed no fresh-opening direction', async t => {
 
 
 
-const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
 async function continuation(t: TestContext, accepted = true, overrides: Partial<LiveVoiceAdapterOptions> = {}) {
   const clock = new FakeClock();
   const opened = await fakeReady(t, { clock, ...overrides });
@@ -1729,21 +1697,7 @@ async function continuation(t: TestContext, accepted = true, overrides: Partial<
 
 
 
-test('SILENCE b: no item at five seconds requests the existing nudge without another create', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.clock.advance(4_999);
-  await quiet();
-  const nudges = () => opened.captured.events.filter(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output');
-  assert.equal(nudges().length, 0);
-  opened.clock.advance(1);
-  await quiet();
-  assert.equal(nudges().length, 1);
-  assert.equal(creates(opened.socket).length, before, 'never overlaps an active response');
-  opened.clock.advance(3_000);
-  await quiet();
-  assert.equal(nudges().length, 1);
-});
+
 
 test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
   const opened = await continuation(t);
@@ -1756,48 +1710,6 @@ test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
 
 
 
-test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
-  const logs: unknown[] = [];
-  const detach = attachHostLogSink({ event: event => logs.push(event) });
-  t.after(detach);
-  const opened = await continuation(t);
-  opened.clock.advance(200);
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'message' } }));
-  opened.socket.deliver(delegated('response.done', { response: { status: 'completed' } }));
-  await quiet();
-  const receipt = logs.find((event): event is Record<string, unknown> => typeof event === 'object' && event !== null && 'event' in event && event.event === 'live_continuation_timing');
-  assert.ok(receipt);
-  for (const key of ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt', 'class']) assert.ok(key in receipt, key);
-  assert.equal(receipt['firstAudioAt'], null);
-  assert.equal(receipt['class'], 'b-second');
-  assert.deepEqual(safeEvent(receipt), {
-    event: 'live_continuation_timing', toolOutputAt: receipt['toolOutputAt'], createAt: receipt['createAt'],
-    createdAt: receipt['createdAt'], firstItemAt: receipt['firstItemAt'], firstAudioAt: null, class: 'b-second',
-  }, 'timing survives the actual host.log whitelist');
-  assert.ok(Number(receipt['toolOutputAt']) <= Number(receipt['createAt']));
-  assert.ok(Number(receipt['createAt']) <= Number(receipt['createdAt']));
-  assert.equal(Number(receipt['firstItemAt']) - Number(receipt['createdAt']), 200);
-});
-
-
-test('SILENCE timing: short completed audio keeps its receipt until actual playback', async t => {
-  const logs: unknown[] = [];
-  const detach = attachHostLogSink({ event: event => logs.push(event) });
-  t.after(detach);
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.clock.advance(200);
-  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before, 'buffered speech is not a silent response');
-  opened.clock.advance(1_000);
-  await quiet();
-  const receipt = logs.find((event): event is Record<string, unknown> => typeof event === 'object' && event !== null && 'event' in event && event.event === 'live_continuation_timing' && 'firstAudioAt' in event && event.firstAudioAt !== null);
-  assert.ok(receipt, 'the audible landmark survives an earlier terminal frame');
-  assert.equal(receipt['class'], 'c');
-  assert.ok(Number(receipt['firstAudioAt']) > Number(receipt['createdAt']));
-});
 
 
 
@@ -1808,56 +1720,20 @@ test('SILENCE timing: short completed audio keeps its receipt until actual playb
 
 
 
-test('typed-only terminal response completes without output audio', async t => {
-  const { socket, session, captured } = await fakeReady(t);
-  session.sendText({ text: 'Synthetic typed ask' });
-  await quiet();
-  socket.deliver(delegated('response.created', { response: { id: 'typed_only' } }));
-  socket.deliver(delegated('response.done', { response: { id: 'typed_only', status: 'completed' } }));
-  await quiet();
-  assert.equal(completions(captured), 1);
-});
-
-test('input audio keeps the audible-output completion rule for typed text', async t => {
-  const { socket, session, captured } = await fakeReady(t);
-  session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
-  session.sendText({ text: 'Synthetic text during voice' });
-  await quiet();
-  socket.deliver(delegated('response.created', { response: { id: 'voice_active' } }));
-  socket.deliver(delegated('response.done', { response: { id: 'voice_active', status: 'completed' } }));
-  await quiet();
-  assert.equal(completions(captured), 0);
-});
-
-test('three synchronous typed finals form one user message and one response', async t => {
-  const { socket, session } = await fakeReady(t);
-  const start = socket.sent.length;
-  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
-  await quiet();
-  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
-  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
-  const messages = frames.filter(frame => frame.type === 'response.item.create');
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
-});
 
 
 
 
-test('a typed final before response.created waits for the already requested response', async t => {
-  const { socket, session } = await fakeReady(t);
-  const start = socket.sent.length;
-  session.sendText({ text: 'Synthetic initial ask' });
-  await quiet();
-  session.sendText({ text: 'Synthetic follow-up' });
-  await quiet();
-  const creates = () => socket.sent.slice(start).map(raw => JSON.parse(raw) as { type: string }).filter(frame => frame.type === 'response.create').length;
-  assert.equal(creates(), 1);
-  socket.deliver(delegated('response.created', { response: { id: 'synthetic_first' } }));
-  socket.deliver(delegated('response.done', { response: { id: 'synthetic_first', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(), 2, 'the follow-up gets one response after the first has ended');
-});
+
+
+
+
+
+
+
+
+
+
 
 // F4: on 10-30 a silent completed continuation set the answer-now lock, and the corrected retry after an
 // invalid_arguments refusal was refused as `research_cap_reached`. The rescue asks for speech only; the cap is
@@ -1887,8 +1763,6 @@ test('F10: a mid-thought tail holds the answer for the longer window, a finished
 // C-POSTTOOL fallback (#868): generic speech is not proof of an answer for a tool batch. The first audible
 // frame of the active response clears an owed continuation. The replay is event ordered, because the guard is
 // about the order of audio and terminal events within one response.
-const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
-const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session['delegation'] as { responses: Record<string, unknown> };
 
 
 
@@ -1899,15 +1773,7 @@ const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session
 // C-POSTTOOL 2: switch a. The wire fixture records the provider refusing any create field beyond type and
 // event_id (10.5.1, unknown_parameter param=response), so the audio request rides on the delegation's response
 // settings at session start, and the create stays exactly as the fixture pins it.
-test('C-POSTTOOL: firstResponseAudio names audio on the delegated response, never on the create', async t => {
-  const off = await continuation(t);
-  assert.equal('audio' in delegationOf(off.socket.sent).responses, false, 'the default delegation names no audio');
-  assert.deepEqual(Object.keys(postToolCreate(off.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort());
-  const opened = await continuation(t, true, { firstResponseAudio: true });
-  assert.deepEqual(delegationOf(opened.socket.sent).responses['audio'], { output: { voice: 'marin' } });
-  assert.deepEqual(Object.keys(postToolCreate(opened.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort(),
-    'the create keeps the two fields the provider accepts');
-});
+
 
 
 

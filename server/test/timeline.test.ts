@@ -910,7 +910,7 @@ test('task audit CLI refuses malformed logs without echoing content', async () =
     fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url)), 'task-log',
     fileURLToPath(new URL('../../test/fixtures/live-boundary/task-malformed.jsonl', import.meta.url)), '--json',
   ], { encoding: 'utf8', timeout: 5000 });
-  assert.equal(result.status, 1); assert.equal(result.stdout, '');
+  assert.equal(result.status, 2); assert.equal(result.stdout, '');
   assert.match(result.stderr, /content omitted/);
   assert.equal(result.stderr.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
 });

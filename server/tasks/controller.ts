@@ -18,7 +18,7 @@ export class FakeDelivery implements Delivery {
   closed(_identity: RevisionIdentity): void {}
 }
 export interface Revision {
-  identity: RevisionIdentity; signal: AbortSignal; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string;
+  identity: RevisionIdentity; signal: AbortSignal; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string | undefined;
   reads: Map<string, ToolResult>; receipts: ToolResult[]; evidence: ToolResult[];
 }
 /** Pure lifecycle decisions; IDs are injected for deterministic tests. No language inspection. */
@@ -44,7 +44,7 @@ export class TaskController {
     this.#running = true; this.#held = false;
     return this.#revision;
   }
-  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; ownerTurn: number; precedingOwnerWords?: string; shortFollowUp: boolean } | undefined {
+  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; ownerTurn: number; precedingOwnerWords?: string | undefined; shortFollowUp: boolean } | undefined {
     const current = this.#revision;
     if (!current || current.identity.task_id !== taskId) return undefined;
     return { id: taskId, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), ownerTurn: current.ownerTurn,

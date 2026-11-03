@@ -46,9 +46,9 @@ export interface TaskIdentity {
   revision: number;
   ownerWords: string;
   shortFollowUp?: boolean;
-  precedingOwnerWords?: string;
+  precedingOwnerWords?: string | undefined;
 }
-export interface EffectCheckInput { ownerWords: string; precedingOwnerWords?: string; effect: EffectKind }
+export interface EffectCheckInput { ownerWords: string; precedingOwnerWords?: string | undefined; effect: EffectKind }
 export interface AuthorizationRequest {
   task: TaskIdentity;
   effect: EffectKind;

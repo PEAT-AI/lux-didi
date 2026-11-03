@@ -1,5 +1,4 @@
 import { ALARM_MODE_MARKER } from '../live/types.js';
-import { hostConversationScenarios } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { cases, setMutation, dispatchScenario, historyScenario, multiReadScenario, injectedScenario, invalidReadScenario } from './harness.js';
+import { cases, setMutation, dispatchScenario, historyScenario, multiReadScenario, injectedScenario, invalidReadScenario, rebuildScenario } from './harness.js';
 
 const directory = new URL('../../../test/fixtures/live-boundary/', import.meta.url);
-type Scenario = { id: string; case: string; tool: string; args: Record<string, unknown>; words: string | string[]; count: number; source: string; allowed: boolean; completeArguments?: boolean };
+type Scenario = { id: string; case: string; tool: string; args: Record<string, unknown>; words: string | string[]; count: number; source: string; allowed: boolean; completeArguments?: boolean; stage: 'before' | 'during' | 'after' | 'replay' };
 const scenarios: { name: string; run: () => Promise<void> }[] = [];
 for (const file of readdirSync(directory).filter(name => name.endsWith('.json')).sort()) {
   const data = JSON.parse(readFileSync(new URL(file, directory), 'utf8'));
@@ -19,6 +19,7 @@ for (const file of readdirSync(directory).filter(name => name.endsWith('.json'))
     let run: () => Promise<void>;
     switch (scenario.case ?? 'dispatch') {
       case 'dispatch': run = () => dispatchScenario({ ...scenario, words: scenario.words as string }); break;
+      case 'rebuild-write': run = () => rebuildScenario(scenario.stage); break;
       case 'history': run = () => historyScenario(scenario.words as string[]); break;
       case 'multi-read': run = () => multiReadScenario(scenario.count); break;
       case 'injected': run = () => injectedScenario(scenario.source, scenario.allowed); break;

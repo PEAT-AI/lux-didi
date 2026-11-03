@@ -3,19 +3,23 @@
   "scenarios": [
     {
       "id": "rebuild-before-dispatch",
-      "case": "rebuild-mid-task"
+      "case": "rebuild-write",
+      "stage": "before"
     },
     {
       "id": "rebuild-during-dispatch",
-      "case": "rebuild-mid-task"
+      "case": "rebuild-write",
+      "stage": "during"
     },
     {
       "id": "rebuild-after-dispatch",
-      "case": "rebuild-after-finish"
+      "case": "rebuild-write",
+      "stage": "after"
     },
     {
       "id": "replay-new-call-id",
-      "case": "duplicate-delegation"
+      "case": "rebuild-write",
+      "stage": "replay"
     }
   ]
 }

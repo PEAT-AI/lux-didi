@@ -269,3 +269,36 @@ cases['inject-same-kind-after-write'] = async () => {
   try { await f.call.input('Save the requested synthetic note then read mail.', 1); equal(notes, 1); }
   finally { f.call.close(); }
 };
+
+export async function rebuildScenario(stage: 'before' | 'during' | 'after' | 'replay'): Promise<void> {
+  let release!: () => void; const held = new Promise<void>(done => { release = done; });
+  let entered!: () => void; const boundary = new Promise<void>(done => { entered = done; });
+  let writes = 0; let inferences = 0;
+  const f = fixture(async request => {
+    inferences++;
+    if ((stage === 'before' && inferences === 1) || (stage === 'after' && request.outputs.length > 0)) { entered(); await held; }
+    return request.outputs.length === 0
+      ? { text: '', calls: [{ id: 'write', name: 'remember_note', args: { text: 'Synthetic retained write.' } }] }
+      : { text: 'Synthetic write complete.', calls: [] };
+  }, async () => {
+    writes++;
+    if (stage === 'during') { entered(); await held; }
+    return documentResult('Synthetic committed write.', 'fixture');
+  });
+  try {
+    f.call.delegation('d1'); const running = f.call.input('Save a synthetic note.', 1);
+    if (stage === 'replay') {
+      await running; const prior = inferences;
+      f.call.delegation('different-call-id');
+      equal(writes, 1); equal(inferences, prior);
+    } else {
+      await boundary;
+      equal(writes, stage === 'before' ? 0 : 1);
+      f.call.socket(2); f.call.delegation('d2'); release(); await running;
+      equal(writes, 1); equal(f.sent.at(-1)?.generation, 2);
+      equal(f.sent.at(-1)?.id, 'd2');
+    }
+    const committed = f.operations.map(args => args[0] as { state: string }).filter(value => value.state === 'committed');
+    assert.equal(committed.length, 1, 'one committed write receipt survives provider rebinding');
+  } finally { release(); f.call.close(); }
+}

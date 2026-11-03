@@ -162,6 +162,11 @@ export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: s
   const used = ['action', ...shape.required, ...shape.optional];
   const kept = normalizeTrelloArguments(args, ['action', ...shape.required], used, TRELLO_WRITE_PARAMETERS.properties);
   const normalized = Object.keys(args).filter(key => TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) && !Object.hasOwn(kept, key));
+  // Trello mentions notify people. Member assignment is absent from the closed write shapes.
+  for (const key of ['name', 'description', 'text', 'item', 'checklist']) {
+    const value = kept[key];
+    if (typeof value === 'string') kept[key] = value.replace(/@[\p{L}\p{N}_-]+/gu, '').replace(/\s{2,}/gu, ' ').trim();
+  }
   return { args: kept, normalized };
 }
 

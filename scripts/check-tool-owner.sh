@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../server"
 npm run build
 # These authority unit files are intentionally outside the service tsconfig inventory.
 # Compile their real import closure with the same strict flags as the former staged build.
-node node_modules/typescript/bin/tsc --target ES2023 --module NodeNext --moduleResolution NodeNext \
+node node_modules/typescript/bin/tsc --ignoreConfig --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots node_modules/@types --rootDir . --outDir dist \
   test/owner-utterances.test.ts test/tool-owner.test.ts test/live-shape.test.ts \

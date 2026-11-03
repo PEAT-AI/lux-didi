@@ -1,41 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openTarget, ownerWords, receiptDetail } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
 const RUN = 'live-open-1';
-
-test('the model-facing open tools are the item tool, the home tool, a file and an app', () => {
-  assert.deepEqual(OPEN_TOOLS.map(tool => tool.name), ['open_source', 'open_home', 'open_file', 'open_app']);
-  // C-OPENWEB8: open_web joins the model-facing set, but it is not one of the single-argument handle tools.
-  assert.deepEqual([...OPEN_TOOL_NAMES].sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web']);
-  assert.equal(OPEN_TOOL_NAMES.has('open_url'), false, 'a free https url is no longer a tool the model sees');
-  assert.equal(OPEN_TOOLS.some(tool => tool.name === 'open_web'), false, 'open_web carries a kind and a target, not a handle');
-  for (const tool of OPEN_TOOLS) {
-    assert.match(tool.description, /only open things: they never type, click, send or change anything\./);
-    const parameters = openParameters(tool) as { required: string[]; additionalProperties: boolean };
-    assert.deepEqual(parameters.required, [tool.parameter]);
-    assert.equal(parameters.additionalProperties, false);
-  }
-});
-
-test('the declared argument shapes accept what the allowlist allows and refuse the rest', () => {
-  const source = OPEN_TOOLS[0]!, home = OPEN_TOOLS[1]!, file = OPEN_TOOLS[2]!, app = OPEN_TOOLS[3]!;
-  assert.equal(validateOpen({ handle: 'L3' }, source), true);
-  assert.equal(validateOpen({ handle: 'L12345' }, source), false, 'a handle is one to four digits');
-  assert.equal(validateOpen({ handle: 'https://example.test/doc' }, source), false, 'a url is never a handle');
-  assert.equal(validateOpen({ handle: 'L3', extra: 'x' }, source), false);
-  assert.equal(validateOpen({ app: 'gmail' }, home), true);
-  assert.equal(validateOpen({ app: 'slack' }, home), false, 'the schema refuses any home page but the three');
-  assert.equal(validateOpen({ url: 'https://example.test/doc' }, home), false, 'open_home takes no url');
-  assert.equal(validateOpen({ path: '~/notes/a.md' }, file), true);
-  assert.equal(validateOpen({ path: '/Users/example/notes/a.md' }, file), true);
-  assert.equal(validateOpen({ path: '' }, file), false);
-  assert.equal(validateOpen({ name: 'Safari.app' }, app), true);
-  assert.equal(validateOpen({ name: '' }, app), false);
-});
 
 test('the receipt names the scheme or extension and never the URL path or file name', () => {
   assert.equal(receiptDetail('open_url', 'https://example.test/private/plan.pdf'), 'https');
@@ -127,15 +97,6 @@ test('a handle minted in one live session is not_found in the next', () => {
   assert.equal(resolveHandle(handle), undefined, 'the last session cleared it');
   assert.deepEqual(openTarget('open_source', { handle }, 'open it'), { code: 'not_found' });
   endHandleSession('run-b');
-});
-
-test('open_home goes to the fixed destinations and open_url is not offered to the model', () => {
-  const home = OPEN_TOOLS.find(tool => tool.name === 'open_home')!;
-  const parameters = openParameters(home) as { properties: { app: { enum?: string[] } } };
-  assert.deepEqual(parameters.properties.app.enum, ['gmail', 'calendar', 'mattermost']);
-  assert.deepEqual(openTarget('open_home', { app: 'gmail' }, 'open Gmail'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/', detail: 'gmail', kind: 'home', title: 'Gmail' } });
-  assert.deepEqual(openTarget('open_home', { app: 'calendar' }, 'open Calendar'), { target: { action: 'open_url', target: 'https://calendar.google.com/', detail: 'calendar', kind: 'home', title: 'Google Calendar' } });
-  assert.deepEqual(openTarget('open_url', { url: 'https://evil.example' }, 'open it'), { code: 'not_allowed' }, 'a name outside the four resolves nothing');
 });
 
 test('a round trip with a fake native peer returns the ack code and keeps the frame closed', async () => {

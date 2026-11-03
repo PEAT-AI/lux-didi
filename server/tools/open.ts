@@ -33,29 +33,6 @@ export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request
 
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything. If refused, say only the plain sentence in say, never internal codes or retry diagnostics.';
 
-export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
-  { name: 'open_source', guidance: 'shown handle', description: `Call it when he asks; the host reads his words. Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
-  { name: 'open_home', guidance: 'app home', description: `Call it when he asks; the host reads his words. Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', guidance: 'local path', description: `Call it when he asks; the host reads his words. Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', guidance: 'app name', description: `Call it when he asks; the host reads his words. Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
-];
-
-export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
-  const shape = tool.parameter === 'handle' ? { type: 'string', minLength: 2, maxLength: 5, description: 'The handle from an open: line of a lookup result, like L3.' }
-    : tool.parameter === 'app' ? { type: 'string', enum: [...HOME_APPS], description: 'Which home page to open.' }
-    : tool.parameter === 'path' ? { type: 'string', minLength: 1, maxLength: 1024, description: 'An absolute or ~ path inside the home folder.' }
-    : { type: 'string', minLength: 1, maxLength: 1024, description: 'The application name, without or with .app.' };
-  return { type: 'object', properties: { [tool.parameter]: shape }, required: [tool.parameter], additionalProperties: false };
-}
-
-/** Exactly one string argument, shaped like the action's target; the native side validates the action frame. */
-export function validateOpen(args: unknown, tool: (typeof OPEN_TOOLS)[number]): args is Record<string, string> {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
-  const keys = Object.keys(args);
-  const value = (args as Record<string, unknown>)[tool.parameter];
-  return keys.length === 1 && keys[0] === tool.parameter && typeof value === 'string' && value.length > 0 && value.length <= 1024 && tool.pattern.test(value);
-}
-
 /** A scheme, an extension or `app`; never a URL path or a file name. */
 export function receiptDetail(action: NativeAction, target: string): string {
   if (action === 'open_app') return 'app';
@@ -364,15 +341,6 @@ export const nativeActions = new NativeActionBus();
  * search are the only web kinds; the target is words he said this turn, never a URL, a host or a query.
  */
 export const OPEN_WEB_NAME = 'open_web';
-export const OPEN_WEB_PARAMETERS: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    kind: { type: 'string', enum: [...WEB_KINDS], description: 'maps for a place or directions, site for a site he named, search for words to search for.' },
-    target: { type: 'string', minLength: 1, maxLength: 200, description: 'The words he said: the place, the site name or the search words. Never a URL.' },
-  },
-  required: ['kind', 'target'],
-  additionalProperties: false,
-};
 export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, use a resolved http(s) URL or site when that answers his request. For a document or file he names by title, look it up and open it with open_source instead.`;
 export function validateOpenWeb(args: unknown): args is { kind: WebKind; target: string } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
@@ -469,12 +437,8 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, _w
   const root = webDestination('site', domain);
   return root === undefined ? { code: 'not_allowed' } : { target: { action: 'open_url', target: root.url, detail: 'web', kind: 'web', title: root.domain } };
 }
-
-/** One generated usage line per registered open tool, shared by the public prompt. */
-export const OPEN_TOOL_GUIDANCE = [
-  ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.guidance}.`),
-  `${OPEN_WEB_NAME}: site/map/search.`,
-].join('\n');
+/** Voice delegates opening requests; the helper owns the canonical native schema. */
+export const OPEN_TOOL_GUIDANCE = 'Ask the host helper to open named sites, installed apps, local files or shown source handles. The helper uses open with kind and target, and find_file where required. Voice never calls native tools directly.';
 
 /** Worker-facing 10.10 schema. Authority is enforced by the task owner, not this executor. */
 export const OPEN_SCHEMA = {

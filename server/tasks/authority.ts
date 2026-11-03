@@ -67,7 +67,7 @@ export interface AuthorityPorts {
   /** Adapter uses the configured model client, with only this closed payload and a boolean answer. */
   checkEffect: (input: EffectCheckInput) => Promise<boolean>;
   journal: { get: (identity: string) => Promise<JournalRecord | undefined>; put: (identity: string, record: JournalRecord) => Promise<void> };
-  log: (event: 'effect_check_failed') => void;
+  log: (event: 'effect_check_failed' | 'delete_confirmation_check_failed') => void;
 }
 /** The existing configured client owns credentials and provider selection. No worker history enters. */
 export function configuredEffectCheck(model: ModelPort, options: { timeoutMs?: number; timeoutSignal?: (ms: number) => AbortSignal; now?: () => number } = {}): AuthorityPorts['checkEffect'] {

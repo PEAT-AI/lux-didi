@@ -32,6 +32,7 @@ interface Pending {
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
   #binding: { generation: number; id: string } | undefined;
+  #deferredFallback = false;
   #quiet = true;
   #owner = false;
   #cancel: (() => void) | undefined;
@@ -50,14 +51,16 @@ export class TaskDelivery implements Delivery {
   progress(_identity: RevisionIdentity): void {}
   deliver(identity: RevisionIdentity, answer: WorkerResult): void {
     if (!this.ports.isCurrent(identity) || answer.status === 'no_action' || !answer.text.trim()) return;
-    this.#stopTimer(); this.#undelivered = undefined;
+    this.#stopTimer(); this.#deferredFallback = false; this.#undelivered = undefined;
     this.#pending = { identity, answer, chunks: splitSpokenText(answer.text), chunk: 0, command: undefined, attempt: 0, reconnect: false, seeded: false, transcript: '' };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
     this.#quiet = input.outputQuiet; this.#owner = input.ownerSpeaking;
     if (this.#owner) this.#stopTimer();
-    else { this.#drain(); if (this.#current()?.command || this.#current()?.seeded) this.#arm(); }
+    else {
+      if (this.#quiet && this.#deferredFallback) { this.#deferredFallback = false; this.#fallback(); }
+      this.#drain(); if (this.#current()?.command || this.#current()?.seeded) this.#arm(); }
   }
   accepted(command: string): void {
     const pending = this.#current();
@@ -97,7 +100,8 @@ export class TaskDelivery implements Delivery {
     this.ports.state(pending.identity, 'sent', pending.chunk); this.#arm();
   }
   #fallback(): void {
-    this.#stopTimer(); const pending = this.#current(); if (!pending || this.#owner) return;
+    this.#stopTimer(); const pending = this.#current(); if (!pending) return;
+    if (this.#owner || !this.#quiet) { this.#deferredFallback = true; return; }
     if (pending.seeded) { this.#fail(); return; }
     if (pending.attempt++ === 0) { pending.command = undefined; pending.transcript = ''; this.#drain(); return; }
     this.#reconnect();

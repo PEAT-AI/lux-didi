@@ -1,3 +1,4 @@
+import { webDestinationAllowed } from './web-destination.js';
 import { hostLogEvent } from './host-events.js';
 
 /**
@@ -182,7 +183,7 @@ function kindTitle(raw: string): string {
 
 /** A structured source is checked at mint time; the handle carries only what the open path may use. */
 function sourceDestination(source: SourceLink): { url: string; kind: OpenKind } | undefined {
-  if (typeof source.url !== 'string') return undefined;
+  if (typeof source.url !== 'string' || !webDestinationAllowed(source.url, true)) return undefined;
   if (source.sourceType === 'mattermost') noteMattermostOrigin(source.url);
   const destination = openDestination(source.url);
   if (!destination || destination.kind === 'home') return undefined;
@@ -222,9 +223,11 @@ export function withOpenHandles<T extends { text: string; sources?: readonly Sou
  */
 export function bodySourceLinks(text: string, sourceType: 'knowledge' = 'knowledge'): SourceLink[] {
   const found: SourceLink[] = [];
-  for (const raw of text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []) {
+  for (const raw of text.match(/https?:\/\/[^\s<>"'`)\]]+/g) ?? []) {
     if (found.length >= OPEN_HANDLE_CAP) break;
-    const destination = openDestination(raw.replace(/[.,;:]+$/, ''));
+    const literal = raw.replace(/[.,;:]+$/, '');
+    if (!webDestinationAllowed(literal, true)) continue;
+    const destination = openDestination(literal);
     if (!destination || destination.kind === 'home') continue;
     if (found.some(link => link.url === destination.url)) continue;
     found.push({ title: kindTitle(destination.url), url: destination.url, sourceType });

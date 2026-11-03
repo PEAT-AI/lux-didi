@@ -6,8 +6,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { HostLog, safeEvent } from '../host/log.js';
-import { openAudit } from '../tools/open.js';
-import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 import { turnScriptBucket, turnScriptCounts } from '../live/index.js';

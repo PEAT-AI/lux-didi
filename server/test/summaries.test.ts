@@ -715,7 +715,6 @@ test('a skipped summary retains finished speech but never tools or unfinished fr
     });
   } finally { f.cleanup(); }
 });
-import type { HistoryArguments } from '../domain/history-reader.js';
 
 test('startup captures legacy speech before pruning and explicit session reads page the complete call', () => {
   const f = open();

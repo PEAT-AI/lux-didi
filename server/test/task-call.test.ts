@@ -1,3 +1,4 @@
+import './host-log.test.js';
 import './connector-publication.test.js';
 import './live-declarations.test.js';
 import './task-unbounded-projection.test.js';

@@ -798,7 +798,7 @@ function saysAbsent(answer, needle) {
  * good answer as a failure is worse than no check.
  */
 const CLAIM = /(wrote|writes|says|said|sent|sends|asks|asked|subject|mail from|email from|message from|heard from)/iu;
-const NEGATION = /\b(no|not|none|nothing|without|couldn.t|could not|didn.t|did not|don.t|do not|never|unable|nobody)\b/iu;
+const NEGATION = /\b(no|not|none|nothing|without|couldn.t|could not|didn.t|did not|don.t|do not|never|unable|nobody)\b|\b(rather than|instead of|as opposed to)\b/iu;
 const RECAP = /(search|look|check|tried|found no|scanned)/iu;
 function inventsSender(answer, needle) {
   const sentences = String(answer ?? '').split(/(?<=[.!?])\s+|\n+/u);
@@ -976,6 +976,11 @@ const SCENARIOS = [
       if (FORBIDDEN_ASK.test(String(answer))) return 'asked the owner to repeat';
       if (!/north block/iu.test(answer)) return 'answer does not report the mail from that day';
       return null;
+    },
+    // Recorded separately from the pass check: the answer can be right without the search having
+    // been bounded, and the report must show both.
+    outcomeCheck(answer) {
+      return /north block/iu.test(answer) && /(tuesday|oct)/iu.test(answer);
     },
   },
   {
@@ -1394,11 +1399,11 @@ function rescore(file) {
   const changed = [];
   const out = rows.map(row => {
     if (row.error) return row;
-    const scenario = SCENARIOS.find(s => s.id === row.scenario);
+    const scenario = SCENARIOS.find(s => s.id.toUpperCase() === String(row.scenario).toUpperCase());
     if (!scenario) return row;
     const failure = scenario.check(row.calls ?? [], row.answer ?? '');
     if (Boolean(row.pass) !== (failure === null)) changed.push(`${row.scenario} ${row.config} rep${row.rep}: ${row.failed_check ?? 'pass'} -> ${failure ?? 'pass'}`);
-    return { ...row, pass: failure === null, failed_check: failure };
+    return { ...row, pass: failure === null, failed_check: failure, outcome_ok: scenario.outcomeCheck ? scenario.outcomeCheck(row.answer ?? '', row.calls ?? []) : null };
   });
   const target = `${file.replace(/\.jsonl$/u, '')}.rescored.jsonl`;
   writeFileSync(target, out.map(row => `${JSON.stringify(row)}\n`).join(''));
@@ -1518,14 +1523,14 @@ async function live(options) {
   for (let rep = 1; rep <= options.runs; rep += 1) {
     for (const config of configs) {
       for (const id of picked) {
-        const scenario = SCENARIOS.find(s => s.id === id);
+        const scenario = SCENARIOS.find(s => s.id.toUpperCase() === id);
         if (!scenario) { console.log(`SKIP scenario ${id} unknown`); continue; }
         if (spent >= options.budget) { skipped += 1; continue; }
         let result;
         try {
           result = await runLive({ scenario, model: config.model, effort: config.effort, tier: options.tier, apiKey });
         } catch (error) {
-          const row = { scenario: id, config: config.id, rep, error: error.message, spent };
+          const row = { scenario: scenario.id, config: config.id, rep, error: error.message, spent };
           console.log(`RUN ${id} ${config.id} rep=${rep} ERROR=${error.message}`);
           if (options.out) appendFileSync(options.out, `${JSON.stringify(row)}\n`);
           runs.push(row);
@@ -1535,7 +1540,7 @@ async function live(options) {
         spent += cost.usd;
         const failure = scenario.check(result.log, result.answer);
         const row = {
-          scenario: id,
+          scenario: scenario.id,
           config: config.id,
           model: config.model,
           effort: config.effort,
@@ -1546,6 +1551,7 @@ async function live(options) {
           rep,
           pass: failure === null,
           failed_check: failure,
+          outcome_ok: scenario.outcomeCheck ? scenario.outcomeCheck(result.answer, result.log) : null,
           hops: result.hops,
           waves: result.waves,
           stop_reason: result.stopReason,

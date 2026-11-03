@@ -11,7 +11,7 @@ export interface TaskTool {
   run(args: Record<string, unknown>, identity: Identity, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
 }
 export interface ToolPorts {
-  execute(name: string, args: Record<string, unknown>, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
+  execute(name: string, args: Record<string, unknown>, signal: AbortSignal, outsideTextSeen?: boolean, identity?: Identity): Promise<ToolResult>;
   authority: AuthorityPort;
 }
 const string: Schema = { type: 'string', minLength: 1 };
@@ -99,7 +99,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
               coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,
               exposures: result.files.some(file => file.outsideText) ? ['drive'] : [] };
           }
-          return ports.execute(tool.name, validation.args, signal, outsideTextSeen);
+          return ports.execute(tool.name, validation.args, signal, outsideTextSeen, identity);
         };
         return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
       },

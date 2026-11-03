@@ -251,6 +251,7 @@ export function createTaskAuthority(authority: Authority, context: TaskAuthority
     const late = stopped(); if (late) return late;
     const committed = await authority.commit(`${task.id}:${tool.name}:${canonical(args)}`, execute);
     if (!committed.allow) return failed(committed.repair);
-    return { ...(committed.value as ToolResult), receipt: { operation_id: request.operation_id, state: 'committed' } };
+    const result = committed.value as ToolResult;
+    return { ...result, receipt: { operation_id: request.operation_id, state: result.status === 'failed' ? 'failed' : 'committed' } };
   } };
 }

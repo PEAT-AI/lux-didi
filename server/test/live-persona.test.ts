@@ -372,7 +372,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '32256596c59bbca3a045a06aed551b7c9b80f5a56841c63873cb72525d22a398');
+  // C-PROMISE 10.10: the announcement sentence is replaced in place, so the voice tools block is re-pinned.
+  assert.equal(sha(NAYA_VOICE_TOOLS), '8c554b93c488a5fdcdd6cac8d5bef419b6c8d4d31eb0bec3f6198c49a3139bcc');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
   assert.equal(sha(NAYA_TOOLS), 'dfdc3e2eebf54889228c2809474385a857bdfd5021ce8466db0837f5ffc8706b');
@@ -711,7 +712,7 @@ const WRAPPER_3O_CHARS = 6603;
 const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Do not announce routine lookups or fill the wait with status updates. A wait belongs only to a response that really makes a call, and it says nothing about work you have not started; a direct ask gets the call, not an announcement of it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
+    'Do not announce work instead of doing it: a direct ask is answered by the call in the same response, a draft included. A wait belongs only to a response that really makes a call, and work is called running only while the host holds it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask and answer your own question.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
@@ -1694,7 +1695,7 @@ test('C-OPENER: the wait guidance is meta, ties a wait to a real call, and pins 
   assert.ok(NAYA_VOICE_TOOLS.includes('never use a stock waiting line'), 'the stock waiting line ban stays');
   assert.doesNotMatch(NAYA_VOICE_TOOLS, /need a moment/u, 'no text invites a wait with no call behind it');
   assert.match(NAYA_VOICE_TOOLS, /response that really makes a call/u, 'the wait is tied to a real call');
-  assert.match(NAYA_VOICE_TOOLS, /direct ask gets the call/u, 'a direct ask gets the call, not an announcement');
+  assert.match(NAYA_VOICE_TOOLS, /a direct ask is answered by the call in the same response/u, 'a direct ask is answered by the call, not an announcement');
   // No recitable line was added: the wait guidance never puts a wait into quotes for her to repeat.
   assert.doesNotMatch(NAYA_VOICE_TOOLS, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
     'the guidance offers no sample waiting line');

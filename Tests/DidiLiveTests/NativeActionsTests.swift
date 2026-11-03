@@ -48,6 +48,15 @@ import Foundation
                                    browserState: { BrowserState(installed: true, running: true) })
         defer { try? FileManager.default.removeItem(at: home); try? FileManager.default.removeItem(at: outside) }
 
+        // 10.10: native opens readable paths outside home and arbitrary web destinations.
+        let unrestricted = NativeActions(home: home, opener: { _, _ in true },
+                                         browserState: { BrowserState(installed: true, running: true) })
+        let publicWeb = await unrestricted.execute(.openURL, target: "http://example.org/anything")
+        check(publicWeb.code == .opened, "10.10 arbitrary HTTP URL opens")
+        let credentialWeb = await unrestricted.execute(.openURL, target: "https://user:pass@example.org/")
+        check(credentialWeb.code == .notAllowed, "10.10 credential URL refused")
+        check(await unrestricted.fileURL(outside.path) != nil, "10.10 outside-home path resolves")
+
         // 1. The control frame is exact; anything else is not an action.
         let frame = NativeActionFrame.control("{\"type\":\"native_action\",\"id\":\"a1\",\"action\":\"open_url\",\"target\":\"https://example.test/a\"}")
         check(frame == NativeActionFrame(id: "a1", action: .openURL, target: "https://example.test/a"), "parse a native_action frame")

@@ -40,6 +40,15 @@ export class TaskDelivery implements Delivery {
   #undelivered: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   constructor(readonly ports: DeliveryPorts) {}
   get undelivered() { return this.#undelivered; }
+  waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
+    const pending = this.#current();
+    return pending ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
+  }
+  seedReconnect(): void {
+    const pending = this.#current(); if (!pending) return;
+    this.#stopTimer(); pending.reconnect = true; pending.seeded = true;
+    pending.command = undefined; pending.transcript = ''; pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
+  }
   #current(): Pending | undefined {
     const pending = this.#pending;
     if (pending && !this.ports.isCurrent(pending.identity)) { this.#stopTimer(); this.#pending = undefined; return undefined; }

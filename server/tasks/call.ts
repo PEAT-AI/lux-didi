@@ -66,9 +66,7 @@ export class TaskCall {
     this.delivery.activity(input);
   }
   reconnectAnswer(): { identity: RevisionIdentity; text: string } | undefined {
-    const value = this.#answer;
-    return value && value.answer.status !== 'no_action' && this.runtime.controller.isCurrent(value.identity)
-      ? { identity: value.identity, text: value.answer.text } : undefined;
+    return this.delivery.waitingAnswer();
   }
   #respond(): void {
     const value = this.#answer;

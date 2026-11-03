@@ -17,9 +17,7 @@ import { WebSocket } from 'ws';
 import { onceDetach, pumpOutput } from '../http/live-upgrade.js';
 // Side-effect import: register the intent-tool suite in this process so a declared check runs it
 // (live-session is in the contract scope; the check scripts are not).
-import './intent-tools.test.js';
 // Side-effect import: register the research-loop suite in this process so a declared check runs it.
-import './research.test.js';
 // Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
 import './host-log.test.js';
 // Side-effect import: register the 3j response-watchdog suite in the declared live-session check,

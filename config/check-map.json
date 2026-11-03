@@ -293,6 +293,18 @@
       "checks": [
         "scripts/check-tasks.sh"
       ]
+    },
+    {
+      "paths": [
+        "server/tasks/**",
+        "server/test/task-*.test.ts",
+        "server/test/tasks-*.test.ts"
+      ],
+      "checks": [
+        "scripts/check-live-session.sh",
+        "scripts/check-live-voice.sh",
+        "scripts/check-live-gateway.sh"
+      ]
     }
   ]
 }

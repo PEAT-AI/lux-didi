@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Authority, type EffectCheckInput, type JournalRecord } from '../tasks/authority.js';
+import { Authority, configuredEffectCheck, type EffectCheckInput, type JournalRecord } from '../tasks/authority.js';
+
+import type { ModelPort, ModelRequest } from '../adapters/model/types.js';
 
 const task = { id: 'task-1', revision: 1, ownerWords: 'Read the mail' };
 function setup(answer: boolean | Error = true) {
@@ -98,6 +100,24 @@ test('commit journals before execution and a duplicate resolves without another 
   assert.equal(writes, 1);
   assert.deepEqual(first, { allow: true, value: { saved: true }, replay: false });
   assert.deepEqual(replay, { allow: true, value: { saved: true }, replay: true });
+});
+
+test('configured client receives only owner words and closed effect, never worker context', async () => {
+  let sent: ModelRequest | undefined;
+  const model = { generate: async (input: ModelRequest) => { sent = input; return { status: 'complete', text: 'yes' }; } } as ModelPort;
+  const check = configuredEffectCheck(model);
+  assert.equal(await check({ ownerWords: 'Read and draft', effect: 'draft_email' }), true);
+  assert.deepEqual(sent?.context, { items: [], selectedIds: [], maxChars: 0 });
+  assert.deepEqual(sent?.contents, [{ role: 'user', parts: [{ text: '{"ownerWords":"Read and draft","effect":"draft_email"}' }] }]);
+  assert.equal(sent?.declarations, undefined);
+});
+
+test('timeout signal fails open and logs without a clock wait or provider call', async () => {
+  const fake = setup();
+  const authority = new Authority({ checkEffect: configuredEffectCheck({ generate: async () => assert.fail('provider called') }, { timeoutSignal: () => AbortSignal.abort() }), journal: { get: async id => fake.records.get(id), put: async (id, value) => { fake.records.set(id, value); } }, log: event => { fake.events.push(event); } });
+  authority.expose(task.id, 'mail');
+  assert.deepEqual(await authority.authorize(request), { allow: true });
+  assert.deepEqual(fake.events, ['effect_check_failed']);
 });
 
 test('pending outcome is never executed a second time', async () => {

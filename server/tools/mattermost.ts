@@ -4,7 +4,7 @@ import type { MattermostEvidence, MattermostResult, MattermostTool } from '../co
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_AUTH_NEEDED, MATTERMOST_CHAT_TOOL } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
 import { hostLogEvent } from './host-events.js';
-import { MATTERMOST_MESSAGE_CHARS, shapeMattermost, type ShapedSource } from './live-shape.js';
+import { shapeMattermost, type ShapedSource } from './live-shape.js';
 
 export interface MattermostProjection {
   text: string;
@@ -129,8 +129,7 @@ export function renderChatRead(data: unknown, nowMs = Date.now()): MattermostPro
     const stamp = role !== '' ? relativeTime(field(post, 'time'), nowMs) : field(post, 'time');
     lines.push(`**${[field(post, 'channel'), role !== '' ? role : field(post, 'author'), stamp].filter(Boolean).join(' | ')}${id !== '' ? ` [post ${id}]` : ''}**`);
     const text = field(post, 'text');
-    if (text.length > MATTERMOST_MESSAGE_CHARS) omitted += text.length - MATTERMOST_MESSAGE_CHARS;
-    lines.push(text.length > MATTERMOST_MESSAGE_CHARS ? `${text.slice(0, MATTERMOST_MESSAGE_CHARS - 3)}...` : text);
+    lines.push(text);
     const permalink = field(post, 'permalink');
     if (permalink !== '') sources.push({ title: `Mattermost: #${field(post, 'channel') || 'post'}`, url: permalink, sourceType: 'mattermost' });
   }

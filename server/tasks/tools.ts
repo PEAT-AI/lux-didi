@@ -1,8 +1,11 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
+import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
 import type { Authority, Effect, Identity } from './authority.js';
 import { failed, type ToolResult } from './results.js';
 export type Schema = Record<string, unknown>;
 export interface TaskTool {
   name: string; description: string; parameters: Schema; effect: Effect; outside_text: boolean;
+  validate?(args: Record<string, unknown>): boolean;
   run(args: Record<string, unknown>, identity: Identity, signal: AbortSignal): Promise<ToolResult>;
 }
 export interface ToolPorts {
@@ -20,7 +23,10 @@ export function strictSchema(schema: Schema): Schema {
     const required = new Set(schema.required as string[] ?? []);
     const properties = Object.fromEntries(Object.entries(schema.properties as Record<string, Schema> ?? {}).map(([key, value]) => {
       const child = strictSchema(value);
-      if (!required.has(key)) child.type = Array.isArray(child.type) ? [...new Set([...child.type, 'null'])] : [child.type, 'null'];
+      if (!required.has(key)) {
+        child.type = Array.isArray(child.type) ? [...new Set([...child.type, 'null'])] : [child.type, 'null'];
+        if (Array.isArray(child.enum)) child.enum = [...child.enum, null];
+      }
       return [key, child];
     }));
     return { ...result, properties, required: Object.keys(properties), additionalProperties: false };
@@ -28,30 +34,20 @@ export function strictSchema(schema: Schema): Schema {
   if (schema.items) result.items = strictSchema(schema.items as Schema);
   return result;
 }
-function matches(schema: Schema, value: unknown): boolean {
-  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return false;
-  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (value === null) return types.includes('null');
-  if (types.includes('object') && value && typeof value === 'object' && !Array.isArray(value)) {
-    const props = schema.properties as Record<string, Schema> ?? {};
-    const data = value as Record<string, unknown>;
-    return Object.keys(data).every(key => key in props) && (schema.required as string[] ?? []).every(key => key in data) && Object.entries(data).every(([key, val]) => matches(props[key]!, val));
-  }
-  if (types.includes('array') && Array.isArray(value)) return value.every(item => matches(schema.items as Schema, item));
-  if (types.includes('string') && typeof value === 'string') return value.length >= Number(schema.minLength ?? 0);
-  if ((types.includes('integer') || types.includes('number')) && typeof value === 'number') return Number.isFinite(value) && (!types.includes('integer') || Number.isInteger(value)) && value >= Number(schema.minimum ?? -Infinity) && value <= Number(schema.maximum ?? Infinity);
-  return types.includes('boolean') && typeof value === 'boolean';
-}
+const schemaValidator = new AjvJsonSchemaValidator();
 export function pruneNulls(value: unknown): unknown {
   if (Array.isArray(value)) return value.filter(item => item !== null).map(pruneNulls);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null).map(([key, item]) => [key, pruneNulls(item)]));
   return value;
 }
 export function validateArguments(tool: TaskTool, value: unknown): { ok: true; args: Record<string, unknown> } | { ok: false; repair: string } {
-  return matches(tool.parameters, value) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
+  const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
+  return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
-export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside?: boolean }
+export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside?: boolean; validate?: (args: Record<string, unknown>) => boolean }
 const definitions: Definition[] = [
+  { name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
+  { name: 'trello_write', description: 'Write the configured board.', fields: strictSchema(TRELLO_WRITE_PARAMETERS).properties as Record<string, Schema>, effect: 'external', outside: false, validate: validateTrelloWrite },
   ...['mail', 'chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
   ...['mail', 'knowledge', 'drive'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
   ...['thread', 'company', 'memory'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { ref: string, cursor: optionalString } })),
@@ -77,7 +73,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside ?? true,
+      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside ?? true, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) return failed(validation.repair);

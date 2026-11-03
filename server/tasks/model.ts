@@ -9,6 +9,7 @@ export interface ModelOptions { role: ModelRole; credentials: Credentials; trans
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** Reuse the shared dialect, retaining the richer generateContent types (voice has stricter types). */
 export function taskGeminiSchema(schema: Schema): Schema {
+  if (Array.isArray(schema.anyOf)) return { anyOf: schema.anyOf.map(item => taskGeminiSchema(item as Schema)) };
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
   const type = types.find(item => item !== 'null');
   const converted = geminiDialect({ ...schema, type, ...(types.includes('null') ? { nullable: true } : {}) });

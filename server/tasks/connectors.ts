@@ -2,7 +2,7 @@ import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
-import { strictSchema, type Definition, type Schema, type ToolPorts } from './tools.js';
+import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -56,18 +56,17 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
 }
 /** Capability-specific query tools avoid a free-form filters blob. Every field comes from configuration. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
-  return bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => {
-    const descriptor = CONNECTOR_DESCRIPTORS[binding.connector]!;
-    return descriptor.declarations(binding.policy).filter(declaration => !['search', 'read'].includes(declaration.name)).map(declaration => {
-      const strict = strictSchema(declaration.parameters);
-      return { name: `query_company_${declaration.name}`, description: declaration.description, fields: strict.properties as Record<string, Schema> };
-    });
-  });
+  const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy));
+  if (!capabilities.length) return [];
+  return [{ name: 'query_company', description: 'Query a configured company resource with its declared filters.', fields: {
+    resource: { type: 'string', enum: [...new Set(capabilities.map(item => item.name))] },
+    filters: { anyOf: capabilities.map(item => strictSchema(item.parameters)) },
+  }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}): ToolPorts['execute'] {
   return async (name, args, signal) => {
     if (existing[name]) return existing[name]!(args, signal);
-    const mapping = mappings[name] ?? (name.startsWith('query_company_') ? { connector: 'mongoose', tool: name.slice('query_company_'.length), args: (a: Record<string, unknown>) => a } : undefined);
+    const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
     const binding = bindings.find(binding => binding.connector === mapping.connector && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');

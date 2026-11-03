@@ -35,7 +35,7 @@ test('task content gating, receipts, final answer, delivery and pruning use Stor
   } finally { store.close(); rmSync(directory, { recursive: true }); }
 });
 test('task log allowlist refuses bodies and queries but accepts a closed event', () => {
-  const valid = { event: 'task_lifecycle', phase: 'complete', revision: 2, count: 3, ms: 12 };
+  const valid = { event: 'task_lifecycle', taskId: 'synthetic-task', generation: 1, phase: 'complete', revision: 2, count: 3, ms: 12 };
   assert.ok(safeEvent(valid));
   assert.equal(safeEvent({ ...valid, query: 'secret synthetic query' }), undefined);
   assert.equal(safeEvent({ ...valid, body: 'synthetic body' }), undefined);

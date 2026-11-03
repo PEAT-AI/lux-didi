@@ -1,6 +1,8 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
 import type { AuthorityPort, Effect, Identity } from './authority.js';
+import { OPEN_SCHEMA, executeOpen, nativeActions } from '../tools/open.js';
+import { FIND_FILE_SCHEMA, findFile } from '../tools/find-file.js';
 import { failed, type ToolResult } from './results.js';
 export type Schema = Record<string, unknown>;
 export interface TaskTool {
@@ -67,7 +69,8 @@ const definitions: Definition[] = [
   { name: 'alarm_list', description: 'List local alarms.', fields: {}, outside: false },
   { name: 'alarm_cancel', description: 'Cancel a local alarm.', fields: { id: string }, effect: 'local', outside: false },
   { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString }, effect: 'local', outside: false },
-  { name: 'open', description: 'Open a specific configured target in the native surface.', fields: { kind: { type: 'string', enum: ['mail', 'calendar', 'chat', 'web', 'document'] }, target: string }, effect: 'local', outside: false },
+  { name: OPEN_SCHEMA.name, description: OPEN_SCHEMA.description, fields: OPEN_SCHEMA.parameters.properties, effect: 'local', outside: false },
+  { name: FIND_FILE_SCHEMA.name, description: FIND_FILE_SCHEMA.description, fields: FIND_FILE_SCHEMA.parameters.properties, outside: false },
 ];
 function integerSchema(value: unknown): boolean {
   if (typeof value === 'number') return Number.isInteger(value);
@@ -83,7 +86,21 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
         const validation = validateArguments(tool, args);
         if (!validation.ok) return failed(validation.repair);
         if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
-        const execute = () => ports.execute(tool.name, validation.args, signal);
+        const execute = async (): Promise<ToolResult> => {
+          if (tool.name === OPEN_SCHEMA.name) {
+            const result = await executeOpen(nativeActions, identity.task_id, validation.args);
+            return result.code === 'opened' ? { status: 'ok', text: 'Opened.', references: [], next_cursor: null, coverage: 'Native open acknowledged.', repair: null } : failed(`Opening failed: ${result.code}.`);
+          }
+          if (tool.name === FIND_FILE_SCHEMA.name) {
+            const result = await findFile(validation.args);
+            if (result.code === 'unavailable' || result.code === 'invalid_arguments') return failed(`File search: ${result.code}.`);
+            return { status: result.code === 'empty' ? 'empty' : 'ok', text: JSON.stringify(result.files),
+              references: result.files.map(file => ({ id: file.path, title: file.name })), next_cursor: null,
+              coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,
+              exposures: result.files.some(file => file.outsideText) ? ['drive'] : [] };
+          }
+          return ports.execute(tool.name, validation.args, signal, outsideTextSeen);
+        };
         return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
       },
     };

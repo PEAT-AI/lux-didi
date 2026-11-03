@@ -103,7 +103,17 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: syntheticTaskFactory(f.store, composition), classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
+  const taskFactory = syntheticTaskFactory(f.store, composition);
+  const diagnosedTaskFactory: typeof taskFactory = (...args) => {
+    const runtime = taskFactory(...args), runTool = runtime.runTool.bind(runtime);
+    let reported = false;
+    runtime.runTool = async (...parameters) => {
+      try { return await runTool(...parameters); }
+      catch (error) { if (!reported) { reported = true; console.error('CHAT_TASK_EXECUTION', String(error)); } throw error; }
+    };
+    return runtime;
+  };
+  const chat = new ChatService(Object.assign({}, f.config, { context: { ...f.config.context, budgets: { ...f.config.context.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } }, tools: composition, createTaskRuntime: diagnosedTaskFactory, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);

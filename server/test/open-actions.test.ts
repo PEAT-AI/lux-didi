@@ -14,7 +14,7 @@ test('canonical open exposes one strict schema and no retired model catalog', ()
   assert.match(OPEN_SCHEMA.description, /never types, clicks, sends or edits/);
   assert.deepEqual(OPEN_SCHEMA.parameters.required, ['kind', 'target']);
   assert.equal(OPEN_SCHEMA.parameters.additionalProperties, false);
-  assert.equal('OPEN_TOOLS' in opening, false); assert.equal('OPEN_TOOL_NAMES' in opening, false);
+  assert.equal('OPEN_TOOLS' in opening, false); assert.equal(typeof opening.executeOpen, 'function');
 });
 
 test('canonical open arguments accept the four kinds and reject undeclared shapes', () => {

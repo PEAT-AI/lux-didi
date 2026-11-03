@@ -245,7 +245,7 @@ test('channel resolution maps id, name and display name, and names the closest m
 
 test('canonical read_thread uses the child argument name and returns its full thread body', async t => {
   const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'read_thread')!;
-  const args = { ref: 'abcdef1234567890abcdefghij' };
+  const args = { ref: 'abcdef1234567890abcdefghij', cursor: null };
   const call = { runId: h.host.runId, actorId: h.host.actorId, authorityEpoch: h.host.authorityEpoch, revision: h.host.revision, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, toolName: definition.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex') };
   assert.equal(h.owner.journal.intent(call), 'fresh');
   const outcome = await definition.execute(args, { ...call, signal: new AbortController().signal });

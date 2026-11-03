@@ -220,6 +220,8 @@ let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
 f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
 f.attachment.setInputMuted(true); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+t.mock.timers.tick(15_000); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
+assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
 t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'muted unspoken-result reconnect');
 assert.match(f.voice.requests[1]!.system.text, /The synthetic task answer/); assert.equal(calls, 1);
 });

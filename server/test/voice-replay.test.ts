@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { deferred, fixtureUntil } from './live-voice-fixture.js';
 import { documentResult, failed } from '../tasks/results.js';
-import { fakeReady } from './openai-live-voice-fixture.js';
 import { sanitize } from './voice-replay/sanitize.js';
 
 // Replay the host task lifecycle, not the removed provider response/tool continuation engine.
@@ -33,7 +32,7 @@ test('task replay: barge-in and finalized correction replace the stale result wi
 test('task replay: parallel reads with mixed outcomes preserve both operations and produce one answer', async t => {
   const release = deferred<void>(); t.after(() => release.resolve()); let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => ++steps === 1
-    ? { text: '', calls: [{ name: 'search_knowledge', args: { query: 'synthetic parallel' } }, { name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
+    ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic parallel' } }, { id: 'synthetic-read_mail',  name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
     : { text: 'One synthetic source was available; the other failed.', calls: [] }, { executors: {
       search_knowledge: async () => { reads++; await release.promise; return documentResult('Synthetic knowledge evidence.', 'synthetic-knowledge'); },
       read_mail: async () => { reads++; release.resolve(); return failed('Synthetic mail source refused the read.'); },
@@ -48,7 +47,7 @@ test('task replay: a newer completed owner turn starts fresh work rather than re
   let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => {
     steps++;
-    return steps % 2 ? { text: '', calls: [{ name: 'search_knowledge', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' } }] }
+    return steps % 2 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' } }] }
       : { text: steps === 2 ? 'The first synthetic answer.' : 'The second synthetic answer.', calls: [] };
   }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic evidence.', `synthetic-${reads}`); } } });
   f.bind('first'); f.finalize('Find the first synthetic record.'); const first = await f.answer();
@@ -77,10 +76,11 @@ test('task replay: repeated rejection and stale acknowledgements permit one resu
   let calls = 0;
   const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic retained answer.', calls: [] }; }, { clock: true });
   f.bind('old'); f.finalize('Give the synthetic retained answer.'); const answer = await f.answer();
-  f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'rejected-result seed');
+  f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); await fixtureUntil(() => f.voice.taskAnswers.length === 2, 'one bounded append retry');
+  f.voice.emit({ type: 'commentaryRejected', commandId: f.voice.taskAnswers[1]!.commandId }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'rejected-result seed');
   f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(15_000); await f.flush();
-  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 2); assert.equal(f.voice.taskAnswers.length, 1);
+  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 2); assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 for (const noAction of [false, true]) {
@@ -91,7 +91,7 @@ for (const noAction of [false, true]) {
     if (noAction) { await fixtureUntil(() => calls === 1, 'no-action worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0); }
     else { const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
     assert.equal(calls, 1);
-    assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'failed');
+    assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'incomplete');
   });
 }
 
@@ -104,12 +104,12 @@ test('task replay: helper completion preserves PCM order through the host output
   assert.deepEqual(bytes, [0x40, 0x1f, 0x28, 0x23]);
 });
 
-test('task replay adapter: bracket cues are omitted while literal citations remain byte-identical', async t => {
-  const { socket, captured } = await fakeReady(t);
-  socket.deliver({ type: 'session.output_transcript.delta', delta: '[chuckle]' });
-  socket.deliver({ type: 'session.output_transcript.delta', delta: ' okay [Q3]' });
-  await fixtureUntil(() => captured.events.some(event => event.type === 'outputTranscription' && event.text.includes('[Q3]')), 'literal citation transcript');
-  const said = captured.events.flatMap(event => event.type === 'outputTranscription' ? [event.text] : []).join('');
+test('task replay host: bracket cues are omitted while literal citations remain byte-identical', async t => {
+  const f = await liveTaskFixture(t, async () => ({ text: '', calls: [], no_action: true }));
+  f.voice.emit({ type: 'outputTranscription', text: '[chuckle]', finished: false });
+  f.voice.emit({ type: 'outputTranscription', text: ' okay [Q3]', finished: true });
+  await fixtureUntil(() => f.chunks.some(chunk => chunk.kind === 'marker' && chunk.marker.kind === 'outputTranscription' && chunk.marker.text?.includes('[Q3]')), 'literal citation transcript');
+  const said = f.chunks.flatMap(chunk => chunk.kind === 'marker' && chunk.marker.kind === 'outputTranscription' ? [chunk.marker.text ?? ''] : []).join('');
   assert.equal(said.includes('chuckle'), false); assert.equal(said, ' okay [Q3]');
 });
 test('the sanitizer replaces every free text field and keeps the frame order and the provider identifiers', () => {

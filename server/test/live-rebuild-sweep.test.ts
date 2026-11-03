@@ -11,7 +11,7 @@ for (const boundary of ['before input', 'pending without a binding', 'pending wi
       if (boundary === 'pending with an old binding') f.bind('old-binding');
       f.finalize('Find the synthetic boundary result.'); await fixtureUntil(() => inferences === 1, 'pending boundary inference');
     }
-    f.voice.emit({ type: 'goAway', timeLeftMs: 0 });
+    f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 });
     await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh boundary socket');
     f.bind('fresh-binding'); await f.flush();
     if (boundary === 'before input') f.finalize('Find the synthetic boundary result.');
@@ -30,7 +30,7 @@ for (const boundary of ['sent', 'accepted', 'partly heard']) {
     f.bind('old-binding'); f.finalize('Give the synthetic boundary answer.'); const first = await f.answer();
     if (boundary !== 'sent') f.voice.emit({ type: 'commentaryAccepted', commandId: first.commandId });
     if (boundary === 'partly heard') f.voice.emit({ type: 'outputTranscription', text: 'The complete', finished: false });
-    await f.flush(); f.voice.emit({ type: 'goAway', timeLeftMs: 0 });
+    await f.flush(); f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 });
     await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh answer socket');
     f.bind('fresh-binding');
     await fixtureUntil(() => f.voice.taskAnswers.length === 2, 'held result on fresh binding');
@@ -45,7 +45,7 @@ test('task rebuild boundary: a heard result is conversation history, not a secon
   f.bind('heard-binding'); f.finalize('Give the synthetic result.'); const answer = await f.answer();
   f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId });
   f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
-  f.voice.emit({ type: 'goAway', timeLeftMs: 0 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'post-heard socket');
+  f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'post-heard socket');
   f.bind('fresh-binding'); await f.flush();
   assert.equal(f.voice.taskAnswers.length, 1); assert.equal(inferences, 1);
   assert.match(JSON.stringify(f.voice.requests[1]?.history), /synthetic result is already heard/);

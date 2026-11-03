@@ -92,7 +92,9 @@ const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The sy
 f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
 f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
 t.mock.timers.tick(14_999); await f.flush(); assert.equal(f.voice.sessionsOpened, 1);
-t.mock.timers.tick(1); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'accepted but unheard task timeout');
+t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
+assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
+t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'accepted but unheard task timeout');
 assert.match(f.voice.requests[1]!.system.text, /The synthetic task answer/); assert.equal(calls, 1);
 });
 
@@ -130,5 +132,7 @@ const f = await liveTaskFixture(t, async () => ({ text: 'The synthetic task answ
 t.mock.timers.tick(10_000); f.bind(); f.finalize('Give the synthetic task answer.'); const answer = await f.answer();
 f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
 t.mock.timers.tick(14_999); await f.flush(); assert.equal(f.voice.sessionsOpened, 1, 'old silence cannot consume the new result deadline');
-t.mock.timers.tick(1); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'task deadline from its own append');
+t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
+assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
+t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'task deadline from its own append');
 });

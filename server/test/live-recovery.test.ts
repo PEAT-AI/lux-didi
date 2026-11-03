@@ -137,7 +137,7 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
   sdk.setRequestHandler('tools/call', async request => {
-    calls.push({ name: request.params.name, args: request.params.arguments });
+    calls.push({ id: 'synthetic-requestparamsname',  name: request.params.name, args: request.params.arguments });
     if (held !== undefined) await held;
     return { content: [{ type: 'text', text: 'synthetic knowledge answer' }] };
   });
@@ -334,22 +334,22 @@ test('#527/L18: a long healthy stretch starts a fresh recovery episode after the
 
 test('task recovery: a finalized request after rebuild reaches its read executor', async t => {
 let inferences = 0, reads = 0;
-const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
-f.voice.emit({ type: 'goAway', timeLeftMs: 0 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'recovered task socket');
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
+f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'recovered task socket');
 f.bind('fresh'); f.finalize('Find the synthetic recovery evidence.');
 assert.equal((await f.answer()).delegationId, 'fresh'); assert.equal(reads, 1); assert.equal(inferences, 2);
 });
 
 test('task recovery: early delegation cannot start work and cannot poison later owner input', async t => {
 let inferences = 0, reads = 0;
-const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic recovery' } }] } : { text: 'The synthetic recovery answer.', calls: [] }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic recovery evidence.', 'recovery-evidence'); } } });
 f.bind('early'); await f.flush(); assert.equal(inferences, 0); assert.equal(reads, 0); assert.equal(f.voice.taskAnswers.length, 0);
 f.finalize('Find the synthetic recovery evidence.'); assert.equal((await f.answer()).text, 'The synthetic recovery answer.'); assert.equal(reads, 1);
 });
 
 test('task recovery: operation audit measures read elapsed time against its task identity', async t => {
 let inferences = 0;
-const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ name: 'search_knowledge', args: { query: 'synthetic latency' } }] } : { text: 'The synthetic timed answer.', calls: [] }, { clock: true, executors: { search_knowledge: async () => { t.mock.timers.tick(25); return documentResult('Synthetic timed evidence.', 'timed-evidence'); } } });
+const f = await liveTaskFixture(t, async () => ++inferences === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic latency' } }] } : { text: 'The synthetic timed answer.', calls: [] }, { clock: true, executors: { search_knowledge: async () => { t.mock.timers.tick(25); return documentResult('Synthetic timed evidence.', 'timed-evidence'); } } });
 f.bind(); f.finalize('Find the synthetic timed evidence.'); await f.answer();
 const operation = f.store.transaction(tx => tx.get('SELECT created_at,updated_at,operation_id FROM task_operations'));
 assert.equal(Number(operation?.updated_at) - Number(operation?.created_at), 25); assert.match(String(operation?.operation_id), /^[a-f0-9-]{36}$/);
@@ -357,8 +357,8 @@ assert.equal(Number(operation?.updated_at) - Number(operation?.created_at), 25);
 
 test('task recovery: refused helper arguments cannot poison a later valid revision', async t => {
 let inferred = 0, reads = 0, valid = false;
-const f = await liveTaskFixture(t, async () => { inferred++; if (inferred === 1) return { text: '', calls: [{ name: 'search_knowledge', args: { query: 77 } }] };
-if (valid) { valid = false; return { text: '', calls: [{ name: 'search_knowledge', args: { query: 'valid synthetic query' } }] }; }
+const f = await liveTaskFixture(t, async () => { inferred++; if (inferred === 1) return { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 77 } }] };
+if (valid) { valid = false; return { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'valid synthetic query' } }] }; }
 return reads ? { text: 'The valid synthetic answer.', calls: [] } : { text: '', calls: [], no_action: true };
 }, { executors: { search_knowledge: async () => { reads++; return documentResult('Valid synthetic evidence.', 'valid-evidence'); } } });
 f.bind('invalid'); f.finalize('Try the synthetic request.'); await fixtureUntil(() => inferred >= 2, 'invalid arguments refused'); await f.flush(); assert.equal(reads, 0);

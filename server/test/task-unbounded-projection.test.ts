@@ -8,7 +8,7 @@ test('helper evidence retains the complete received mail body instead of a spoke
   assert.equal(result.omittedCharacters, 0);
 });
 test('helper evidence retains every received mail-list row rather than a spoken item cap', () => {
-  const messages = Array.from({ length: 13 }, (_, index) => ({ id: `synthetic-${index}`, subject: `Synthetic subject ${index}`, from: 'sender@example.invalid', snippet: `Synthetic excerpt ${index}` }));
+  const messages = Array.from({ length: 13 }, (_, index) => ({ id: `synthetic-${index}`, headers: { Subject: `Synthetic subject ${index}`, From: 'sender@example.invalid' }, snippet: `Synthetic excerpt ${index}` }));
   const result = renderGoogleTool('gmail_search_messages', { messages });
   assert.ok(result.text.includes('Synthetic subject 12'), 'all received rows belong to the helper evidence');
 });

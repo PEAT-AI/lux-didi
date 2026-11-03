@@ -622,7 +622,7 @@ function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
   const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
   const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `ask research with ids=[${id}] for the whole note` : 'final, ask research again with this note id for the whole note'}]` : '';
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `use read_knowledge with id=${id} for the whole note` : 'use read_knowledge with this note id for the whole note'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 /** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */

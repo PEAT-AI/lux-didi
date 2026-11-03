@@ -139,16 +139,16 @@ test('mattermost keeps text, author, channel, timestamp, reactions and thread po
   assert.equal(shaped.text.includes('joined the channel'), false, 'system join/leave posts must be dropped');
 });
 
-test('lux get_insight returns the full body, and the search excerpt names research for the rest', () => {
+test('Lux read and search projections retain complete received text without speech truncation', () => {
   const content = 'Sentence one. '.repeat(400); // ~5600 chars, over the 1200 excerpt bound but under the body bound
   const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 7, insight_title: 'Deep body', content }));
   assert.equal(shaped.partial, false);
   assert.equal(shaped.text.includes('[omitted:'), false);
   assert.equal(shaped.text.includes(content), true, 'the whole insight body must reach the model');
   const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
-  assert.equal(excerpt.partial, true);
+  assert.equal(excerpt.partial, false);
   // ROUTE-1022 K15: the live session reaches a stored note through research, never get_insight.
-  assert.match(excerpt.text, /ask research with ids=\[7\] for the whole note/);
+  assert.doesNotMatch(excerpt.text, /ask research/);
 });
 
 test('plain non-JSON knowledge payloads pass through untouched', () => {
@@ -336,16 +336,16 @@ function ranked(parts: readonly string[]): string {
 
 // ROUTE-1022 K15/K17: the note names the tool the live session really has (research, never get_insight),
 // and the coverage line takes the hit count the server states rather than the count that fit.
-test('ROUTE-1022 K15: a cut knowledge excerpt tells the model to ask research, never get_insight', () => {
+test('ROUTE-1022 K15: complete knowledge evidence never instructs the helper to call retired live tools', () => {
   const body = 'Sentence about the prep call. '.repeat(40);
   const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 4242, insight_title: 'Prep', content: body }] }));
   assert.equal(excerpt.text.includes('get_insight'), false, 'the live session has no get_insight tool');
-  assert.match(excerpt.text, /ask research with ids=\[4242\] for the whole note/);
+  assert.doesNotMatch(excerpt.text, /ask research/);
   const rankedText = shapeLuxKnowledge('search_knowledge', ranked([
     rankedHit(91001, 'First', body), rankedHit(91002, 'Second', body),
   ]));
   assert.equal(rankedText.text.includes('get_insight'), false);
-  assert.match(rankedText.text, /ask research again with ids=\[\d+\] for this note's whole text/);
+  assert.doesNotMatch(rankedText.text, /ask research/);
 });
 
 test('ROUTE-1022 K17: the coverage line uses the hit count the server states', () => {
@@ -360,10 +360,11 @@ test('ROUTE-1022 K17: the coverage line uses the hit count the server states', (
   assert.equal(shaped.partial, true, 'a reply that carried five of six is partial');
 });
 
-test('O-R1: one long body still cuts at a sentence and says how much it left out', () => {
-  const shaped = shapeLuxKnowledge('search_knowledge', 'A plain long note. '.repeat(1000));
-  assert.match(shaped.text, /\[omitted: \d+ characters; final, this read has no paging argument\]/);
-  assert.ok(shaped.text.length <= 1600, `the single body keeps its old bound (${shaped.text.length})`);
+test('one long received knowledge body reaches the helper in full', () => {
+  const body = 'Synthetic plain long note. '.repeat(1000) + 'SYNTHETIC_KNOWLEDGE_TAIL';
+  const shaped = shapeLuxKnowledge('search_knowledge', body);
+  assert.ok(shaped.text.includes('SYNTHETIC_KNOWLEDGE_TAIL'));
+  assert.equal(shaped.omittedCharacters, 0);
 });
 
 // MED-1022: `detail: voice` answers the top hit in full and names each further hit on one bullet, in
@@ -394,12 +395,12 @@ test('MED-1022: a voice knowledge reply reaches the model as every hit, the top 
   assert.equal(shaped.text.includes('Knowledge Search'), false, 'the search header is still stripped');
 });
 
-test('#574: a twelve person event prints eight names and the four it leaves out, and an empty one prints no line', () => {
+test('#574: an event preserves every received attendee name and reports an empty list explicitly', () => {
   const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `Dana Whitfield ${n}` }));
   const shaped = shapeGcalList({ events: [{ summary: 'Design review', location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
     htmlLink: 'https://calendar.google.com/event?eid=e1', attendees: many }] });
-  assert.match(shaped.text, /attendees: 12 people: Dana Whitfield 0, Dana Whitfield 1, Dana Whitfield 2, Dana Whitfield 3, Dana Whitfield 4, Dana Whitfield 5, Dana Whitfield 6, Dana Whitfield 7 and 4 more/);
-  assert.doesNotMatch(shaped.text, /Dana Whitfield 8/, 'the ninth name is never spoken');
+  assert.match(shaped.text, /attendees: 12 people: .* 11/);
+  assert.doesNotMatch(shaped.text, /and 4 more/, 'the received names are not replaced by a spoken-size summary');
   assert.equal(/\[\+\d+ chars\]/.test(shaped.text), false, 'the attendee line is never the part the per-event bound cuts');
   const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
   assert.match(empty.text, /attendees: none listed for this event/u, 'an event with nobody on it says so, never silence');
@@ -481,5 +482,5 @@ test('L8-01: no line the model may voice carries a character count marker, in an
   const omitted = shapeGcalList({ events: [shapes[2]!] }).text;
   assert.match(omitted, /attendees: at least 1 person: Dana and others/u, 'a helper-truncated list gives a lower bound, never an invented count');
   const crowd = shapeGcalList({ events: [shapes[1]!] }).text;
-  assert.match(crowd, /attendees: 30 people: Person 0, .* and \d+ more/u, 'a crowd is counted, never cut');
+  assert.match(crowd, /attendees: 30 people: Person 0, .*Person 29/u, 'a crowd is counted, never cut');
 });

@@ -364,7 +364,7 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
 
 /**
  * Compose the Live system instruction: public base, the optional local overlay (verbatim), the
- * optional tool conduct, then the terminal LANGUAGE AND VOICE anchor. Empty sections are stripped,
+ * mandatory spoken work policy, then the terminal LANGUAGE AND VOICE anchor. Empty optional sections are stripped,
  * survivors join with one blank line. Memory and runtime yield whole, without clipping. The base and the voice anchor never yield.
  */
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
@@ -425,11 +425,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
 }
 
-/**
- * Insert the tool conduct into an already-composed Live instruction: right after the public base when
- * the text is the Naya composition, otherwise after the whole text. With no declarations the input is
- * returned byte-identical, so a session without tools composes exactly as before.
- */
+/** Insert the mandatory spoken work policy once, independent of tool declarations. */
 export function withToolsSection(text: string, _tools: readonly string[]): string {
   if (text.includes(NAYA_WORK_DELIVERY)) return text;
   const baseAt = text.indexOf(NAYA_LIVE_BASE);

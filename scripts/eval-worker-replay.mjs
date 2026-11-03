@@ -161,6 +161,7 @@ const MAIL = [
   {
     id: 'm_guerena_later',
     ts: GUERENA_SECOND_TS,
+    only: 'S2b',
     from: { name: 'David Guerena', address: 'd.guerena@sample-institute.example' },
     to: [{ name: 'Owner', address: 'owner@example.test' }],
     subject: 'Kit order for the field team',
@@ -477,7 +478,7 @@ function searchMail({ query }) {
     else tests.push(hit => haystack(hit).includes(value));
   }
   for (const n of negatives) tests.push(hit => !haystack(hit).includes(n.value.toLowerCase()));
-  const hits = impossible ? [] : MAIL
+  const hits = impossible ? [] : mailbox()
     .filter(hit => (lower === null || hit.ts >= lower) && (upper === null || hit.ts <= upper))
     .filter(hit => tests.every(test => test(hit)))
     .sort((a, b) => b.ts - a.ts)
@@ -498,8 +499,12 @@ function haystack(hit) {
   return `${hit.from.name} ${hit.from.address} ${hit.subject} ${hit.body}`.toLowerCase();
 }
 
+// S2b's extra mail would change what the other scenarios read first, so it is visible to S2b only.
+let ACTIVE_SCENARIO = '';
+const mailbox = () => MAIL.filter(hit => !hit.only || hit.only === ACTIVE_SCENARIO);
+
 function readMail({ id }) {
-  const hit = MAIL.find(row => row.id === id);
+  const hit = mailbox().find(row => row.id === id);
   if (!hit) return { status: 'not_found', id };
   return {
     status: 'ok',
@@ -1247,6 +1252,7 @@ function geminiSession({ model, effort, turns, apiKey }) {
  */
 async function runLive({ scenario, model, provider = 'openai', effort, tier, apiKey, maxHops = 8 }) {
   assertLatest(model);
+  ACTIVE_SCENARIO = scenario.id;
   // S2 hands the failed prior turn in as history, so it already ends with the correction; every other
   // scenario turns its prompt list into the user turns.
   const turns = scenario.history ?? scenario.prompts.map(prompt => ({ role: 'user', content: prompt }));
@@ -1476,27 +1482,31 @@ function selftest() {
   const gorell = searchMail({ query: 'from:David Gorell' });
   note(gorell.hits.length === 0, 'unknown from: returns nothing', JSON.stringify(gorell.status));
   const guerena = searchMail({ query: 'from:guerena' });
-  note(guerena.hits.length === 4, 'from:guerena returns every institute mail', String(guerena.hits.length));
+  note(guerena.hits.length === 3, 'from:guerena returns every institute mail', String(guerena.hits.length));
   const plain = searchMail({ query: 'Guerena' });
-  note(plain.hits.length === 4, 'plain display name matches', String(plain.hits.length));
+  note(plain.hits.length === 3, 'plain display name matches', String(plain.hits.length));
   const bodyTerm = searchMail({ query: 'phosphorus' });
   note(bodyTerm.hits.length === 1, 'plain body term matches', String(bodyTerm.hits.length));
-  // S2b carries two mails from one sender, one on last Tuesday and one an hour old, so the operator
-  // window has to pick the day out rather than the latest message.
   const windowed = searchMail({ query: `from:guerena after:${NOW - DAY}` });
   note(!windowed.hits.some(hit => hit.id === 'm_guerena_0418'), 'an epoch after: operator excludes the older mail', String(windowed.hits.length));
+  // S2b adds a second mail from the same sender an hour old, and it must stay invisible elsewhere,
+  // because the other scenarios read the newest mail from that sender.
+  note(searchMail({ query: 'from:guerena' }).hits.length === 3, 'the S2b extra mail stays out of the other scenarios');
+  ACTIVE_SCENARIO = 'S2b';
+  note(searchMail({ query: 'from:guerena' }).hits.length === 4, 'the S2b extra mail is visible inside S2b');
   const tuesdayWindow = searchMail({ query: `from:guerena after:${LAST_TUESDAY} before:${LAST_TUESDAY + DAY}` });
   note(tuesdayWindow.hits.length === 1 && tuesdayWindow.hits[0].id === 'm_guerena_tue', 'the Tuesday window holds only the Tuesday mail', String(tuesdayWindow.hits.length));
+  ACTIVE_SCENARIO = '';
   const opAfter = searchMail({ query: 'from:guerena after:2d' });
-  note(opAfter.hits.length === 2, 'after: operator honoured', String(opAfter.hits.length));
+  note(opAfter.hits.length === 1, 'after: operator honoured', String(opAfter.hits.length));
   const subjectOp = searchMail({ query: 'subject:"soil trial protocol"' });
   note(subjectOp.hits.length === 1, 'quoted subject operator honoured', String(subjectOp.hits.length));
   const negated = searchMail({ query: 'acme -tomas' });
   note(negated.hits.length === 1 && negated.hits[0].id === 'm_sam_0402', 'negation honoured', String(negated.hits.length));
   const ored = searchMail({ query: 'from:guerena OR subject:"invoice summary"' });
-  note(ored.hits.length === 5, 'OR unions two groups', String(ored.hits.length));
+  note(ored.hits.length === 4, 'OR unions two groups', String(ored.hits.length));
   const orHost = searchMail({ query: 'from:david OR to:david' });
-  note(orHost.hits.length === 4, 'the host compiled query shape matches on a first name', String(orHost.hits.length));
+  note(orHost.hits.length === 3, 'the host compiled query shape matches on a first name', String(orHost.hits.length));
 
   const today = calendarEvents({});
   note(today.count === 8, 'today holds eight events', String(today.count));
@@ -1857,6 +1867,12 @@ function summarize(runs) {
     console.log(`${config} ${group[0]?.model ?? ''} ${passed}/${group.length} ${leading.map(id => cell(group, id)).join(' ')} ${seconds(median(walls))} ${seconds(p90(walls))} ${seconds(Math.max(...walls))} ${median(group.map(row => row.hops))} ${median(hopMs)} ${inTok} ${outTok} ${usd.toFixed(4)} ${passed ? (usd / passed).toFixed(4) : 'n/a'}`);
   }
   console.log('');
+  console.log('OUTCOME_OK CONFIG = answers that carried the right fact, pass check or not');
+  for (const config of configs) {
+    const group = done.filter(row => row.config === config && row.outcome_ok !== null && row.outcome_ok !== undefined);
+    console.log(`OUTCOME_OK ${config} ${group.filter(row => row.outcome_ok).length}/${group.length}`);
+  }
+  console.log('');
   console.log('COLD_START CONFIG FIRST_HOP_MS HOPS WALL_MS');
   for (const row of cold) console.log(`COLD_START ${row.config} ${row.cold_start_ms} ${row.hops} ${row.wall_ms}`);
   console.log('');
@@ -1876,7 +1892,7 @@ function summarize(runs) {
   console.log('FAILING_RUNS');
   for (const row of done.filter(row => !row.pass)) {
     const calls = (row.calls ?? []).map(call => `${call.hop}:${call.name}${call.ok ? '' : `(${call.error})`}${call.args?.query ? `[${String(call.args.query).slice(0, 60)}]` : ''}`).join(' ');
-    console.log(`FAIL ${row.config} ${row.scenario} rep=${row.rep} check=${row.failed_check} hops=${row.hops} ms=${row.wall_ms} calls=${calls || 'none'}`);
+    console.log(`FAIL ${row.config} ${row.scenario} rep=${row.rep} check=${row.failed_check} outcome_ok=${row.outcome_ok} hops=${row.hops} ms=${row.wall_ms} answer=${String(row.answer ?? '').replace(/\s+/gu, ' ').slice(0, 200)} calls=${calls || 'none'}`);
   }
   const universal = Object.entries(byScenario).filter(([, rows]) => rows.length > 0).filter(([, rows]) => {
     const configs = new Set(rows.map(r => r.config));

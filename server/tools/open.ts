@@ -433,19 +433,41 @@ export function webOpenedSay(domain: string): string { return `opening ${domain}
 let webPort: (() => WebSearchPort | undefined) | undefined;
 export function useWebSearchPort(source: (() => WebSearchPort | undefined) | undefined): void { webPort = source; }
 
-export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed'; candidates?: string[] };
+export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed' | 'egress_blocked'; candidates?: string[]; repair?: string };
+
+/** Compare exact owner tokens, never a substring in a retrieved passage or another URL. */
+export function ownerContainsURL(words: string, target: string): boolean {
+  return words.split(/\s+/u).some(word => word.replace(/^[('"<]+|[)'">,;.!?]+$/gu, '') === target);
+}
+
+export function publicOpenURL(target: string): boolean {
+  try {
+    const url = new URL(target);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase().replace(/\.$/u, '');
+    if (!host.includes('.') || /(?:^|\.)(?:localhost|local|internal|home|lan)$/u.test(host)) return false;
+    if (host.startsWith('[')) return /^\[[23][0-9a-f]{3}:/u.test(host) && !host.startsWith('[2001:db8:');
+    if (/^\d+(?:\.\d+){3}$/u.test(host)) {
+      const [a = 0, b = 0] = host.split('.').map(Number);
+      if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 export interface WebOpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /**
  * What open_web means: his words bind the target, the host builds the address, and a site he named but
  * did not spell out is found through the existing web search. Nothing here reads an argument as a URL.
  */
-export async function resolveWebOpen(args: { kind: WebKind; target: string }, _words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
+export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
   if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
     try {
-      const url = new URL(/^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`);
-      return { target: { action: 'open_url', target: url.href, detail: 'web', kind: 'web', title: url.hostname } };
+      const target = /^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`;
+      if (!ownerContainsURL(words, args.target) || !publicOpenURL(target)) return { code: 'egress_blocked', repair: 'Ask the owner to provide or select the exact public link.' };
+      const url = new URL(target);
+      return { target: { action: 'open_url', target, detail: 'web', kind: 'web', title: url.hostname } };
     } catch { return { code: 'not_allowed' }; }
   }
   const direct = webDestination(args.kind, args.target);

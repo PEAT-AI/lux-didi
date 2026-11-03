@@ -51,7 +51,7 @@ export type WebOutcome = { ok: true; evidence: WebEvidence } | { ok: false; code
 
 export interface WebSearchPort {
   /** N6: an ask may carry its own deadline, so a slow weather or news read is not held to the short one. */
-  search(request: { query: string; signal: AbortSignal; deadlineMs?: number }): Promise<WebOutcome>;
+  search(request: { query: string; signal: AbortSignal; deadlineMs?: number; ownerWords?: string; exposed?: boolean }): Promise<WebOutcome>;
 }
 
 export interface WebSearchOptions {
@@ -72,6 +72,13 @@ const text = (value: unknown): string | undefined =>
  * Only the public query egresses. A question that carries an address, a long digit run, a pasted
  * passage or a whole spoken sentence is reported instead of sent.
  */
+/** After outside evidence, invented URLs and site operators cannot carry local content out. */
+export function searchQueryAfterExposure(query: string, ownerWords: string, exposed: boolean): string {
+  if (!exposed) return query;
+  const ownerTokens = new Set(ownerWords.split(/\s+/u));
+  return query.split(/\s+/u).filter(token => !/^(?:https?:\/\/|site:)/iu.test(token) || ownerTokens.has(token)).join(' ').trim();
+}
+
 export function publicQueryOf(value: string): string | undefined {
   const query = value.replace(/\s+/g, ' ').trim();
   if (!query || query.length > WEB_QUERY_CHARS) return undefined;
@@ -210,8 +217,8 @@ export function createWebSearch(options: WebSearchOptions): WebSearchPort {
   const defaultDeadlineMs = options.deadlineMs ?? WEB_DEADLINE_MS;
   const keyReference = options.keyReference ?? 'gemini-primary';
   return {
-    async search({ query, signal, deadlineMs }): Promise<WebOutcome> {
-      const publicQuery = publicQueryOf(query);
+    async search({ query, signal, deadlineMs, ownerWords = '', exposed = false }): Promise<WebOutcome> {
+      const publicQuery = publicQueryOf(searchQueryAfterExposure(query, ownerWords, exposed));
       if (publicQuery === undefined) return { ok: false, code: 'web_private_question' };
       const key = await options.credentials.resolve(keyReference).catch(() => '');
       if (!key || /[\r\n]/.test(key)) return { ok: false, code: 'web_unavailable' };

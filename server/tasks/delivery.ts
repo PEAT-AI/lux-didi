@@ -27,7 +27,7 @@ export function splitSpokenText(text: string): string[] {
 const normalized = (text: string): string => text.normalize('NFKC').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
-  command: string | undefined; attempt: number; reconnect: boolean; seeded: boolean; transcript: string;
+  command: string | undefined; attempt: number; reconnect: boolean; seeded: boolean; seededText?: string; transcript: string;
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
@@ -67,6 +67,14 @@ export class TaskDelivery implements Delivery {
       if (this.#quiet && this.#deferredFallback) { this.#deferredFallback = false; this.#fallback(); }
       this.#drain(); if (this.#current()?.command || this.#current()?.seeded) this.#arm(); }
   }
+  reconnected(): void {
+    const pending = this.#current(); if (!pending?.seeded) return;
+    this.#stopTimer();
+    this.ports.state(pending.identity, 'sent', pending.chunk);
+    this.ports.state(pending.identity, 'accepted', pending.chunk);
+    this.#arm();
+  }
+  reconnectFailed(): void { if (this.#current()?.seeded) this.#fail(); }
   accepted(command: string): void {
     const pending = this.#current();
     if (pending?.command === command) this.ports.state(pending.identity, 'accepted', pending.chunk);
@@ -79,7 +87,7 @@ export class TaskDelivery implements Delivery {
   transcript(text: string): void {
     const pending = this.#current(); if (!pending) return;
     pending.transcript = `${pending.transcript} ${text}`;
-    const expected = pending.seeded ? pending.answer.text : pending.chunks[pending.chunk];
+    const expected = pending.seeded ? pending.seededText : pending.chunks[pending.chunk];
     if (!expected || !normalized(pending.transcript).includes(normalized(expected))) return;
     this.#stopTimer(); this.ports.state(pending.identity, 'heard', pending.chunk);
     if (pending.seeded || ++pending.chunk >= pending.chunks.length) { this.#pending = undefined; return; }
@@ -116,8 +124,8 @@ export class TaskDelivery implements Delivery {
     if (pending.reconnect) { this.#fail(); return; }
     pending.reconnect = true; pending.seeded = true; pending.command = undefined; pending.transcript = '';
     this.ports.state(pending.identity, 'reconnecting', pending.chunk);
-    if (!this.ports.reconnect(pending.answer.text, pending.identity)) { this.#fail(); return; }
-    this.#arm();
+    pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
+    if (!this.ports.reconnect(pending.seededText, pending.identity)) { this.#fail(); return; }
   }
   #fail(): void {
     const pending = this.#current(); if (!pending) return;

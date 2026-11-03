@@ -45,7 +45,7 @@ test('unheard answer retries once reconnects once then retains undelivered', () 
   const f = fixture(); f.delivery.attach(identity, 'd1'); f.delivery.deliver(identity, answer('Synthetic answer.'));
   f.advance(); assert.equal(f.sends.length, 2);
   f.advance(); assert.equal(f.reconnects(), 1);
-  f.advance(); assert.equal(f.states.at(-1), 'undelivered');
+  f.delivery.reconnected(); f.advance(); assert.equal(f.states.at(-1), 'undelivered');
   assert.equal(f.delivery.undelivered?.answer.text, 'Synthetic answer.');
   f.advance(); assert.equal(f.reconnects(), 1); assert.equal(f.sends.length, 2);
 });

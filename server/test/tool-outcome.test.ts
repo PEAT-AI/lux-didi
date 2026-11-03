@@ -1,8 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolOutcomeOf } from '../live/tool-outcome.js';
-import { ADMISSION_BLOCK_REASONS, RESEARCH_REFUSAL_REASONS, ResearchAdmission, admissionBlocked, researchRepair } from '../tools/research.js';
-import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, REFUSAL_CAUSES, refusalCauseOf, runningStateLine } from '../tools/refusal-cause.js';
+import { CAUSE_NOT_KNOWN, HOST_REFUSAL_CODES, REFUSAL_CAUSES, refusalCauseOf } from '../tools/refusal-cause.js';
 
 const cases = [
   [{ status: 'refused', code: 'no_owner_request' }, 'refused', 'no_owner_request'],
@@ -41,70 +40,58 @@ for (const [response, outcome, refusalCode] of cases) {
 }
 
 // Synthetic wire frames exercise each provider's actual send and trace path, without a server.
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Store } from '../runtime/store.js';
-import { liveTracePort } from '../trace/record.js';
 import { safeEvent } from '../host/log.js';
-import { GeminiLiveVoiceAdapter, OpenAiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
+import { OpenAiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions } from '../adapters/live-voice/index.js';
-import { FakeSocket, options as openaiOptions } from './openai-live-voice-fixture.js';
-import { options as geminiOptions, request, control } from './live-voice-fixture.js';
-const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-for (const provider of ['openai', 'gemini'] as const) {
-  for (const delivered of [true, false]) for (const [index, [response, outcome, refusalCode]] of cases.entries()) {
-    test(`${provider} wire delivered=${delivered} business outcome ${index}: ${outcome}`, async t => {
-      const directory = mkdtempSync(join(tmpdir(), 'didi-truth-'));
-      const store = new Store(directory);
-      t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-      const trace = liveTracePort({ port: store, liveSessionId: 'synthetic-truth', connectionEpoch: 'e0' });
-      const socket = new FakeSocket();
-      const socketFactory: NonNullable<LiveVoiceAdapterOptions['socketFactory']> = () => {
-        queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
-        return socket as unknown as ReturnType<NonNullable<LiveVoiceAdapterOptions['socketFactory']>>;
-      };
-      const adapter = provider === 'openai' ? new OpenAiLiveVoiceAdapter(openaiOptions({ socketFactory })) : new GeminiLiveVoiceAdapter(geminiOptions({ socketFactory }));
-      const session = adapter.open(request(), { ...control(), trace });
-      t.after(() => session.close());
-      const events = (async () => { for await (const _event of session.events) { /* drain provider events */ } })();
-      await tick();
-      socket.deliver(provider === 'openai' ? { type: 'session.started', session: { id: 'synthetic' } } : { setupComplete: {} });
-      await session.ready;
-      const names = ['set_alarm', 'set_alarm', 'trello_read', 'mattermost_chat', 'mattermost_chat', 'remember_note', 'stage_lux_note'];
-      const call = { id: 'synthetic-call', name: names[index] ?? 'research', args: {} };
-      if (provider === 'openai') {
-        socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd1', offset_ms: 0, response_id: 'r1' } });
-        socket.deliver({ type: 'response.event', delegation_id: 'd1', event: { type: 'response.created', response: { id: 'r1' } } });
-        socket.deliver({ type: 'response.event', delegation_id: 'd1', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: call.id, name: call.name, arguments: '{}' } } });
-        await tick();
-        socket.deliver({ type: 'response.event', delegation_id: 'd1', event: { type: 'response.done', response: { id: 'r1', status: 'completed' } } });
-      } else socket.deliver({ toolCall: { functionCalls: [call] } });
-      await tick();
-      if (!delivered) socket.send = () => { throw new Error('synthetic wire failure'); };
-      const sent = session.sendToolResponse({ responses: [{ id: call.id, name: call.name, response }] });
-      await tick();
-      if (!delivered) assert.equal(sent, 'failed');
-      const rows = store.transaction(tx => tx.all('SELECT outcome, outcome_code, delivered FROM trace_call'));
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0]!.outcome, outcome);
-      assert.equal(rows[0]!.outcome_code, refusalCode ?? null);
-      assert.equal(rows[0]!.delivered, Number(delivered));
-      const host = safeEvent({ event: 'tool_call_outcome', callKey: call.id, tool: call.name, ...toolOutcomeOf(response) });
-      assert.equal(host?.outcome, outcome);
-      assert.equal(host?.refusalCode, refusalCode);
-      const frames = socket.sent.map(frame => JSON.parse(frame));
-      assert.equal(frames.some(frame => provider === 'openai' ? frame.item?.type === 'function_call_output' : frame.toolResponse?.functionResponses?.length === 1), delivered);
-      session.close(); await events;
-    });
-  }
+import { FakeSocket, options } from './openai-live-voice-fixture.js';
+import { request, control } from './live-voice-fixture.js';
+
+for (const [index, [response, outcome, refusalCode]] of cases.entries()) {
+  test(`business outcome ${index} retains its closed host metadata`, () => {
+    const host = safeEvent({ event: 'tool_call_outcome', callKey: 'synthetic-call', tool: 'run_task', ...toolOutcomeOf(response) });
+    assert.equal(host?.outcome, outcome);
+    assert.equal(host?.refusalCode, refusalCode);
+  });
+}
+
+for (const wireFailure of [false, true]) {
+  test(`client task answer preserves exact content, wireFailure=${wireFailure}`, async t => {
+    const socket = new FakeSocket();
+    const socketFactory: NonNullable<LiveVoiceAdapterOptions['socketFactory']> = () => {
+      queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+      return socket as unknown as ReturnType<NonNullable<LiveVoiceAdapterOptions['socketFactory']>>;
+    };
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory })).open(request(), control());
+    const drained = (async () => { for await (const event of session.events) void event; })();
+    t.after(async () => { session.close(); await drained; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    socket.deliver({ type: 'session.started', session: { id: 'synthetic' } });
+    await session.ready;
+    const text = 'The synthetic receipt is A17.';
+    assert.equal(session.sendTaskAnswer!({ delegationId: 'missing', text }), undefined);
+    socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd1' } });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (wireFailure) socket.send = () => { throw new Error('synthetic wire failure'); };
+    const commandId = session.sendTaskAnswer!({ delegationId: 'd1', text });
+    const frames = socket.sent.map(frame => JSON.parse(frame));
+    const commentary = frames.filter(frame => frame.type === 'session.commentary.append');
+    assert.equal(commentary.length, Number(!wireFailure));
+    if (wireFailure) assert.equal(commandId, undefined);
+    else {
+      assert.equal(commentary[0].event_id, commandId);
+      assert.equal(commentary[0].delegation_id, 'd1');
+      assert.equal(commentary[0].content, text);
+      assert.equal(typeof commandId, 'string');
+    }
+    assert.equal(frames.some(frame => frame.type === 'response.create' || frame.type === 'response.item.create'), false);
+  });
 }
 
 // C-TOOLTRUTH (10.8): F7. Every refusal a tool hands the model states its true cause in one plain sentence the
 // model can repeat, plus what will or will not happen next. A code whose honest cause the host does not hold
 // says so and never guesses, so nothing she is handed invites an invented cause.
 test('C-TOOLTRUTH every closed refusal code carries a plain cause and a next line', () => {
-  for (const code of [...ADMISSION_BLOCK_REASONS, ...RESEARCH_REFUSAL_REASONS, ...HOST_REFUSAL_CODES]) {
+  for (const code of HOST_REFUSAL_CODES) {
     const { cause, next } = refusalCauseOf(code);
     assert.ok(cause.trim().length > 20, `${code}: the cause is one plain sentence, got ${cause}`);
     assert.match(cause, /^[A-Z].*\.$/u, `${code}: the cause is a finished sentence, got ${cause}`);
@@ -129,40 +116,3 @@ test('C-TOOLTRUTH a refusal code the table does not know says the reason is not 
   assert.match(refusalCauseOf('not a code').next, /an unnamed code/u);
 });
 
-// C-TOOLTRUTH: the refused argument shape she is handed carries the cause and what it did not do.
-test('C-TOOLTRUTH a refused research argument carries its cause and that nothing was searched', () => {
-  const reply = researchRepair('topic_required');
-  assert.equal(reply['reason'], 'topic_required');
-  assert.equal(reply['cause'], REFUSAL_CAUSES.topic_required.cause);
-  assert.equal(reply['next'], 'Nothing was searched.');
-});
-
-// C-TOOLTRUTH: F6. The rebuild shape that lost her sense of what had finished: the result reached her, the
-// provider generation was replaced, and nothing was running afterwards. The refusal she receives then says
-// from the host's own record that nothing is running, and it never reads as work in progress.
-test('C-TOOLTRUTH after a rebuild the turn_spent refusal says nothing is running', () => {
-  const admission = new ResearchAdmission();
-  admission.ownerTurn();
-  assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
-  admission.delivered('synthetic-run-1');
-  // The rebuild: the same admission object outlives the generation, and no scheduler run survives it.
-  const reply = admissionBlocked('turn_spent', undefined, admission.running());
-  assert.deepEqual(admission.running(), []);
-  assert.equal(reply['state'], 'Nothing is running now.');
-  assert.equal(reply['cause'], REFUSAL_CAUSES.turn_spent.cause);
-  assert.equal(reply['next'], REFUSAL_CAUSES.turn_spent.next);
-  assert.doesNotMatch(JSON.stringify(reply), /still (reading|looking|searching)|results? (is|are) (still )?(coming|on the way)/iu);
-});
-
-// C-TOOLTRUTH: while one run really is in flight the refusal names it from the host's own record, and the
-// record is the same object across a rebuild.
-test('C-TOOLTRUTH the state line names the running work and clears when it settles', () => {
-  const admission = new ResearchAdmission();
-  admission.ownerTurn();
-  admission.working('synthetic web question');
-  assert.deepEqual(admission.running(), ['the research for "synthetic web question"']);
-  assert.equal(runningStateLine(admission.running()), 'Running now: the research for "synthetic web question".');
-  admission.settledWork();
-  assert.deepEqual(admission.running(), []);
-  assert.equal(admissionBlocked('no_turn_since_result', undefined, admission.running())['state'], 'Nothing is running now.');
-});

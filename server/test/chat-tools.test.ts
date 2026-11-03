@@ -44,7 +44,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
     if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { id: '42', cursor: null } : { query: 'which emails arrived' }, id: randomUUID() } }] } };
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { id: '42', cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -586,7 +586,9 @@ test('the task facade is stable across newly approved source tools and owner rev
   assert.ok(names.includes('search_knowledge') && names.includes('read_knowledge'));
   await f.approveY(); f.noCalls();
   const next = await f.turn(session);
-  assert.equal(next.outcome, 'complete');
+  assert.equal(next.outcome, 'denied', 'an accepted conversation cannot silently widen its source policy');
+  const fresh = await f.turn(f.session());
+  assert.equal(fresh.outcome, 'complete', 'fresh owner consent captures the approved source policy');
   assert.deepEqual(f.requests.at(-1)?.declarations?.map(tool => tool.name), names);
   assert.equal(names.includes('get_insight'), false, 'connector tool names never become chat tools');
 });

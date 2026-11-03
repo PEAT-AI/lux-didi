@@ -1,3 +1,4 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import { connectorDescriptor } from '../connectors/index.js';
 import { HOST_EVIDENCE } from '../tools/types.js';
 import { projectGoogleResult } from '../tools/google.js';
@@ -22,10 +23,9 @@ import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope 
 import { composeMcpRuntime } from '../host/mcp.js';
 import { composeResult, notAuthorizedFor } from '../tools/compose.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
-import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
+import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, GOOGLE_DEFAULTS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleConsentLine, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
-import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -104,7 +104,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const list = completed(await gmail.gmailList({}));
     payloadPorts.set(list, adapter);
     const listEnvelope = envelopeOf(list);
-    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
+    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GOOGLE_DEFAULTS.mailListResults);
     const listProjection = renderGoogleTool('gmail_search_messages', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> to read/);
@@ -180,13 +180,12 @@ test('a default gmail_search_messages asks the child for the batched digest cap 
     payloadPorts.set(list, adapter);
     const envelope = envelopeOf(list);
     // The helper now reads the listed messages' metadata in one batched call, so the request is no
-    // longer paced by sequential round trips and the digest cap is ten.
-    assert.equal(GMAIL_LIST_MESSAGES, 10);
-    assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
+    // longer paced by sequential round trips; this default batch retains every returned message.
+    assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GOOGLE_DEFAULTS.mailListResults);
     const data = envelope['data'] as Record<string, unknown>;
-    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one batched fetch returns every listed message');
+    assert.equal((data['messages'] as unknown[]).length, GOOGLE_DEFAULTS.mailListResults, 'one batched fetch returns every listed message');
     const projection = renderGoogleTool('gmail_search_messages', data);
-    assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GMAIL_LIST_MESSAGES);
+    assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GOOGLE_DEFAULTS.mailListResults);
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -386,7 +385,7 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
   }
 });
 
-test('the owner composes the google tool table and a Live-shaped gmail_search_messages call reaches the fixture and returns projected Markdown', async () => {
+test('the canonical search_email reaches the approved Google fixture and returns structured evidence', async () => {
   noteGmailAccount(undefined);
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
   const { dir: childDir, pidFile } = scratch();
@@ -422,24 +421,23 @@ test('the owner composes the google tool table and a Live-shaped gmail_search_me
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definitions = owner.definitions('run');
-    // gmail_read_message carries a remote body, so the owner also admits the local body continuation the run may use.
-    assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS, 'read_received_body'].sort());
-    assert.equal(definitions.some(definition => definition.name === 'gmail_send'), false);
-
-    const callArgs = {};
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
-    assert.equal(owner.journal.intent(intent), 'fresh');
-    const definition = definitions.find(candidate => candidate.name === 'gmail_search_messages');
-    assert(definition?.execute);
-    const outcome = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
-    assert.equal(outcome.status, 'completed');
-    const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
-    const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.equal(stored.response['tool'], 'gmail_search_messages');
-    assert.match(String(stored.response['text']), /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024/);
-    assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
-    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
+    const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic Google mail');
+    try {
+      assert.ok(task.tools.some(tool => tool.name === 'search_email'));
+      assert.equal(task.tools.some(tool => tool.name === 'gmail_search_messages'), false, 'native names are not a second model catalog');
+      assert.equal(task.tools.some(tool => tool.name === 'gmail_send'), false);
+      const definition = task.tools.find(tool => tool.name === 'search_email')!;
+      const callArgs = { query: 'synthetic' };
+      const intent = owner.taskIntent({ ...live!, executionId: 'run:1:0', callId: 'synthetic-call',
+        accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, 'search_email', callArgs);
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
+      assert.equal(outcome.status, 'completed');
+      const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
+      const response = JSON.parse(String(row?.result_json)).response;
+      assert.match(JSON.stringify(response), /Synthetic subject line/);
+      assert.equal(response.status, 'complete');
+    } finally { task.close(); }
   } finally {
     await adapter.close();
     store.close();

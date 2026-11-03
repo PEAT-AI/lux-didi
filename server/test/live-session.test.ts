@@ -6878,13 +6878,12 @@ test('C-PROMISE: the continuation is spent once per owner turn', async t => {
 
 // C-PROMISE: a rebuilt generation is told what the host holds, so she cannot call a finished run running.
 test('C-PROMISE: a rebuilt session is told the host running state, from the host own record', () => {
-  const idle = rebuildResearchSeed('', []);
-  assert.match(idle, /nothing is running now/i, 'an empty record is stated as nothing running');
+  assert.equal(rebuildResearchSeed('', []), '', 'a rebuild with no research and nothing running invents no host note');
   const busy = rebuildResearchSeed('', ['the research for "the synthetic invoice"']);
   assert.match(busy, /running now: the research for "the synthetic invoice"/i, 'a live run is named from the record');
   const ledger = rebuildResearchSeed('evidence ledger (extractive, 1 of 1 asked entities covered)', []);
   assert.match(ledger, /evidence ledger/, 'the delivered ledger still reaches the rebuilt session');
-  assert.match(ledger, /nothing is running now/i, 'and the state rides with it');
+  assert.match(ledger, /nothing is running now/i, 'a finished run is reported finished, from the host own record');
 });
 
 // C-PROMISE: the classes the field missed are read as promises, and a plain statement of what happened is not.

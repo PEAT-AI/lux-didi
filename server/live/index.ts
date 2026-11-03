@@ -420,6 +420,9 @@ export const HOST_LEDGER_HEADER = '[host note, not the owner\u2019s words] resea
  * window cannot read an old transcript as live work. It rides the same host section as the delivered ledger.
  */
 export function rebuildResearchSeed(ledger: string, running: readonly string[]): string {
+  // A rebuild with nothing delivered and nothing running keeps its plain shape: there is no research for the
+  // state line to qualify, and inventing a host note would change every recovery seed.
+  if (ledger.trim() === '' && running.length === 0) return '';
   return [ledger.trim(), `running state: ${runningStateLine(running)}`].filter(line => line !== '').join('\n');
 }
 /** The cost cap on a mute: past this the muted session closes benignly, so a long mute costs no provider time. */
@@ -702,7 +705,7 @@ export function announcesLookup(text: string): boolean {
  * bare acknowledgement of the action he just asked for ("okay, doing that") has no subject to read at all, so
  * it is named by its shape. "let me know" is a reply, never a promise of work, and it stays out on purpose.
  */
-const FIRST_PERSON_WORK = /\b(?:i(?:'?ll| will)|we(?:'?ll| will)|i(?:'?m| am)\s+\w+ing|we(?:'?re| are)\s+\w+ing|let (?:me|us)\b(?!\s+know)|let'?s)\b/iu;
+const FIRST_PERSON_WORK = /\b(?:i(?:'?ll| will)|we(?:'?ll| will)|i(?:'?m| am)\s+\w+ing|we(?:'?re| are)\s+\w+ing|let (?:me|us)\b(?!\s+know)(?!\s+retry)|let'?s)\b/iu;
 const BARE_WORK_ACK = /^\s*(?:(?:okay|ok|sure|yes|yeah|yep|alright|right|got it|gotcha)[,.!\u2026 ]+)?(?:doing (?:that|it|this)|on (?:that|it|this) now|working on (?:that|it|this)|checking (?:on )?(?:that|it)|sorting (?:that|it)(?: out)?)\b/iu;
 /** A claim that work is in progress. It is the truth only while the host holds running work of its own. */
 const RUNNING_CLAIM = /\b(?:still (?:running|working|going|searching|checking)|(?:is|are|was|were) still (?:running|working|going|searching)|running (?:now|in the background|as we speak))\b/iu;
@@ -3579,7 +3582,8 @@ export class LiveSessionOwner {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
       ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
     const body = typeof ledger === 'string' ? ledger.trim() : '';
-    const text = `${HOST_LEDGER_HEADER}\n${rebuildResearchSeed(body, running)}`;
+    const composed = rebuildResearchSeed(body, running);
+    const text = composed === '' ? undefined : `${HOST_LEDGER_HEADER}\n${composed}`;
     const appended = text === undefined ? [] : [{ role: 'user' as const, text, dataClass: inputClass }];
     const fitted = fitSeedTurns(seed.turns, appended);
     return { turns: fitted.turns, chars: fitted.chars, transcriptChars: seed.chars, ledgerChars: body.length, condensed: fitted.condensed };

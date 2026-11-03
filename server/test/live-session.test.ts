@@ -106,7 +106,8 @@ function writeFailingStore(store: Store, marker: string): Store {
   return store;
 }
 
-function profileInput(limits?: Record<string, number>, model = MODEL, provider: 'gemini' | 'openai' = 'gemini') {
+function profileInput(limits?: Record<string, number>, model: string | undefined = undefined, provider: 'gemini' | 'openai' = 'gemini') {
+  model ??= provider === 'openai' ? 'gpt-live-1' : MODEL;
   return {
     provider, liveModelId: model, voice: 'ExplicitVoice',
     keyReference: provider === 'openai' ? 'openai-primary' : 'test-reference',

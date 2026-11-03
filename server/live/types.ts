@@ -114,7 +114,7 @@ export interface LiveOwnerConfig {
   readonly createTaskRuntime: import('../tasks/host.js').HostTaskFactory;
   readonly tools?: LiveToolsComposition;
   /** Optional public web read for the research loop; absent means the web source is not offered. */
-  readonly researchWeb?: WebSearchPort;
+  readonly web?: WebSearchPort;
   /**
    * W10-R20: the retained-payload rebuild threshold, defaulting to `RESEARCH.rebuildThresholdChars`.
    * A replay injects a small value; production never sets it.

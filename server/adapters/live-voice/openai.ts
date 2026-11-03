@@ -435,6 +435,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
 }
 
 class Session implements LiveVoiceSession {
+  private latestDelegationId: string | undefined;
+  private readonly commentaryCommands = new Map<string, string>();
   private readonly readiness = deferred<void>();
   private readonly completion = deferred<LiveVoiceOutcome>();
   readonly ready = this.readiness.promise;
@@ -862,13 +864,13 @@ class Session implements LiveVoiceSession {
       case 'session.output_audio.delta': return this.outputAudio(message);
       case 'session.input_transcript.delta': return this.inputTranscript(message);
       case 'session.output_transcript.delta': return this.outputTranscript(message);
-      case 'response.event': return this.delegated(message);
+
       // 3r D4: the provider opening a delegation. Unread until now, so it landed in the unknown-frame counter.
       case 'session.delegation.created': return this.delegationCreated(message);
       // #438: the provider acknowledges an append in the past tense; an unknown frame is a fact of its own and
       // these are known, so they are classified instead of counted as one.
-      case 'session.thinking.appended': return this.appendAcknowledged('thinking');
-      case 'session.commentary.appended': return this.appendAcknowledged('commentary');
+
+      case 'session.commentary.appended': return this.appendAcknowledged('commentary', message);
       case 'session.usage.updated': return this.touch();
       case 'session.closed': return this.sessionClosed(message);
       case 'error': return this.providerError(message);
@@ -1374,29 +1376,11 @@ class Session implements LiveVoiceSession {
     this.callDelegation.set(callId, delegationId);
     this.delegations.get(delegationId)?.awaiting.add(callId);
   }
-
-  /** `session.delegation.created`: one back-end delegation, its first response id and its stream offset (3r D4). */
   private delegationCreated(message: ObjectValue): void {
-    const inner = object(message.delegation) ? message.delegation : message;
-    const id = typeof inner.id === 'string' && inner.id.length ? inner.id : undefined;
-    if (id === undefined) { this.touch(); return; }
-    // A repeated `session.delegation.created` is the same delegation, not a protocol fault (S5): rebuilding a
-    // healthy session over a duplicated frame is what turned one duplicate into a lost call.
-    if (this.delegations.has(id)) { this.touch(); return; }
-    const offsetMs = typeof inner.offset_ms === 'number' && Number.isFinite(inner.offset_ms) && inner.offset_ms >= 0 ? Math.round(inner.offset_ms) : 0;
-    // S1-R1: the frame names the response this delegation opens with, so the chain starts here and not at the first
-    // nested `response.created`.
-    const responseId = typeof inner.response_id === 'string' && inner.response_id.length ? inner.response_id : undefined;
-    this.delegations.set(id, { id, openedAt: this.clock.now(), responses: responseId ? [responseId] : [], awaiting: new Set(), outputsAt: undefined, stallTimer: undefined, stalled: false });
-    hostLogEvent({ event: 'delegation_open', ms: offsetMs });
-    // O1b-A (D12-1): one receipt per delegated response, so a delegation is never only an end-of-session count.
-    // The key is minted here and reused by that response's own `response.created`, so the two rows join.
-    if (responseId !== undefined) {
-      this.receipt('delegation.created', { responseKey: this.responseKeyOf(responseId) }, {
-        createdAt: this.clock.now(), providerResponseId: responseId, callCount: 0,
-      });
-    }
-    this.touch();
+    const delegation = object(message.delegation) ? message.delegation : message;
+    if (typeof delegation.id !== 'string' || !delegation.id.length) { this.touch(); return; }
+    this.latestDelegationId = delegation.id;
+    this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
   }
 
   /** A delegated `response.created`: it names the response this delegation's chain continues with (D4, D10). */
@@ -1453,84 +1437,24 @@ class Session implements LiveVoiceSession {
     if (typeof value !== 'string' || !value.length || (this.secret && value.includes(this.secret))) fail('protocol_error');
     return value;
   }
-
   private providerError(message: ObjectValue): void {
-    // Errors can cut assistant audio without ending the session (docs, "Handle moderation"); the
-    // session's end arrives as session.closed, so this only stops the current generation.
     const error = object(message.error) ? message.error : {};
     const type = typeof error.type === 'string' ? error.type : 'unknown';
-    const errorCode = typeof error.code === 'string' && error.code.length ? error.code : 'none';
-    const param = typeof error.param === 'string' && error.param.length ? error.param : 'none';
+    const errorCode = typeof error.code === 'string' ? error.code : 'none';
+    const param = typeof error.param === 'string' ? error.param : 'none';
     hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param });
-    // C-POSTTOOL switch a: a provider that names the delegated audio output as unsupported is the one answer
-    // that decides the switch for this session. The refusal is logged once and the switch goes off, so no later
-    // request in this session repeats the field; the probe reports the refusal and the master decides.
-    if (this.firstResponseAudio && /audio|modalities/i.test(param === 'none' ? `${type} ${errorCode}` : param)) {
-      this.firstResponseAudio = false;
-      hostLogEvent({ event: 'first_response_audio_unsupported', type, code: errorCode, param });
+    const commandId = typeof error.client_event_id === 'string' ? error.client_event_id : undefined;
+    if (commandId && this.commentaryCommands.has(commandId)) {
+      this.commentaryCommands.delete(commandId); this.emit({ type: 'commentaryRejected', commandId });
+      hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: 'cmt' }); this.touch(); return;
     }
-    // S4a-R2 (c): the disposition comes from the code or type map, and the client event id is read from the
-    // ledger only to name which command it was.
     const disposition = dispositionOf(type, errorCode);
-    const clientEventId = typeof error.client_event_id === 'string' && error.client_event_id.length ? error.client_event_id : undefined;
-    const command = clientEventId === undefined ? undefined : this.commands.get(clientEventId);
-    // 3r F: a rejection that only says a response is already active is the one retry the continuation gate allows
-    // (3r A). It is read before the disposition, because its own type is `invalid_request_error`, which the map
-    // would otherwise take for a rejected command.
-    const retry = ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`);
-    if (disposition === 'command_rejected' && !retry) {
-      // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
-      hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
-      // #677: a continuation refused because a call still owes its output is still owed: the next output write or
-      // terminal event sends it, so the turn is answered instead of falling to the dead-air rebuild.
-      if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
-      else if (command?.kind === 'cont') {
-        if (this.continuationRetries < 1) this.continueTurn(0, 1);
-        else this.failContinuation();
-      }
-      this.touch();
-      return;
-    }
-    if (disposition === 'validation_failed') {
-      // The backend refused the delegation config itself: one loud receipt naming the field, and the live session
-      // keeps running, because the voice path is unaffected by a refused backend setting.
-      if (!this.validationRefused) { this.validationRefused = true; hostLogEvent({ event: 'responses_validation_failed', param }); }
-      this.touch();
-      return;
-    }
-    if (disposition === 'unknown') {
-      // S4a-R2 (c): an unclassified provider error is a diagnostic trap, never an interruption and never a retry.
-      hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
-      this.failOpenResponse();
-      this.endResponse(undefined);
-      this.touch();
-      return;
-    }
-    // 3r F: an error is not a speech cut unless what it names says so. A rejection that only says a response is
-    // already active is the one retry the continuation gate allows (3r A).
-    if (ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`)) {
-      if (this.continuationRetries >= 1) { this.failContinuation(); this.touch(); return; }
-      this.continuationOwed = true;
-      this.continuationRejected = true;
-      // The retry answers the same batch the rejected create answered (S1-R1).
-      this.continuationCalls = Math.max(this.continuationCalls, this.lastContinuationCalls);
-      this.touch();
-      return;
-    }
-    if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) && this.generation !== this.muted) {
-      this.clearInputEpisode();
-      this.generation += 1;
-      this.muted = this.generation;
-      // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
-      this.playbackUntil = this.clock.now();
-      this.discardHeadStart();
-      this.audioSinceCompletion = false;
+    if (disposition === 'command_rejected') { hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: 'other' }); this.touch(); return; }
+    if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(type + ' ' + errorCode)) && this.generation !== this.muted) {
+      this.clearInputEpisode(); this.generation += 1; this.muted = this.generation;
+      this.playbackUntil = this.clock.now(); this.discardHeadStart(); this.audioSinceCompletion = false;
       this.emit({ type: 'interrupted' });
-    }
-    // 3r E (ruling S1-R1): an error ends the response that earned it, whether or not it cut the audio (3r F decides
-    // the cut), so the wait for its next frame does not outlive it and an owed continuation is resumed.
-    this.failOpenResponse();
-    this.endResponse(undefined);
+    } else hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
     this.touch();
   }
 
@@ -1605,36 +1529,7 @@ class Session implements LiveVoiceSession {
       return false;
     }
   }
-
-  /**
-   * The host answers each delegated call on its own, so an answer is recorded and the turn continues only once
-   * every call of the delegated response has one: `function_call_output` per call_id, then one `response.create`.
-   * The return says what reached the backend: a socket write is not provider acceptance (3r amendment A).
-   */
-  sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome {
-    // A retired session takes no answer: its calls are gone and their outputs never enter a later one (3r B).
-    if (this.draining || this.terminal) return 'failed';
-    if (!this.isReady) fail('not_ready');
-    if (!object(input) || !Array.isArray(input.responses) || !input.responses.length
-      || new Set(input.responses.map(response => (object(response) ? response.id : undefined))).size !== input.responses.length
-      || input.responses.some(response => !object(response) || !object(response.response) || typeof response.id !== 'string')) fail('invalid_request');
-    // A call id this turn never delegated, or one whose output is already on the wire, is not a new answer: the
-    // first is a protocol fault, the second a duplicate completion the adapter ignores (3r A, B).
-    const fresh = input.responses.filter(response => !this.outputSent.has(response.id));
-    if (fresh.some(response => !this.pendingCalls.some(call => call.id === response.id && call.name === response.name))) fail('protocol_error');
-    for (const { name, response } of fresh) {
-      if (name === 'research' && response['status'] === 'blocked'
-        && ['turn_spent', 'answer_already_given', 'no_turn_since_result'].includes(String(response['reason']))) this.answerNow = true;
-    }
-    for (const { id, response } of fresh) {
-      if (this.answeredCalls.has(id)) fail('protocol_error');
-      // Structural refusals never ran research. Release their admission slot without changing trace truth.
-      if (response['state'] === 'refused' && this.researchAdmissions.delete(id)) this.researchCalls -= 1;
-      this.answeredCalls.set(id, response);
-    }
-    if (!fresh.length) return this.continuationOutcome;
-    return this.writeAnswered();
-  }
+  sendToolResponse(_input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { return 'failed'; }
 
   /**
    * The delegation guide's order (S5): each answered call's output is written the moment it is ready, and exactly
@@ -2032,37 +1927,7 @@ class Session implements LiveVoiceSession {
     }
     this.connectionWeakAt = now;
   }
-
-  sendText(input: { text: string }): void {
-    if (this.draining) return;
-    if (!this.checkpoint()) fail(this.terminal!.code);
-    if (!this.isReady) fail('not_ready');
-    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
-    this.typedTurn = true;
-    this.typedFinals.push(input.text);
-    if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
-      this.continuationOwed = true;
-      this.continuationReceipt('deferred', 'awaiting_calls');
-      return;
-    }
-    // A synchronous burst of final transcripts is one ask, not several competing responses.
-    if (this.typedFlushQueued) return;
-    this.typedFlushQueued = true;
-    queueMicrotask(() => {
-      this.typedFlushQueued = false;
-      if (this.terminal || this.draining || !this.typedFinals.length) return;
-      if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
-        this.continuationOwed = true;
-        return;
-      }
-      if (!this.writeTypedFinals()) return;
-      if (this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
-        // Reserve the response before response.created arrives, closing the typed-input race.
-        this.delegatedOutstanding = true;
-        this.openResponseTiming();
-      }
-    });
-  }
+  sendText(_input: { text: string }): void { fail('invalid_request'); }
 
   private writeTypedFinals(): boolean {
     if (!this.typedFinals.length) return true;
@@ -2071,17 +1936,16 @@ class Session implements LiveVoiceSession {
     this.typedFinals.length = 0;
     return true;
   }
-
-  /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
-   *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
-   *  tokens. C-REBUILD8: the provider requires `delegation_id` on the append and refuses one without it by name
-   *  (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10), so the
-   *  frame carries the delegation in flight; with no delegation open nothing is sent at all. */
   sendCommentary(input: { text: string }): boolean {
-    // Progress is optional. The provider rejects a delegation that still owes a function output,
-    // and that rejection can silence its voice path. Never risk a lookup's answer for a progress line.
-    if (this.pendingCalls.length > 0) return false;
-    return this.append('session.commentary.append', 'cmt', input);
+    return this.latestDelegationId !== undefined && this.sendTaskAnswer({ ...input, delegationId: this.latestDelegationId }) !== undefined;
+  }
+  sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
+    if (this.draining || this.terminal || !this.isReady || input.delegationId !== this.latestDelegationId) return undefined;
+    if (!input.text.length || input.text.length > 450) return undefined;
+    const commandId = this.commandId('cmt');
+    if (!this.write(JSON.stringify({ type: 'session.commentary.append', event_id: commandId, delegation_id: input.delegationId, content: input.text }))) return undefined;
+    this.commentaryCommands.set(commandId, input.delegationId);
+    return commandId;
   }
 
   /** C-REBUILD8: the delegation a progress line belongs to: the open one still waiting on a call, else the most
@@ -2114,11 +1978,12 @@ class Session implements LiveVoiceSession {
     if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text, delegation_id: delegationId }))) { fail(this.terminal!.code); return false; }
     return true;
   }
-
-  /** #438: the provider acknowledges an append in the past tense. Both shapes are known frames, not unknowns. */
-  private appendAcknowledged(kind: 'thinking' | 'commentary'): void {
-    hostLogEvent({ event: 'gptlive_append_ack', kind });
-    this.touch();
+  private appendAcknowledged(_kind: 'thinking' | 'commentary', message: ObjectValue): void {
+    const commandId = typeof message.client_event_id === 'string' ? message.client_event_id : this.commentaryCommands.keys().next().value;
+    if (commandId && this.commentaryCommands.has(commandId)) {
+      this.commentaryCommands.delete(commandId); this.emit({ type: 'commentaryAccepted', commandId });
+    }
+    hostLogEvent({ event: 'gptlive_append_ack', kind: 'commentary' }); this.touch();
   }
 
   endAudioStream(): void {

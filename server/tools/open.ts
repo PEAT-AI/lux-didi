@@ -12,17 +12,16 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed', 'browser_not_running'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
-export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout', 'egress_blocked'] as const;
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout'] as const;
 export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
-export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' | 'browser_not_running' | 'egress_blocked', string> = {
+export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' | 'browser_not_running', string> = {
   not_found: 'The host could not resolve that shown item.',
   not_allowed: 'I cannot open that target.',
   // F6b: Chrome is never launched for her; she asks the owner to open it.
   browser_not_running: 'Chrome is not open, could you open it for me?',
-  egress_blocked: 'I need you to provide or select the exact public link before I open it.',
   no_open_intent: 'I did not hear an open request, so nothing is open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
@@ -405,11 +404,7 @@ export function openWebFailure(code: string): { code: string; fixNotForSpeech: s
   return { code: reason, ...(guidance ?? { fixNotForSpeech: 'Nothing opened. Say the browser action failed; do not claim success.', say: 'I could not open that in your browser, so nothing is open.' }) };
 }
 
-export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed' | 'egress_blocked', NotForSpeech> = {
-  egress_blocked: {
-    fixNotForSpeech: 'Ask the owner to provide or select the exact public link. Do not rewrite the URL.',
-    say: 'I need you to provide or select the exact public link before I open it.',
-  },
+export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
   no_open_intent: {
     fixNotForSpeech: 'Report the structured host refusal honestly; do not invent an action or a confirmation round.',
     say: 'I did not hear an open request, so nothing is open.',
@@ -438,41 +433,19 @@ export function webOpenedSay(domain: string): string { return `opening ${domain}
 let webPort: (() => WebSearchPort | undefined) | undefined;
 export function useWebSearchPort(source: (() => WebSearchPort | undefined) | undefined): void { webPort = source; }
 
-export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed' | 'egress_blocked'; candidates?: string[]; repair?: string };
-
-/** Compare exact owner tokens, never a substring in a retrieved passage or another URL. */
-export function ownerContainsURL(words: string, target: string): boolean {
-  return words.split(/\s+/u).some(word => word === target || word.replace(/^[('"<]+|[)'">,;.!?]+$/gu, '') === target);
-}
-
-export function publicOpenURL(target: string): boolean {
-  try {
-    const url = new URL(target);
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return false;
-    const host = url.hostname.toLowerCase().replace(/\.$/u, '');
-    if (host.startsWith('[')) return /^\[[23][0-9a-f]{3}:/u.test(host) && !/^\[(?:2001:(?:db8|0):|2002:)/u.test(host);
-    if (!host.includes('.') || /(?:^|\.)(?:localhost|local|internal|home|lan)$/u.test(host)) return false;
-    if (/^\d+(?:\.\d+){3}$/u.test(host)) {
-      const [a = 0, b = 0] = host.split('.').map(Number);
-      if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))) return false;
-    }
-    return true;
-  } catch { return false; }
-}
+export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed'; candidates?: string[] };
 export interface WebOpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /**
  * What open_web means: his words bind the target, the host builds the address, and a site he named but
  * did not spell out is found through the existing web search. Nothing here reads an argument as a URL.
  */
-export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
+export async function resolveWebOpen(args: { kind: WebKind; target: string }, _words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
   if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
     try {
-      const target = /^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`;
-      if (!ownerContainsURL(words, args.target) || !publicOpenURL(target)) return { code: 'egress_blocked', repair: 'Ask the owner to provide or select the exact public link.' };
-      const url = new URL(target);
-      return { target: { action: 'open_url', target, detail: 'web', kind: 'web', title: url.hostname } };
+      const url = new URL(/^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`);
+      return { target: { action: 'open_url', target: url.href, detail: 'web', kind: 'web', title: url.hostname } };
     } catch { return { code: 'not_allowed' }; }
   }
   const direct = webDestination(args.kind, args.target);

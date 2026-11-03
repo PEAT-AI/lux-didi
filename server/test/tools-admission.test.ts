@@ -144,7 +144,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify({ tools: batch.outcome.tools, errors: batch.errors, policies: batch.policies }));
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify({ tools: batch.outcome.tools, errors: batch.errors, policies: batch.policies, gmailGrant: expanded.registry.currentGrant('gmail') }));
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);

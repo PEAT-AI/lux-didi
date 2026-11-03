@@ -353,3 +353,41 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/i);
   assert.equal(workerInstructions(), WORKER_INSTRUCTIONS);
 });
+
+for (const provider of ['openai', 'gemini'] as const) {
+  test(`${provider} accepts the composed work policy with no tools on its fake wire`, async t => {
+    const { FakeSocket, FakeClock, options } = await import('./openai-live-voice-fixture.js');
+    const { OpenAiLiveVoiceAdapter, GeminiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
+    const { NAYA_WORK_DELIVERY, composeLiveSessionInstruction } = await import('../prompt/live-persona.js');
+    const clock = new FakeClock();
+    let sent!: () => void;
+    const firstFrame = new Promise<void>(resolve => { sent = resolve; });
+    class CaptureSocket extends FakeSocket {
+      override send(frame: string, callback?: (error?: Error) => void) { super.send(frame, callback); sent(); }
+    }
+    const socket = new CaptureSocket();
+    const adapterOptions = options({ clock, socketFactory: () => {
+      queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+      return socket as unknown as import('ws').default;
+    } });
+    const adapter = provider === 'openai' ? new OpenAiLiveVoiceAdapter(adapterOptions)
+      : new GeminiLiveVoiceAdapter({ ...adapterOptions, modelId: 'models/synthetic-live', voice: 'SyntheticVoice',
+        route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic-live', dataClasses: ['ordinary'] } });
+    const base = composeLiveInstruction({ base: NAYA_LIVE_BASE });
+    const accepted = composeLiveSessionInstruction({ text: base.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+    const session = adapter.open({ system: { text: accepted.text, dataClass: 'ordinary' }, dataClasses: ['ordinary'], tools: [], opening: 'user_first' },
+      { signal: new AbortController().signal, deadlineMs: clock.now() + 60_000 });
+    t.after(() => session.close());
+    await firstFrame;
+    const frame = JSON.parse(socket.sent[0]!) as {
+      session?: { instructions: string };
+      setup?: { systemInstruction: { parts: { text: string }[] } };
+    };
+    socket.deliver(provider === 'openai' ? { type: 'session.started', session: { id: 'synthetic-session' } } : { setupComplete: {} });
+    await session.ready;
+    const instruction = provider === 'openai' ? frame.session!.instructions : frame.setup!.systemInstruction.parts[0]!.text;
+    assert.equal(instruction.split(NAYA_WORK_DELIVERY).length - 1, 1);
+    assert.doesNotMatch(instruction, /# Research procedure/);
+    assert.ok(instruction.includes('MUST be handed off in the same turn'));
+  });
+}

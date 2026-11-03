@@ -19,7 +19,8 @@ cd "$root"
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
 mkdir -p "$out/source/tasks" "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts" "$out/source/trace" "$out/source/domain" "$out/source/live"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
-cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
+cp server/adapters/live-voice/types.ts server/adapters/live-voice/gemini.ts server/adapters/live-voice/index.ts "$out/source/adapters/live-voice/"
+cp server/test/openai-live-voice-fixture.ts "$out/source/test/"
 # #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
 # and the two modules it imports are staged; nothing else of the adapter tree is compiled.
 cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
@@ -154,8 +155,8 @@ node --input-type=module - "$out/dist" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
-assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through research'));
-assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through what the helper returned'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what the helper returned; never invent a past quote.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE
 

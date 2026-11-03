@@ -1,5 +1,6 @@
-import { isToolFailureCode } from '../adapters/model/types.js';
+import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_OUTCOME } from './results.js';
+import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
@@ -84,6 +85,9 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
     coverage: `${items.length} returned items.${cursor ? ' More results exist; continue the same query with the returned cursor.' : incomplete ? ' Coverage incomplete. Source paging is not exposed by this tool; narrow the query or time window instead.' : ' Connector returned no continuation.'}`, repair: null };
 }
+export function nativeTaskReadGranted(policy: BoundConnector['policy'], tool: string): boolean {
+  return policy.toolNames.includes(tool) || composedGrantedNames(policy.connector, policy.toolNames).includes(tool);
+}
 /** Capability-specific query tools avoid a free-form filters blob. Every field comes from configuration. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy));
@@ -104,7 +108,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
-    const binding = bindings.find(binding => binding.connector === mapping.connector && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
+    const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
@@ -113,7 +117,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const hostRepair = connectorFailures.get(result);
     if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
     if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
-      [TASK_CONNECTOR_OUTCOME]: { status: result.state === 'unknown' ? 'unknown' : 'failed', code: 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error' } };
+      [TASK_CONNECTOR_OUTCOME]: { status: 'failed', code: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' } };
     if (binding.project) {
       try {
         const snapshot = binding.project(result);

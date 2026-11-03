@@ -212,7 +212,7 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   assert.equal(rows.length, 1);
   const result = JSON.parse(String(rows[0]!.result_json));
   assert.equal(result.response.reason, expected);
-  assert.equal(rows[0]!.state, 'unknown', 'SDK-rejected result preserves the existing unknown-outcome contract');
+  assert.equal(rows[0]!.state, 'failed', 'the canonical read failed; no unverified evidence is disclosed');
   assert.equal(observed.outcome.status, 'complete'); assert.equal(observed.outcome.reason, 'stop', 'the helper can continue after a verified connector failure');
   const logs = h.logRows(); assert.equal(logs.length, 1);
   assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
@@ -234,10 +234,10 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   const observed = await h.read(runtime, run.host, ['lux-knowledge']);
   assert.equal(observed.outcome.status, 'complete');
   const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
-  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'no_match', 'ranked neighbours are not exact title matches');
+  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
   const saved = JSON.parse(String(rows[0]!.result_json));
-  assert.equal(saved.response.status, 'completed');
-  assert.match(saved.response.text, /knowledge results: 1/);
+  assert.equal(saved.response.status, 'no_match', 'ranked neighbours are not exact title matches');
+  assert.match(saved.response.text, /Synthetic result/);
   const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));

@@ -1,6 +1,6 @@
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
-import { nativeTaskReadTool, isConnectorTaskRead } from '../tasks/connectors.js';
+import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
@@ -12,7 +12,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { isToolFailureCode } from '../adapters/model/types.js';
+import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
@@ -534,7 +534,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const snapshot = validateCallRun(tx, call);
         const bound = snapshot.connections.find(item => {
           const native = nativeTaskReadTool(call.toolName, item.policy.connector, args);
-          return native !== undefined && snapshot.acceptance.connectionIds.includes(item.connectionId) && connectorDescriptor(item.policy.connector)?.declarations(item.policy).some(declaration => declaration.name === native);
+          return native !== undefined && snapshot.acceptance.connectionIds.includes(item.connectionId) && nativeTaskReadGranted(item.policy, native);
         });
         if (!bound) return undefined;
         if (!currentPolicies(tx, snapshot, bound.connectionId)) throw Error('task_source_policy_denied');
@@ -589,7 +589,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const nativeReader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
         const reader = { ...nativeReader, call: async (...args: Parameters<typeof nativeReader.call>) => {
           const evidence = await nativeReader.call(...args);
-          if ('reason' in evidence && isToolFailureCode(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
+          if ('reason' in evidence && isToolFailureCode(evidence.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);

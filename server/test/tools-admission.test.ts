@@ -164,7 +164,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.deepEqual(allRun.acceptance.connectionIds, all);
   const beforeAll = new Map(h.counts);
   const allRead = await h.read(expanded, allRun.host, all); assert.equal(allRead.outcome.status, 'complete'); assert.equal(allRead.seen.length, 2);
-  for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id);
+  for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify({ tools: allRead.outcome.tools, errors: allRead.errors, replies: allRead.seen[1]?.contents.flatMap(c => c.parts.filter(p => p.functionResponse?.name === 'search_chat')) }));
   const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(allResponses.length, 5);
   for (const response of allResponses) assert(typeof response['text'] === 'string' && response['text'].length > 0, 'each admitted read releases nonempty model evidence');

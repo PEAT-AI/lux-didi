@@ -105,16 +105,6 @@ export function vaultTitle(content: string): string {
 const INSIGHT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 export const validInsightId = (value: unknown): value is string => typeof value === 'string' && INSIGHT_ID.test(value);
 
-/**
- * W5 (Q-05): the whole words of a request, none of it content. The transcriber split one ask across
- * two turns ("Can you, can you" then "store it in Lux Knowledge"), and the old rule took the first
- * half as the note. A turn built only from these words is a request fragment, never a referent.
- */
-const REQUEST_WORDS = new Set(['can', 'could', 'would', 'will', 'you', 'please', 'naya', 'just', 'okay', 'ok', 'right', 'now',
-  'so', 'and', 'then', 'uh', 'um', 'er', 'hey', 'hi', 'yes', 'no', 'let', 'us', 'we', 'go', 'ahead',
-  'save', 'remember', 'put', 'add', 'write', 'store', 'note', 'keep', 'this', 'that', 'it', 'these', 'those', 'them',
-  'to', 'in', 'into', 'my', 'the', 'for', 'me', 'lux', 'knowledge', 'base', 'vault', 'memory', 'didi']);
-
 function receiptFromRow(row: SQLRow): VaultReceipt {
   const state = String(row['state']) as VaultState;
   const insightId = row['insight_id'] === null || row['insight_id'] === undefined ? undefined : String(row['insight_id']);

@@ -313,7 +313,7 @@ your configured connectors. The example is not a real account corpus. The format
   belonging to a tool call in this canary session, then be cancelled. Opens must receive a
   matching acknowledgement from the production native transport. The shell's host-only
   `canary_ack` action returns before all URL, workspace, window and focus operations.
-- A local staged note is not a remote save. Release 10.10 uses `save_to_vault` for an asked vault save and `stage_lux_note` for local staging. Any paid canary must match the current helper's actual operation and receipt, not assume an older voice-tool name proves a remote write. A real-account cleanup requires explicit authorization and exact receipt identity.
+- A local staged note is not a remote save. Release 10.10 uses `save_to_vault` for an asked Lux vault save; the misleading local `stage_lux_note` tool has been removed. Any paid canary must match the current helper's actual operation and receipt, not assume an older voice-tool name proves a remote write. A real-account cleanup requires explicit authorization and exact receipt identity.
 
 Before any paid work, the script reads `logs/host.log` under `LUX_DIDI_DATA_DIR` (default:
 `~/Library/Application Support/ai.peat.lux-didi`), using the host's structured

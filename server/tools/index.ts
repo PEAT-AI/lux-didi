@@ -8,8 +8,8 @@ import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyEnd, type ReceivedBodyP
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';

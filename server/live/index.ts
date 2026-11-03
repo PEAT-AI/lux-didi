@@ -310,7 +310,6 @@ function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: n
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
-import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
@@ -319,7 +318,6 @@ import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING } from '../tools/declarations.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
@@ -1521,7 +1519,7 @@ export class LiveSessionOwner {
   /** W3: the last uplink measurement shown to the web, kept so the ended page can still say why it ended. */
   #uplink: LivePageProjection['connection'] = undefined;
 
-  constructor(config: LiveOwnerConfig & { vaultTransport?: ReturnType<typeof createLuxWriteTransport> }) {
+  constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
     this.#tools = config.tools;
     const summaryHooks = config.tools as unknown as SummaryHooks | undefined;
@@ -4521,7 +4519,7 @@ export class LiveSessionOwner {
 }
 
 /** Factory composition: the host supplies the validated profile, the real LiveVoicePort and its credentials. */
-export function createLiveSessionOwner(config: LiveOwnerConfig & { vaultTransport?: ReturnType<typeof createLuxWriteTransport> }): LiveSessionOwner {
+export function createLiveSessionOwner(config: LiveOwnerConfig): LiveSessionOwner {
   return new LiveSessionOwner(config);
 }
 

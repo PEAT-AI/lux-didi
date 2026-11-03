@@ -169,3 +169,12 @@ test('configured connector executor forwards query operators and whole read bodi
     converted.forEach(visit);
   }
 });
+
+test('default model and effort are applied without provider-specific caller code', async () => {
+  const { createModelPort, DEFAULT_WORKER_MODEL } = await import('../tasks/model.js');
+  const infer = createModelPort({ role: { keyReference: 'fixture' }, credentials: { resolve: async () => 'fixture' }, transport: async (_url, init) => {
+    const body = JSON.parse(String(init.body)); assert.equal(body.model, DEFAULT_WORKER_MODEL); assert.equal(body.reasoning.effort, 'low');
+    return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'fixture' }] }] }));
+  } });
+  assert.equal((await infer({ instructions: '', input: '', outputs: [], turns: [], tools: [], model: DEFAULT_WORKER_MODEL, effort: 'low' }, new AbortController().signal)).text, 'fixture');
+});

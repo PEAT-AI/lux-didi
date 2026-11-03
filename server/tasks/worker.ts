@@ -6,9 +6,8 @@ import { WORKER_INSTRUCTIONS } from './instructions.js';
 export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
-import { DEFAULT_WORKER_MODEL } from './model.js';
-export { DEFAULT_WORKER_MODEL } from './model.js';
-export const DEFAULT_WORKER_EFFORT = 'low';
+import { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
+export { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export interface ToolCall { id: string; name: string; args: unknown }
 export interface Output { id: string; name: string; result: ToolResult }
 export interface Inference { text: string; calls: ToolCall[]; no_action?: boolean; continuation?: { provider: 'openai' | 'gemini'; items: unknown[] } }

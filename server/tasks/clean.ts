@@ -83,4 +83,3 @@ export function cleanMailBody(raw: string): string {
   body = stripTrackingUrls(body);
   return body.replace(/\n{3,}/g, '\n\n').trim();
 }
-

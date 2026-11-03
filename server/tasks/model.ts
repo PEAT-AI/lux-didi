@@ -3,9 +3,11 @@ import { geminiDialect } from '../tools/declarations.js';
 import type { Infer, InferRequest, Inference, ToolCall } from './worker.js';
 import type { Schema } from './tools.js';
 export const DEFAULT_WORKER_MODEL = 'gpt-6.1-terra';
+export const DEFAULT_WORKER_EFFORT = 'low';
 export interface ModelRole { provider: 'openai' | 'gemini'; model: string; effort: 'low' | 'medium' | 'high'; keyReference: string }
 export interface RoleModels { worker: ModelRole; effect_check: ModelRole }
-export interface ModelOptions { role: ModelRole; credentials: Credentials; transport?: Transport }
+export type ModelConfiguration = Pick<ModelRole, 'keyReference'> & Partial<Omit<ModelRole, 'keyReference'>>;
+export interface ModelOptions { role: ModelConfiguration; credentials: Credentials; transport?: Transport }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** Reuse the shared dialect, retaining the richer generateContent types (voice has stricter types). */
 export function taskGeminiSchema(schema: Schema): Schema {
@@ -37,7 +39,8 @@ const terminalRule = '\nFor plain conversation with no action, return the JSON o
 /** No credential discovery here: the host supplies its existing reference resolver. */
 export function createModelPort(options: ModelOptions): Infer {
   return async (request, signal) => {
-    const { role } = options;
+    if (options.role.provider === 'gemini' && !options.role.model) throw new Error('Configure the Gemini role model explicitly');
+    const role: ModelRole = { provider: options.role.provider ?? 'openai', model: options.role.model ?? DEFAULT_WORKER_MODEL, effort: options.role.effort ?? DEFAULT_WORKER_EFFORT, keyReference: options.role.keyReference };
     const key = await options.credentials.resolve(role.keyReference);
     if (!key || signal.aborted) throw new Error('Worker credential unavailable or revision cancelled');
     const send = options.transport ?? fetch;

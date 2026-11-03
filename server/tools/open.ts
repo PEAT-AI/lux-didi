@@ -136,27 +136,26 @@ const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
 ];
 
 /**
- * The owner's own words for the stretch an open call answers, so a call is checked against the ask: every
- * finalized turn since the model last spoke, because a provider may finalize one utterance in two turns.
+ * The owner's own words for the stretch an open call answers, so a call is checked against the ask: the
+ * asks of this session, because a provider may finalize one utterance in two turns and because an open
+ * he asked for earlier still opens (C-FREEDOM). Her own sentence never clears the window.
  */
-const INTENT_TURNS = 3;
+const INTENT_TURNS = 40;
 const INTENT_CHARS = 400;
-interface IntentWindow { turns: string[]; modelSpoke: boolean; partial?: string }
+interface IntentWindow { turns: string[]; partial?: string }
 const ownerTurn = new Map<string, IntentWindow>();
 export function noteOwnerPartial(runId: string, text: string): void {
-  const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
+  const window = ownerTurn.get(runId) ?? { turns: [] };
   window.partial = `${window.partial ?? ''}${text}`.slice(-INTENT_CHARS);
   ownerTurn.set(runId, window);
 }
 export function noteOwnerWords(runId: string, text: string): void {
-  const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
-  const turns = window.modelSpoke ? [] : window.turns;
-  ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
+  const window = ownerTurn.get(runId) ?? { turns: [] };
+  ownerTurn.set(runId, { turns: [...window.turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS) });
 }
-/** The model produced output: the next finalized owner turn opens a fresh intent window. */
+/** The model produced output. It never clears the owner's ask: her own sentence leaves the window alone. */
 export function noteModelOutput(runId: string): void {
-  const window = ownerTurn.get(runId);
-  if (window) window.modelSpoke = true;
+  void runId;
 }
 export function ownerWords(runId: string): string {
   return (ownerTurn.get(runId)?.turns ?? []).join(' ').slice(-INTENT_CHARS);
@@ -165,7 +164,7 @@ export function ownerWords(runId: string): string {
 /** Only owner transcription contributes to the current unanswered ask. */
 export function ownerTurnWords(runId: string): string {
   const window = ownerTurn.get(runId);
-  return [...(window?.modelSpoke ? [] : window?.turns ?? []), ...(window?.partial ? [window.partial] : [])].join(' ').slice(-INTENT_CHARS);
+  return [...(window?.turns ?? []), ...(window?.partial ? [window.partial] : [])].join(' ').slice(-INTENT_CHARS);
 }
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */

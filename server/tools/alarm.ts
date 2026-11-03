@@ -23,7 +23,7 @@ export interface AlarmReady {
   series?: SeriesRule;
 }
 export type AlarmTime = AlarmReady
-  | { status: 'clarify'; reason: 'missing_time' | 'ambiguous_time' | 'past_time' };
+  | { status: 'clarify'; reason: 'missing_time' | 'invalid_time' };
 
 export function alarmReadBack(instant: number, tz: string): AlarmReadBack {
   const formatter = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, ...options }).formatToParts(instant);
@@ -55,10 +55,10 @@ function weekdayOf(year: number, month: number, day: number): number {
 }
 
 /**
- * C-TIME past rule: a wall time with no stated date that already passed today is the next
- * occurrence, while a stated "today" that already passed is asked back, never silently moved.
+ * C-FREEDOM: the next occurrence of the wall time he sent. A time that already passed today is that time
+ * tomorrow, never a question; an explicit date keeps the date he named.
  */
-function commitWall(day: WallDay, hour: number, minute: number, now: number, zone: string, statedToday: boolean): number | 'past_time' {
+function commitWall(day: WallDay, hour: number, minute: number, now: number, zone: string): number {
   const [year, month, date] = localParts(now, zone) as [number, number, number, number, number, number];
   let y = year, m = month, d = date;
   if (day.kind === 'tomorrow') d = date + 1;
@@ -70,10 +70,9 @@ function commitWall(day: WallDay, hour: number, minute: number, now: number, zon
     y = parts[0]!; m = parts[1]!; d = parts[2]!;
   }
   const instant = wallInstant(zone, y, m, d, hour, minute);
-  if (instant > now) return instant;
-  if (day.kind !== 'today' || statedToday) return 'past_time';
-  const next = wallInstant(zone, year, month, date + 1, hour, minute);
-  return next > now ? next : 'past_time';
+  // A passed clock time on a stated day is the same time tomorrow: he said a time, not a regret.
+  if (instant > now || day.kind === 'iso') return instant;
+  return wallInstant(zone, y, m, d + 1, hour, minute);
 }
 
 function modelClock(time: TimeSpec | undefined): { hour: number; minute: number; localTime: string } | undefined {
@@ -132,9 +131,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
   if (checked.status === 'unique') {
     const localTime = checked.localTime as string;
     const [hour, minute] = localTime.split(':').map(Number);
-    const statedToday = checked.day?.kind === 'today';
-    const instant = commitWall(checked.day ?? { kind: 'today' }, hour!, minute!, now, zone, statedToday);
-    if (instant === 'past_time') return { status: 'clarify', reason: 'past_time' };
+    const instant = commitWall(checked.day ?? { kind: 'today' }, hour!, minute!, now, zone);
     const agreed = time === undefined ? 'model_time_missing' : clock === undefined ? 'model_time_differs' : clock.localTime === localTime ? undefined : 'model_time_differs';
     return ready(instant, 'owner', agreed);
   }
@@ -142,37 +139,36 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
   // The owner constrained part of it: combine, and override only the fields they constrained.
   if (checked.status === 'partial') {
     if (checked.hour !== undefined) {
-      // "at six" fixes the hour but not half of the day: a model time settles the meridian, and
-      // "wake me" permits the morning default the owner's words carry. A bare set asks.
-      if (!clock && !/\bwake (?:me|up)\b/i.test(words)) return { status: 'clarify', reason: 'ambiguous_time' };
+      // "at six" fixes the hour but not half of the day: the next occurrence of that clock time wins,
+      // whichever meridiem comes first, and the read-back carries it (C-FREEDOM).
       let hour = checked.hour;
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
-      else if (!clock) hour = hour === 12 ? 0 : hour;
       const minute = checked.minutesStated === true ? checked.minute ?? 0 : clock?.minute ?? 0;
       const day = checked.day ?? (time?.mode === 'wall' ? time.date : { kind: 'today' as const });
-      const statedToday = checked.day?.kind === 'today';
-      const instant = commitWall(day, hour, minute, now, zone, statedToday);
-      if (instant === 'past_time') return { status: 'clarify', reason: 'past_time' };
+      const hours = clock || hour >= 13 ? [hour] : [hour % 12, (hour % 12) + 12];
+      const instant = Math.min(...hours.map(candidate => commitWall(day, candidate, minute, now, zone)));
       return ready(instant, clock ? 'combined' : 'owner', clock ? undefined : 'model_time_missing');
     }
     if (!clock) {
       if (relative !== undefined) return ready(now + relative, 'model');
-      return { status: 'clarify', reason: 'ambiguous_time' };
+      // Only a minute came through: the next clock time that reads that minute.
+      const minute = checked.minutesStated === true ? checked.minute ?? 0 : 0;
+      const [, , , hourNow, minuteNow] = localParts(now, zone) as [number, number, number, number, number, number];
+      const nextHour = minute > minuteNow ? hourNow : hourNow + 1;
+      return ready(commitWall({ kind: 'today' }, nextHour % 24, minute, now, zone), 'owner');
     }
     const day = checked.day ?? (time?.mode === 'wall' ? time.date : { kind: 'today' as const });
-    const instant = commitWall(day, clock.hour, clock.minute, now, zone, checked.day?.kind === 'today');
-    if (instant === 'past_time') return { status: 'clarify', reason: 'past_time' };
+    const instant = commitWall(day, clock.hour, clock.minute, now, zone);
     return ready(instant, 'combined');
   }
 
   // The words settled nothing: a valid model time executes and is read back.
   if (clock) {
-    const instant = commitWall(time?.mode === 'wall' ? time.date : { kind: 'today' }, clock.hour, clock.minute, now, zone, false);
-    if (instant === 'past_time') return { status: 'clarify', reason: 'past_time' };
-    return ready(instant, 'model');
+    return ready(commitWall(time?.mode === 'wall' ? time.date : { kind: 'today' }, clock.hour, clock.minute, now, zone), 'model');
   }
   if (relative !== undefined) return ready(now + relative, 'model');
-  if (time) return { status: 'clarify', reason: time.mode === 'wall' ? 'past_time' : 'missing_time' };
+  // A time was sent but cannot be read as a time: that is the one alarm refusal left (C-FREEDOM).
+  if (time) return { status: 'clarify', reason: 'invalid_time' };
   return { status: 'clarify', reason: 'missing_time' };
 }
 export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;
@@ -446,6 +442,21 @@ export interface AlarmListEntry {
 }
 
 /** Pending and ringing occurrences, each carrying its series rule and therefore its next occurrence. */
+const NAME_STOP = new Set(['the', 'and', 'for', 'with', 'out', 'off', 'too', 'one', 'that', 'this', 'a', 'an', 'my', 'me',
+  'to', 'at', 'of', 'on', 'in', 'it', 'alarm', 'alarms', 'reminder', 'remind', 'cancel', 'wake', 'up', 'please', 'naya']);
+
+/** C-FREEDOM: the alarm his own words name, by a word of its label or by the clock time he said. */
+export function alarmNamedBy(entry: { label: string; fireAtUtc: number; tz: string }, words: string): boolean {
+  const said = ` ${words.toLowerCase().replace(/[^a-z0-9: ]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
+  const words_ = said.split(' ').filter(word => word.length >= 3 && !NAME_STOP.has(word));
+  if (words_.some(word => entry.label.toLowerCase().split(/\s+/).includes(word))) return true;
+  const [hour, minute] = alarmReadBack(entry.fireAtUtc, entry.tz).localTime.split(':').map(Number);
+  const hour12 = hour! % 12 === 0 ? 12 : hour! % 12;
+  const meridiem = hour! < 12 ? 'am' : 'pm';
+  return [`${hour12}${meridiem}`, `${hour12} ${meridiem}`, `${hour12}:${String(minute).padStart(2, '0')}${meridiem}`,
+    `${hour12}:${String(minute).padStart(2, '0')} ${meridiem}`, `${hour12} o clock`].some(form => said.includes(` ${form} `));
+}
+
 export function listPendingAlarms(tx: Transaction): AlarmListEntry[] {
   const rows = tx.all(`SELECT a.id,a.fire_at_utc,a.tz,a.label,a.state,o.series_id FROM alarms a
     LEFT JOIN alarm_occurrences o ON o.alarm_id=a.id WHERE a.state IN ('pending','ringing') ORDER BY a.fire_at_utc,a.id`);

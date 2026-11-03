@@ -154,13 +154,13 @@ test('C-TIME shape8-cancel: settles the one alarm that is armed and lists severa
   // A missing id with exactly one armed alarm cancels that one.
   const lone = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
   assert.equal(lone.reply.status, 'cancelled');
-  assert.equal(lone.reply.id, alarms[1]!.id);
+  assert.equal(lone.reply.id, remaining[0]!.id);
   // The same call again has nothing armed left, so it is not a silent success.
   const empty = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
   assert.equal(empty.reply.status, 'clarify');
   assert.equal(empty.reply.reason, 'no_alarm');
   // An id that is truly finished is the only "not active".
-  const finished = await h.dispatch('cancel_alarm', { id: alarms[1]!.id }, 'cancel that one');
+  const finished = await h.dispatch('cancel_alarm', { id: remaining[0]!.id }, 'cancel that one');
   assert.equal(finished.reply.status, 'refused');
   assert.equal(finished.reply.reason, 'alarm_not_active');
 });
@@ -219,7 +219,7 @@ test('C-TIME: every reproduced shape is pinned where it lives, and only new clar
     assert.ok(ids.has(id), `the corpus keeps ${id}`);
   }
   const reasons = new Set(corpus.filter(row => row.expects.status === 'clarify').map(row => String(row.expects.reason)));
-  for (const reason of reasons) assert.ok(['missing_time', 'ambiguous_time', 'past_time'].includes(reason), `clarify reason ${reason}`);
+  for (const reason of reasons) assert.ok(['missing_time', 'invalid_time'].includes(reason), `clarify reason ${reason}`);
   // Shape 5: the retry rows above are the corpus pin, and the retry rule itself is pinned by the
   // split-ask merge in owner-request.test.ts. Shape 8 and shapes 6 and 7 are the three tests below,
   // so their presence in this file is the pin that can fail.

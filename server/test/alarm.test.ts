@@ -154,7 +154,7 @@ for (const words of [
   test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
     const parsed = parseAlarmTime(words, now, tz);
     assert.equal(parsed.status, 'clarify', words);
-    if (parsed.status === 'clarify') assert.ok(['missing_time', 'ambiguous_time'].includes(parsed.reason), `${words}: ${parsed.reason}`);
+    if (parsed.status === 'clarify') assert.ok(['missing_time', 'invalid_time'].includes(parsed.reason), `${words}: ${parsed.reason}`);
   });
 }
 

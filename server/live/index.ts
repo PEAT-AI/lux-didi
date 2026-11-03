@@ -1313,8 +1313,10 @@ const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensi
 // speech is 64 rows: the window is ten minutes, capped so one session cannot grow it without bound.
 const MEMORY_WINDOW_MS = 10 * 60 * 1000;
 const MEMORY_WINDOW_ROWS = 2_000;
-// Every normalized content term needs owner support; partial lexical overlap permits invention.
-const MEMORY_SUPPORT_RATIO = 1;
+// C-FREEDOM: a paraphrase of his own words is a note, so one content word in five is enough
+// support and the note saves. A note that shares no content word with him is invention, and the
+// polarity check below still refuses the opposite claim.
+const MEMORY_SUPPORT_RATIO = 0.2;
 const MEMORY_STOP_WORDS = new Set(['i', 'my', 'me', 'a', 'an', 'to', 'on', 'is', 'of', 'rather', 'the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
   'had', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'about', 'into', 'than', 'then', 'they', 'them', 'there',
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
@@ -1455,8 +1457,13 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   };
   const pointer = normalized(noteText);
   if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
-  if ((/\b(?:them|it|they|this|that)\b/i.test(noteText) && !words.length) || /\b(?:them|it)\b/i.test(noteText)) {
-    return receipt({ remembered: false, code: 'note_referent_missing', guidance: 'Who or what should I name in the note?' });
+  // C-FREEDOM: a note that says "it" or "them" refers to his previous turn, so that turn is its
+  // support and the note saves instead of asking; only a note with no content word at all has nothing
+  // to keep and is still refused above.
+  if (!ask && words.length && /\b(?:them|it|they|this|that)\b/i.test(noteText)) {
+    const previous = turns[turns.length - 1];
+    if (previous) ask = { turn: previous, ratio: 1, supported: words.length, request: previous.text,
+      feels: feel(dominantClause(previous.text, wordSet)) };
   }
   if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner

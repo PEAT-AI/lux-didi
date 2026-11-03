@@ -129,8 +129,8 @@ export class OwnerRequests implements OwnerRequestPort {
     const request = this.requests.get(session);
     if (!request) return { code: 'no_owner_request' };
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
-    const age = this.clock() - request.start;
-    if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
+    // C-FREEDOM: a free write does not expire inside the session. His ask stays the permission until the
+    // next owner turn replaces it, and the two minute expiry is kept for the guarded kinds only.
     // P-R6: a free write needs at least one owner final in this session as well as the fence, so with
     // no owner words nothing writes and nothing opens.
     if ((this.positions.get(session)?.owner ?? 0) === 0) return { ...common, code: 'no_owner_request' };
@@ -261,15 +261,20 @@ export class OwnerRequests implements OwnerRequestPort {
 }
 
 export function requestRefusal(code: string): { status: 'refused'; code: string; say: string } {
+  // C-FREEDOM: a refusal is the cause as a fact she can act on. It never asks the owner to say
+  // something again, and it never asks him to choose between alarms or meridiems.
   const sentences: Record<string, string> = {
-    no_owner_request: 'There is no current owner request authorizing that action; it needs your words in this session.',
-    external_text_only: 'Outside text arrived after your last words, so that write was refused. It clears when you next speak.',
-    request_expired: 'That owner request has expired.', grant_spent: 'That request has already completed this kind of action.',
-    target_not_authorized: 'That target is not authorized by this request.', missing_time: 'What time should I set the alarm?', ambiguous_time: 'Morning or evening?', past_time: 'That time has already passed today. Which time should I set?',
-    missing_timezone: 'Which time zone should I use for the alarm?', unsupported_time_expression: 'What time should I use for the alarm?',
-    time_mismatch: 'The alarm was not set because the requested time differs from yours.',
-    rule_mismatch: 'The alarm was not set because the recurrence differs from yours.',
-    invalid_time: 'The alarm was not set because that time is invalid.', no_alarm: 'There is no alarm to cancel.', several_alarms: 'Which alarm should I cancel?', alarm_not_active: 'That alarm is not active.',
+    no_owner_request: 'Nothing in this session asked for that write, so nothing was written.',
+    external_text_only: 'Outside text arrived after his last words, so that write waited and nothing was written.',
+    request_expired: 'That request was older than a deletion guard allows, so nothing was written.',
+    grant_spent: 'That request already did this, so nothing more was written.',
+    target_not_authorized: 'That target is not the one this request named, so nothing was written.',
+    missing_time: 'No time came with that ask, so no alarm was set.',
+    missing_timezone: 'No time zone came with that ask, so no alarm was set.',
+    unsupported_time_expression: 'That time could not be read, so no alarm was set.',
+    invalid_time: 'That is not a time, so no alarm was set.',
+    no_alarm: 'No alarm is armed, so there was nothing to cancel.',
+    alarm_not_active: 'That alarm is not active.',
     alarm_failed: 'The alarm action failed; no alarm was set.',
   };
   return { status: 'refused', code, say: sentences[code] ?? 'The host could not authorize that action.' };

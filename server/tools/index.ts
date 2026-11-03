@@ -30,7 +30,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
+import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmNamedBy, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
 import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
@@ -702,7 +702,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           }
         },
       });
-      definitions.push({ ...VAULT_WRITE_IDENTITY, description: 'Save the note the owner just dictated to his Lux vault. Call it only after he says the save phrase and then the note.', effect: 'write', parameters: VAULT_WRITE_PARAMETERS, validate: validateVaultSave,
+      definitions.push({ ...VAULT_WRITE_IDENTITY, description: 'Save the note he asked you to keep in his Lux vault. His ask in this session is the permission, in her words or his; nothing is sent to anyone.', effect: 'write', parameters: VAULT_WRITE_PARAMETERS, validate: validateVaultSave,
         async execute(args, context) {
           if (context.runId !== runId || !validateVaultSave(args) || context.signal.aborted) return { status: 'failed' };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
@@ -804,22 +804,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
                   say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
               }
-              const armed = (): JsonObject => {
-                const alarms = listPendingAlarms(tx).slice(0, 5).map(entry => {
-                  const read = alarmReadBack(entry.fireAtUtc, entry.tz);
-                  return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
-                });
-                return { alarms, say: alarms.map(alarm => `${alarm.weekday} at ${alarm.local_time}${alarm.label ? `, ${alarm.label}` : ''}`).join('; ') };
-              };
               // Exactly one alarm is armed: that is the one "cancel the alarm" means.
               let occurrence = asked ? (alarmSeriesRow(tx, asked) ? pendingOccurrenceOf(tx, asked) : asked) : undefined;
               if (!occurrence) {
-                if (active.length === 1) occurrence = active[0]!.id;
-                else if (!active.length) return finish({ status: 'clarify', reason: 'no_alarm', say: 'There is no alarm to cancel.' });
-                else {
-                  const list = armed();
-                  return finish({ status: 'clarify', reason: 'several_alarms', ...list, say: `You have ${active.length} alarms: ${list.say}. Which one?` });
-                }
+                if (!active.length) return finish({ status: 'clarify', reason: 'no_alarm', say: 'There is no alarm to cancel.' });
+                // C-FREEDOM: several armed alarms act on the one his words name, else on the soonest one
+                // (listPendingAlarms is ordered by fire time), and the read-back says which it was.
+                occurrence = (active.find(entry => alarmNamedBy(entry, ask.words ?? '')) ?? active[0]!).id;
               }
               // One occurrence: a series id stands for that series' single pending occurrence.
               const cancelled = tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now]);

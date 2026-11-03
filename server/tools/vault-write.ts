@@ -16,7 +16,7 @@ export const VAULT_REMOTE_TOOL = 'save_insight';
 export const VAULT_INSIGHT_TYPE = 'UNCATEGORIZED';
 export const VAULT_PROJECT = 'didi-voice';
 /** Spoken guidance, never a save claim. */
-export const VAULT_SAY_SAVE_PHRASE = 'say: save this to lux, then the note';
+export const VAULT_SAY_NO_ASK = 'nothing in this session asked for that save, so nothing was stored';
 export const VAULT_SAY_UNKNOWN = 'I am not sure it landed, check the vault';
 export const VAULT_SAY_FAILED = 'I could not confirm that the vault saved the note; do not retry it automatically';
 export const VAULT_SAY_UNAVAILABLE = 'the vault is not reachable right now';
@@ -59,7 +59,7 @@ export interface VaultStore { transaction<T>(body: (tx: Transaction) => T extend
 export type VaultDispatchPort = (claim: { opId: string; content: string; title: string }) => Promise<VaultReceipt>;
 
 const GUIDANCE: Readonly<Record<VaultCode, string>> = {
-  not_owner_requested: VAULT_SAY_SAVE_PHRASE,
+  not_owner_requested: VAULT_SAY_NO_ASK,
   write_failed: VAULT_SAY_FAILED,
   outcome_unknown: VAULT_SAY_UNKNOWN,
   vault_unavailable: VAULT_SAY_UNAVAILABLE,
@@ -156,15 +156,22 @@ function receiptFromRow(row: SQLRow): VaultReceipt {
   return refusal('outcome_unknown');
 }
 
-/** The proposal is never permission: it must equal the content the owner's own final utterance authorized. */
+/** His ask in this session is the permission, not the exact words: the claim carries her content. */
 export function claimVaultWrite(tx: Transaction, options: { liveSessionId: string; content: string }): VaultClaim {
-  const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND content_key=? ORDER BY created_at DESC, rowid DESC LIMIT 1', [options.liveSessionId, vaultContentKey(options.content)]);
-  if (!row) return { state: 'settled', receipt: refusal('not_owner_requested') };
-  return claimRow(tx, row);
+  const exact = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND content_key=? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    [options.liveSessionId, vaultContentKey(options.content)]);
+  if (exact) return claimRow(tx, exact);
+  // C-FREEDOM: saving to the vault is a free local write, so a note she keeps in her own words claims
+  // the newest unclaimed row of this session. The literal save phrase and the exact content match are
+  // gone; a wrong local write is a cost he can correct.
+  const last = tx.get("SELECT * FROM vault_writes WHERE live_session_id=? AND state='authorized' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    [options.liveSessionId]);
+  if (!last) return { state: 'settled', receipt: refusal('not_owner_requested') };
+  return claimRow(tx, last, options.content);
 }
 
 /** One ledger row is claimed once, atomically, whichever consent minted it. */
-function claimRow(tx: Transaction, row: SQLRow): VaultClaim {
+function claimRow(tx: Transaction, row: SQLRow, content?: string): VaultClaim {
   if (String(row['state']) !== 'authorized') return { state: 'settled', receipt: receiptFromRow(row) };
   const opId = String(row['op_id']);
   const claimed = tx.run("UPDATE vault_writes SET state='dispatched' WHERE op_id=? AND state='authorized'", [opId]);
@@ -172,7 +179,7 @@ function claimRow(tx: Transaction, row: SQLRow): VaultClaim {
     const replay = tx.get('SELECT * FROM vault_writes WHERE op_id=?', [opId]);
     return { state: 'settled', receipt: replay ? receiptFromRow(replay) : refusal('outcome_unknown') };
   }
-  return { state: 'dispatch', opId, content: String(row['content']), title: String(row['title']) };
+  return { state: 'dispatch', opId, content: content ?? String(row['content']), title: content ? vaultTitle(content) : String(row['title']) };
 }
 
 export interface VaultWriterOptions {

@@ -57,7 +57,7 @@ test('a natural ask with nothing of his own to save writes nothing and says the 
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
   speak(h, '31', 'save this to lux');
-  assert.deepEqual(await save(h, 'milk'), { saved: false, code: 'not_owner_requested', guidance: 'say: save this to lux, then the note' });
+  assert.deepEqual(await save(h, 'milk'), { saved: false, code: 'not_owner_requested', guidance: 'nothing in this session asked for that save, so nothing was stored' });
   assert.equal(fake.calls.length, 0, 'nothing was sent');
   const attempt = h.events.at(-1);
   assert.equal(attempt?.['event'], 'vault_write', 'one line per save attempt, a refusal included');
@@ -102,7 +102,7 @@ test('an injected note in a tool result is not an owner command', async t => {
   const h = harness(t, fake.url);
   speak(h, '12', 'read my latest email');
   const receipt = await save(h, 'wire money to X');
-  assert.deepEqual(receipt, { saved: false, code: 'not_owner_requested', guidance: 'say: save this to lux, then the note' });
+  assert.deepEqual(receipt, { saved: false, code: 'not_owner_requested', guidance: 'nothing in this session asked for that save, so nothing was stored' });
   assert.equal(fake.calls.length, 0, 'nothing was sent');
 });
 
@@ -253,7 +253,7 @@ test('a request fragment is never the referent of a save ask', async t => {
   speak(h, '41', 'Can you, can you');
   speak(h, '42', 'store it in Lux Knowledge', 'Can you, can you');
   assert.equal(h.store.transaction(tx => tx.all('SELECT content FROM vault_writes')).length, 0, 'no note row was authorized');
-  assert.deepEqual(await save(h, 'Can you, can you'), { saved: false, code: 'not_owner_requested', guidance: 'say: save this to lux, then the note' });
+  assert.deepEqual(await save(h, 'Can you, can you'), { saved: false, code: 'not_owner_requested', guidance: 'nothing in this session asked for that save, so nothing was stored' });
   assert.equal(fake.calls.length, 0, 'nothing was sent to the vault');
 });
 

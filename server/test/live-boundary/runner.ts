@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { cases, setMutation } from './harness.js';
+import { cases, setMutation, dispatchScenario } from './harness.js';
 
 const scenarios = JSON.parse(readFileSync(new URL('../../../test/fixtures/live-boundary/tasks.json', import.meta.url), 'utf8')) as string[];
+const dispatch = JSON.parse(readFileSync(new URL('../../../test/fixtures/live-boundary/dispatch.json', import.meta.url), 'utf8')) as { id: string; tool: string; args: Record<string, unknown>; words: string }[];
+for (const scenario of dispatch) { scenarios.push(scenario.id); cases[scenario.id] = () => dispatchScenario(scenario); }
 let failures = 0;
 for (const name of scenarios) {
   const run = cases[name];

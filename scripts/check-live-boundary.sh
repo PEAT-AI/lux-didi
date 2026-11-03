@@ -24,5 +24,6 @@ cd "$root/server"
 "$deps/typescript/bin/tsc" --ignoreConfig --outDir dist --rootDir . --module nodenext --moduleResolution nodenext \
   --target ES2023 --strict --exactOptionalPropertyTypes --noUncheckedIndexedAccess \
   --noUnusedLocals --noUnusedParameters --skipLibCheck --types node \
-  test/live-boundary/harness.ts test/live-boundary/runner.ts
+  test/live-boundary/harness.ts test/live-boundary/runner.ts test/timeline.test.ts
+node --test --test-name-pattern '^task audit' dist/test/timeline.test.js
 exec node dist/test/live-boundary/runner.js "$@"

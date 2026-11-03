@@ -44,6 +44,26 @@ function deferred() {
   return { promise, resolve };
 }
 export const cases: Record<string, () => Promise<void>> = {
+  async 'noncommands'() {
+    const f = fixture(async () => ({ text: '', calls: [], no_action: true }));
+    try {
+      await f.call.input('Synthetic conversation, no action requested.', 1);
+      equal(f.operations.length, 0); equal(f.call.running, false);
+    } finally { f.call.close(); }
+  },
+  async 'invalid-read-arguments'() {
+    let runs = 0; let executed = 0;
+    const f = fixture(async () => ++runs === 1
+      ? { text: '', calls: [{ id: 'bad', name: 'read_mail', args: { wrong_field: 'synthetic' } }] }
+      : { text: 'Read arguments need repair, not an empty mailbox.', calls: [] }, async () => {
+        executed++; return documentResult('Synthetic evidence.', 'fixture');
+      });
+    try {
+      const result = await f.call.input('Read synthetic mail.', 1);
+      equal(executed, 0); equal(result.findings[0]?.status, 'failed');
+      assert.ok(result.findings[0]?.repair);
+    } finally { f.call.close(); }
+  },
   async 'injected-mail-read-write-refused'() { await injected(false); },
   async 'injected-mail-read-write-valid'() { await injected(true); },
   async 'delegation-before-final'() {
@@ -122,7 +142,8 @@ export const cases: Record<string, () => Promise<void>> = {
     try {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
       f.call.delivery.rejected('wrong-command'); equal(f.reconnects(), 0);
-      f.call.delivery.rejected('c1'); assert.ok(f.states.includes('rejected')); equal(f.reconnects(), 1);
+      f.call.delivery.rejected('c1'); assert.ok(f.states.includes('rejected')); equal(f.sent.length, 2);
+      f.call.delivery.rejected('c2'); equal(f.reconnects(), 1);
       equal(f.states.includes('heard'), false);
     } finally { f.call.close(); }
   },
@@ -144,5 +165,20 @@ async function injected(allowed: boolean): Promise<void> {
     await f.call.input(allowed ? 'Read synthetic mail and save a note.' : 'Read synthetic mail only.', 1);
     equal(executed.filter(name => name === 'remember_note').length, allowed ? 1 : 0);
     assert.deepEqual(executed.slice(0, 2), ['read_mail', 'search_mail']);
+  } finally { f.call.close(); }
+}
+
+export async function dispatchScenario(scenario: { tool: string; args: Record<string, unknown>; words: string }): Promise<void> {
+  let runs = 0; const executed: { name: string; args: Record<string, unknown> }[] = [];
+  const f = fixture(async () => ++runs === 1
+    ? { text: '', calls: [{ id: 'synthetic-operation', name: scenario.tool, args: scenario.args }] }
+    : { text: 'Synthetic operation complete.', calls: [] }, async (name, args) => {
+      executed.push({ name, args }); return documentResult('Synthetic receipt.', 'fixture');
+    });
+  try {
+    f.call.delegation('d1'); await f.call.input(scenario.words, 1);
+    equal(executed.length, 1);
+    assert.deepEqual(executed, [{ name: scenario.tool, args: scenario.args }]);
+    assert.ok(f.operations.length > 0); equal(f.sent.length, 1);
   } finally { f.call.close(); }
 }

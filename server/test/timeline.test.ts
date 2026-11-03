@@ -829,3 +829,33 @@ test('C-DIAG109: the across-sessions summary counts both readings and names the 
       /owner finals with no provider audio unanswered=2 fragment=1 fragmentBound=5000ms/u);
   });
 });
+
+
+// Public CLI task audit: the reader is synthetic, never a real database or owner log.
+test('task audit projects metadata and never upgrades delivery to heard', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const { buildTaskAudit } = require('../../../scripts/didi-timeline');
+  const privateText = 'SYNTHETIC CONTENT MUST NOT ESCAPE';
+  const queries: string[] = [];
+  const audit = buildTaskAudit({ all: (sql: string) => {
+    queries.push(sql);
+    if (sql.includes('FROM tasks ')) return [{ task_id: 't', status: 'complete', final_answer: privateText }];
+    if (sql.includes('FROM task_revisions ')) return [{ task_id: 't', task_revision: 1, owner_words: privateText }];
+    if (sql.includes('FROM task_operations ')) return [{ task_id: 't', operation_id: 'o', effect: 'local', tool: 'remember_note', state: 'committed', arguments: privateText, result: privateText }];
+    return [{ task_id: 't', state: 'delivered', attempt_id: 'a', text: privateText }];
+  } });
+  assert.equal(JSON.stringify(audit).includes(privateText), false);
+  assert.equal(queries.some(sql => /SELECT \*/.test(sql)), false);
+  assert.equal(audit.writes[0].receipt, 'committed');
+  assert.deepEqual(audit.deliveryStates, { sent: null, accepted: null, heard: null });
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.match(audit.coverage, /not joined/);
+});
+test('task audit distinguishes no tasks, missing schema and reader errors', async () => {
+  const { createRequire } = await import('node:module');
+  const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  assert.deepEqual(buildTaskAudit({ all: () => [] }).tasks, []);
+  assert.match(buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }).coverage, /unavailable/);
+  assert.throws(() => buildTaskAudit({ all: () => { throw new Error('synthetic I/O failure'); } }), /synthetic I\/O failure/);
+});

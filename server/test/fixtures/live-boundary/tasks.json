@@ -10,5 +10,7 @@
   "stale-result-suppressed",
   "delivery-rejected",
   "injected-mail-read-write-refused",
-  "injected-mail-read-write-valid"
+  "injected-mail-read-write-valid",
+  "noncommands",
+  "invalid-read-arguments"
 ]

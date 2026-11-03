@@ -26,6 +26,8 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
     updated_at INTEGER NOT NULL,
     FOREIGN KEY(task_id,task_revision) REFERENCES task_revisions(task_id,task_revision) ON DELETE CASCADE
   )`,
+] }, { owner: 'tasks', version: 2, statements: [
+  `CREATE TABLE task_effect_journal (identity_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')), value TEXT, updated_at INTEGER NOT NULL)`,
 ] }];
 /** Same 30-day content / 90-day metadata policy as trace. Identities and outcome survive content. */
 export function pruneTaskContent(tx: Transaction, now: number): void {
@@ -34,6 +36,8 @@ export function pruneTaskContent(tx: Transaction, now: number): void {
   tx.run('UPDATE task_operations SET arguments=NULL,result=NULL WHERE task_id IN (SELECT task_id FROM tasks WHERE updated_at < ?)', [contentCutoff]);
   tx.run('UPDATE task_receipts SET receipt=NULL WHERE operation_id IN (SELECT operation_id FROM task_operations WHERE updated_at < ?)', [contentCutoff]);
   tx.run('UPDATE tasks SET final_answer=NULL,content_pruned_at=? WHERE updated_at < ? AND content_pruned_at IS NULL', [now, contentCutoff]);
+  tx.run('UPDATE task_effect_journal SET value=NULL WHERE updated_at < ?', [contentCutoff]);
+  tx.run('DELETE FROM task_effect_journal WHERE updated_at < ?', [now - 90 * 86400000]);
   tx.run('DELETE FROM tasks WHERE updated_at < ?', [now - 90 * 86400000]);
 }
 export interface TaskRecord { task_id: string; task_revision: number; connection_generation: number }

@@ -4,7 +4,7 @@ import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ServiceError } from '../contracts/errors.js';
 import type { SchemaMigration, SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
 import { traceMigrations } from '../trace/schema.js';
@@ -199,6 +199,25 @@ export class Store {
     this.transaction(tx => { tx.run(`INSERT INTO task_deliveries(attempt_id,task_id,task_revision,connection_generation,state,updated_at) VALUES (?,?,?,?,?,?)
       ON CONFLICT(attempt_id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at`,
       [attemptId, identity.task_id, identity.task_revision, identity.connection_generation, state, now]); });
+  }
+  /** Sole durable writer for permission commits; argument-bearing identity strings are hashed at entry. */
+  taskEffectJournal(contentAllowed: () => boolean): import('../tasks/authority.js').AuthorityPorts['journal'] {
+    const key = (identity: string): string => createHash('sha256').update(identity).digest('hex');
+    const redacted = { status: 'ok', text: '', references: [], next_cursor: null, coverage: 'Previously committed; content not retained.', repair: null };
+    return {
+      get: async identity => this.transaction(tx => {
+        const row = tx.get('SELECT status,value FROM task_effect_journal WHERE identity_hash=?', [key(identity)]);
+        if (!row) return undefined;
+        if (row.status === 'pending') return { status: 'pending' as const };
+        if (row.status === 'failed') return { status: 'failed' as const };
+        return { status: 'succeeded' as const, value: row.value === null ? redacted : JSON.parse(String(row.value)) as unknown };
+      }),
+      put: async (identity, record) => this.transaction(tx => {
+        const value = record.status === 'succeeded' && contentAllowed() ? JSON.stringify(record.value) : null;
+        tx.run('INSERT INTO task_effect_journal(identity_hash,status,value,updated_at) VALUES (?,?,?,?) ON CONFLICT(identity_hash) DO UPDATE SET status=excluded.status,value=excluded.value,updated_at=excluded.updated_at',
+          [key(identity), record.status, value, Date.now()]);
+      }),
+    };
   }
   pruneTasks(now = Date.now()): void { this.transaction(tx => pruneTaskContent(tx, now)); }
   close(): void {

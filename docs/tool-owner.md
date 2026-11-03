@@ -202,3 +202,13 @@ behavior. C-VOICE owns removal of the vault speech grammar with its caller bridg
 The worker surface is `open(kind, target)`, with `web`, `app`, `file` and `source` kinds. Its schema and executor are `OPEN_SCHEMA` and `executeOpen` in `server/tools/open.ts`. C-CORE registers those instead of the legacy live open family. Web targets accept HTTP(S) URLs or named sites; installed app names and readable paths are not allowlisted. URL credentials are refused; missing native targets are `not_found`. Only a native `opened` receipt means opened. No typing, clicking, sending or editing is added. The host task authority layer owns outside-text policy.
 
 C-CORE also registers `FIND_FILE_SCHEMA` and `findFile` from `server/tools/find-file.ts`. Spotlight receives literal argv predicates, never shell interpolation. Results contain paths, names, modified dates and `outsideText` provenance, capped at 20 and sorted newest first. Content-only matches are outside text; name matches are not. `empty` and `unavailable` are separate outcomes. There is no `find_app`: installed applications resolve by name in the native opener.
+
+### Call-scoped deletion confirmation (VOICE-R3)
+
+`Authority` owns one exact staged event id per call. A later delete attempt for that
+id in a later finalized owner turn runs the isolated `confirm_delete_event` check
+using only that turn's owner words. Failure is closed and retryable; unrelated speech
+never confirms. A different id stages afresh, even if a different task is active.
+The runtime includes the stage in verified worker status and clears it at call end.
+Ordinary effect checks always receive available immediately preceding owner task
+words as earlier context; no host short-follow-up classification is used.

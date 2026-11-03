@@ -84,7 +84,7 @@ is not permission to execute a second time.
 Outside mail, chat, web, drive and company bodies, including their retained memory
 evidence, expose a task. Calendar, alarms and purely local memory do not. After
 exposure an isolated effect check sees only finalized owner words, the immediately
-preceding owner task for a short follow-up, and a closed effect kind. It never sees
+preceding owner task as earlier context when available in the same call, and a closed effect kind. The check judges the current words; the host does not classify short follow-ups. An earlier ask may let a later local write through, an accepted risk. It never sees
 targets, payloads or worker history. The host caches one check per task revision and
 effect kind. A failed or timed-out check allows the local effect and logs failure,
 following the explicit product tradeoff. No send tool is introduced.
@@ -92,8 +92,14 @@ following the explicit product tradeoff. No send tool is introduced.
 The configured effect client is injected through the model port. Deployment selects
 one provider and its fastest current model for this role, never a 6.0 model. The
 authority module does not select or hardcode a provider or model identifier. Tests
-use fakes, never a provider. Delete confirmation binds the exact staged calendar
-event to a later finalized owner turn.
+use fakes, never a provider. Delete confirmation is call-scoped and binds the exact
+staged event id to a later finalized owner turn, even across a new task. A different
+id replaces the stage. The isolated `confirm_delete_event` check sees only the latest
+owner turn and that kind, never event titles, targets or helper text. A yes admits
+that event; unrelated speech does not. This check alone fails closed on error or
+timeout and returns `confirmation_unavailable` so nothing is deleted. The helper
+receives the staged id as verified status and must name the event when asking.
+Ending the call clears the stage.
 
 The old live authority remains until the task adapter switches. Callers of the web
 search port must pass the host-owned `exposed` state. After outside reads the

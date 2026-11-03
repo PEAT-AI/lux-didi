@@ -544,7 +544,7 @@ test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
   assert.equal(LIVE_RECOVERY_PICKUP, "The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner's last words.");
 });
 test('C-PICKUP: the mute pickup names the silence, never a dropped connection', () => {
-  assert.equal(LIVE_MUTE_PICKUP, "You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a lookup failed, say in one short sentence that it failed; otherwise answer the owner's last words.");
+  assert.equal(LIVE_MUTE_PICKUP, "You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a result reports a failure, say in one short sentence that it failed; otherwise answer the owner's last words.");
   for (const word of ['dropped', 'back', 'connection']) {
     assert.equal(LIVE_MUTE_PICKUP.toLowerCase().includes(word), false, `the mute pickup never says ${word}`);
   }

@@ -96,7 +96,7 @@ export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is 
  * simply went silent, so the rebuild names the silence and never a reconnection. Same role as the pickup
  * above, and the one place the difference reaches the model.
  */
-export const LIVE_MUTE_PICKUP = 'You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a lookup failed, say in one short sentence that it failed; otherwise answer the owner\'s last words.';
+export const LIVE_MUTE_PICKUP = 'You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a result reports a failure, say in one short sentence that it failed; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
 export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'people', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);

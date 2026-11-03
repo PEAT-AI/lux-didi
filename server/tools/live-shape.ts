@@ -65,10 +65,6 @@ function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean): 
   while (count > 0 && render(count).length > Number.POSITIVE_INFINITY) count -= 1;
   return render(count);
 }
-/** Hard ceiling on the shaped text of any single model-visible Live tool result, and the larger
- * ceiling for a result that combines several sources (for example a brief). */
-export const LIVE_RESULT_CHARS = 2000;
-export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedSource { title: string; url?: string; sourceType?: string }
 export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
@@ -161,7 +157,7 @@ export function stripModelOnlyNotes(text: string): string {
 /** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
  * how to ask for the rest, so the whole text (note included) stays within `budget`. */
-export function capped(result: ShapedResult, budget: number = LIVE_RESULT_CHARS): ShapedResult {
+export function capped(result: ShapedResult, budget: number = Number.POSITIVE_INFINITY): ShapedResult {
   if (result.text.length <= budget) return withOpenHandles(result);
   const note = (omitted: number): string => `\n\n[omitted: ${omitted} characters to keep this result under ${budget}; ask a narrower question or for fewer items for the rest]`;
   const first = cutAtSentence(result.text, budget);
@@ -285,8 +281,6 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
 
 /** C-OPEN 3: what a listing of several plausible files says instead of opening one of them. */
 export const DRIVE_CHOOSE_GUIDANCE = 'Several Drive files match and none is open. Read him two or three names with their modified dates and ask which one he means; then look up his pick with a drive lookup of id: and its id. Never read an id aloud.';
-/** How many Drive files one listing shows; the helper returns at most ten, newest first. */
-export const DRIVE_FILES_SHOWN = 5;
 const DRIVE_KINDS: Readonly<Record<string, string>> = {
   'application/vnd.google-apps.presentation': 'Slides deck',
   'application/vnd.google-apps.document': 'Google Doc',
@@ -330,7 +324,7 @@ function driveOpenable(item: { name: string; line: string; viewer?: string }): {
 export function shapeDriveSearch(data: Record<string, unknown>): ShapedResult {
   const files = Array.isArray(data['files']) ? data['files'].filter(isRecord) : [];
   if (files.length === 0) return capped({ text: 'No Drive file matched that name. Nothing is open.', partial: data['sourceIncomplete'] === true, originalCharacters: 0, omittedCharacters: 0 });
-  const items = files.slice(0, DRIVE_FILES_SHOWN).map(driveItem);
+  const items = files.slice(0, Number.POSITIVE_INFINITY).map(driveItem);
   const more = data['sourceIncomplete'] === true || files.length > items.length;
   const tail = more ? `\nThese are the newest ${items.length} of more; a narrower name finds the rest.` : '';
   if (items.length === 1) {

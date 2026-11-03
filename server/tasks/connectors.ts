@@ -1,5 +1,5 @@
 import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
-import { TASK_CONNECTOR_OUTCOME } from './results.js';
+import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
@@ -117,7 +117,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const hostRepair = connectorFailures.get(result);
     if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
     if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
-      [TASK_CONNECTOR_OUTCOME]: { status: 'failed', code: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' } };
+      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' };
     if (binding.project) {
       try {
         const snapshot = binding.project(result);

@@ -127,7 +127,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const task = canonicalTaskFixture(store, runtime.owner, host.runId, 'Read the synthetic sources', host.connectionIds);
     try {
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: task.tools, host: { ...host, grants: task.tools.map(d => ({ tool: d.name, effect: d.effect, accountId: d.accountId, resourceId: d.resourceId })) }, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
-    return { outcome, seen, errors: task.errors, policies: task.bindings.map(b => ({ id: b.policy.connectionId, mode: b.policy.bindingMode, generation: b.policy.generation, source: b.policy.sourcePolicy, route: b.policy.route })) };
+    return { outcome, seen };
     } finally { task.close(); }
   };
   return { logRows: () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
@@ -150,7 +150,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify({ tools: batch.outcome.tools, errors: batch.errors, policies: batch.policies, gmailGrant: expanded.registry.currentGrant('gmail') }));
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify(batch.outcome.tools));
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);
@@ -164,7 +164,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.deepEqual(allRun.acceptance.connectionIds, all);
   const beforeAll = new Map(h.counts);
   const allRead = await h.read(expanded, allRun.host, all); assert.equal(allRead.outcome.status, 'complete'); assert.equal(allRead.seen.length, 2);
-  for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify({ tools: allRead.outcome.tools, errors: allRead.errors, replies: allRead.seen[1]?.contents.flatMap(c => c.parts.filter(p => p.functionResponse?.name === 'search_chat')) }));
+  for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify(allRead.outcome.tools));
   const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(allResponses.length, 5);
   for (const response of allResponses) assert(typeof response['text'] === 'string' && (response['text'].length > 0 || Array.isArray(response['references']) && response['references'].length > 0), 'each admitted read releases verified text or ranked references');
@@ -199,7 +199,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 2);
   assert.equal(revoked.outcome.status, 'complete', 'a source-free repair can continue from accepted owner context');
   assert(!JSON.stringify(revoked.seen[1]).includes('synthetic gmail read'), 'revoked raw content never enters the continuation');
-  assert(!revoked.seen[1]!.dataClasses.includes('private')); 
+  assert(!revoked.seen[1]!.dataClasses.includes('private'));
   const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
   assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
 

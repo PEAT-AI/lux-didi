@@ -19,7 +19,7 @@ async function fixture(t: TestContext, configured = true) {
   const runtime = hostTaskFactory(options)('synthetic-draft-call', new FakeDelivery(), ['synthetic-mattermost-connection']);
   const revision = runtime.begin('Create a Mattermost draft with the synthetic body', 1, 1);
   t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { calls, run: (target: string) => runtime.runTool(revision.identity, 'draft_chat', { target, text: 'Synthetic draft body' }) };
+  return { calls, run: (target: string) => runtime.runTool(revision.identity, 'draft_chat', { target, text: 'Synthetic draft body' }, new AbortController().signal) };
 }
 test('VOICE-R19: chat drafts reach the configured connector and return its receipt rather than a local note', async t => {
   const f = await fixture(t); const result = await f.run('@synthetic-user');

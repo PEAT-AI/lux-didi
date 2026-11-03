@@ -522,7 +522,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const { snapshot } = readRun(tx, runId);
         return snapshot.connections.some(bound => {
           const p = bound.policy, c = p.sourcePolicy.unknownClass;
-          return (nativeTaskReadTool(name, p.connector) !== undefined || (name === 'query_company' && p.connector === 'mongoose'))
+          const native = nativeTaskReadTool(name, p.connector);
+          return snapshot.acceptance.connectionIds.includes(bound.connectionId)
+            && (native !== undefined ? p.toolNames.includes(native) : name === 'query_company' && p.connector === 'mongoose' && p.toolNames.length > 0)
             && p.enabled && p.bindingMode === 'connection' && c !== null
             && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
         });
@@ -533,7 +535,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const snapshot = validateCallRun(tx, call);
         const bound = snapshot.connections.find(item => {
           const native = nativeTaskReadTool(call.toolName, item.policy.connector, args);
-          return native !== undefined;
+          return native !== undefined && snapshot.acceptance.connectionIds.includes(item.connectionId) && item.policy.toolNames.includes(native);
         });
         if (!bound) return undefined;
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('task_source_policy_denied');

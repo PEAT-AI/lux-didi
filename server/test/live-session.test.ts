@@ -445,7 +445,7 @@ async function harness(t: TestContext, overrides: {
     });
   };
   owner = createLiveSessionOwner({ store, voice, profile,
-    createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner?.taskBindings(tools.owner.connectionIds()) ?? [],
+    createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
       contentAllowed: () => true, timeZone: 'UTC', executors: () => overrides.taskExecutors ?? {}, infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };

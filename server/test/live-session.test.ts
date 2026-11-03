@@ -1,3 +1,4 @@
+import type { ExistingExecutors } from '../tasks/connectors.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { hostTaskFactory } from '../tasks/host.js';
 import { resolveTaskModels } from '../config/tasks.js';
@@ -135,6 +136,7 @@ interface Harness {
 
 async function harness(t: TestContext, overrides: {
   taskInfer?: Infer;
+  taskExecutors?: ExistingExecutors;
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
   socketFactory?: NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
@@ -438,7 +440,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile,
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],
-      contentAllowed: () => true, timeZone: 'UTC', infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+      contentAllowed: () => true, timeZone: 'UTC', executors: () => overrides.taskExecutors ?? {}, infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -8660,4 +8662,26 @@ test('finalized owner input invokes the task worker without a delegation or prom
   assert.equal(inputs.length, 1);
   assert.ok(inputs[0]?.includes('Synthetic finalized request'));
   assert.equal(h.owner.get(session.liveSessionId).terminal, null);
+});
+
+
+test('live deletion cannot confirm in its staging owner turn', async t => {
+  let deletes = 0; const p = progressPort();
+  const h = await harness(t, { port: p.port, provider: 'openai',
+    taskExecutors: { delete_event: async () => { deletes++; return { status: 'ok', text: 'Deleted.', references: [], next_cursor: null, coverage: 'Synthetic deletion.', repair: null }; } },
+    taskInfer: async request => request.turns.length < 2 ? { text: '', calls: [{ id: `delete-${request.turns.length}`, name: 'delete_event', args: { id: 'synthetic-event' } }] } : { text: 'Please confirm the synthetic event.', calls: [] },
+  });
+  await openPort(h, 'task-same-turn'); p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
+  await settlePort(); assert.equal(deletes, 0);
+});
+test('live deletion confirmation on a later finalized owner turn commits once', async t => {
+  let deletes = 0; const p = progressPort();
+  const h = await harness(t, { port: p.port, provider: 'openai',
+    taskExecutors: { delete_event: async () => { deletes++; return { status: 'ok', text: 'Deleted.', references: [], next_cursor: null, coverage: 'Synthetic deletion.', repair: null }; } },
+    taskInfer: async request => request.turns.length === 0 ? { text: '', calls: [{ id: 'delete', name: 'delete_event', args: { id: 'synthetic-event' } }] } : { text: 'Synthetic task settled.', calls: [] },
+  });
+  await openPort(h, 'task-later-turn'); p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
+  await settlePort(); assert.equal(deletes, 0);
+  p.emit({ type: 'inputTranscription', text: 'Yes, delete it', finished: true, finalOrigin: 'provider' });
+  await settlePort(); assert.equal(deletes, 1);
 });

@@ -1478,3 +1478,22 @@ test('task bindings use configured validated connector readers without the resea
   f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
   assert.equal(f.owner.taskBindings(['lux']).length, 0);
 });
+
+
+test('task alarm executors keep the existing scheduler and refuse invalid writes', async t => {
+  const now = Date.UTC(2030, 0, 1); let rechecks = 0;
+  const f = await fixture(t, { alarms: { now: () => now, recheck: () => { rechecks++; }, health: () => ({ degraded: false, reasons: [] }) }, timezone: 'UTC' });
+  const executors = f.owner.taskExecutors('synthetic-call'), signal = new AbortController().signal;
+  const context = { identity: { task_id: 'synthetic-task', task_revision: 1, operation_id: 'alarm', connection_generation: 1 }, outsideTextSeen: false };
+  const bad = await executors.alarm_create!({ text: 'Synthetic reminder', at: 'not a time' }, signal, context);
+  assert.equal(bad.status, 'failed'); assert.equal(rechecks, 0);
+  const created = await executors.alarm_create!({ text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() }, signal, context);
+  assert.equal(created.status, 'ok'); const id = created.references[0]?.id; assert.ok(id);
+  const updated = await executors.alarm_update!({ id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() }, signal, context);
+  assert.equal(updated.status, 'ok');
+  const missing = await executors.alarm_cancel!({ id: 'missing' }, signal, context); assert.equal(missing.status, 'failed');
+  const cancelled = await executors.alarm_cancel!({ id }, signal, context); assert.equal(cancelled.status, 'ok');
+  assert.equal(rechecks, 3);
+  const row = f.store.transaction(tx => tx.get('SELECT state,label,fire_at_utc FROM alarms WHERE id=?', [id]));
+  assert.equal(row?.state, 'cancelled'); assert.equal(row?.label, 'Updated reminder'); assert.equal(row?.fire_at_utc, now + 7200000);
+});

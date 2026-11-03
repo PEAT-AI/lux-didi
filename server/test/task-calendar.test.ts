@@ -7,7 +7,7 @@ import { createGoogleReader } from '../connectors/google.js';
 test('calendar_create_event dispatch has no attendees and requests no updates even with surplus input', async () => {
   const registry = new McpRegistry();
   const endpointId = 'synthetic-calendar';
-  registry.register({ id: endpointId, transport: 'stdio', command: '/usr/bin/false', args: [], env: {}, account: 'synthetic', resource: 'synthetic' });
+  registry.register({ id: endpointId, transport: 'stdio', command: process.execPath, args: [], env: { HOME: '/tmp/synthetic-calendar', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'synthetic' });
   registry.enable(endpointId); registry.allowEgress(endpointId);
   const tools = [{ name: 'calendar_create_event', inputSchema: { type: 'object' } }];
   const digest = registry.observed(endpointId, tools, registry.revision(endpointId));

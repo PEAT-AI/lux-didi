@@ -519,7 +519,7 @@ test('C-PERMTIER (e/g): the exposure fence holds a free write until his own next
   // C-NOTEGATE (#874): the refusal is a fact about what happened and what clears it, never an
   // invitation to repeat a phrase.
   assert.equal(requestRefusal('external_text_only').say,
-    'Outside text arrived after your last words, so that write was refused. It clears when you next speak.');
+    'Outside text arrived after his last words, so that write waited and nothing was written.');
   // Refused writes are never auto-flushed: a fresh owner final is what opens the next one.
   assert.equal(requests.authorize('s', 'create_event', 'block-1').code, 'external_text_only');
   requests.observe('s', 'j2', 'check my calendar and put cardio in a free slot', 2_000);

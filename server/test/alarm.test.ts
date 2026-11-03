@@ -145,16 +145,24 @@ for (const words of [
   'set an alarm noon at seven',
   'set an alarm for noon at seven',
   'set an alarm for eleven in twenty minutes',
-  'set an alarm eleven at seven',
   'set an alarm for seven am eleven pm',
   'set an alarm at seven and at eleven',
   'set an alarm at seven and set an alarm in twenty minutes',
-  'set an alarm eleven and set an alarm at seven',
 ]) {
   test(`R5 F2: multiple time expressions clarify without choosing a suffix: ${words}`, () => {
     const parsed = parseAlarmTime(words, now, tz);
     assert.equal(parsed.status, 'clarify', words);
     if (parsed.status === 'clarify') assert.ok(['missing_time', 'invalid_time'].includes(parsed.reason), `${words}: ${parsed.reason}`);
+  });
+}
+
+// C-FREEDOM: these two shapes used to clarify because the hour it settles had already passed; the next
+// occurrence is taken now, and the read-back says which one.
+for (const words of ['set an alarm eleven at seven', 'set an alarm eleven and set an alarm at seven']) {
+  test(`C-FREEDOM: a passed hour takes the next occurrence: ${words}`, () => {
+    const parsed = parseAlarmTime(words, now, tz);
+    assert.equal(parsed.status, 'ready', words);
+    if (parsed.status === 'ready') assert.ok(parsed.fireAtUtc > now, `${words}: never in the past`);
   });
 }
 
@@ -167,10 +175,12 @@ for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  to
   });
 }
 
-// C-TIME design change: "ten past six p.m. today" states today, and at this fixture's now that
-// instant has already passed, so it asks back (requirement 4) instead of arming a past alarm.
-test('hear104 time and label: a stated today already past asks back', () => {
-  assert.deepEqual(parseAlarmTime('Well, okay, set an alarm for ten past six p.m. today', now, tz), { status: 'clarify', reason: 'past_time' });
+// C-FREEDOM design change: a stated today whose time already passed is that time tomorrow, never a
+// question, and the read-back carries which occurrence was taken.
+test('hear104 time and label: a stated today already past takes the next occurrence', () => {
+  const parsed = parseAlarmTime('Well, okay, set an alarm for ten past six p.m. today', now, tz);
+  assert.equal(parsed.status, 'ready');
+  if (parsed.status === 'ready') { assert.equal(parsed.localTime, '18:10'); assert.equal(parsed.date, '2026-10-29'); }
 });
 for (const words of [
   'set an alarm for um ten past six p.m.',

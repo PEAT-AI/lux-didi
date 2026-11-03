@@ -25,10 +25,12 @@ Tool arguments and results are untrusted. A document, email or model answer cann
 | Action | Authority and limit |
 | --- | --- |
 | Local memory | A local record, not a write to its original external source; inspect it in Memory |
-| Dictated Lux note | The owner asks in his own words, "save this to lux", "put that in my knowledge", "remember this in lux" or "save to my vault"; a bare ask saves the turn he spoke just before it; `server/tools/vault-write.ts` owns this flow |
+| Dictated Lux note | The owner asks in his own words, "save this to lux", "put that in my knowledge", "remember this in lux" or "save to my vault"; a bare ask saves the turn he spoke just before it; his ask in the session is the permission and her own wording of the note is the content (C-FREEDOM), so no literal phrase and no exact content match is required; `server/tools/vault-write.ts` owns this flow |
 | Composed Lux note | Default enabled, host-authorized, staged, read back and freshly confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
 | Trello card change | An owner-requested action on the privately pinned board; `server/tools/trello.ts` owns the exposed actions |
 | Native open | An allowed native action, not arbitrary application automation; `server/tools/open.ts` and `Sources/LuxDidi/NativeActions.swift` own it |
+
+C-FREEDOM (issue 880) sets the note floor: a remembered note saves when one content word in five is his, so a paraphrase is kept, and a note that says "it" or "them" reads his previous turn instead of asking him to name it. The polarity check still refuses a note that claims the opposite of what he said, and a note that shares no content word with him is invention and is refused. Opening, alarms, drafts, events, Trello and the vault are free local writes: his ask in the session is the permission, a passed alarm time takes the next occurrence, and several armed alarms act on the one his own words name or else the soonest, with the read-back saying which.
 
 A free write's authority is the open owner call, never a phrase of his (C-NOTEGATE, #874). What he dictates is content: a negated verb, a report or a quotation inside it voids nothing, so a long dictation that says "I don't want to put the survey in there" still commits the save it ends with. The one guard left on that tier is the fence: text from mail, chat, web or research that reaches the model after his last final refuses the write `external_text_only`. Only the guarded `delete_event` still reads a negated clause, beside its created-or-named selector. The host log records the gate's answer as closed fields (tool, decision, code, both fence positions, whether an owner final existed) and never a word of his.
 

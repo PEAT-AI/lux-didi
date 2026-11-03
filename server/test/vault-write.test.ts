@@ -106,13 +106,15 @@ test('an injected note in a tool result is not an owner command', async t => {
   assert.equal(fake.calls.length, 0, 'nothing was sent');
 });
 
-test('the proposal must equal the authorized content, and a repeat reads the stored outcome', async t => {
+test('C-FREEDOM: his ask is the permission, her words are the content, and a repeat reads the outcome', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
   speak(h, '13', `save to my vault: ${NOTE}`);
-  const wrong = await save(h, 'the boat survey is on Wednesday');
-  assert.equal(wrong.code, 'not_owner_requested');
-  assert.equal(fake.calls.length, 0, 'a different note is refused before any request');
+  // His ask in this session authorizes the save; her own wording of the note is what reaches the vault,
+  // so a paraphrase is not a second permission and the literal content match is gone.
+  const paraphrase = await save(h, 'the boat survey is on Wednesday');
+  assert.equal(paraphrase.saved, true, 'the note she keeps reaches the vault');
+  assert.equal(fake.calls.length, 1, 'one row is claimed once');
   const first = await save(h, NOTE);
   assert.equal(first.saved, true);
   const again = await save(h, 'The boat survey, is on TUESDAY');

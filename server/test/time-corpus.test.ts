@@ -144,13 +144,17 @@ test('C-TIME shape8-cancel: settles the one alarm that is armed and lists severa
   assert.equal(second.reply.status, 'set');
   // C-FREEDOM: several armed alarms never become a question: the soonest is cancelled and the
   // read-back says which one it was.
+  const armedList = await h.dispatch('list_alarms', {}, 'list my alarms');
+  const before = armedList.reply.alarms as Array<Record<string, unknown>>;
+  assert.equal(before.length, 2, 'both alarms are armed');
   const soonest = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
   assert.equal(soonest.reply.status, 'cancelled', 'several armed alarms act on the soonest');
+  assert.equal(soonest.reply.id, before[0]!.id, 'the soonest alarm is the one cancelled');
   assert.match(String(soonest.reply.say), /^Cancelled the \w+day \d{1,2} \w+ at 18:00/, 'the read-back names the one it cancelled');
   const left = await h.dispatch('list_alarms', {}, 'list my alarms');
   const remaining = left.reply.alarms as Array<Record<string, unknown>>;
   assert.equal(remaining.length, 1, 'one alarm is left');
-  assert.equal(remaining[0]!.local_time, '19:00', 'the later one is still armed');
+  assert.equal(remaining[0]!.id, before[1]!.id, 'the later one is still armed');
   // A missing id with exactly one armed alarm cancels that one.
   const lone = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
   assert.equal(lone.reply.status, 'cancelled');
@@ -171,8 +175,9 @@ test('C-TIME shape8-armed: a set_alarm clarify names the alarm still armed', asy
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
   const set = await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
   assert.equal(set.reply.status, 'set');
-  // A bare set with an open hour asks for the time back, and the armed alarm is still named.
-  const retry = await h.dispatch('set_alarm', {}, 'set an alarm at 6');
+  // C-FREEDOM: a bare hour is no longer a question, so the clarify left is a set with no time at all,
+  // and the armed alarm is still named in it.
+  const retry = await h.dispatch('set_alarm', {}, 'set an alarm');
   assert.equal(retry.reply.status, 'clarify');
   const armed = retry.reply.armed as Array<Record<string, unknown>>;
   assert.equal(armed.length, 1, 'the still armed alarm is named');
@@ -248,11 +253,15 @@ test('C-FREEDOM: with several alarms armed, his words pick the one', async t => 
   h.clock.now = Date.parse('2026-03-05T09:30:00Z');
   await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
   await h.dispatch('set_alarm', { label: 'take the bins out' }, 'wake me at 7 pm to take the bins out');
+  const armedList = await h.dispatch('list_alarms', {}, 'list my alarms');
+  const before = armedList.reply.alarms as Array<Record<string, unknown>>;
+  assert.equal(before.length, 2, 'both alarms are armed');
   const named = await h.dispatch('cancel_alarm', {}, 'cancel the bins alarm');
   assert.equal(named.reply.status, 'cancelled', 'the alarm his words name is the one cancelled');
+  assert.equal(named.reply.id, before[1]!.id, 'the named alarm went, not the soonest');
   assert.match(String(named.reply.say), /19:00/, 'the read-back says which one it was');
   const left = await h.dispatch('list_alarms', {}, 'list my alarms');
   const remaining = left.reply.alarms as Array<Record<string, unknown>>;
   assert.equal(remaining.length, 1, 'the alarm his words did not name is still armed');
-  assert.equal(remaining[0]!.local_time, '18:00', 'the named alarm went, not the soonest');
+  assert.equal(remaining[0]!.id, before[0]!.id, 'the soonest alarm is still armed');
 });

@@ -372,10 +372,12 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-ALARMFIX grants voice alarms explicitly without increasing the prompt ceiling.
   // W1030: the write abilities land in the voice tools block, so its hash is re-pinned.
   // PT-1101: the write paragraph's truth fixes re-pin it again.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '32256596c59bbca3a045a06aed551b7c9b80f5a56841c63873cb72525d22a398');
+  // C-FREEDOM: the alarm sentence now says the next occurrence when the time passed, so the block is re-pinned.
+  assert.equal(sha(NAYA_VOICE_TOOLS), '8b45ad92c15cebe25dccc4747db1977a72dc1838d04e22d6a0ea4bf961eda7ac');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'db9064ef90cfe60eb0859b535b2c5801ccb4ed9516196d5a4ba1481f757815c8');
   // W1030: the voice tools block carries the write paragraph, so NAYA_TOOLS follows it.
-  assert.equal(sha(NAYA_TOOLS), 'dfdc3e2eebf54889228c2809474385a857bdfd5021ce8466db0837f5ffc8706b');
+  // C-FREEDOM: the open paragraph names an ask from earlier in the session, so this block is re-pinned.
+  assert.equal(sha(NAYA_TOOLS), '2975f2f900859edd1950ea86aee610df2a90a750bd7b59f7ac0018cc6e91ac1d');
 
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
@@ -1530,7 +1532,7 @@ test('C-OPEN 8: an open ask for a document, deck or sheet uses Drive and asks be
   assert.match(NAYA_VOICE_TOOLS, /To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits\./);
   assert.match(NAYA_VOICE_TOOLS, /If it lists several files and no handle, ask which one, then look up his pick by its id\./);
   assert.match(NAYA_OPEN_SURFACE, /Say it opened only after the open tool returned opened\./);
-  assert.match(NAYA_OPEN_SURFACE, /Never read a handle or web address aloud\./);
+  assert.match(NAYA_OPEN_SURFACE, /Never read a handle aloud\./);
   assert.equal(NAYA_VOICE_TOOLS.includes('Search again only when needed.'), false, 'the drive rule replaced the vague search line');
   // The tool result that asks is product text too: it names what to say and never invites reading an id or a link.
   assert.match(DRIVE_CHOOSE_GUIDANCE, /none is open/);

@@ -145,7 +145,11 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
       if (clock && (hour < 12 ? clock.hour % 12 === hour : clock.hour === hour)) hour = clock.hour;
       const minute = checked.minutesStated === true ? checked.minute ?? 0 : clock?.minute ?? 0;
       const day = checked.day ?? (time?.mode === 'wall' ? time.date : { kind: 'today' as const });
-      const hours = clock || hour >= 13 ? [hour] : [hour % 12, (hour % 12) + 12];
+      // A minute with the hour is a written clock, so its hour stands as read; a bare hour takes the
+      // next occurrence of that clock time, and "wake me" keeps the morning reading his words carry.
+      const hours = clock || checked.minutesStated === true || hour >= 13
+        ? [hour]
+        : /\bwake (?:me|up)\b/i.test(words) ? [hour % 12] : [hour % 12, (hour % 12) + 12];
       const instant = Math.min(...hours.map(candidate => commitWall(day, candidate, minute, now, zone)));
       return ready(instant, clock ? 'combined' : 'owner', clock ? undefined : 'model_time_missing');
     }

@@ -49,7 +49,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   if (row.expectedSay !== undefined) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
-    assert.match(refused.say, /no current owner request/i);
+    assert.match(refused.say, /nothing in this session asked for that write/i);
     assert.doesNotMatch(refused.say, /I'll try|sure|\n/i);
   }
 });

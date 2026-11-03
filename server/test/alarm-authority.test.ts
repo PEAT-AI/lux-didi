@@ -7,7 +7,7 @@ for (const [operation, words] of [
   ['set_alarm', 'wake me at 8'], ['list_alarms', 'show my alarms'],
   ['cancel_alarm', 'cancel my alarm'], ['snooze_alarm', 'snooze my alarm for five minutes'],
 ] as const) {
-  test(`alarm authority: ${operation} requires an unexpired finalized owner request`, () => {
+  test(`alarm authority: ${operation} requires a finalized owner request and does not expire`, () => {
     let now = 1000;
     const gate = new OwnerRequests(() => now);
     assert.equal(gate.authorize('s', operation, 'target').code, 'no_owner_request');
@@ -15,7 +15,10 @@ for (const [operation, words] of [
     assert.equal(gate.authorize('s', operation, 'target').code, 'allowed');
     assert.equal(gate.authorize('other', operation, 'target').code, 'no_owner_request');
     now += 120001;
-    assert.equal(gate.authorize('s', operation, 'target').code, 'request_expired');
+    // C-FREEDOM: an alarm is a free local write, so his ask in the session never expires; a guarded
+    // deletion still does.
+    assert.notEqual(gate.authorize('s', operation, 'target').code, 'request_expired', 'a free alarm write does not expire');
+    assert.equal(gate.authorize('s', 'delete_event', 'target').code, 'request_expired', 'a guarded delete still expires');
   });
 }
 
@@ -38,7 +41,7 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   assert.equal(gate.authorize('s', 'set_alarm', 'other').code, 'allowed');
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'idempotent');
   mono = 120001;
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired');
+  assert.notEqual(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired', 'the set stays open in the session');
 });
 
 test('hear104 alarm authority: finals join until the completed answer', () => {

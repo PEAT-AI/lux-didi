@@ -24,7 +24,7 @@ Knowledge reads in two stages. The search answers with summaries; when the ask n
 
 ## Opening things
 
-`open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A request expires after 120 seconds on a monotonic clock. Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
+`open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A free write does not expire inside the session; only a guarded kind keeps the 120 second expiry on a monotonic clock (C-FREEDOM). Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
 
 A direct ask executes now, without confirmation.
 

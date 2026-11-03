@@ -3235,6 +3235,7 @@ export class LiveSessionOwner {
         ackAnsweredOwner: this.#ackAnsweredOwner(handle.liveSessionId),
       });
     }
+    if (reason === 'task_delivery') return 'task_delivery';
     if (reason === 'research_context') return 'research_context';
     if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
       || reason === 'handshake_timeout') return 'session_window';
@@ -3252,7 +3253,7 @@ export class LiveSessionOwner {
    * otherwise, which is what a mute is.
    */
   #upstreamCause(handle: ActiveSession, reason: string | null): 'host' | 'network' | 'provider' {
-    if (reason === 'research_context') return 'host';
+    if (reason === 'task_delivery' || reason === 'research_context') return 'host';
     return handle.adapterOutcome?.upstream === undefined ? 'provider' : 'network';
   }
 
@@ -3289,7 +3290,7 @@ export class LiveSessionOwner {
     // #591: a model mute with nothing asked for since the model last spoke rebuilds quietly: no reconnect
     // marker (which is what makes the native shell ring and chime) and no pickup instruction to answer.
     // C-CONTINUITY R-01/R-02: the trigger is the outcome's, never a default arm, and the cause is read off the
-    // outcome too: `network` only when a transport receipt exists, `host` for a planned research rebuild, and
+    // outcome too: `network` only when a transport receipt exists, `host` for a planned helper rebuild, and
     // `provider` for a model that went quiet. A close code and its sanitized reason ride along when there is one.
     const trigger = this.#rebuildTrigger(handle, reason);
     const upstream = handle.adapterOutcome?.upstream;

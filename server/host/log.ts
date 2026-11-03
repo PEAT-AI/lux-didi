@@ -35,7 +35,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
   'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
-export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context'] as const;
+export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context', 'task_delivery'] as const;
 /** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */

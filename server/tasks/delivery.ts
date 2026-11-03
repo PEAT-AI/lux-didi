@@ -61,6 +61,9 @@ export class TaskDelivery implements Delivery {
   }
   attach(identity: RevisionIdentity, binding: string): void {
     if (!this.ports.isCurrent(identity)) return;
+    const pending = this.#current();
+    // A fresh delegation asks for the retained result, even when startup already carried its seed.
+    if (pending?.seeded) { this.#stopTimer(); pending.seeded = false; pending.command = undefined; pending.transcript = ''; }
     this.#binding = { generation: this.#generation ?? identity.connection_generation, id: binding }; this.#drain();
   }
   progress(_identity: RevisionIdentity): void {}

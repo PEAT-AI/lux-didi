@@ -1,4 +1,3 @@
-import { mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { pumpOutput } from '../http/live-upgrade.js';
 import type { LiveAttachment } from '../live/index.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -796,7 +795,6 @@ test('page Live projection is cookie-only, same-origin, read-only and no-store',
 // TR-R10: the model's own turn must be audible to the adapter's level rule. The shared fixture payload is eight
 // zero bytes, which W5 made digital silence, so a spoken turn sent with it can never move presence to speaking.
 // These are the -12 dBFS samples W5-R5 used for the same reason in live-session.test.ts.
-const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => (index % 2 === 0 ? 0x40 : 0x1f));
 
 
 
@@ -1000,7 +998,7 @@ test('AC2: a locale with no two-letter language still sends an explicit en setup
   assert.equal(logged?.languageCode, 'en', 'the setup log carries the effective default languageCode');
 });
 
-for (const openCase of [
+for (const {} of [
   { name: 'open_home', args: { app: 'gmail' }, words: 'open my gmail', action: 'open_url', target: 'https://mail.google.com/mail/u/0/' },
   { name: 'open_source', args: {}, words: 'open this email in my browser', action: 'open_url', target: 'https://mail.google.com/mail/u/0/#all/abc123' },
   { name: 'open_file', args: { path: '~/synthetic.txt' }, words: 'open this local file', action: 'open_file', target: '~/synthetic.txt' },
@@ -1008,7 +1006,7 @@ for (const openCase of [
   { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, words: 'open economist.com in a new tab', action: 'open_url', target: 'https://economist.com/' },
 ]) 
 
-for (const scenario of [
+for (const {} of [
   { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'Nothing in this session asked for that write, so nothing was written.' },
   { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },

@@ -9,12 +9,11 @@ import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
 import { InstalledCanary, canarySessions } from '../live/canary.js';
 import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler.js';
-import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
-import { captureHostDiagnostics, HostLog, logContext, safeEvent } from '../host/log.js';
+import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
 import { readSessionTranscript } from '../services/summarize.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { WebSocket } from 'ws';
@@ -48,11 +47,11 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -63,14 +62,13 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
-import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
+import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
-import { refusalCauseOf } from '../tools/refusal-cause.js';
+import { admissionBlocked } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../live/schema.js';
@@ -2102,7 +2100,7 @@ test('a response the owner barges in on is measured on its own, so two voices ne
   t.after(() => sink());
   const h = await harness(t, {});
   const { session, attachment } = await attached(h);
-  void (async () => { for await (const _chunk of attachment.output) { /* drain playback */ } })();
+  void (async () => {  })();
   // 2000 samples of a 110 Hz tone at 24 kHz: a real voiced frame, not the 8-byte stub.
   const samples = new Int16Array(2000);
   for (let index = 0; index < samples.length; index += 1) samples[index] = Math.round(0.4 * 32767 * Math.sin((2 * Math.PI * 110 * index) / 24000));
@@ -3835,15 +3833,7 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
   assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 
-/** D3/D5 receipts are read from the host log itself, so the test proves the operator-visible record. */
-function hostLines(dir: string): Record<string, unknown>[] {
-  const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim();
-  return text === '' ? [] : text.split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
-}
 // #538: a tool turn's silence is the audible debt clock's, and the watchdog reports only the rebuild it runs.
-const phasesOf = (dir: string): unknown[] => hostLines(dir)
-  .filter(line => line.event === 'live_watchdog' || line.event === 'live_debt').map(line => line.phase);
-const fillFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 } as const;
 const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 } as const;
 /** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
 const portEvent = (event: unknown) => event as never;
@@ -4079,8 +4069,6 @@ const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 }
 
 // --- R6: late findings reach the voice model, and are spoken only on a quiet turn -----------------
 
-/** The owner's memory answers in process and the chat read is held, so 4.5 s arrives with one source open. */
-const LATE_LOOKUPS = [{ source: 'memory', query: 'dentist' }, { source: 'chat', query: 'standup' }];
 
 
 
@@ -4373,14 +4361,6 @@ test('fluency: demand recovery belongs to new owner input and not repeated model
 // W1-R4: a reader follows pageCursor for the rest of a page and the reply's own nextCursor for the rest of the
 // body. The reply's own canContinue is copied unchanged onto every page, so it alone can never end a loop; a
 // continuation this reader already used is the other end.
-const pageStep = (response: Record<string, unknown>, used: Set<string>): Record<string, unknown> | undefined => {
-  const page = response['pageCursor'];
-  // C-RESEARCH #107 (D6): the model is never handed a poll invitation, so the cursor alone says more is left.
-  const cursor = page !== undefined ? String(page) : response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
-  if (cursor === undefined || used.has(cursor)) return undefined;
-  used.add(cursor);
-  return page !== undefined ? { pageCursor: cursor } : { cursor };
-};
 
 
 
@@ -4405,7 +4385,7 @@ const pageStep = (response: Record<string, unknown>, used: Set<string>): Record<
 
 
 
-for (const source of ['mail', 'calendar'] as const) 
+for (const {} of ['mail', 'calendar'] as const) 
 
 
 
@@ -5153,10 +5133,6 @@ test('R3 bare commands close the real fake-provider socket and consumer, not the
   }
 });
 
-/** #656: one second of 16 kHz s16 mono owner audio, the frame size the uplink carries. */
-const ownerSecond = (fill = 3): Uint8Array => new Uint8Array(32_000).fill(fill);
-const rebuildReceipts = (receipts: Record<string, unknown>[], event: string): Record<string, unknown>[] =>
-  receipts.filter(entry => entry['event'] === event);
 
 
 

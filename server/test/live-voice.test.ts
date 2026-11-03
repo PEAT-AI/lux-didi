@@ -8,7 +8,6 @@ import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
-import { liveVoiceActivityDefaults } from '../adapters/live-voice/gemini.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';

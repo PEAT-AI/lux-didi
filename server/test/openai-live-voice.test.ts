@@ -4,20 +4,14 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_BREVITY_TIGHT, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, GPT_LIVE_CREATE_FIELDS, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
-import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Store } from '../runtime/store.js';
-import { liveTracePort, type LiveTracePort } from '../trace/record.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 /** The adapter receipts as the host log receives them: the durable sink captures exactly the emitted record. */
@@ -1647,27 +1641,7 @@ describe('openai gpt-live turn states', () => {
 });
 
 describe('openai gpt-live receipts', () => {
-  /** A real store in a temp dir: the receipts are rows, not a mock, and the adapter is given a real port. */
-  function receipts(t: TestContext): { port: LiveTracePort; rows: (kind: string) => Record<string, unknown>[] } {
-    const dir = mkdtempSync(join(tmpdir(), 'didi-o1ba-receipts-'));
-    const store = new Store(dir);
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    return {
-      port: liveTracePort({ port: store, liveSessionId: 'ls-o1ba', connectionEpoch: 'e0', turnId: () => 'ls-o1ba:t1' }),
-      rows: (kind: string) => store.transaction(tx => tx.all('SELECT * FROM trace_event WHERE kind=? ORDER BY seq', [kind])),
-    };
-  }
 
-  async function openWithTrace(t: TestContext, port: LiveTracePort) {
-    const f = await fixture(t);
-    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), { ...control(), trace: port });
-    t.after(() => session.close());
-    const captured = collect(session);
-    await f.frame(1);
-    f.send({ type: 'session.started', session: { id: 'sess_fixture' } });
-    await session.ready;
-    return { f, session, captured };
-  }
 
   
 
@@ -1801,9 +1775,7 @@ test('direct102 fresh opening demands speech itself, not an acknowledgment of st
   assert.doesNotMatch(FRESH_OPENING, /Internal startup direction/);
 });
 
-for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_result']) {
-  
-}
+
 
 
 
@@ -2041,8 +2013,6 @@ test('F10: a mid-thought tail holds the answer for the longer window, a finished
 // frame of the active response clears an owed continuation. The replay is event ordered, because the guard is
 // about the order of audio and terminal events within one response.
 const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
-/** Inbound audible speech on the fake socket: the same 400 ms stretch the wire fixture's speak() sends. */
-const speakFrame = (f: FakeSocket) => f.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') });
 const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session['delegation'] as { responses: Record<string, unknown> };
 
 

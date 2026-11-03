@@ -567,42 +567,6 @@ class Session implements LiveVoiceSession {
    *  instants are written as measured and neither is clamped: the pair is a real ordering, never an assertion. */
   private firstResponseTiming: { kind: 'first' | 'continuation'; createdAt: number; responseKey?: string; firstItemAt: number | null; firstAudioAt: number | null } | undefined;
 
-  private clearNoItemTimer(): void {
-    if (this.noItemTimer !== undefined) this.clock.clearTimer(this.noItemTimer);
-    this.noItemTimer = undefined;
-  }
-
-  private logContinuationTiming(): void {
-    const timing = this.continuationTiming;
-    if (!timing) return;
-    hostLogEvent({ event: 'live_continuation_timing', ...timing,
-      class: timing.toolCall ? 'd-chain' : timing.nudged ? 'b' : timing.firstAudioAt !== null ? 'c' : 'b-second' });
-  }
-
-  /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
-  private openResponseTiming(): void {
-    this.logResponseFirstAudio();
-    this.firstResponseTiming = { kind: this.continuationsSent === 0 ? 'first' : 'continuation', createdAt: this.clock.now(), firstItemAt: null, firstAudioAt: null };
-  }
-
-  /** LAT-1022: the first of a kind only, so a later item or frame never moves the segment it measured. */
-  private noteResponseTiming(field: 'firstItemAt' | 'firstAudioAt'): void {
-    const timing = this.firstResponseTiming;
-    if (timing && timing[field] === null) timing[field] = this.clock.now();
-  }
-
-  /** LAT-1022: one line per response that produced audio, written when it ends: response key, the item and
-   *  audio instants, and whether this was the turn's first response or a continuation. Nothing else. */
-  private logResponseFirstAudio(): void {
-    const timing = this.firstResponseTiming;
-    this.firstResponseTiming = undefined;
-    if (!timing || timing.firstAudioAt === null) return;
-    const responseKey = timing.responseKey ?? (this.currentResponse === undefined ? undefined : this.responseKeyOf(this.currentResponse));
-    if (responseKey === undefined) return;
-    hostLogEvent({ event: 'response_first_audio', responseKey, createdAt: timing.createdAt,
-      ...(timing.firstItemAt === null ? {} : { firstItemAt: timing.firstItemAt }), firstAudioAt: timing.firstAudioAt, kind: timing.kind });
-  }
-
   private lastAnswerNow = false;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
@@ -875,9 +839,7 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
-    if (this.answerOnReady || this.openerOnReady) this.openResponseTiming();
-    if (this.answerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
-    else if (this.openerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
+    if (this.answerOnReady || this.openerOnReady)
   }
 
   private audioDelta(message: ObjectValue): Uint8Array | undefined {
@@ -932,11 +894,8 @@ class Session implements LiveVoiceSession {
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
-      this.noteResponseTiming('firstAudioAt');
       if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
         this.continuationTiming.firstAudioAt = this.clock.now();
-        this.clearNoItemTimer();
-        this.logContinuationTiming();
       }
       this.audioSinceCompletion = true;
       this.silenceSent = false;
@@ -1010,12 +969,7 @@ class Session implements LiveVoiceSession {
   private noteInput(): void {
     // Reset on the first real owner fragment, not its quiet tail: a fast provider may start before that tail.
     if (this.episodeQuiet === undefined) {
-      this.toolRounds = 0;
-      this.researchCalls = 0;
       this.lastAnswerNow = false;
-      this.researchAdmissions.clear();
-      this.silentRescueUsed = false;
-      this.clearNoItemTimer();
       this.continuationTiming = undefined;
     }
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
@@ -1109,7 +1063,7 @@ class Session implements LiveVoiceSession {
   private settleTurn(): void {
     if (this.terminal) return;
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
-    if (this.holding || this.delegatedOutstanding || this.pendingCalls.length > 0 || !this.audioSinceCompletion) return;
+    if (this.holding || !this.audioSinceCompletion) return;
     const now = this.clock.now();
     const wait = Math.max(TURN_IDLE_QUIET_MS - (now - this.lastForwardedAt), Math.ceil(this.playbackUntil - now), 0);
     if (wait <= 0) { this.completeTurn(); return; }
@@ -1295,23 +1249,6 @@ class Session implements LiveVoiceSession {
       const oldest = this.commands.keys().next();
       if (!oldest.done) this.commands.delete(oldest.value);
     }
-  }
-
-  /** A session that ends owes no call an answer and no delegation a stall receipt (3r B). */
-  private retireCalls(): void {
-    for (const delegation of this.delegations.values()) this.clearStall(delegation);
-    this.delegations.clear();
-    this.callDelegation.clear();
-    this.pendingCalls = [];
-    this.answeredCalls.clear();
-    this.outputSent.clear();
-    this.openedResponses.clear();
-    this.endedResponses.clear();
-    this.continuationOwed = false;
-    this.batchAnswers = 0;
-    this.continuationCalls = 0;
-    this.lastContinuationCalls = 0;
-    this.delegatedOutstanding = false;
   }
 
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
@@ -1549,7 +1486,6 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
-    this.clearNoItemTimer();
     this.discardHeadStart();
     // C-REBUILD: a teardown under a response the provider announced and never terminated is the one case the wire
     // never settles. The response is settled here as superseded, so a rebuild, a drop or an ended call leaves no
@@ -1563,8 +1499,6 @@ class Session implements LiveVoiceSession {
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
     // A closed session has no speaking stretch: no silence check is still owed to the turn it was in.
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
-    this.retireCalls();
     this.reportUnknownFrames();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));

@@ -16,7 +16,7 @@ import { createRegistry, type TaskTool } from '../tasks/tools.js';
 import { connectorExecutor } from '../tasks/connectors.js';
 import { insertAlarmSeries, linkAlarmOccurrence, seriesNextFireAt } from '../tools/alarm.js';
 
-function alarmHarness(t: TestContext) {
+function alarmHarness(t: TestContext, recheck: () => void = () => {}) {
   const directory = mkdtempSync(join(tmpdir(), 'synthetic-task-alarm-'));
   const migrations = [...domainMigrations, ...liveMigrations, ...toolsMigrations];
   const store = new Store(directory, migrations);
@@ -24,7 +24,7 @@ function alarmHarness(t: TestContext) {
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
   t.after(async () => { await port.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, grantMode: 'owner-trusted-reads',
-    lookupAuthority: async () => null, alarms: { now: Date.now, recheck() {}, health: () => ({ degraded: false, reasons: [] }) } });
+    lookupAuthority: async () => null, alarms: { now: Date.now, recheck, health: () => ({ degraded: false, reasons: [] }) } });
   const task = { id: 'synthetic-task', revision: 1, ownerWords: '', ownerTurn: 1, exposures: [] };
   let tools: Map<string, TaskTool>;
   const authority = createTaskAuthority(new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }), {
@@ -58,6 +58,20 @@ test('alarm atomicity: lost confirmation replays one alarm and a durable task re
     assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
     assert.equal(recovered.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM task_effect_journal WHERE status='succeeded'")?.n), 1);
   } finally { recovered.close(); }
+});
+
+test('SOURCE DEFECT alarm atomicity: scheduler failure after insertion retains a replayable receipt', async t => {
+  let crash = true;
+  const h = alarmHarness(t, () => { if (crash) { crash = false; throw new Error('synthetic_crash_after_commit'); } });
+  const args = { text: 'synthetic crash reminder', at: new Date(Date.now() + 60_000).toISOString() };
+  // The real task authority catches executor errors. The committed alarm must still
+  // have a successful durable receipt, not a failed action that cannot be retried.
+  await h.call('alarm_create', args, 'wake me in one minute');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
+  const replay = await h.call('alarm_create', args, 'wake me in one minute');
+  assert.equal(replay.status, 'ok', 'the committed alarm must replay after scheduler notification fails');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
+  assert.equal(h.store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM task_effect_journal WHERE status='succeeded'")?.n), 1);
 });
 
 test('SOURCE DEFECT C-RECUR: recurring task creation persists one replay-safe series', async t => {

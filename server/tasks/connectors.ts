@@ -10,7 +10,7 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
-  search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query }) },
+  search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
   calendar_events: { connector: 'google', tool: 'calendar_list_events', args: a => ({ timeMin: a.start, timeMax: a.end }) },
   search_drive: { connector: 'google', tool: 'drive_search_files', args: a => ({ query: a.query }) },
@@ -74,8 +74,10 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   });
   if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
-  return { status: next || root.sourceIncomplete === true ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: next || null,
-    coverage: `${items.length} returned items.${next ? ' More results exist; continue with the returned cursor.' : ' Connector returned no continuation.'}`, repair: null };
+  const cursor = name === 'search_mail' ? next : '';
+  const incomplete = !!next || root.sourceIncomplete === true;
+  return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
+    coverage: `${items.length} returned items.${cursor ? ' More results exist; continue the same query with the returned cursor.' : incomplete ? ' Coverage incomplete. Source paging is not exposed by this tool; narrow the query or time window instead.' : ' Connector returned no continuation.'}`, repair: null };
 }
 /** Capability-specific query tools avoid a free-form filters blob. Every field comes from configuration. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {

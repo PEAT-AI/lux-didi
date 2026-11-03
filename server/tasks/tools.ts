@@ -48,7 +48,8 @@ export interface Definition { name: string; description: string; fields: Record<
 const definitions: Definition[] = [
   { name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
   { name: 'trello_write', description: 'Write the configured board.', fields: strictSchema(TRELLO_WRITE_PARAMETERS).properties as Record<string, Schema>, effect: 'external', outside: false, validate: validateTrelloWrite },
-  ...['mail', 'chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
+  { name: 'search_mail', description: 'Search mail with time operators inside query. Use null cursor for the first page, then the returned next_cursor to continue the same query.', fields: { query: string, cursor: optionalString } },
+  ...['chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
   ...['mail', 'knowledge', 'drive'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
   ...['thread', 'company', 'memory'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { ref: string, cursor: optionalString } })),
   { name: 'calendar_events', description: 'List events in the owner time window.', fields: { start: string, end: string } },

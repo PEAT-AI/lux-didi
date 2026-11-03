@@ -38,8 +38,8 @@ test('strict schemas, null pruning and writes pass the one authority port', asyn
     visit(tool.parameters);
   }
   const search = registry.get('search_mail')!;
-  assert.equal(validateArguments(search, { query: 'after:2026/01/01', extra: true }).ok, false);
-  assert.equal(validateArguments(search, { query: 'after:2026/01/01' }).ok, true);
+  assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null, extra: true }).ok, false);
+  assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null }).ok, true);
   const read = registry.get('read_mail')!;
   assert.deepEqual(validateArguments(read, { id: 'm1', cursor: null }), { ok: true, args: { id: 'm1' } });
   await registry.get('delete_event')!.run({ id: 'e1' }, { task_id: 't', task_revision: 1, operation_id: 'o', connection_generation: 1 }, new AbortController().signal);

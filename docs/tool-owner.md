@@ -159,3 +159,9 @@ integration suites, the retained live-shape regression suite and the check-map s
 fixtures in `scripts/eval-worker-replay.mjs` reuse the probe's Gmail data and search semantics; they do not
 prove that a real model chooses the right calls or behaves correctly. Real model replay and installation
 remain separate acceptance work, never an implicit effect of this check.
+
+Gmail search accepts a required nullable `cursor`: use null for the first page, then pass the returned
+`next_cursor` with the same query. The host prunes null and maps a real cursor to Google `pageToken`;
+page tokens participate in read-cache identity. Other source search and merged multi-calendar results
+that cannot consume an upstream cursor stay partial, expose no `next_cursor`, and explicitly state
+that paging is not exposed rather than instructing an impossible continuation.

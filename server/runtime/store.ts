@@ -1,3 +1,4 @@
+import { taskMigrations, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
@@ -104,7 +105,7 @@ export class Store {
         for (const sql of runtimeSchema) this.#db.exec(sql);
         // Trace tables are owned by the same Store and applied on every host: a debugger reads
         // one state.sqlite, never a second database with its own connection.
-        this.applyMigrations([...migrations, ...traceMigrations]);
+        this.applyMigrations([...migrations, ...traceMigrations, ...taskMigrations]);
         // Trace content retention: 30 days for owner content, nulled in place; 90 days for the
         // metadata rows that may be deleted. The run happens at host start, never inside a live call.
         const traceExec: TraceExec = {
@@ -114,6 +115,8 @@ export class Store {
         const memoryTx = new Tx(sql => this.#db!.prepare(sql));
         try { backfillHistoryTurns(memoryTx); } finally { memoryTx.expire(); }
         pruneTraceContent(traceExec, Date.now());
+        this.transaction(tx => pruneTaskContent(tx, Date.now()));
+        this.#db.prepare("UPDATE task_operations SET state='unknown' WHERE state='pending'").run();
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an
         // older run, and nothing reads it again. Purging it here keeps old feed text out of every surface.
@@ -168,6 +171,37 @@ export class Store {
     } catch (error) { tx.expire(); this.#allowControl = true; if (this.#db.isTransaction) this.#db.exec('ROLLBACK'); throw error; }
     finally { this.#inTransaction = false; }
   }
+  /** Content capture is explicitly supplied by the host gate, never inferred from model text. */
+  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, contentAllowed: boolean, now = Date.now()): void {
+    this.transaction(tx => {
+      tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status) VALUES (?,?,?,?,?)
+        ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status`,
+        [identity.task_id, now, now, identity.task_revision, 'running']);
+      tx.run('INSERT INTO task_revisions(task_id,task_revision,connection_generation,created_at,owner_words,evidence) VALUES (?,?,?,?,?,?)',
+        [identity.task_id, identity.task_revision, identity.connection_generation, now, contentAllowed ? JSON.stringify(ownerWords) : null, contentAllowed ? JSON.stringify(evidence) : null]);
+    });
+  }
+  saveTaskOperation(operation: OperationRecord, contentAllowed: boolean, now = Date.now()): void {
+    this.transaction(tx => {
+      tx.run(`INSERT INTO task_operations(operation_id,task_id,task_revision,connection_generation,tool,effect,state,arguments,result,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,result=excluded.result,updated_at=excluded.updated_at`,
+        [operation.operation_id, operation.task_id, operation.task_revision, operation.connection_generation, operation.tool, operation.effect, operation.state,
+          contentAllowed ? JSON.stringify(operation.args) : null, contentAllowed ? JSON.stringify(operation.result) : null, now, now]);
+      if (operation.effect !== 'none' && operation.state !== 'pending') tx.run(`INSERT INTO task_receipts(operation_id,state,receipt,created_at) VALUES (?,?,?,?)
+        ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,receipt=excluded.receipt`,
+        [operation.operation_id, operation.state, contentAllowed ? JSON.stringify(operation.result) : null, now]);
+    });
+  }
+  finishTask(identity: TaskRecord, status: string, answer: unknown, contentAllowed: boolean, now = Date.now()): boolean {
+    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=?,updated_at=? WHERE task_id=? AND current_revision=?',
+      [status, contentAllowed ? JSON.stringify(answer) : null, now, identity.task_id, identity.task_revision]) === 1);
+  }
+  saveTaskDelivery(identity: TaskRecord, attemptId: string, state: 'attached' | 'pending' | 'delivered' | 'closed' | 'failed', now = Date.now()): void {
+    this.transaction(tx => { tx.run(`INSERT INTO task_deliveries(attempt_id,task_id,task_revision,connection_generation,state,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(attempt_id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at`,
+      [attemptId, identity.task_id, identity.task_revision, identity.connection_generation, state, now]); });
+  }
+  pruneTasks(now = Date.now()): void { this.transaction(tx => pruneTaskContent(tx, now)); }
   close(): void {
     if (this.#inTransaction) throw new Error('Cannot close during transaction');
     this.#db?.close(); this.#db = undefined;

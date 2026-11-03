@@ -235,6 +235,12 @@ export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number]
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'task_lifecycle') {
+    if (!closedKeys(value, ['event', 'phase', 'revision', 'count', 'ms']) ||
+      !['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery'].includes(String(value.phase)) ||
+      !isSafeCount(value.revision) || !isSafeCount(value.count) || !isSafeCount(value.ms)) return;
+    return { event: 'task_lifecycle', phase: value.phase, revision: value.revision, count: value.count, ms: value.ms };
+  }
   if (value.event === 'host_ready_ms') {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
     return { event: 'host_ready_ms', ms: value.ms };

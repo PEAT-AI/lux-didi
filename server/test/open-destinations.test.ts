@@ -326,3 +326,27 @@ test('C-OPENWEB8: the site he named is the one whose label matches, aggregators 
     assert.ok(SITE_BLOCKLIST.includes(blocked), `${blocked} is never the site he means`);
   }
 });
+
+// 10.10: the worker uses one typed open executor, with native receipts as facts.
+test('10.10 open dispatches all kinds and preserves native not_found', async () => {
+  const api = await import('../tools/open.js');
+  assert.equal(typeof (api as any).executeOpen, 'function');
+  const bus = new api.NativeActionBus();
+  const cases = [['web', 'https://example.org/a', 'open_url'], ['web', 'example.org', 'open_url'], ['app', 'Example Editor', 'open_app'], ['file', '/Volumes/Example/document.txt', 'open_file']] as const;
+  for (const code of ['opened', 'not_found'] as const) {
+    for (const [kind, target, action] of cases) {
+      let sent = false;
+      const unbind = bus.bind('synthetic-open', frame => {
+        sent = true;
+        assert.equal(frame.action, action);
+        assert.equal(frame.target, kind === 'web' && !target.startsWith('https:') ? `https://${target}` : target);
+        queueMicrotask(() => bus.settle('synthetic-open', { type: 'native_action_result', id: frame.id, code }));
+        return true;
+      });
+      assert.equal((await (api as any).executeOpen(bus, 'synthetic-open', { kind, target })).code, code);
+      assert.equal(sent, true);
+      unbind();
+    }
+  }
+  assert.equal((await (api as any).executeOpen(bus, 'synthetic-open', { kind: 'web', target: 'https://user:pass@example.org' })).code, 'not_allowed');
+});

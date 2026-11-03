@@ -2285,16 +2285,23 @@ test('an identical invalid call is answered from the cached rejection and ends i
 });
 
 test('Live revocation invalidates authority and discards an in-flight result', async t => {
-  const started = deferred<void>(), finish = deferred<void>();
-  const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
-  const { session, attachment } = await attached(h);
-  await ownerSpoke(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'late', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
-  await fixtureSettled(started.promise, 'started task callback'); assert.equal(h.owner.current().state, 'thinking');
-  h.owner.revoke(session.liveSessionId); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
-  finish.resolve(); await attachment.done;
-  assert.equal(h.f.frames.length, 1);
-  assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult').length, 0);
+  const p = progressPort(); const started = deferred<void>(), finish = deferred<void>();
+  let signal: AbortSignal | undefined;
+  const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async (_request, current) => {
+    signal = current; started.resolve(); await finish.promise;
+    return { text: 'Synthetic result that must not escape revocation.', calls: [] };
+  } });
+  const { session, attachment } = await openPort(h, 'task-revocation');
+  p.emit({ type: 'delegation', delegationId: 'synthetic-binding' });
+  p.emit({ type: 'inputTranscription', text: 'Read the synthetic record', finished: true, finalOrigin: 'provider' });
+  await fixtureSettled(started.promise, 'controlled task inference');
+  assert.equal(signal?.aborted, false);
+  h.owner.invalidate('profile');
+  assert.equal(signal?.aborted, true, 'revocation cancels the worker, not only its speech');
+  finish.resolve(); await settlePort();
+  assert.equal(p.taskAnswers.length, 0, 'a late answer cannot reach the revoked provider binding');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'revoked' });
+  await attachment.done;
 });
 
 test('shared declarations retain original schemas and tool policy refuses before invocation', async () => {
@@ -4570,6 +4577,7 @@ test('D6: the adapter silence model between her sentences never drops the orb ou
  */
 function progressPort() {
   const commentary: string[] = [];
+  const taskAnswers: { delegationId: string; text: string; commandId: string }[] = [];
   const thinking: string[] = [];
   /** W4: whether the transport can carry a commentary at all, which the real adapter answers per delegation. */
   let commentaryDelivered = true;
@@ -4638,6 +4646,11 @@ function progressPort() {
           if (refuseText > 0) { refuseText -= 1; textRefusals += 1; throw new Error('not_ready'); }
           texts.push(input.text); textInputs.push({ session: sessionsOpened, text: input.text });
         }, endAudioStream(): void {},
+        sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
+          if (!commentaryDelivered || closed) return undefined;
+          const commandId = `synthetic-commentary-${taskAnswers.length + 1}`;
+          taskAnswers.push({ ...input, commandId }); commentary.push(input.text); return commandId;
+        },
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
@@ -4647,7 +4660,7 @@ function progressPort() {
       };
     },
   };
-  return { port, commentary, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+  return { port, commentary, taskAnswers, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
     /** #660: the next text inputs meet a session that is not ready; one retry is all the host gives. */
     refuseText: (times = 1) => { refuseText = times; },
     refuseTextOnce: () => { refuseText = 1; },

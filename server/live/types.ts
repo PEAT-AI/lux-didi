@@ -73,6 +73,7 @@ export interface LiveProfile {
 }
 
 export type LiveToolsComposition = {
+  draftChat?: import('../tasks/host.js').HostTaskOptions['draftChat'];
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
   acknowledgeAlarm?(id: string): void;
   /** One explicit new owner request may retry unavailable transport, never a model tool retry. */

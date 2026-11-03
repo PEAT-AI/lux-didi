@@ -33,6 +33,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   const credentials = testing?.credentials ?? credentialsFor(configDir);
   const createTaskRuntime = hostTaskFactory({ store, models: loadTaskModels(configDir), credentials,
     bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
+    ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
     contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     web: createWebSearch({ credentials }), vault: new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) }),
   });

@@ -58,10 +58,9 @@ const definitions: Definition[] = [
   { outside: false, name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
   { outside: true, name: 'search_web', description: 'Search the web.', fields: { query: string } },
   { name: 'remember_note', description: 'Remember a local note.', fields: { text: string }, effect: 'local', outside: false },
-  { name: 'stage_lux_note', description: 'Stage a local knowledge note.', fields: { title: string, text: string }, effect: 'local', outside: false },
-  { name: 'save_to_vault', description: 'Save a local document.', fields: { title: string, text: string }, effect: 'local', outside: false },
+  { name: 'save_to_vault', description: 'Save a note to the configured Lux vault and return its real connector receipt.', fields: { title: string, text: string }, effect: 'local', outside: false },
   { name: 'draft_email', description: 'Create an email draft, not send.', fields: { to: strings, subject: string, body: string }, effect: 'local', outside: false },
-  { name: 'draft_chat', description: 'Create a local chat draft, not send.', fields: { target: string, text: string }, effect: 'local', outside: false },
+  { name: 'draft_chat', description: 'Save a draft in the configured Mattermost reply box, never post it. Resolve the target to @username, #channel or thread:<channel-id>:<root-post-id>.', fields: { target: string, text: string }, effect: 'local', outside: false },
   { name: 'create_event', description: 'Create a calendar event.', fields: { title: string, start: string, end: string, calendar_id: optionalString }, effect: 'external', outside: false },
   { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect: 'destructive', outside: false },
   // Distinct schemas avoid action-dependent optional fields and model guessing.

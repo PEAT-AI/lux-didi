@@ -1,3 +1,4 @@
+import type { ToolFailureCode } from '../adapters/model/types.js';
 import { hostLogEvent } from '../tools/host-events.js';
 import { createHash } from 'node:crypto';
 import { HOST_EVIDENCE } from '../tools/types.js';
@@ -5,6 +6,7 @@ import { redactSecrets, redactSecretsWithCount } from '../tools/redact.js';
 export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** Host-classified connector failures, never raw connector text or a model field. */
 export const TASK_CONNECTOR_FAILURE = Symbol('task-connector-failure');
+export const TASK_CONNECTOR_OUTCOME = Symbol('task-connector-outcome');
 export const connectorFailures = new WeakMap<object, string>();
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
@@ -13,6 +15,7 @@ export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recor
 export interface ToolResult {
   [TASK_DISCLOSURE]?: TaskDisclosure;
   [TASK_CONNECTOR_FAILURE]?: string;
+  [TASK_CONNECTOR_OUTCOME]?: { status: 'failed' | 'unknown'; code: ToolFailureCode };
   dataClasses?: readonly import('../adapters/model/types.js').DataClass[];
   exposures?: import('./authority.js').Exposure[];
   status: ResultStatus;
@@ -52,6 +55,7 @@ export function redactTaskResult(result: ToolResult, tool: string): ToolResult {
     else hostLogEvent({ event: 'tool_redaction', tool, count });
   }
   if (result[TASK_CONNECTOR_FAILURE]) safe[TASK_CONNECTOR_FAILURE] = safe.repair ?? redactSecrets(result[TASK_CONNECTOR_FAILURE]!);
+  if (result[TASK_CONNECTOR_OUTCOME]) safe[TASK_CONNECTOR_OUTCOME] = result[TASK_CONNECTOR_OUTCOME];
   if (disclosure) {
     const snapshot = redactSecrets(disclosure), evidence = disclosure[HOST_EVIDENCE];
     if (evidence?.kind === 'remote-body') {

@@ -1,3 +1,5 @@
+import { isToolFailureCode } from '../adapters/model/types.js';
+import { TASK_CONNECTOR_OUTCOME } from './results.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
@@ -110,7 +112,8 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const result = await binding.reader.call(mapping.tool, mapped, signal);
     const hostRepair = connectorFailures.get(result);
     if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
-    if (result.state !== 'completed') return failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.');
+    if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
+      [TASK_CONNECTOR_OUTCOME]: { status: result.state === 'unknown' ? 'unknown' : 'failed', code: 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error' } };
     if (binding.project) {
       try {
         const snapshot = binding.project(result);

@@ -682,6 +682,31 @@ test('C-OPENER: a waiting phrase with no call behind it counts, one with a real 
   });
 });
 
+// C-PROMISE 10.10: the three shapes the 10.9 field call showed were invisible to the counter, because it
+// only knew look-up and wait phrasings. A bare acknowledgement, a first-person announcement of work and a
+// running claim are all a promise of work, and a past-tense report of what happened is not.
+test('C-PROMISE: the promise shapes are counted, and a report of finished work is not', () => {
+  withStore(store => {
+    const promises = ['Okay, doing that.', "I'm drafting a message to the colleague now.",
+      'Two sources are still running.'];
+    for (const [index, text] of promises.entries()) {
+      const id = `promise-${index}`;
+      turn(store, SESSION, id, index + 1, T0 + index * 1000);
+      store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', [id, 'model', T0 + index * 1000 + 1, text]));
+    }
+    // The turn that made the call its words named owes nothing, and a past-tense report is no promise.
+    turn(store, SESSION, 'promise-served', 4, T0 + 4000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['promise-served', 'model', T0 + 4001, 'Okay, doing that.']));
+    call(store, SESSION, 'promise-served', 'call:draft', 'draft_email', 'completed', 20, T0 + 4002);
+    turn(store, SESSION, 'promise-report', 5, T0 + 5000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['promise-report', 'model', T0 + 5001, 'I drew up the draft and saved it.']));
+    const read = store.transaction(tx => buildTimeline(tx, SESSION));
+    assert.equal(buildCallAudit(read, scanLogs([])).aggregates.claimsWithoutCall, promises.length,
+      'every promise with no call is counted, and the served and reported turns are not');
+    assert.equal(read.transcript, undefined, 'the audit still exports counts, never transcript content');
+  });
+});
+
 test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source directory', () => {
   const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
   const source = mkdtempSync(join(tmpdir(), 'truth-wal-source-'));

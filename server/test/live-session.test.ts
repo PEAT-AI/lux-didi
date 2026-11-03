@@ -56,7 +56,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, announcesWork, claimsRunningWork, rebuildResearchSeed, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, DEAD_AIR_CONTINUATION_MS, DEAD_AIR_RESPONSE_GRACE_MS, DELEGATION_DEADLINE_MS, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -6814,6 +6814,91 @@ test('OPEN2-5: an open claim the turn did not make gets one correction, never tw
   const received = lines.filter(line => line.event === 'open_claim_corrected');
   assert.deepEqual(received.map(line => line.reason), ['no_receipt']);
   h.owner.revoke(session.liveSessionId);
+});
+
+// C-PROMISE 10.10: on 10.9 she said "okay, doing that" to a direct ask, made no call, and went quiet for
+// 103 s. The words are a promise of work in the same shape as a look-up announcement, so the host owes it
+// the same one continuation, and it speaks nothing itself.
+test('C-PROMISE: a bare acknowledgement of the ask gets one host continuation and no host speech', async t => {
+  const { h, session, advance, corrections, counted } = await emptyClaimSetup(t);
+  h.f.send({ serverContent: { outputTranscription: { text: 'Okay, doing that.', finished: true }, turnComplete: true } });
+  await settlePort();
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the acknowledgement earns exactly one host continuation');
+  assert.equal((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text.startsWith('[host note, not the owner]'), true,
+    'the continuation is a host note and never owner speech');
+  assert.equal(h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text?.startsWith('Okay, doing that')).length, 0,
+    'the host never repeats her words back as owner input');
+  assert.deepEqual(counted().map(line => line.event), ['live_claim_without_call'], 'and the audit line counts it');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-PROMISE: a first-person announcement of work no lookup verb covers ("drafting a message") is the same
+// promise, and the continuation asks for the call or for a plain statement that nothing is running.
+test('C-PROMISE: an announced draft gets one continuation, and the draft call then really runs', async t => {
+  const port = composePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, compose: port, grantMode: 'owner-trusted-reads', limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  await attached(h, 'promise-draft');
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
+  });
+  h.f.send({ serverContent: { inputTranscription: { text: 'draft a note to Priya about the synthetic invoice', finished: true } } });
+  await settlePort();
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm drafting that message now.", finished: true }, turnComplete: true } });
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(corrections().length, 1, 'the announced draft earns exactly one continuation');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that nothing is running/i,
+    'and it offers the plain statement instead of work that is not happening');
+  // The continuation earns a real draft, which is the whole point: the words become the call.
+  await settleLiveTool(h, 'd1', 'draft_email', { to: 'Priya', subject: 'the synthetic invoice', body: 'Hello Priya, here is the synthetic invoice.' });
+  const response = liveToolResponse(h, 'd1');
+  assert.equal(response['status'], 'draft_ready', 'the draft really exists after the announcement');
+  assert.equal(port.log.length, 1, 'one unsent draft, never a send');
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(corrections().length, 1, 'the call that answered the promise spends no second continuation');
+});
+
+// C-PROMISE: the continuation is bounded. A turn spends one, and a later response that announces work again
+// waits for the owner, because the host asks once and never loops.
+test('C-PROMISE: the continuation is spent once per owner turn', async t => {
+  const { h, session, advance, corrections } = await emptyClaimSetup(t);
+  h.f.send({ serverContent: { outputTranscription: { text: 'Okay, doing that.', finished: true }, turnComplete: true } });
+  await settlePort();
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the first promise is continued');
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm drafting it right now.", finished: true }, turnComplete: true } });
+  await settlePort();
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the second promise is not continued again');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-PROMISE: a rebuilt generation is told what the host holds, so she cannot call a finished run running.
+test('C-PROMISE: a rebuilt session is told the host running state, from the host own record', () => {
+  const idle = rebuildResearchSeed('', []);
+  assert.match(idle, /nothing is running now/i, 'an empty record is stated as nothing running');
+  const busy = rebuildResearchSeed('', ['the research for "the synthetic invoice"']);
+  assert.match(busy, /running now: the research for "the synthetic invoice"/i, 'a live run is named from the record');
+  const ledger = rebuildResearchSeed('evidence ledger (extractive, 1 of 1 asked entities covered)', []);
+  assert.match(ledger, /evidence ledger/, 'the delivered ledger still reaches the rebuilt session');
+  assert.match(ledger, /nothing is running now/i, 'and the state rides with it');
+});
+
+// C-PROMISE: the classes the field missed are read as promises, and a plain statement of what happened is not.
+test('C-PROMISE: the promise classes are grammar, and a past tense report is left alone', () => {
+  for (const said of ['Okay, doing that.', 'Sure, doing it now.', "I'm drafting a message to the colleague now.",
+    "I'll put the draft together.", 'Let me write that up.', 'Working on it.']) {
+    assert.equal(announcesWork(said), true, `a promise of work: ${said}`);
+  }
+  for (const said of ['I drew up the draft and saved it.', 'It is still on your calendar.', 'Nothing is running now.',
+    'The invoice came to nine thousand.']) {
+    assert.equal(announcesWork(said), false, `not a promise of work: ${said}`);
+  }
+  assert.equal(claimsRunningWork('Two sources are still running.', false), true, 'a stale running claim over an empty record');
+  assert.equal(claimsRunningWork('Two sources are still running.', true), false, 'the same words over a live run are true');
 });
 
 test('R7: the dropped-line opener is cancelled only before its own audio starts', async () => {

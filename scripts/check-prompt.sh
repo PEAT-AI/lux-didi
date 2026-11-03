@@ -142,7 +142,13 @@ assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting l
 // The text she reads now ties the wait to a response that really makes a call, so the rule is asserted where
 // it is guidance, never as a line she is told to say.
 assert.ok(voice.includes('response that really makes a call'), 'the wait is tied to a response with a real call');
-assert.ok(voice.includes('direct ask gets the call'), 'a direct ask gets the call, not an announcement');
+// C-PROMISE 10.10: the sentence that carried this rule named only a look-up. It now covers every ask and
+// says plainly that an announced draft is a draft that never happened, and that running work is named only
+// while the host holds it. The text is replaced in place, so the instruction does not grow.
+assert.ok(voice.includes('a direct ask is answered by the call in the same response, a draft included'),
+  'a direct ask is answered by the call in the same response, a draft included');
+assert.ok(voice.includes('work is called running only while the host holds it'),
+  'running work is named only while the host holds it');
 assert.ok(!voice.includes('need a moment'), 'no text invites a wait without a call behind it');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');

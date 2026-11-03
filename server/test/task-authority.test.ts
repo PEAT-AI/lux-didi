@@ -266,3 +266,30 @@ test('earlier owner context is always available to the ordinary effect check', a
   await authority.authorize({ ...request, task: { ...task, precedingOwnerWords: 'Earlier synthetic owner request' } });
   assert.equal(calls[0]?.precedingOwnerWords, 'Earlier synthetic owner request');
 });
+
+test('VOICE-R5 a replaced stage cannot be confirmed by an older deferred check', async () => {
+  let resolve!: (answer: boolean) => void; let checking!: () => void;
+  const started = new Promise<void>(done => { checking = done; });
+  const authority = new Authority({ checkEffect: async () => { checking(); return new Promise<boolean>(done => { resolve = done; }); }, log: () => {}, journal: { get: async () => undefined, put: async () => {} } });
+  let current = { id: 't', revision: 1, ownerWords: 'Delete the event', latestOwnerWords: 'Delete the event', ownerTurn: 1, exposures: [] as const };
+  const port = createTaskAuthority(authority, { isCurrent: () => true, taskContext: () => current, hostUrls: () => [], registry: () => registry });
+  let writes = 0;
+  const registry = createRegistry({ authority: port, execute: async () => portResult });
+  const deletion = (id: string) => port.authorize({ task_id: 't', task_revision: 1, operation_id: id, connection_generation: 1, tool: 'delete_event', effect: 'destructive', args: { id }, outside_text: false }, async () => { writes++; return portResult; }, new AbortController().signal);
+  await deletion('A'); current = { ...current, ownerTurn: 2, latestOwnerWords: 'Yes, delete it' };
+  const a = deletion('A'); await started;
+  assert.equal((await deletion('B')).repair, REPAIRS.confirmation_required);
+  resolve(true);
+  assert.equal((await a).repair, REPAIRS.confirmation_required); assert.equal(writes, 0);
+  assert.equal(authority.stagedDeletion()?.eventId, 'B');
+});
+
+test('VOICE-R5 a sequential confirmation consumes its exact stage once', async () => {
+  const { authority } = setup();
+  const deletion = { ...request, effect: 'delete_event' as const, eventId: 'A', ownerTurn: 1 };
+  assert.deepEqual(await authority.authorize(deletion), refusal('confirmation_required'));
+  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 2 }), { allow: true });
+  assert.equal(authority.stagedDeletion(), undefined);
+  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 2 }), refusal('confirmation_required'));
+  assert.equal(authority.stagedDeletion()?.ownerTurn, 2);
+});

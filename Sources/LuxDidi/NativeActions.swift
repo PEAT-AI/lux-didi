@@ -305,12 +305,28 @@ public actor NativeActions: NativeActionExecuting {
         guard !name.isEmpty, !name.contains("/"), !name.hasPrefix(".") else { return nil }
         let base = name.hasSuffix(".app") ? String(name.dropLast(4)) : name
         guard !base.isEmpty else { return nil }
-        if let path = NSWorkspace.shared.fullPath(forApplication: base) { return URL(fileURLWithPath: path) }
         for folder in [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications"), URL(fileURLWithPath: "/System/Applications")] {
             let candidate = folder.appendingPathComponent(base + ".app").resolvingSymlinksInPath().standardizedFileURL
             guard candidate.path.hasPrefix(folder.resolvingSymlinksInPath().standardizedFileURL.path + "/") else { continue }
             if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Contents/Info.plist").path) { return candidate }
         }
+        // Launch Services has no supported name lookup. Spotlight also finds apps outside standard folders.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        process.arguments = ["-0", "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == \"\(escaped).app\"cd"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if process.terminationStatus == 0,
+               let path = String(data: data, encoding: .utf8)?.split(separator: "\0").first {
+                return URL(fileURLWithPath: String(path))
+            }
+        } catch { return nil }
         return nil
     }
 

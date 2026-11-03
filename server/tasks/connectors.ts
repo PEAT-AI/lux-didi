@@ -1,12 +1,14 @@
+import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy }
+export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
-  [tool: string]: ((args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>) | undefined;
+  [tool: string]: ((args: Record<string, unknown>, signal: AbortSignal, context: TaskExecutionContext) => Promise<ToolResult>) | undefined;
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
@@ -89,8 +91,8 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
   }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}): ToolPorts['execute'] {
-  return async (name, args, signal) => {
-    if (existing[name]) return existing[name]!(args, signal);
+  return async (name, args, signal, outsideTextSeen = false, identity) => {
+    if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
     const binding = bindings.find(binding => binding.connector === mapping.connector && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));

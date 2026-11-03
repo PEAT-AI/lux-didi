@@ -134,6 +134,8 @@ export interface OwnerRequestPort {
 }
 
 export interface ToolsOwner {
+  taskExecutors(sessionId: string): import('../tasks/connectors.js').ExistingExecutors;
+  closeTaskCall(sessionId: string): void;
   taskBindings(connectionIds: readonly string[]): { connector: string; reader: import('../connectors/index.js').ConnectorReader; policy: ConnectionPolicy }[];
   readonly ownerRequests: OwnerRequestPort;
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;

@@ -1,3 +1,6 @@
+import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
+import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
+import { findFile } from './find-file.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
@@ -32,7 +35,7 @@ import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmNamedBy, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
 import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { executeOpen, OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -517,6 +520,44 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
+    closeTaskCall(sessionId) { options.trello?.end(sessionId); },
+    taskExecutors(sessionId) {
+      const project = (name: string, value: JsonObject) => value.ok === false
+        ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
+      const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
+        if (!options.alarms || !context.identity) return taskFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
+        const now = options.alarms.now(), at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
+        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        const id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
+        const result = store.transaction(tx => {
+          if (action === 'create') {
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
+          } else {
+            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
+            if (!row) return taskFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
+            if (action === 'cancel') tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
+            else tx.run("UPDATE alarms SET label=?,fire_at_utc=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), id]);
+          }
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString() }) }), id), references: [{ id }] };
+        });
+        if (result.status === 'ok') options.alarms.recheck();
+        return result;
+      };
+      const executors: ExistingExecutors = {
+        alarm_create: async (args, _signal, context) => alarm('create', args, context),
+        alarm_update: async (args, _signal, context) => alarm('update', args, context),
+        alarm_cancel: async (args, _signal, context) => alarm('cancel', args, context),
+        alarm_list: async () => taskDocumentResult(JSON.stringify(store.transaction(tx => listPendingAlarms(tx))), 'local-alarms'),
+        trello_read: async (args, signal) => options.trello ? project('trello_read', await options.trello.read(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
+        trello_write: async (args, signal) => options.trello ? project('trello_write', await options.trello.writeTask(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
+        open: async args => { const receipt = await executeOpen(nativeActions, sessionId, args); return receipt.code === 'opened' ? taskDocumentResult('Opened.', 'open') : taskFailed(`Open was not acknowledged: ${receipt.code}. Nothing was reported as opened.`); },
+        find_file: async args => taskDocumentResult(JSON.stringify(await findFile(args)), 'local-files'),
+      };
+      return executors;
+    },
     taskBindings(connectionIds) {
       const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled));
       return policies.map(policy => {

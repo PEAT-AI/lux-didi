@@ -819,6 +819,7 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
 interface ActiveSession {
   tasks?: TaskCall;
   taskReconnectSeed?: string;
+  taskOwnerTurn?: number;
   taskWords?: string;
   taskOutputQuiet?: boolean;
   taskOwnerOpen?: boolean;
@@ -4666,7 +4667,7 @@ export class LiveSessionOwner {
     handle.lateHeld = [];
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
-    handle.taskSilenceTimer?.cancel(); handle.tasks?.close();
+    handle.taskSilenceTimer?.cancel(); handle.tasks?.close(); this.#tools?.owner.closeTaskCall(handle.liveSessionId);
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();
     this.#alarmSessions.delete(handle.liveSessionId);
     handle.terminalOutcome = outcome;
@@ -4724,7 +4725,8 @@ export class LiveSessionOwner {
     if (!handle.terminal && generation === handle.generation && handle.taskWords?.trim()) {
       const words = handle.taskWords; handle.taskWords = ''; handle.taskOwnerOpen = false;
       handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
-      void handle.tasks?.input(words, Number(handle.inputJournalId ?? 0)).catch(() => {
+      handle.taskOwnerTurn = (handle.taskOwnerTurn ?? 0) + 1;
+      void handle.tasks?.input(words, handle.taskOwnerTurn).catch(() => {
         hostLogEvent({ event: 'task_effect_check', code: 'task_failed' });
       });
     }

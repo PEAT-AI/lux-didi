@@ -202,6 +202,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   }
   const createTaskRuntime = hostTaskFactory({ store, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
+    executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     contentAllowed: () => boundProfile.route.dataClasses.includes('private'), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });

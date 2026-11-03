@@ -16,7 +16,7 @@ export interface HostTaskOptions {
   bindings(): readonly BoundConnector[];
   contentAllowed(): boolean;
   timeZone: string;
-  existing?: ExistingExecutors;
+  executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
   infer?: Infer;
   effectCheck?: AuthorityPorts['checkEffect'];
@@ -29,19 +29,21 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
   return (sessionId, delivery) => {
     const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(options.contentAllowed),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
+    const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, delivery, authority, infer, contentAllowed: options.contentAllowed,
       configuredTools: configuredCompanyTools(options.bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
-        if (name === 'remember_note') {
+        if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });
+        if (name === 'remember_note' || name === 'draft_chat' || name === 'stage_lux_note') {
           const now = Date.now(), clock = { now: () => now };
           return options.store.transaction(tx => {
-            const session = memory.createSession(tx, { title: 'Task note', startedAt: now, timeZone: options.timeZone }, clock);
+            const session = memory.createSession(tx, { title: name === 'draft_chat' ? `Draft for ${String(args.target)}` : typeof args.title === 'string' ? args.title : 'Task note', startedAt: now, timeZone: options.timeZone }, clock);
             const entry = memory.appendEntry(tx, { sessionId: session.id, text: String(args.text), capturedAt: now, timeZone: options.timeZone,
               source: { label: 'task note', provider: 'live-voice', accountId: sessionId, externalId: `${identity?.task_id}:${identity?.operation_id}`, sourceTimestamp: now, availability: 'present', note: 'kind:fact' } }, clock);
             labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'private' }, now);
             labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'private' }, now);
-            return { status: 'ok', text: 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
+            return { status: 'ok', text: name === 'draft_chat' ? 'Draft saved locally. Nothing was sent.' : name === 'stage_lux_note' ? 'Knowledge note staged locally. Not sent to the vault.' : 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
           });
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
@@ -58,7 +60,7 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
         };
         const write = writes[name];
         if (write) {
-          const binding = bindings.find(item => item.connector === 'google');
+          const binding = bindings.find(item => item.connector === 'google' && item.policy.toolNames.includes(write.tool));
           if (!binding) return failed('This Google write capability is not configured. Nothing was written.');
           const result = await binding.reader.call(write.tool, write.arguments, signal);
           return result.state === 'completed' ? documentResult(JSON.stringify(result.decodedResult), name) : failed('The connector did not acknowledge this write. Report the unresolved outcome rather than retrying blindly.');
@@ -67,7 +69,7 @@ export function hostTaskFactory(options: HostTaskOptions): (sessionId: string, d
           const result = await options.web.search({ query: String(args.query), signal, exposed: !!exposed });
           return documentResult(JSON.stringify(result), 'web');
         }
-        const execute = connectorExecutor(bindings, options.existing);
+        const execute = connectorExecutor(bindings, existing);
         return execute(name, args, signal, exposed, identity);
       },
     });

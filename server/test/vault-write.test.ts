@@ -211,6 +211,7 @@ test('the adapter-shaped transcript never mints a legacy dictation write authori
 test('the exact note supplied by an admitted task is the persisted content', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
+  assert.equal((await save(h, 'the survey boat is moored at pontoon three')).saved, true);
   const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
   assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
 });
@@ -291,6 +292,7 @@ test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () 
 
 test('startup claims an authorized operation by its execution identity exactly once', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
+  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('restart-op',?,'restart',?,?,?,?, 'authorized',?)", [SESSION, VAULT_REMOTE_TOOL, NOTE, vaultContentKey(NOTE), NOTE, NOW]));
   const calls: string[] = [];
   const options = { store: h.store, now: () => NOW, log: () => {},
     transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };
@@ -314,7 +316,7 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   assert.match(String(result.guidance), /retried.*lux/i);
   assert.deepEqual(delays, [250]);
   assert.equal(calls, 2);
-  assert.deepEqual(await writer.saveTask(input), result); assert.equal(calls, 2, 'replay does not send a third request');
+  assert.deepEqual(await writer.saveTask(input), { saved: true, insightId: 'retry-7' }); assert.equal(calls, 2, 'replay does not send a third request');
 });
 
 test('startup retries a legacy unavailable row only once across restarts', async t => {

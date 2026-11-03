@@ -34,9 +34,9 @@ Keep lifecycle policy in the owning layer. A web rendering workaround cannot fix
 
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` defines the published connector surface. Connection configuration and approvals are distinct from whether a service happens to be reachable. Read [connectors.md](connectors.md) for the available sources and [mcp-configuration.md](mcp-configuration.md) for their setup.
 
-The host's tool layer, `server/tools/`, validates requests and projects results before returning evidence to a model. Research, opening a result in Chrome, Trello reads and note creation are tool capabilities, not permission for arbitrary remote writes. See [tool-owner.md](tool-owner.md).
+The helper in `server/tasks/` receives finalized owner input and uses the typed registry in `server/tasks/tools.ts`. The voice model talks and delivers the helper's result; it does not choose or run source tools. The host executes those tools, retains task revisions and operation receipts, and rejects stale delivery. A correction revises the work rather than starting a competing answer.
 
-Composed Lux notes are an explicit gated write flow. `liveDefinitions` in `server/tools/index.ts` advertises the staging tool only when `composedNotes` is enabled; staging is not saving. The owner must confirm the host's readback. See [privacy-and-authority.md](privacy-and-authority.md) before changing any write path.
+Permission belongs in `server/tasks/authority.ts`. Direct asks run without another permission question. After outside text, an isolated check sees only owner words and the effect kind. Calendar deletion alone needs a later confirmation. No tool sends a message or invites anyone. See [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md).
 
 ## Where to investigate
 
@@ -75,4 +75,4 @@ Task migrations belong to `runtime/task-schema.ts` and are applied by `Store` on
 results and final answers use the host content-capture gate; metadata and delivery attempts remain recorded.
 Content is pruned at 30 days, metadata at 90, matching trace retention. Pending operations become unknown at restart.
 Closed-field `task_lifecycle` events never include queries or bodies. Delivery completion here means acceptance by
-an injected delivery interface, not proof of spoken audio. The voice wagon owns actual transport acknowledgement.
+an injected delivery interface, not proof of spoken audio. The live-call integration owns actual transport acknowledgement.

@@ -22,29 +22,15 @@ Tool arguments and results are untrusted. A document, email or model answer cann
 
 ## The supported write boundaries
 
-| Action | Authority and limit |
-| --- | --- |
-| Local memory | A local record, not a write to its original external source; inspect it in Memory |
-| Dictated Lux note | The owner asks in his own words, "save this to lux", "put that in my knowledge", "remember this in lux" or "save to my vault"; a bare ask saves the turn he spoke just before it; his ask in the session is the permission and her own wording of the note is the content (C-FREEDOM), so no literal phrase and no exact content match is required; `server/tools/vault-write.ts` owns this flow |
-| Composed Lux note | Default enabled, host-authorized, staged, read back and freshly confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
-| Trello card change | An owner-requested action on the privately pinned board; `server/tools/trello.ts` owns the exposed actions |
-| Native open | An allowed native action, not arbitrary application automation; `server/tools/open.ts` and `Sources/LuxDidi/NativeActions.swift` own it |
+`server/tasks/tools.ts` declares reads and effects. Local memories and chat drafts stay on the Mac. An email draft is created through the configured Google source, never sent. Calendar creation supplies no attendees. Trello changes use only the pinned board's declared actions. A vault save uses the configured vault writer; a local staged note is not a remote save. No action sends, posts, invites, accepts an invitation or pays.
 
-C-FREEDOM (issue 880) sets the note floor: a remembered note saves when it paraphrases his own turn, even when no content word matches ("I am exhausted" becomes "Owner feels tired"), and a note that says "it" or "them" reads his previous turn instead of asking him to name it. The polarity check is the only refusal on that path: it still refuses a note that claims the opposite of what he said, and a wrong local note is his to correct. Opening, alarms, drafts, events, Trello and the vault are free local writes: his ask in the session is the permission, a passed alarm time takes the next occurrence, and several armed alarms act on the one his own words name or else the soonest, with the read-back saying which.
+The helper may perform an asked action immediately. `server/tasks/authority.ts` owns permission and the operation journal. A stable operation identity prevents an uncertain or pending outcome from becoming permission to execute twice. The model's prose is never proof of success.
 
-A free write's authority is the open owner call, never a phrase of his (C-NOTEGATE, #874). What he dictates is content: a negated verb, a report or a quotation inside it voids nothing, so a long dictation that says "I don't want to put the survey in there" still commits the save it ends with. The one guard left on that tier is the fence: text from mail, chat, web or research that reaches the model after his last final refuses the write `external_text_only`. Only the guarded `delete_event` still reads a negated clause, beside its created-or-named selector. The host log records the gate's answer as closed fields (tool, decision, code, both fence positions, whether an owner final existed) and never a word of his.
+After outside mail, chat, web, Drive or company text, including retained outside evidence, an isolated check compares the owner's finalized words with the effect kind. It sees no targets, payloads or outside text. The answer is cached for that task revision and kind. A failed effect check logs failure and permits the effect, an explicit availability tradeoff, not an injection-immunity guarantee.
 
-Composed notes default **on** in `liveFeatures` in `server/live/config.ts`; an explicit `composedNotes: false` disables them. `STAGE_NOTE_IDENTITY` identifies the only live save declaration, `stage_lux_note`. Staging alone never saves. A host-owned request token binds the owner journal IDs and watermark, merges provider-split requests and is single use. Intervening non-save owner speech, an external read or disconnect invalidates it; model-authored quotes cannot mint it.
+Deleting a calendar event stages its exact id and requires a later owner turn. The isolated confirmation check sees the latest owner words and the confirmation kind. A failed confirmation check refuses deletion. Ending the call clears the pending confirmation.
 
-The readback is carried by the stage function/tool result on Gemini and OpenAI, never a user-role item. Its title and first sentence from each paragraph are frozen by the host. `read it all` requires a complete readback and a new playback boundary. Transcript overlap must reach 0.9 and native playback must end before confirmation arms. `noteOwnerUtterance` preserves the first fragment's onset; an earlier “yes” cannot become consent when its final fragment arrives later. `noteOwnerFragment` suspends settlement, so split “yes ... no” never commits. Only the closed affirmative phrases settle positively; revisions require a new note.
-
-Any external result entering the session taints the candidate independently of model citations. `external_context_present` is host-local on candidate and receipt rows, not an outbound API parameter. When set, the host reads the provenance sentence before confirmation and appends this final line to the stored body: `Provenance: this note includes content from mail, web or chat read in that session.` The 4,000-character model body allowance is separate from this fixed host line.
-
-A receipt binds the candidate digest and ID. Uncertain dispatch is not retried automatically, preventing duplicate inserts after a crash. A successful reply needs a real insight ID and names the saved title. Transport failures speak `vault_unavailable` or `write_failed`; metadata-only host logs classify `initialize_http`, `initialize_transport`, `initialized_notify`, `endpoint_rejected`, `call_http`, `call_transport` and `schema_rejected`. They never log note bodies or arbitrary payload fields.
-
-A confirmed live save uses one remote tool, `save_insight` under project `didi-voice`, reached only through the vault write transport; the connector read envelope never names a write. Each save attempt writes exactly one `vault_write` host log line carrying its outcome (`confirmed`, `failed`, `uncertain`, `unavailable`) and closed code, and never the note text.
-
-Trello's `TRELLO_WRITE_ACTIONS` is a closed surface. The board pin is configured privately through `TRELLO_BOARD_FILE` in `server/host/trello.ts`. Do not publish its real name or infer board administration, member changes or permanent deletion from the fact that card writes are available. Already granted card actions do not use the composed-note confirmation flow. Unknown write outcomes must remain unknown, not be retried as if nothing happened.
+After outside text, a web open must also match a URL exactly from a tool result or canonical connector link. The host does not repair a synthesized URL. Web search removes address-bearing query tokens after outside exposure. These restrictions do not make outside text trustworthy.
 
 ## Conversation consent and audio
 
@@ -70,51 +56,10 @@ Never publish real credentials, private profiles, board names, account content, 
 
 Same-user process separation is not an operating-system sandbox. Data-class enforcement is routing policy, not perfect sensitivity detection. Prompt-injection immunity, forensic erasure, guaranteed notification delivery and universal provider availability are not claimed. Future policy belongs in [roadmap.md](roadmap.md), not in descriptions of the installed release.
 
-Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.
+Legacy local memories remain available for recall. Closing a call never automatically exports them. An asked vault save runs through the task permission and receipt boundary, not a phrase test or a spoken readback ceremony.
 
-## Task authority port (10.10)
+## Opening things on the Mac
 
-`server/tasks/authority.ts` provides `Authority.authorize(request)` and a separate
-journaled `commit(identity, execute)` boundary. The task controller supplies validated
-arguments, finalized owner words and host-owned task/revision identity. An action
-identity must be stable across retries and distinct for different actions. The journal
-adapter must durably persist records before resolving its writes. A pending outcome
-is not permission to execute a second time.
+`open(kind, target)` opens a web address or named site, an installed application, a readable local path or a shown source handle. There is no destination allowlist or home-folder restriction. URLs carrying credentials are refused. A missing file or application returns `not_found`; native failures never imply success. Opening never types, clicks, sends or edits. Host task authority still applies.
 
-Outside mail, chat, web, drive and company bodies, including their retained memory
-evidence, expose a task. Calendar, alarms and purely local memory do not. After
-exposure an isolated effect check sees only finalized owner words, the immediately
-preceding owner task as earlier context when available in the same call, and a closed effect kind. The check judges the current words; the host does not classify short follow-ups. An earlier ask may let a later local write through, an accepted risk. It never sees
-targets, payloads or worker history. The host caches one check per task revision and
-effect kind. A failed or timed-out check allows the local effect and logs failure,
-following the explicit product tradeoff. No send tool is introduced.
-
-The configured effect client is injected through the model port. Deployment selects
-one provider and its fastest current model for this role, never a 6.0 model. The
-authority module does not select or hardcode a provider or model identifier. Tests
-use fakes, never a provider. Delete confirmation is call-scoped and binds the exact
-staged event id to a later finalized owner turn, even across a new task. A different
-id replaces the stage. The isolated `confirm_delete_event` check sees only the latest
-owner turn and that kind, never event titles, targets or helper text. A yes admits
-that event; unrelated speech does not. This check alone fails closed on error or
-timeout and returns `confirmation_unavailable` so nothing is deleted. The helper
-receives the staged id as verified status and must name the event when asking.
-Ending the call clears the stage.
-
-The old live authority remains until the task adapter switches. Callers of the web
-search port must pass the host-owned `exposed` state. After outside reads the
-query is split on whitespace and every whole token containing `://`, `www.` or
-`site:` is removed, case-insensitively and regardless of punctuation. There is no
-owner-word URL exemption. Clean tasks are untouched. `publicQueryOf` still
-keeps addresses, long digit sequences, markup and pasted passages out of queries;
-ordinary short questions remain valid. On clean tasks any public HTTPS URL may open, without a URL in spoken owner words.
-Credentials, localhost and private ranges are refused. After outside exposure, open
-is an effect under the same isolated check. Its URL must also be byte-exact to a
-string in a tool result or a connector canonical link. Synthesized or extended
-URLs are rejected rather than rewritten. The legacy live open path stays unchanged
-until C-VOICE wires the task authority.
-## 10.10 opening floor
-
-`open(kind, target)` opens a public HTTP or HTTPS address (or a named site), an installed application by name, any readable local path with its default application, or a shown source handle. There is no destination allowlist or home-folder restriction. URLs carrying a username or password are refused. A missing file or application returns `not_found`; native failures never imply success. Opening never types, clicks, sends or edits. Task authority, including the outside-text rule, belongs to the host task authority layer, not the native opener.
-
-`find_file(query)` uses local Spotlight name and content-word searches without a shell. It returns at most 20 paths, names and modification dates, newest first, never file bodies. Content-only matches are marked `outsideText`; a name match is not outside text. Empty results and an unavailable Spotlight are distinct outcomes.
+`find_file(query)` uses Spotlight without a shell. It returns paths, names and modification dates, not file bodies. Content-only matches are outside text; name matches are not. Empty results and unavailable Spotlight are distinct outcomes.

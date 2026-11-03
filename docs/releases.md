@@ -4,13 +4,13 @@ Reader: whoever ships a release, or wants to know what one contains.
 
 A release in this repository is one squash-merged pull request to `main`. There is no long-lived release branch: the merge commit on `main` is the release, its subject is the release line ("Didi release N: ...") and everything in it landed as one unit. Every push to `main` also gets a CalVer tag and a GitHub release, cut automatically (see [Cutting a release](#cutting-a-release)). The repository is a sole-owner project, so a release is also the moment the owner installs and uses the build.
 
-## Release 10.9
+## Release 10.10
 
-This train combines reviewed fixes for dictated-note negation, recent live openings and evidence-backed write claims, connector readiness before calls, alarm argument validation, bounded call diagnostics and CI gate accuracy/timing.
+Naya now talks while a host-owned helper reads sources and carries out your requests. Ask in your own words: drafts, notes, owner-only events, alarms, board changes and opening things no longer depend on a phrase or a readback ceremony. Corrections revise the work, and connection recovery preserves work awaiting delivery. The helper model is one configurable role, separate from voice.
 
-Tracked delivery issues: #874 (notes), #877 (openings), #875 (connector readiness), #873 (alarms), #876 (diagnostics) and #867 (CI checks). Pre-existing MCP check staging defects are repaired on this train. The known held-positive installed-proof failure recurred under #841 and remains a failed check, not a pass; installed checks after merge are still owed. Native audibility receipt timing remains open in #878; the broader guarded-gate and alarm-audit requests in #828 and #829 also remain open.
+Nothing sends, posts, invites or pays. Deleting a calendar event needs a later confirmation. After outside text, an isolated permission check sees your words and the action kind, never that text. Local records and operation receipts keep an uncertain outcome distinct from success.
 
-The release number belongs to the squash commit title and release notes, as in release 10.8. It does not change the application's independent bundle version. A missing installed runtime makes the macOS install check blocked, never passed. Assembly and check evidence must accompany the release handoff before any merge or install.
+This is a source release description, not a claim that a particular Mac has installed it. Verify the candidate and obtain permission before installing or exercising it.
 
 ## The shape of a release
 

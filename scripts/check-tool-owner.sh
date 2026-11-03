@@ -14,10 +14,12 @@ node node_modules/typescript/bin/tsc --ignoreConfig --target ES2023 --module Nod
   test/redact.test.ts test/open-destinations.test.ts test/lux-note.test.ts
 mkdir -p dist/test/fixtures
 cp test/fixtures/open-destinations.json test/fixtures/open-evals.json test/fixtures/owner-utterances.json dist/test/fixtures/
-node_test_files --test-timeout=15000 \
+cp tools/open-handles.ts dist/test/fixtures/parity-open-handles.ts
+cp ../Sources/LuxDidi/NativeActions.swift dist/test/fixtures/parity-NativeActions.swift
+node_test_files --test-reporter=tap --test-timeout=15000 \
   dist/test/owner-utterances.test.js dist/test/tool-owner.test.js \
   dist/test/live-shape.test.js dist/test/redact.test.js \
   dist/test/open-destinations.test.js dist/test/lux-note.test.js
-node_test_files --test-timeout=30000 \
+node_test_files --test-reporter=tap --test-timeout=30000 \
   dist/test/tools-builtin-intent.test.js dist/test/time-corpus.test.js \
   dist/test/chat-tools.test.js dist/test/task-authority.test.js

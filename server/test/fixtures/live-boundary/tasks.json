@@ -1,0 +1,12 @@
+[
+  "delegation-before-final",
+  "correction-during-wait",
+  "duplicate-delegation",
+  "no-delegation",
+  "rebuild-mid-task",
+  "rebuild-after-finish",
+  "mic-pause",
+  "spoken-answer-chunked",
+  "stale-result-suppressed",
+  "delivery-rejected"
+]

@@ -7,7 +7,7 @@ export const DEFAULT_WORKER_EFFORT = 'low';
 export interface ModelRole { provider: 'openai' | 'gemini'; model: string; effort: 'low' | 'medium' | 'high'; keyReference: string }
 export interface RoleModels { worker: ModelRole; effect_check: ModelRole }
 export type ModelConfiguration = Pick<ModelRole, 'keyReference'> & Partial<Omit<ModelRole, 'keyReference'>>;
-export interface ModelOptions { role: ModelConfiguration; credentials: Credentials; transport?: Transport }
+export interface ModelOptions { kind?: 'worker' | 'effect_check'; role: ModelConfiguration; credentials: Credentials; transport?: Transport }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** Reuse the shared dialect, retaining the richer generateContent types (voice has stricter types). */
 export function taskGeminiSchema(schema: Schema): Schema {
@@ -60,7 +60,7 @@ export function createModelPort(options: ModelOptions): Infer {
         }
       }
       url = 'https://api.openai.com/v1/responses';
-      body = { model: role.model, reasoning: { effort: role.effort }, instructions: request.instructions + terminalRule, input, tools: declarations(request, 'openai'), parallel_tool_calls: true, store: false, include: ['reasoning.encrypted_content'] };
+      body = { model: role.model, reasoning: { effort: role.effort }, instructions: request.instructions + (options.kind === 'effect_check' ? '' : terminalRule), input, tools: declarations(request, 'openai'), parallel_tool_calls: true, store: false, include: ['reasoning.encrypted_content'] };
       headers = { 'content-type': 'application/json', authorization: `Bearer ${key}` };
     } else {
       const contents: unknown[] = [{ role: 'user', parts: [{ text: request.input }] }];
@@ -73,7 +73,7 @@ export function createModelPort(options: ModelOptions): Infer {
         if (responses.length) contents.push({ role: 'user', parts: responses });
       }
       url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(role.model)}:generateContent`;
-      body = { systemInstruction: { parts: [{ text: request.instructions + terminalRule }] }, contents, tools: [{ functionDeclarations: declarations(request, 'gemini') }], generationConfig: { thinkingConfig: { thinkingLevel: role.effort.toUpperCase() } } };
+      body = { systemInstruction: { parts: [{ text: request.instructions + (options.kind === 'effect_check' ? '' : terminalRule) }] }, contents, tools: [{ functionDeclarations: declarations(request, 'gemini') }], generationConfig: { thinkingConfig: { thinkingLevel: role.effort.toUpperCase() } } };
       headers = { 'content-type': 'application/json', 'x-goog-api-key': key };
     }
     const response = await send(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
@@ -103,5 +103,19 @@ export function createModelPort(options: ModelOptions): Infer {
     if (!calls.length && !texts.length) throw new Error('Worker response empty');
     const items = role.provider === 'openai' ? (Array.isArray(json.output) ? json.output : []) : (record(record((json.candidates as unknown[])[0]).content).parts as unknown[]);
     return { ...terminal(texts.join('\n'), calls), continuation: { provider: role.provider, items } };
+  };
+}
+
+import { EFFECT_CHECK_INSTRUCTIONS, type AuthorityPorts } from './authority.js';
+/** Same configured provider port, isolated owner-only input and no tools or worker history. */
+export function createEffectRole(options: ModelOptions): AuthorityPorts['checkEffect'] {
+  const infer = createModelPort({ ...options, kind: 'effect_check' });
+  return async input => {
+    const signal = AbortSignal.timeout(10_000);
+    const answer = await infer({ instructions: EFFECT_CHECK_INSTRUCTIONS, input: JSON.stringify(input), tools: [], outputs: [], turns: [],
+      model: options.role.model ?? DEFAULT_WORKER_MODEL, effort: options.role.effort ?? DEFAULT_WORKER_EFFORT }, signal);
+    const text = answer.text.trim().toLowerCase();
+    if (answer.calls.length || (text !== 'yes' && text !== 'no')) throw new Error('invalid_effect_decision');
+    return text === 'yes';
   };
 }

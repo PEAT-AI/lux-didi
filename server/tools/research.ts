@@ -4713,7 +4713,9 @@ function capabilityArgs(question: string): JsonObject {
 
 /** The country the owner named, spelled as the owner spelled it, or none when the ask names no place. */
 function metricCountryOf(question: string): string | undefined {
-  const match = /\bin ([\p{Lu}][\p{L}]+(?: [\p{Lu}][\p{L}]+)*)/u.exec(question);
+  // SEARCH-110: the slot is written from the question's own spelling, whether it locates the ask with
+  // "in" or asks for the place with "for".
+  const match = /\b(?:in|for) ([\p{Lu}][\p{L}]+(?: [\p{Lu}][\p{L}]+)*)/u.exec(question);
   const country = match?.[1]?.trim();
   // SEARCH-110: a route word is never a country. On 10.9 this slot held a source's own name and the router
   // answered an unsupported country for a question that asked no coverage question at all.

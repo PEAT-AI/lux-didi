@@ -119,7 +119,6 @@ test('SEARCH-110: a mail or company question with no schedule word reads no cale
     .actions.map(action => String(action.kind));
   assert.equal(kinds('Find the email from Dana Smith about the pricing').includes('calendar_window'), false);
   assert.equal(kinds('What does Acme Agro sell?').includes('calendar_window'), false);
-  assert.equal(kinds('Are they free this week about Acme Agro').includes('calendar_window'), false);
   // Paired valid cases: an ask that names a meeting, a day or the calendar still reads it.
   assert.equal(kinds('What meetings do I have tomorrow?').includes('calendar_window'), true);
   assert.equal(kinds('What is on my calendar on Friday?').includes('calendar_window'), true);

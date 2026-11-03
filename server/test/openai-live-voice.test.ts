@@ -2842,3 +2842,10 @@ test('C-POSTTOOL: backendBrevityTight swaps the brevity line in the delegated in
   assert.equal(String(start.session['instructions']).includes(OPENAI_BACKEND_BREVITY_TIGHT), false,
     'the voice model instructions keep the delivery sections');
 });
+
+test('client delegation starts without session tools or Responses configuration', async t => {
+  const f = await fakeReady(t);
+  const start = f.socket.sent.map(frame => JSON.parse(frame as string) as Record<string, any>).find(frame => frame.type === 'session.start');
+  assert.deepEqual(start?.session.delegation, { type: 'client' });
+  assert.equal(start?.session.tools, undefined);
+});

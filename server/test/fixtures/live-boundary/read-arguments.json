@@ -17,9 +17,9 @@
       "tool": "search_knowledge"
     },
     {
-      "id": "invalid-read_chat",
+      "id": "invalid-read_thread",
       "case": "invalid-read",
-      "tool": "read_chat"
+      "tool": "read_thread"
     },
     {
       "id": "invalid-search_chat",

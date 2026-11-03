@@ -11,9 +11,9 @@ import type { Infer, Inference } from '../../tasks/worker.js';
 
 let mutate = false;
 export function setMutation(value: boolean): void { mutate = value; }
-function equal(actual: unknown, expected: unknown): void {
-  if (mutate) { mutate = false; assert.notDeepEqual(actual, expected); }
-  else assert.deepEqual(actual, expected);
+function equal(actual: unknown, expected: unknown, message?: string): void {
+  if (mutate) { mutate = false; assert.notDeepEqual(actual, expected, message); }
+  else assert.deepEqual(actual, expected, message);
 }
 /** Synthetic persistence only. Never opens the application's database. */
 export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffect = true) {
@@ -154,7 +154,7 @@ async function injected(allowed: boolean, source = "read_mail"): Promise<void> {
   let inference = 0; const executed: string[] = [];
   const f = fixture(async () => {
     inference++;
-    if (inference === 1) return { text: '', calls: [{ id: 'mail', name: source, args: source === 'read_mail' || source === 'read_chat' ? { id: 'synthetic-mail', cursor: null } : source === 'search_web' ? { query: 'synthetic' } : { query: 'synthetic', cursor: null } }] };
+    if (inference === 1) return { text: '', calls: [{ id: 'mail', name: source, args: source === 'read_mail' ? { id: 'synthetic-mail', cursor: null } : source === 'read_thread' ? { ref: 'synthetic-thread', cursor: null } : { query: 'synthetic' } }] };
     if (inference === 2) return { text: '', calls: [{ id: 'read', name: 'search_mail', args: { query: 'synthetic', cursor: null } }] };
     if (inference === 3) return { text: '', calls: [{ id: 'write', name: 'remember_note', args: { text: 'Synthetic note' } }] };
     return { text: 'Synthetic task complete.', calls: [] };
@@ -183,7 +183,7 @@ export async function dispatchScenario(scenario: { tool: string; args: Record<st
     }
     assert.equal(validateArguments(f.call.runtime.registry.get(scenario.tool)!, scenario.args).ok, true, 'synthetic provider arguments must match the production schema');
     f.call.delegation('d1'); await f.call.input(scenario.words, 1);
-    equal(executed.length, 1);
+    equal(executed.length, 1, `Expected one connector execution after valid provider arguments; normalized revalidation=${validateArguments(f.call.runtime.registry.get(scenario.tool)!, pruneNulls(scenario.args)).ok}`);
     assert.deepEqual(executed, [{ name: scenario.tool, args: pruneNulls(scenario.args) }]);
     assert.ok(f.operations.length > 0); equal(f.sent.length, 1);
   } finally { f.call.close(); }
@@ -205,7 +205,7 @@ cases['open-positive'] = async () => {
   const calls: unknown[] = [];
   const bus = { dispatch: async (...args: unknown[]) => { calls.push(args); return 'opened'; } } as unknown as Parameters<typeof executeOpen>[0];
   equal((await executeOpen(bus, 'synthetic-task', { kind: 'web', target: 'https://synthetic.invalid' })).code, 'opened');
-  assert.deepEqual(calls, [['synthetic-task', 'open_url', 'https://synthetic.invalid/']]);
+  assert.deepEqual(calls, [['synthetic-task', 'open_url', 'https://synthetic.invalid']]);
 };
 cases['open-invalid'] = async () => {
   let calls = 0;

@@ -14,15 +14,15 @@
       "allowed": true
     },
     {
-      "id": "inject-read_chat-false",
+      "id": "inject-read_thread-false",
       "case": "injected",
-      "source": "read_chat",
+      "source": "read_thread",
       "allowed": false
     },
     {
-      "id": "inject-read_chat-true",
+      "id": "inject-read_thread-true",
       "case": "injected",
-      "source": "read_chat",
+      "source": "read_thread",
       "allowed": true
     },
     {

@@ -30,16 +30,15 @@
     "id": "search_knowledge-valid",
     "tool": "search_knowledge",
     "args": {
-      "query": "synthetic",
-      "cursor": null
+      "query": "synthetic"
     },
     "words": "Read the synthetic source."
   },
   {
-    "id": "read_chat-valid",
-    "tool": "read_chat",
+    "id": "read_thread-valid",
+    "tool": "read_thread",
     "args": {
-      "id": "synthetic-post",
+      "ref": "synthetic-thread",
       "cursor": null
     },
     "words": "Read the synthetic source."
@@ -48,8 +47,7 @@
     "id": "search_chat-valid",
     "tool": "search_chat",
     "args": {
-      "query": "synthetic",
-      "cursor": null
+      "query": "synthetic"
     },
     "words": "Read the synthetic source."
   },

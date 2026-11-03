@@ -1440,3 +1440,11 @@ for (const provider of ['openai', 'gemini']) {
     assert.doesNotMatch(accepted.text, /# Research procedure/);
   });
 }
+
+test('worker instructions append composed presentation style, never owner lore', async () => {
+  const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
+  const profile = syntheticOwner('SYNTHETIC PRESENTATION', 'SYNTHETIC LORE');
+  const style = ownerProfileSections(profile).find(section => section.id === 'owner-style')!.text;
+  assert.equal(workerInstructions(profile), `${WORKER_INSTRUCTIONS}\n\n${style}`);
+  assert.doesNotMatch(workerInstructions(profile), /SYNTHETIC LORE/);
+});

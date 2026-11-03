@@ -85,6 +85,12 @@ import { pathToFileURL } from 'node:url';
 const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
+const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
+assert.ok(worker.length <= 3000);
+for (const text of [voice, worker]) {
+  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
+  assert.doesNotMatch(text, /["“][^"”]+["”]/);
+}
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
 assert.doesNotMatch(voice, /research|[\u2013\u2014]|\b(?:open_web|draft_email|stage_lux_note)\b/i);

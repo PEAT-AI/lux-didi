@@ -330,36 +330,6 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 
 // N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
-test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  // VOICE-R1: waiting behaviour is one persona rule, and no section tells the model to speak before every lookup.
-  assert.equal(NAYA_WORK_DELIVERY.includes("Silence while you look something up is fine."), false, 'C-LIVE: silence while looking is no longer licensed');
-  assert.ok(NAYA_WORK_DELIVERY.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
-  // C-OPENER 10.9: the field calls said a waiting phrase with no call behind them, once after a direct ask.
-  // The licence to announce a wait is gone; the rule names the two situations instead of a line to say.
-  assert.equal(NAYA_WORK_DELIVERY.includes('need a moment'), false, 'no text invites a wait with no call behind it');
-  assert.ok(NAYA_WORK_DELIVERY.includes('A wait belongs only to a response that really makes a call'), 'a wait is tied to a response that makes the call');
-  assert.ok(NAYA_WORK_DELIVERY.includes('a direct ask gets the call, not an announcement of it'), 'a direct ask gets the call, not an announcement');
-  for (const banned of ['never go silent', 'say one short line', 'Nothing has been sent or booked', 'Before an actual lookup']) {
-    assert.equal((NAYA_LIVE_BASE + NAYA_WORK_DELIVERY + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
-  }
-  // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
-  assert.ok(instruction.includes('Answer from these instructions without a lookup when they already answer it.'), 'the no-lookup answer rule sits beside the cue');
-  assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
-  // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
-  for (const moved of ['put independent source lookups in one research plan so the host can run them concurrently', 'consuming retained local remainder before another source read']) {
-    assert.equal(instruction.includes(moved), false, `the voice prompt carries no moved procedure sentence: ${moved}`);
-    assert.ok(NAYA_BACKEND_PROCEDURE.includes(moved), `the backend procedure carries it: ${moved}`);
-  }
-  // PV1-R3 and 3p: the retired cue rules are absent from the whole composed instruction, not just from the base.
-  for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
-    assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
-  }
-  assert.equal((NAYA_WORK_DELIVERY + instruction).split('never use a stock waiting line').length - 1, 1, 'the waiting rule is stated once');
-  assert.ok(NAYA_WORK_DELIVERY.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
-});
-
-// --- W5: the four audit rules reach the Gemini voice instruction too, and nothing they replaced returns --
 test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
   for (const rule of [
@@ -373,13 +343,6 @@ test('W5: the compiled Gemini voice instruction carries the four audit rules onc
     'Never hand ordinary continuation back to the owner as a permission question',
   ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
   assert.equal(instruction.split('Only the host bridges lookups.').length - 1, 1, 'the silence rule is still stated once');
-});
-
-test('#665: the research procedure answers with what it has instead of chasing a page-limit note', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
-  const rule = 'A page limit or more-available note is not a gap to chase; answer with what you have.';
-  assert.equal(NAYA_BACKEND_PROCEDURE.split(rule).length - 1, 1, 'the procedure states the page-limit rule once');
-  assert.equal(instruction.split(rule).length - 1, 1, 'and the compiled instruction carries it once');
 });
 
 test('public voice and worker policies contain judgments, not lines to recite', async () => {

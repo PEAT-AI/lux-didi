@@ -263,6 +263,7 @@ test('a Live acceptance snapshot taken while verifying never gains the connector
 });
 
 test('a slow identity proof inside the endpoint call deadline still publishes the connector', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   // F9: the proof is one read call, so it is bounded by the endpoint's own call deadline, not a shorter
   // fixed bound. A healthy connector whose first identity call is slow under host load must be proven,
   // never wrongly marked unproven and fail-closed. The fake answers at 4.2 s, past the old 4 s bound.
@@ -271,7 +272,7 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
-  await new Promise<void>(resolve => setTimeout(resolve, 4_200));
+  t.mock.timers.tick(4_200);
   fake.releaseProof(0, OWNER);
   await started;
   assert.deepEqual(mcp.connectionIds(), ['gmail']);

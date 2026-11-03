@@ -51,6 +51,7 @@ export function redactTaskResult(result: ToolResult, tool: string): ToolResult {
     if (disclosure?.recordRedaction) disclosure.recordRedaction(tool, count);
     else hostLogEvent({ event: 'tool_redaction', tool, count });
   }
+  if (result[TASK_CONNECTOR_FAILURE]) safe[TASK_CONNECTOR_FAILURE] = safe.repair ?? redactSecrets(result[TASK_CONNECTOR_FAILURE]!);
   if (disclosure) {
     const snapshot = redactSecrets(disclosure), evidence = disclosure[HOST_EVIDENCE];
     if (evidence?.kind === 'remote-body') {

@@ -155,8 +155,12 @@ export function parseAlarmTime(words: string, now: number, tz: string, time?: Ti
     }
     if (!clock) {
       if (relative !== undefined) return ready(now + relative, 'model');
+      // A day with no clock names no time of day, and an hour is not ours to invent (C-FREEDOM takes the
+      // next occurrence only of a time he actually sent). The alarm refuses it; the event path resolves
+      // its own clock from the same words, which is its recorded outcome.
+      if (checked.minute === undefined) return { status: 'clarify', reason: 'invalid_time' };
       // Only a minute came through: the next clock time that reads that minute.
-      const minute = checked.minutesStated === true ? checked.minute ?? 0 : 0;
+      const minute = checked.minutesStated === true ? checked.minute : 0;
       const [, , , hourNow, minuteNow] = localParts(now, zone) as [number, number, number, number, number, number];
       const nextHour = minute > minuteNow ? hourNow : hourNow + 1;
       return ready(commitWall({ kind: 'today' }, nextHour % 24, minute, now, zone), 'owner');

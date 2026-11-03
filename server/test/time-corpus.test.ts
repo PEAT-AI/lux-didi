@@ -246,6 +246,16 @@ test('C-TIME T-R1 counts: how the checker reads every corpus row', () => {
   assert.deepEqual(reading, { unique: 49, partial: 7, inconclusive: 10 }, JSON.stringify(reading));
 });
 
+test('C-FREEDOM: a day with no clock names no time of day', () => {
+  // C-FREEDOM takes the next occurrence of a time he sent; a day alone is not a time, so the alarm
+  // refuses it and the paired valid case below still takes the next occurrence of a stated clock.
+  const dayOnly = parseAlarmTime('What is on my calendar tomorrow?', Date.parse('2026-03-05T09:30:00Z'), 'Europe/Berlin');
+  assert.deepEqual(dayOnly, { status: 'clarify', reason: 'invalid_time' });
+  const stated = parseAlarmTime('at 6 pm today', Date.parse('2026-03-05T09:30:00Z'), 'Europe/Berlin');
+  assert.equal(stated.status, 'ready');
+  if (stated.status === 'ready') assert.equal(stated.localTime, '18:00');
+});
+
 test('C-FREEDOM: with several alarms armed, his words pick the one', async t => {
   // The words "bins" name the second alarm, so the first one stays armed and the read-back says which.
   const h = await alarmHarness(t);

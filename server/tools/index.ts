@@ -328,7 +328,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
     }
     if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
-    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && call.effect === 'read' && TASK_TOOL_NAMES.has(call.toolName);
+    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && TASK_TOOL_NAMES.has(call.toolName);
     const bound = taskRead
       ? snapshot.connections.find(item => item.policy.endpoint.id === evidence.source.endpointId && item.policy.endpoint.account === evidence.source.account && item.policy.endpoint.resource === evidence.source.resource)
       : snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);

@@ -207,10 +207,11 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const createTaskRuntime = testing?.createTaskRuntime ?? hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
+    ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
     contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { researchWeb } : {}), ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

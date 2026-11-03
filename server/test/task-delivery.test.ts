@@ -1,3 +1,4 @@
+import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TaskDelivery, splitSpokenText, DELIVERY_HEARD_MS } from '../tasks/delivery.js';
@@ -8,7 +9,7 @@ function fixture() {
   const delivery = new TaskDelivery({ isCurrent: () => current,
     append: (id, text) => { const command = `c${sends.length}`; sends.push({ id, text, command }); return command; },
     reconnect: text => { reconnectTexts.push(text); reconnects++; return true; },
-    state: (_identity, state) => states.push(state),
+    state: (identity, state) => { const event = safeEvent({ event: 'task_delivery', taskId: identity.task_id, revision: identity.task_revision, state }); assert.ok(event, `delivery state ${state} must survive safeEvent`); states.push(String(event.state)); },
     after: (_ms, callback) => { pending.add(callback); return () => { pending.delete(callback); }; },
   });
   return { delivery, sends, states, reconnectTexts, stale: () => { current = false; }, reconnects: () => reconnects,
@@ -74,9 +75,9 @@ test('a delivery deadline during other output defers fallback until quiet', () =
 
 test('a reconnect is not sent or accepted until the fresh session is ready', () => {
   const f = fixture(); f.delivery.deliver(identity, answer('Synthetic ready answer.'));
-  assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnecting']);
+  assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnect']);
   f.advance(); assert.equal(f.delivery.undelivered, undefined, 'no heard deadline runs before setup acknowledgement');
-  f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnecting', 'sent', 'accepted']);
+  f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnect', 'sent', 'accepted']);
   f.delivery.transcript('Synthetic ready answer.'); f.advance();
   assert.equal(f.states.at(-1), 'heard'); assert.equal(f.delivery.undelivered, undefined);
 });
@@ -85,4 +86,16 @@ test('reconnect instructions contain only the not-yet-heard answer chunks', () =
   f.delivery.attach(identity, 'd'); f.delivery.deliver(identity, answer(first + ' Second sentence.'));
   f.delivery.transcript(first); f.delivery.rejected('c1'); f.delivery.rejected('c2');
   assert.deepEqual(f.reconnectTexts, ['Second sentence.']);
+});
+
+test('VOICE-R15: every delivery state and lifecycle identity survives closed safe audit serialization', () => {
+  for (const state of ['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']) {
+    const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 2, state };
+    assert.deepEqual(safeEvent(event), event);
+    assert.equal(safeEvent({ ...event, text: 'Synthetic forbidden payload' }), undefined);
+  }
+  const lifecycle = { event: 'task_lifecycle', taskId: 'synthetic-task', revision: 2, generation: 3, phase: 'complete', count: 1, ms: 2 };
+  assert.deepEqual(safeEvent(lifecycle), lifecycle);
+  assert.equal(safeEvent({ ...lifecycle, text: 'Synthetic forbidden payload' }), undefined);
+  assert.equal(safeEvent({ event: 'task_delivery', taskId: 'synthetic-task', revision: 2, state: 'unknown' }), undefined);
 });

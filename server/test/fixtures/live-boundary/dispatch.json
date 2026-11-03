@@ -1,0 +1,62 @@
+[
+  {
+    "id": "mail-read-positive",
+    "tool": "read_mail",
+    "args": {
+      "id": "synthetic-mail",
+      "cursor": null
+    },
+    "words": "Read synthetic mail."
+  },
+  {
+    "id": "calendar-read-positive",
+    "tool": "calendar_events",
+    "args": {
+      "start": "2030-01-02T00:00:00Z",
+      "end": "2030-01-03T00:00:00Z"
+    },
+    "words": "Read the synthetic calendar."
+  },
+  {
+    "id": "search_mail-valid",
+    "tool": "search_mail",
+    "args": {
+      "query": "synthetic",
+      "cursor": null
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "search_knowledge-valid",
+    "tool": "search_knowledge",
+    "args": {
+      "query": "synthetic"
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "read_thread-valid",
+    "tool": "read_thread",
+    "args": {
+      "ref": "synthetic-thread",
+      "cursor": null
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "search_chat-valid",
+    "tool": "search_chat",
+    "args": {
+      "query": "synthetic"
+    },
+    "words": "Read the synthetic source."
+  },
+  {
+    "id": "people_lookup-valid",
+    "tool": "people_lookup",
+    "args": {
+      "query": "synthetic"
+    },
+    "words": "Read the synthetic source."
+  }
+]

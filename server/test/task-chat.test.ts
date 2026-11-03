@@ -22,7 +22,7 @@ test('chat declarations execute one read and one write through the shared task r
   t.after(() => { try { runtime.close(); } finally { store.close(); rmSync(directory, { recursive: true, force: true }); } });
   const revision = runtime.begin('Show my reminders, then add one for tomorrow', 1, 1);
   const results: JsonObject[] = [];
-  const registry = taskDefinitions(runtime, revision.identity, { complete: (_call, response) => { results.push(response); return { id: `result-${results.length}`, sha256: 'a'.repeat(64) }; } });
+  const registry = taskDefinitions(runtime, revision.identity, { journal: { fail: () => { throw Error('successful isolated task must not fail'); } }, taskVisible: () => true, runTask: (_call, _args, body) => body(), taskIntent: (context, name) => { const { signal: _signal, ...execution } = context; return { ...execution, toolName: name, argumentsHash: 'synthetic' }; }, complete: (_call, response) => { results.push(response); return { id: `result-${results.length}`, sha256: 'a'.repeat(64) }; } });
   const { declarations } = declarationsFor(registry);
   assert.ok(declarations.some(tool => tool.name === 'alarm_list')); assert.ok(declarations.some(tool => tool.name === 'alarm_create'));
   assert.ok(!declarations.some(tool => tool.name.includes('research')));

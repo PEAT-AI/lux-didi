@@ -1,3 +1,4 @@
+import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { Store } from '../runtime/store.js';
 import type { SchemaMigration } from '../contracts/storage.js';
@@ -29,7 +30,7 @@ export function openFixture(dir: string, model: ModelPort, overrides: Partial<Ch
     route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] },
     preferences: validatePreferences({ schemaVersion: 1, ownerId: store.assistantId, dataClass: 'ordinary', language: 'de-DE', register: 'plain', humor: 'off', verbosity: 'brief' }, store.assistantId),
     classify: () => ({ ownerId: store.assistantId, dataClass: 'ordinary', revision: 1 }),
-    context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [] },
+    context: { budgets: { trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, contextChars: 12000, historyChars: 12000 }, sources: [] },
     now: () => 0, ...overrides };
   const recoveryContext = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch };
   const chat = new ChatService(config); chat.recover(recoveryContext);

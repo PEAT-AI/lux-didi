@@ -1,16 +1,20 @@
+import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
+import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
+import { composedGrantedNames } from '../connectors/index.js';
+import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
   [tool: string]: ((args: Record<string, unknown>, signal: AbortSignal, context: TaskExecutionContext) => Promise<ToolResult>) | undefined;
 }
-interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>): Record<string, unknown> }
+interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
   search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
@@ -19,7 +23,7 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: a => ({ query: a.query }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: (parameters.properties as { limit: { maximum: number } }).limit.maximum }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: [Number(a.id)] }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref }) },
@@ -57,9 +61,9 @@ function eventTime(value: unknown): string {
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
-  if ((name === 'search_knowledge' || name === 'search_company') && typeof data === 'string') {
-    const rows = rankedText(data);
-    return rows.length ? rankedResult(text(args.query), rows) : failed('The source returned no structured ranked candidates. Try a broader query; this is not proof of absence.');
+  if (typeof data === 'string' && !name.startsWith('read_')) {
+    const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
+    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
@@ -81,6 +85,9 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
     coverage: `${items.length} returned items.${cursor ? ' More results exist; continue the same query with the returned cursor.' : incomplete ? ' Coverage incomplete. Source paging is not exposed by this tool; narrow the query or time window instead.' : ' Connector returned no continuation.'}`, repair: null };
 }
+export function nativeTaskReadGranted(policy: BoundConnector['policy'], tool: string): boolean {
+  return policy.toolNames.includes(tool) || composedGrantedNames(policy.connector, policy.toolNames).includes(tool);
+}
 /** Capability-specific query tools avoid a free-form filters blob. Every field comes from configuration. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy));
@@ -90,18 +97,34 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
     filters: { anyOf: capabilities.map(item => strictSchema(item.parameters)) },
   }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
+export function isConnectorTaskRead(name: string): boolean { return Object.hasOwn(mappings, name) || name === 'query_company'; }
+export function nativeTaskReadTool(name: string, connector: string, args?: Record<string, unknown>): string | undefined {
+  if (name === 'query_company' && connector === 'mongoose' && typeof args?.resource === 'string') return args.resource;
+  const mapping = mappings[name];
+  return mapping?.connector === connector ? mapping.tool : undefined;
+}
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
-    const binding = bindings.find(binding => binding.connector === mapping.connector && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
+    const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
-    const mapped = mapping.args(args);
+    const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
-    if (result.state !== 'completed') return failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.');
+    const hostRepair = connectorFailures.get(result);
+    if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
+    if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
+      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' };
+    if (binding.project) {
+      try {
+        const snapshot = binding.project(result);
+        const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
+        return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
+      } catch { return failed('The connector result could not be safely disclosed. Repair its source policy or use another approved source.'); }
+    }
     return projectTaskPayload(name, result.decodedResult, args);
   };
 }

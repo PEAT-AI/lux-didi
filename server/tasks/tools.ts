@@ -1,3 +1,4 @@
+import { redactTaskResult } from './results.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
 import type { AuthorityPort, Effect, Identity } from './authority.js';
@@ -44,7 +45,7 @@ export function pruneNulls(value: unknown): unknown {
 }
 export function validateArguments(tool: TaskTool, value: unknown): { ok: true; args: Record<string, unknown> } | { ok: false; repair: string } {
   const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
-  return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
+  return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: structuredClone(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
 export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 const definitions: Definition[] = [
@@ -58,10 +59,9 @@ const definitions: Definition[] = [
   { outside: false, name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
   { outside: true, name: 'search_web', description: 'Search the web.', fields: { query: string } },
   { name: 'remember_note', description: 'Remember a local note.', fields: { text: string }, effect: 'local', outside: false },
-  { name: 'stage_lux_note', description: 'Stage a local knowledge note.', fields: { title: string, text: string }, effect: 'local', outside: false },
-  { name: 'save_to_vault', description: 'Save a local document.', fields: { title: string, text: string }, effect: 'local', outside: false },
+  { name: 'save_to_vault', description: 'Save a note to the configured Lux vault and return its real connector receipt.', fields: { title: string, text: string }, effect: 'local', outside: false },
   { name: 'draft_email', description: 'Create an email draft, not send.', fields: { to: strings, subject: string, body: string }, effect: 'local', outside: false },
-  { name: 'draft_chat', description: 'Create a local chat draft, not send.', fields: { target: string, text: string }, effect: 'local', outside: false },
+  { name: 'draft_chat', description: 'Save a draft in the configured Mattermost reply box, never post it. Resolve the target to @username, #channel or thread:<channel-id>:<root-post-id>.', fields: { target: string, text: string }, effect: 'local', outside: false },
   { name: 'create_event', description: 'Create a calendar event.', fields: { title: string, start: string, end: string, calendar_id: optionalString }, effect: 'external', outside: false },
   { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect: 'destructive', outside: false },
   // Distinct schemas avoid action-dependent optional fields and model guessing.
@@ -102,9 +102,9 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
               coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,
               exposures: result.files.some(file => file.outsideText) ? ['drive'] : [] };
           }
-          return ports.execute(tool.name, validation.args, signal, outsideTextSeen, identity);
+          return ports.execute(tool.name, pruneNulls(validation.args) as Record<string, unknown>, signal, outsideTextSeen, identity);
         };
-        return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
+        return redactTaskResult(await (effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal)), tool.name);
       },
     };
     if (!integerSchema(tool.parameters)) throw new Error(`Non-integer numeric schema literal in ${tool.name}`);

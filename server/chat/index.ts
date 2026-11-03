@@ -163,7 +163,7 @@ export class ChatService implements ChatPort {
     const revision = call.runtime.begin(words, 1, ++call.ownerTurn);
     call.runtime.bindCurrent(() => this.lookupAuthority(run.runId) !== null);
     this.#taskRuns.set(run.runId, { runtime: call.runtime, identity: revision.identity });
-    const registry = taskDefinitions(call.runtime, revision.identity, tools.owner);
+    const registry = taskDefinitions(call.runtime, revision.identity, tools.owner, run.runId);
     const identities = registry.map(tool => ({ name: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId }));
     const frozen = scope.frozen;
     if (!frozen) this.#config.store.transaction(tx => tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)', [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()), scope.policyIdentity, canonicalJSON(identities), canonicalJSON(scope.connectionIds)]));

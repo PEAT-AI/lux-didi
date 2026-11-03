@@ -4,12 +4,23 @@ import { Authority, authorizeWebOpen, assertRegistryExposure } from '../tasks/au
 import { normalizeTrelloWrite } from '../tools/trello.js';
 import { publicQueryOf, searchQueryAfterExposure } from '../tools/web-search.js';
 
-for (const target of ['http://example.com/', 'https://localhost/a', 'https://127.0.0.1/', 'https://10.0.0.1/', 'https://172.16.0.1/', 'https://192.168.0.1/', 'https://169.254.169.254/', 'https://[::1]/', 'https://[fc00::1]/', 'https://[::ffff:127.0.0.1]/', 'https://user:pass@example.com/']) {
-  test(`new task sink rejects nonpublic URL, paired with a public URL: ${target}`, () => {
-    const result = authorizeWebOpen({ target, exposed: false });
+for (const target of ['http://example.com/article', 'https://example.com/article']) {
+  test(`SD7 public HTTP(S) opens clean and from exact outside evidence: ${target}`, () => {
+    assert.deepEqual(authorizeWebOpen({ target, exposed: false }), { allow: true });
+    assert.deepEqual(authorizeWebOpen({ target, exposed: true, toolResultURLs: [target] }), { allow: true });
+  });
+}
+for (const target of ['http://localhost/preview', 'https://localhost/a', 'https://127.0.0.1/', 'https://10.0.0.1/', 'https://172.16.0.1/', 'https://192.168.0.1/', 'https://169.254.169.254/', 'https://[::1]/', 'https://[fc00::1]/', 'https://[::ffff:127.0.0.1]/']) {
+  test(`SD7 trusted private destination is allowed, exact outside destination refused: ${target}`, () => {
+    assert.deepEqual(authorizeWebOpen({ target, exposed: false }), { allow: true });
+    const result = authorizeWebOpen({ target, exposed: true, toolResultURLs: [target], canonicalURLs: [target] });
     assert.equal(result.allow, false);
     if (!result.allow) { assert.equal(result.code, 'egress_blocked'); assert.ok(result.repair); }
-    assert.deepEqual(authorizeWebOpen({ target: 'https://example.com/article', exposed: false }), { allow: true });
+  });
+}
+for (const target of ['http://user:pass@example.com/', 'https://user:pass@example.com/', 'file:///synthetic/path', 'javascript:alert(1)']) {
+  test(`SD7 unsafe scheme or credentials are refused in both contexts: ${target}`, () => {
+    for (const exposed of [false, true]) assert.equal(authorizeWebOpen({ target, exposed, toolResultURLs: [target] }).allow, false);
   });
 }
 

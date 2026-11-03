@@ -1,3 +1,4 @@
+import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
 import type { Store } from '../runtime/store.js';
@@ -13,8 +14,10 @@ import { documentResult, failed } from './results.js';
 import { TaskRuntime } from './runtime.js';
 import { canonical, type Infer } from './worker.js';
 export interface HostTaskOptions {
+  now?: () => number;
   store: Store; credentials: Credentials; models: RoleModels;
   bindings(): readonly BoundConnector[];
+  draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
   contentAllowed(): boolean;
   timeZone: string;
   executors?(sessionId: string): ExistingExecutors;
@@ -35,19 +38,29 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, delivery, authority, infer, contentAllowed: options.contentAllowed,
-      configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
+      timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
         if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });
-        if (name === 'remember_note' || name === 'draft_chat' || name === 'stage_lux_note') {
+        if (name === 'draft_chat') {
+          if (!options.draftChat || !identity) return failed('Mattermost drafts are not configured. Configure the Mattermost draft connector; nothing was saved.');
+          const target = String(args.target).trim(), thread = /^thread:([^:]+):([^:]+)$/.exec(target);
+          const destination = thread ? { channel: thread[1]!, rootId: thread[2]! } : target.startsWith('#') ? { channel: target.slice(1) } : target.startsWith('@') ? { person: target.slice(1) } : undefined;
+          if (!destination) return failed('Resolve the target to an exact Mattermost @username, #channel or thread:<channel-id>:<root-post-id>. Nothing was saved.');
+          const outcome = await options.draftChat({ ...destination, message: String(args.text), clientRequestId: identity.operation_id }, connectionIds);
+          if (outcome.state === 'done') return documentResult(JSON.stringify(outcome.response), 'mattermost-draft');
+          if (outcome.state === 'unknown') throw Error('Mattermost draft acknowledgement is unknown; check the reply box before retrying.');
+          return failed(outcome.state === 'not_authorized' ? 'Mattermost drafts are not configured or authorized. Configure the Mattermost draft connector; nothing was saved.' : outcome.state === 'recipient' ? 'The Mattermost target is unresolved or ambiguous. Use its exact username or channel id; nothing was saved.' : 'Mattermost did not save the draft: ' + outcome.reason);
+        }
+        if (name === 'remember_note') {
           const now = Date.now(), clock = { now: () => now };
           return options.store.transaction(tx => {
-            const session = memory.createSession(tx, { title: name === 'draft_chat' ? `Draft for ${String(args.target)}` : typeof args.title === 'string' ? args.title : 'Task note', startedAt: now, timeZone: options.timeZone }, clock);
+            const session = memory.createSession(tx, { title: typeof args.title === 'string' ? args.title : 'Task note', startedAt: now, timeZone: options.timeZone }, clock);
             const entry = memory.appendEntry(tx, { sessionId: session.id, text: String(args.text), capturedAt: now, timeZone: options.timeZone,
               source: { label: 'task note', provider: 'live-voice', accountId: sessionId, externalId: `${identity?.task_id}:${identity?.operation_id}`, sourceTimestamp: now, availability: 'present', note: 'kind:fact' } }, clock);
             labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'private' }, now);
             labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'private' }, now);
-            return { status: 'ok', text: name === 'draft_chat' ? 'Draft saved locally. Nothing was sent.' : name === 'stage_lux_note' ? 'Knowledge note staged locally. Not sent to the vault.' : 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
+            return { status: 'ok', text: 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
           });
         }
         if (name === 'save_to_vault') {

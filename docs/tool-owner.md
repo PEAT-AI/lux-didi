@@ -19,20 +19,13 @@ or delegation machinery to the owner.
 
 ## Opening things
 
-`open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A free write does not expire inside the session; only a guarded kind keeps the 120 second expiry on a monotonic clock (C-FREEDOM). Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
+The helper uses the canonical `open` schema (`kind` and `target`) and `find_file` from the shared task registry. Task Authority admits an opening effect before the accepted native opener resolves and dispatches its exact destination. Finalized owner words belong to the task revision; partial speech holds delivery rather than minting an independent phrase-based permission grant. These tools only open destinations; they do not type, click, send or edit.
 
 A direct ask executes now, without confirmation.
 
 ### The tier table (C-PERMTIER, 10.7.2)
 
-`server/tools/tiers.ts` is the one closed table. `free` is `set_alarm`, `cancel_alarm`,
-`snooze_alarm`, `list_alarms`, `create_event`, `draft_email`, `draft_chat`, `remember_note`,
-`stage_lux_note`, `save_to_vault`, `trello_write` and every `open_*` tool; everything else is
-`guarded`, so a send tool added later is guarded without any code here. A free tool executes on the
-model's call while the owner's live call is open: no cue regex, no verb and noun set, no negation scan
-and no later final takes an earned grant back. `delete_event` stays guarded on its created-or-named
-selector, and it is the one kind that still reads a negated clause. A refusal always names its cause,
-which the model may repeat.
+Task effects are declared in `server/tasks/tools.ts` and admitted by `server/tasks/authority.ts`, not a free/guarded keyword tier. A write after outside text goes through the isolated effect check with the latest finalized owner words and the immediately preceding task owner words as earlier context when present. Ordinary effect-check failure follows the accepted fail-open tradeoff. `delete_event` is different: it stages one exact event id per call and requires a later finalized owner turn and a successful closed confirmation check. A failed check never deletes, a replacement stage cannot inherit confirmation, and a successful confirmation consumes its stage once.
 
 The free tier reads no clause of his speech (C-NOTEGATE, #874). A dictation that says "I don't want to
 put the survey in there" is content about the survey, not a withdrawal of the open owner call, so the
@@ -68,7 +61,7 @@ A source handle must resolve in the existing host-shown registry, have the kind 
 
 ## Local memory and Lux notes
 
-`stage_lux_note` saves a direct finalized owner write request immediately through the canonical host tool path and the already-authorized remote writer. There is no yes/readback/settle commit path. The host validates the bounded candidate body before adding a small provenance line with the host request id and successful-read source counts. An external-content marker conservatively covers reused source context from the same session. Counts are request-local, host-recorded after actual successful reads, and cannot create write permission.
+`save_to_vault` sends the exact Task Authority-approved payload through `VaultWriter.saveTask` and the configured Lux write transport. It returns the real connector receipt; an unknown acknowledgement is not committed as success. The misleading local `stage_lux_note` tool is removed. `remember_note` remains a private local Domain memory note and must never be described as a remote Lux save.
 
 Authorization and local state are committed before the remote writer runs outside the database transaction. A successful receipt contains the saved title/id; failure or an unknown write outcome never claims a saved note. Same-candidate retries reuse the receipt and cannot write twice. A quoted note, a source instruction or a vague comment cannot create a grant. A genuinely missing field returns a named clarification; it does not ask for a second complete confirmation. Historical nonterminal confirmation rows are cancelled by migration rather than resumed as executable requests. Existing local-memory formats remain separate from Lux knowledge writes.
 
@@ -122,7 +115,7 @@ Alarms ring only on an awake Mac and cannot wake a sleeping or closed-lid machin
 
 The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` through the same live registry composition as its other owner-facing tools. Both Gemini setup and OpenAI responses delegation receive these declarations. Alarms ring only on an awake Mac; finalized owner speech authorizes mutations and the host parses the time.
 
-`LIVE_NOT_MODEL_FACING` in `server/tools/declarations.ts` is the single explicit exception list for registered internal reads, with a reason per name. Research owns those reads. Release 10 removes `remember_note` and `save_to_vault` from the live registry; `stage_lux_note` is the live vault-write path. The catalog guard in `server/test/tools-builtin-intent.test.ts`, run by `scripts/check-tool-owner.sh`, compares real host registrations with both adapters' first fake-provider wire frames. New registered owner tools must reach that wire catalog or have an explicit exception.
+The shared task registry is the model-facing read/write catalog. Chat derives its declarations through `declarationsFor`; the worker uses the same definitions, Authority, provenance and receipts. The live voice surface exposes client delegation or the single Gemini `delegate(request)` function, not internal reads or writes. The retired live exception list and research catalog no longer choose which tools a voice model may call.
 
 ## Registered calendar schema and safe rejection evidence
 

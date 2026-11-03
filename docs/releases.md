@@ -4,13 +4,13 @@ Reader: whoever ships a release, or wants to know what one contains.
 
 A release in this repository is one squash-merged pull request to `main`. There is no long-lived release branch: the merge commit on `main` is the release, its subject is the release line ("Didi release N: ...") and everything in it landed as one unit. Every push to `main` also gets a CalVer tag and a GitHub release, cut automatically (see [Cutting a release](#cutting-a-release)). The repository is a sole-owner project, so a release is also the moment the owner installs and uses the build.
 
-## Release 10.9
+## Release 10.10
 
-This train combines reviewed fixes for dictated-note negation, recent live openings and evidence-backed write claims, connector readiness before calls, alarm argument validation, bounded call diagnostics and CI gate accuracy/timing.
+Naya now talks while a host-owned helper reads sources and carries out your requests. Ask in your own words: drafts, notes, owner-only events, alarms, board changes and opening things no longer depend on a phrase or a readback ceremony. Corrections revise the work, and connection recovery preserves work awaiting delivery. The helper model is one configurable role, separate from voice.
 
-Tracked delivery issues: #874 (notes), #877 (openings), #875 (connector readiness), #873 (alarms), #876 (diagnostics) and #867 (CI checks). Pre-existing MCP check staging defects are repaired on this train. The known held-positive installed-proof failure recurred under #841 and remains a failed check, not a pass; installed checks after merge are still owed. Native audibility receipt timing remains open in #878; the broader guarded-gate and alarm-audit requests in #828 and #829 also remain open.
+Nothing sends, posts, invites or pays. Deleting a calendar event needs a later confirmation. After outside text, an isolated permission check sees your words and the action kind, never that text. Local records and operation receipts keep an uncertain outcome distinct from success.
 
-The release number belongs to the squash commit title and release notes, as in release 10.8. It does not change the application's independent bundle version. A missing installed runtime makes the macOS install check blocked, never passed. Assembly and check evidence must accompany the release handoff before any merge or install.
+This is a source release description, not a claim that a particular Mac has installed it. Verify the candidate and obtain permission before installing or exercising it.
 
 ## The shape of a release
 
@@ -56,7 +56,7 @@ bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applicat
 bash scripts/smoke.sh
 ```
 
-`scripts/install-macos-app.sh` replaces only the app and keeps the previous one beside it until the new one validates. `scripts/smoke.sh` is the real-path smoke: it runs the host the way the native app does (`--supervised`, the app's environment, a staged copy of its configuration), holds its stdout to the native rule, and drives the operator's path: every configured connector, one text turn that must call tools, one Live turn that must call and keep the session open, and one Live voice turn that must run the research loop. Run it after every install and before every release. It is a manual run after an install; the gate carries the narrower `scripts/check-install-smoke.sh`, which runs the install research smoke against the repo build with every fetch intercepted and starts no host.
+`scripts/install-macos-app.sh` replaces the app and retains a rollback copy. `scripts/smoke.sh` is a real-path probe that can contact configured connectors and providers; obtain explicit authorization before running it or exercising an installed app. It is not an offline documentation check. The narrower `scripts/check-install-smoke.sh` uses synthetic mail and intercepted transport against the packaged source-read path; its legacy implementation filename does not define the current helper tools.
 
 A release is done when the gate passed at the merged head, the installer put the bundle in place, the smoke passed against the installed app, and the release row is in `implementation-status.md`.
 

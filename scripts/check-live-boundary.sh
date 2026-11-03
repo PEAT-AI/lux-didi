@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# C-EVALS: the live-boundary eval check. No network, no model, no audio device, no owner data: every ask
-# and every connector answer in server/test/fixtures/live-boundary is synthetic.
-#
-# It builds the production live session (createLiveSessionOwner with its catalogue, grants, declarations,
-# owner-final observation and dispatch), replaces only the provider transport and the connector I/O, and
-# prints PASS / EXPECTED_RED / FAIL per scenario plus the phrasing corpus's usability and safety gates.
-#
-# EXPECTED_RED is a base-truth marker with a named reason, never a pass. This local check tolerates it;
-# the release train runs scripts/check-live-boundary.sh --release-gate, which refuses it.
+# Synthetic task runtime and delivery boundaries. No app, network, audio or owner database.
+# Every scenario also runs with an inverted concrete expectation to prove it detects red.
+# A fake provider does not prove the real wire. Any source defect fails this gate.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,5 +24,6 @@ cd "$root/server"
 "$deps/typescript/bin/tsc" --ignoreConfig --outDir dist --rootDir . --module nodenext --moduleResolution nodenext \
   --target ES2023 --strict --exactOptionalPropertyTypes --noUncheckedIndexedAccess \
   --noUnusedLocals --noUnusedParameters --skipLibCheck --types node \
-  test/live-boundary/harness.ts test/live-boundary/runner.ts
+  test/live-boundary/harness.ts test/live-boundary/runner.ts test/timeline.test.ts
+node --test --test-name-pattern '^task audit' dist/test/timeline.test.js
 exec node dist/test/live-boundary/runner.js "$@"

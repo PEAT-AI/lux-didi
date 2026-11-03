@@ -1,3 +1,12 @@
+import './host-compose-wire.test.js';
+import './continuity-replay.test.js';
+import './task-context.test.js';
+import './host-log.test.js';
+import './connector-publication.test.js';
+import './live-declarations.test.js';
+import './task-unbounded-projection.test.js';
+import './task-draft-chat.test.js';
+import './task-live-correction.test.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';

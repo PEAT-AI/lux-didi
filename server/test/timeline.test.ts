@@ -829,3 +829,90 @@ test('C-DIAG109: the across-sessions summary counts both readings and names the 
       /owner finals with no provider audio unanswered=2 fragment=1 fragmentBound=5000ms/u);
   });
 });
+
+
+// Public CLI task audit: the reader is synthetic, never a real database or owner log.
+test('task audit projects metadata and never upgrades delivery to heard', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const { buildTaskAudit } = require('../../../scripts/didi-timeline');
+  const privateText = 'SYNTHETIC CONTENT MUST NOT ESCAPE';
+  const queries: string[] = [];
+  const audit = buildTaskAudit({ all: (sql: string) => {
+    queries.push(sql);
+    if (sql.includes('FROM tasks ')) return [{ task_id: 't', status: 'complete', final_answer: privateText }];
+    if (sql.includes('FROM task_revisions ')) return [{ task_id: 't', task_revision: 1, owner_words: privateText }];
+    if (sql.includes('FROM task_operations ')) return [{ task_id: 't', operation_id: 'o', effect: 'local', tool: 'remember_note', state: 'committed', arguments: privateText, result: privateText }];
+    return [{ task_id: 't', state: 'delivered', attempt_id: 'a', text: privateText }];
+  } });
+  assert.equal(JSON.stringify(audit).includes(privateText), false);
+  assert.equal(queries.some(sql => /SELECT \*/.test(sql)), false);
+  assert.equal(audit.writes[0].receipt, 'committed');
+  assert.deepEqual(audit.deliveryStates, { sent: null, accepted: null, heard: null });
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.match(audit.coverage, /not joined/);
+});
+test('task audit distinguishes no tasks, missing schema and reader errors', async () => {
+  const { createRequire } = await import('node:module');
+  const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  assert.deepEqual(buildTaskAudit({ all: () => [] }).tasks, []);
+  assert.match(buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }).coverage, /unavailable/);
+  assert.throws(() => buildTaskAudit({ all: () => { throw new Error('synthetic I/O failure'); } }), /synthetic I\/O failure/);
+});
+
+test('task audit reads lifecycle and delivery host events without content', async () => {
+  const { createRequire } = await import('node:module');
+  const { readFileSync } = await import('node:fs');
+  const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const events = readFileSync(new URL('../../test/fixtures/live-boundary/task-events.jsonl', import.meta.url), 'utf8').trim().split('\n').map(text => ({ stream: 'host', callId: 'synthetic-call', record: JSON.parse(text) }));
+  const audit = buildTaskAudit({ all: () => [] }, events, { callId: 'synthetic-call' });
+  assert.deepEqual(audit.lifecycle.map((value: { phase: string }) => value.phase), ['start', 'revision', 'inference', 'calls']);
+  assert.equal(audit.lifecycle[1].connectionGeneration, 2);
+  assert.deepEqual(audit.helperEvents.map((value: { count: number }) => value.count), [1, 2]);
+  assert.deepEqual(audit.deliveryEvents.map((value: { state: string }) => value.state), ['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
+  assert.deepEqual(audit.deliveryStates, { sent: 1, accepted: 1, heard: 1 });
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.match(audit.gaps.join(' '), /Promises.*unavailable/);
+  assert.equal(JSON.stringify(audit).includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+  const unrelated = buildTaskAudit({ all: () => [] }, events, { callId: 'another-call' });
+  assert.equal(unrelated.deliveryEvents.length, 0);
+  assert.equal(unrelated.unjoinedTaskEvents, 10);
+  assert.equal(unrelated.deliveryStates.heard, null);
+  assert.match(unrelated.lifecycleCoverage, /unavailable/);
+  const missingStore = buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }, events);
+  assert.equal(missingStore.deliveryStates.heard, 1);
+  const invalid = buildTaskAudit({ all: () => [] }, [
+    { stream: 'native', record: events[0]!.record },
+    { record: { event: 'task_delivery', task_id: 'synthetic-task', revision: 1, state: 'delivered' } },
+    { record: { event: 'task_lifecycle', task_id: 'synthetic-task', revision: -1, connection_generation: 1, phase: 'start' } },
+  ]);
+  assert.equal(invalid.lifecycle.length, 0); assert.equal(invalid.deliveryEvents.length, 0);
+});
+
+test('task audit CLI reads only synthetic host-log metadata', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url)), 'task-log',
+    fileURLToPath(new URL('../../test/fixtures/live-boundary/task-events.jsonl', import.meta.url)), '--json',
+  ], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  const audit = JSON.parse(result.stdout);
+  assert.equal(audit.lifecycle.length, 4);
+  assert.match(audit.coverage, /store not opened/);
+  assert.equal(audit.deliveryStates.heard, 1);
+  assert.equal(audit.promisesWithoutTask, null);
+  assert.equal(result.stdout.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+});
+
+test('task audit CLI refuses malformed logs without echoing content', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url)), 'task-log',
+    fileURLToPath(new URL('../../test/fixtures/live-boundary/task-malformed.jsonl', import.meta.url)), '--json',
+  ], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 2); assert.equal(result.stdout, '');
+  assert.match(result.stderr, /content omitted/);
+  assert.equal(result.stderr.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+});

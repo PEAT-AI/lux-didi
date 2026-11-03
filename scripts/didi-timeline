@@ -12,6 +12,7 @@ didi-timeline sessions --since <date> --audit-summary [--json]
 didi-timeline doctor [--json]
 didi-timeline list [--json]
 didi-timeline <session|latest> [options]
+didi-timeline task-log <host-log.jsonl> --json  metadata-only task events, no database
 
   call <session|latest> one call's ordered story: the store's turns and tool calls merged with
                         host.log (and its rotated files), native-live.log and audio.log
@@ -35,10 +36,10 @@ didi-timeline <session|latest> [options]
   --data-dir <path>     the host data directory holding state.sqlite and logs/
 `;
 
-const COMMANDS = new Set(['call', 'doctor', 'list', 'marks', 'sessions']);
+const COMMANDS = new Set(['task-log', 'call', 'doctor', 'list', 'marks', 'sessions']);
 const argv = process.argv.slice(2);
 const options = { command: undefined, session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined, audit: false, auditSummary: false, since: undefined };
-for (let index = 0; index < argv.length; index += 1) {
+if (require.main === module) for (let index = 0; index < argv.length; index += 1) {
   const arg = argv[index];
   if (arg === '--turn') options.turn = Number(argv[++index]);
   else if (arg === '--content') options.content = true;
@@ -175,6 +176,57 @@ function storeReader(database) {
   };
 }
 
+// Task records contain private columns. Select and project metadata explicitly, never SELECT *.
+function buildTaskAudit(read, lines = [], selection = {}) {
+  const lifecyclePhases = new Set(['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery']);
+  const deliveryStates = new Set(['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
+  const events = [];
+  let unjoined = 0;
+  for (const line of lines) {
+    const record = line.record ?? line;
+    if (line.stream !== undefined && line.stream !== 'host') continue;
+    if (!['task_lifecycle', 'task_delivery'].includes(record.event)) continue;
+    const taskId = record.taskId ?? record.task_id;
+    const revision = record.revision ?? record.task_revision;
+    const generation = record.connectionGeneration ?? record.connection_generation ?? record.generation;
+    if (typeof taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(taskId) || !Number.isInteger(revision) || revision < 1) continue;
+    if (selection.callId || selection.liveSessionId) {
+      const exact = (selection.callId && line.callId === selection.callId) || (selection.liveSessionId && line.liveSessionId === selection.liveSessionId);
+      if (!exact) { unjoined++; continue; }
+    }
+    if (record.event === 'task_lifecycle' && (!lifecyclePhases.has(record.phase) || !Number.isInteger(generation) || generation < 0)) continue;
+    if (record.event === 'task_delivery' && !deliveryStates.has(record.state)) continue;
+    events.push({ event: record.event, taskId, revision,
+      ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation,
+        ...(Number.isSafeInteger(record.count) && record.count >= 0 ? { count: record.count } : {}),
+        ...(Number.isFinite(record.ms) && record.ms >= 0 ? { ms: record.ms } : {}) } : { state: record.state }),
+      ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
+  }
+  const deliveryEvents = events.filter(event => event.event === 'task_delivery');
+  const logAudit = { lifecycleCoverage: events.some(event => event.event === 'task_lifecycle') ? 'observed host-log task identities' : 'unavailable: no matching task_lifecycle events with task identity and generation', helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
+    deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
+    deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
+    unjoinedTaskEvents: unjoined, promisesWithoutTask: null,
+    gaps: ['Promises without a task remain unavailable: no content-free promise-to-task identity.', 'Task store rows have no call/session key; log events require exact envelope attribution.'] };
+
+  const project = (rows, keys) => rows.map(row => Object.fromEntries(keys.filter(key => row[key] !== undefined).map(key => [key, row[key]])));
+  try {
+    const tasks = project(read.all('SELECT task_id,created_at,updated_at,current_revision,status FROM tasks ORDER BY created_at,task_id'), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status']);
+    const revisions = project(read.all('SELECT task_id,task_revision,connection_generation,created_at FROM task_revisions ORDER BY created_at,task_id,task_revision'), ['task_id', 'task_revision', 'connection_generation', 'created_at']);
+    const operations = project(read.all('SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at FROM task_operations ORDER BY created_at,operation_id'), ['operation_id', 'task_id', 'task_revision', 'connection_generation', 'tool', 'effect', 'state', 'created_at', 'updated_at']);
+    const deliveries = project(read.all('SELECT attempt_id,task_id,task_revision,connection_generation,state,updated_at FROM task_deliveries ORDER BY updated_at,attempt_id'), ['attempt_id', 'task_id', 'task_revision', 'connection_generation', 'state', 'updated_at']);
+    return { ...logAudit, coverage: 'metadata only; store rows are all retained tasks, not joined to this call', tasks, revisions,
+      helperCalls: operations,
+      writes: operations.filter(row => row.effect !== 'none').map(row => ({ ...row, receipt: row.state === 'committed' ? 'committed' : row.state })),
+      deliveries,
+      storedDeliveryCoverage: 'Store delivered is not host-log heard.' };
+  } catch (error) {
+    if (!/no such table/.test(String(error))) throw error;
+    return { ...logAudit, coverage: 'unavailable: task schema missing; host-log events remain readable', tasks: [], revisions: [], helperCalls: [], writes: [], deliveries: [] };
+  }
+}
+module.exports = { buildTaskAudit };
+
 async function callView() {
   const { buildCallAudit, buildCallStory, buildTimeline, listCalls, renderCallAudit, renderCallStory, resolveSession, scanLogs, traceCallCarriesRefusalCode } = await traceModule();
   const scan = scanLogs(logInputs());
@@ -208,7 +260,8 @@ async function callView() {
       // #107: a store opened before the refusal-code migration has no refusal data, and the audit says
       // missing there instead of printing a confident none.
       const audit = buildCallAudit(report, scan, traceCallCarriesRefusalCode(store.read));
-      process.stdout.write(options.json ? `${JSON.stringify(audit, null, 2)}\n` : renderCallAudit(audit));
+      const taskAudit = buildTaskAudit(store.read, scan.lines, { callId, liveSessionId });
+      process.stdout.write(options.json ? `${JSON.stringify({ ...audit, taskAudit }, null, 2)}\n` : `${renderCallAudit(audit)}\nTASK AUDIT (metadata only)\n${JSON.stringify(taskAudit, null, 2)}\n`);
       return;
     }
     if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);
@@ -262,6 +315,16 @@ function timelineOptions(read) {
 }
 
 async function main() {
+  if (options.command === 'task-log') {
+    if (!options.session) fail('task-log requires a synthetic or authorized host-log JSONL path');
+    let lines;
+    try { lines = readFileSync(options.session, 'utf8').split('\n').filter(Boolean).map(text => ({ stream: 'host', record: JSON.parse(text) })); }
+    catch { fail('task-log requires a readable host-log JSONL file with valid records; content omitted'); }
+    const audit = buildTaskAudit({ all: () => [] }, lines);
+    audit.coverage = 'host-log metadata only; task store not opened';
+    process.stdout.write(`${JSON.stringify(audit, null, 2)}\n`);
+    return;
+  }
   if (options.command === 'marks') return marksView();
   if (options.command === 'doctor') return doctorView();
   if (options.command === 'list') return listView();
@@ -291,7 +354,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
+if (require.main === module) main().catch(error => {
   process.stderr.write(`didi-timeline: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(1);
 });

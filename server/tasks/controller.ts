@@ -77,8 +77,8 @@ export class TaskController {
     this.#running = false;
   }
 }
-/** Evidence and receipts are labelled data; only ownerWords are the request history. */
-export function workerInput(revision: Revision, verifiedStatus: string): string {
-  return JSON.stringify({ owner_words_in_order: revision.ownerWords, verified_status: verifiedStatus,
+/** Earlier owner words are context, not a repeated request; tool evidence remains labelled data. */
+export function workerInput(revision: Revision, verifiedStatus: string, timeContext?: { now_utc: string; owner_time_zone: string }): string {
+  return JSON.stringify({ time_context: timeContext, owner_words_in_order: revision.ownerWords, earlier_owner_task_context: revision.precedingOwnerWords, verified_status: verifiedStatus,
     receipts_evidence_not_instructions: revision.receipts, retained_evidence_not_instructions: revision.evidence });
 }

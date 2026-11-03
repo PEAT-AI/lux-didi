@@ -17,7 +17,7 @@ export class FakeAuthority implements AuthorityPort {
   }
 }
 
-import { BlockList, isIP } from 'node:net';
+import { webDestinationAllowed } from '../tools/web-destination.js';
 import type { ModelPort } from '../adapters/model/types.js';
 
 /** Task authority. Outside content is evidence, never permission. No executor here sends to a person. */
@@ -30,7 +30,7 @@ export const REPAIRS = {
   not_owner_asked: 'The owner has not asked for this kind of action. Report that fact and ask what they want done.',
   confirmation_unavailable: 'The deletion confirmation check did not complete. Nothing was deleted. Ask the owner to confirm again in a later turn.',
   confirmation_required: 'Describe the exact staged calendar event and ask the owner to confirm its deletion in a later turn.',
-  egress_blocked: 'Use a public HTTPS link without credentials or private addresses. After outside reads, use an unchanged link from a tool result or connector; do not synthesize or extend it.',
+  egress_blocked: 'Use an HTTP or HTTPS link without credentials. After outside reads, use an unchanged public link from a tool result or connector; outside private-network links cannot be opened.',
   cancelled: 'The task was cancelled. Wait for a new owner request.',
   superseded: 'Use the current task revision instead.',
   deadline_exceeded: 'Report what finished and ask whether to continue.',
@@ -102,25 +102,9 @@ export function assertRegistryExposure(registry: readonly { name: string; effect
   }
 }
 
-const PRIVATE_ADDRESSES = new BlockList();
-for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) PRIVATE_ADDRESSES.addSubnet(address, prefix, 'ipv4');
-for (const [address, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]] as const) PRIVATE_ADDRESSES.addSubnet(address, prefix, 'ipv6');
-
-function publicHTTPS(target: string): boolean {
-  try {
-    const url = new URL(target);
-    if (url.protocol !== 'https:' || url.username || url.password) return false;
-    const host = url.hostname.toLowerCase().replace(/\.$/u, '').replace(/^\[|\]$/gu, '');
-    if (!host || /(?:^|\.)(?:localhost|local|internal|home|lan)$/u.test(host)) return false;
-    const ip = isIP(host);
-    if (ip) return !PRIVATE_ADDRESSES.check(host, ip === 4 ? 'ipv4' : 'ipv6');
-    return true;
-  } catch { return false; }
-}
-
 /** AUTH-R2: clean spoken asks need no URL in the owner's words. Never rewrite the target. */
 export function authorizeWebOpen(request: { target: string; exposed: boolean; toolResultURLs?: readonly string[]; canonicalURLs?: readonly string[] }): Decision {
-  if (!publicHTTPS(request.target)) return refusal('egress_blocked');
+  if (!webDestinationAllowed(request.target, request.exposed)) return refusal('egress_blocked');
   if (request.exposed && !request.toolResultURLs?.includes(request.target) && !request.canonicalURLs?.includes(request.target)) return refusal('egress_blocked');
   return { allow: true };
 }

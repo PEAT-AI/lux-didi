@@ -23,16 +23,17 @@ import type { JsonObject } from '../adapters/model/types.js';
  * carries no attendee and no update notification, a draft carries no send, and a delete names the exact
  * event id. Nothing here can send, post or invite.
  */
-export function createComposeDispatch(options: { store: Store; ownerId: string; registry: McpRegistry; port: McpPort }): ComposeDispatch {
+export function createComposeDispatch(options: { store: Store; ownerId: string; registry: McpRegistry; port: McpPort; connectionIds?: readonly string[] }): ComposeDispatch {
   const { store, ownerId, registry, port } = options;
 
   /** The approved policy of the one connection whose grant names this published tool, or undefined. */
   const policyFor = (connector: string, tool: string): ConnectionPolicy | undefined => {
     let rows: readonly Record<string, unknown>[];
     try {
-      rows = store.transaction(tx => tx.all('SELECT policy_json FROM tool_connections WHERE owner_id=?', [ownerId]));
+      rows = store.transaction(tx => tx.all('SELECT connection_id,policy_json FROM tool_connections WHERE owner_id=?', [ownerId]));
     } catch { return undefined; }
     for (const row of rows) {
+      if (options.connectionIds !== undefined && !options.connectionIds.includes(String(row['connection_id']))) continue;
       try {
         const policy = validatePolicy(JSON.parse(String(row['policy_json'])) as ConnectionPolicy);
         if (policy.enabled && policy.connector === connector && policy.toolNames.includes(tool)) return policy;

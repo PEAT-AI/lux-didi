@@ -2,7 +2,7 @@ import type { Delivery, RevisionIdentity } from './controller.js';
 import type { WorkerResult } from './worker.js';
 /** A delivery receipt is not audibility. Only matching output transcription proves heard. */
 export const DELIVERY_HEARD_MS = 15_000;
-export type DeliveryState = 'sent' | 'accepted' | 'heard' | 'rejected' | 'reconnecting' | 'undelivered';
+export type DeliveryState = 'sent' | 'accepted' | 'heard' | 'retry' | 'reconnect' | 'undelivered';
 export interface DeliveryPorts {
   isCurrent(identity: RevisionIdentity): boolean;
   append(delegationId: string, text: string): string | undefined;
@@ -40,6 +40,16 @@ export class TaskDelivery implements Delivery {
   #undelivered: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   constructor(readonly ports: DeliveryPorts) {}
   get undelivered() { return this.#undelivered; }
+  waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
+    const pending = this.#current();
+    return pending ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
+  }
+  seedReconnect(): void {
+    const pending = this.#current(); if (!pending) return;
+    if (!pending.reconnect) this.ports.state(pending.identity, 'reconnect', pending.chunk);
+    this.#stopTimer(); pending.reconnect = true; pending.seeded = true;
+    pending.command = undefined; pending.transcript = ''; pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
+  }
   #current(): Pending | undefined {
     const pending = this.#pending;
     if (pending && !this.ports.isCurrent(pending.identity)) { this.#stopTimer(); this.#pending = undefined; return undefined; }
@@ -51,6 +61,9 @@ export class TaskDelivery implements Delivery {
   }
   attach(identity: RevisionIdentity, binding: string): void {
     if (!this.ports.isCurrent(identity)) return;
+    const pending = this.#current();
+    // A fresh delegation asks for the retained result, even when startup already carried its seed.
+    if (pending?.seeded) { this.#stopTimer(); pending.seeded = false; pending.command = undefined; pending.transcript = ''; }
     this.#binding = { generation: this.#generation ?? identity.connection_generation, id: binding }; this.#drain();
   }
   progress(_identity: RevisionIdentity): void {}
@@ -82,7 +95,7 @@ export class TaskDelivery implements Delivery {
   rejected(command: string): void {
     const pending = this.#current();
     if (pending?.command !== command) return;
-    this.ports.state(pending.identity, 'rejected', pending.chunk); this.#fallback();
+    this.#fallback();
   }
   transcript(text: string): void {
     const pending = this.#current(); if (!pending) return;
@@ -116,14 +129,14 @@ export class TaskDelivery implements Delivery {
     this.#stopTimer(); const pending = this.#current(); if (!pending) return;
     if (this.#owner || !this.#quiet) { this.#deferredFallback = true; return; }
     if (pending.seeded) { this.#fail(); return; }
-    if (pending.attempt++ === 0) { pending.command = undefined; pending.transcript = ''; this.#drain(); return; }
+    if (pending.attempt++ === 0) { this.ports.state(pending.identity, 'retry', pending.chunk); pending.command = undefined; pending.transcript = ''; this.#drain(); return; }
     this.#reconnect();
   }
   #reconnect(): void {
     const pending = this.#current(); if (!pending || this.#owner || !this.#quiet) return;
     if (pending.reconnect) { this.#fail(); return; }
     pending.reconnect = true; pending.seeded = true; pending.command = undefined; pending.transcript = '';
-    this.ports.state(pending.identity, 'reconnecting', pending.chunk);
+    this.ports.state(pending.identity, 'reconnect', pending.chunk);
     pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
     if (!this.ports.reconnect(pending.seededText, pending.identity)) { this.#fail(); return; }
   }

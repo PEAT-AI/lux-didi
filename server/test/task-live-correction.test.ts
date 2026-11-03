@@ -34,7 +34,7 @@ async function fixture(t: TestContext) {
       infer: async () => new Promise<Inference>(resolve => { inference.push(resolve); }),
     }),
   });
-  t.after(async () => { try { await owner.shutdown(); } finally { sink.close(); store.close(); rmSync(directory, { recursive: true, force: true }); } });
+  t.after(async () => { try { await owner.shutdown(); } finally { sink(); store.close(); rmSync(directory, { recursive: true, force: true }); } });
   const context = { clientId: 'synthetic-client', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   const session = owner.create({ inputClass: 'ordinary', idempotencyKey: 'synthetic-correction' }, context);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, context); await attachment.ready; await flush();

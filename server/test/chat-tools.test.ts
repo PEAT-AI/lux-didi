@@ -702,7 +702,7 @@ test('real chat turn reads a local reminder and commits a task note through cano
   for await (const event of f.chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { outcome = event.run.outcome; break; }
   assert.equal(outcome, 'complete');
   const continuation = observed.flatMap(request => request.contents).flatMap(content => content.parts).flatMap(part => part.functionResponse ? [part.functionResponse.response] : []);
-  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), 'a populated real read reaches the chat model');
+  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), JSON.stringify({ responses: continuation, calls: f.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls')) }).slice(0, 1600));
   assert.ok(continuation.some(response => JSON.stringify(response).includes('committed')), 'the chat model receives the effect receipt');
   const notes = f.store.transaction(tx => tx.all("SELECT e.text FROM entries e JOIN sessions s ON s.id=e.session_id WHERE s.title='Task note'"));
   assert.deepEqual(notes.map(row => row.text), ['Synthetic task note body']);

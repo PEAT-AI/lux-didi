@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
@@ -595,7 +595,12 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
 // fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval. The
 // synthetic child is the Mattermost reader the owner actually runs, never a real account or service.
 
-const PEOPLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mattermost-people-child.mjs');
+// The isolated task producer emits test/; the full staged producer emits server/test/.
+function fixtureFile(name: string): string {
+  const adjacent = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name);
+  return existsSync(adjacent) ? adjacent : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', name);
+}
+const PEOPLE_CHILD = fixtureFile('stdio-mattermost-people-child.mjs');
 const ECHO_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
@@ -735,7 +740,7 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
 
 // W1030: the Mattermost draft family is recorded beside the read family and never inside it.
 test('W1030: the recorded Mattermost draft family matches the allowed draft names and no read map carries them', () => {
-  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
+  const recording = JSON.parse(readFileSync(fixtureFile('mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
   assert.deepEqual(recording.tools.map(tool => tool.name), [...MATTERMOST_DRAFT_TOOLS]);
   for (const name of MATTERMOST_DRAFT_TOOLS) {
     assert.equal((MATTERMOST_READ_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
@@ -775,7 +780,7 @@ async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: s
 // W1030/WT-R7: the recorded write families travel real discovery and the connector's preflight, and a
 // missing probe name is red there rather than at the first draft he asks for.
 test('W1030: each recorded write family discovers, preflights and probes with google_identity only', async t => {
-  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const recording = JSON.parse(readFileSync(fixtureFile('google-tools-list.json'), 'utf8'));
   const writeChild = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-write-child.mjs');
   for (const [family, didiFamily] of [['gmail_draft', 'compose'], ['calendar_write', 'calendar_write']] as const) {
     const { dir, pidFile } = scratch();

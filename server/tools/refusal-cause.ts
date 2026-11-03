@@ -25,7 +25,7 @@ export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
 
 const NOTHING_SEARCHED = 'Nothing was searched.';
 
-export const REFUSAL_CAUSES: Readonly<Record<string, RefusalCause>> = Object.freeze({
+export const REFUSAL_CAUSES: Readonly<Record<HostRefusalCode, RefusalCause>> = Object.freeze({
   // The admission blocks (C-RESEARCH-CONTRACT T-03 codes, unchanged): one research operation per owner turn.
   no_owner_turn: {
     cause: 'No owner turn has started in this session, so there is no owner question to research.',

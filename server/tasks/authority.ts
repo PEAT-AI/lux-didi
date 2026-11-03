@@ -198,3 +198,42 @@ export class Authority {
     return { allow: true, value, replay: false };
   }
 }
+
+/** Worker effects are registry-owned. Never accept an effect kind from model arguments. */
+export const TASK_EFFECTS: Readonly<Record<string, EffectKind>> = {
+  draft_email: 'draft_email', draft_chat: 'draft_chat', create_event: 'create_event', delete_event: 'delete_event',
+  remember_note: 'remember_note', stage_lux_note: 'remember_note', save_to_vault: 'save_to_vault', trello_write: 'trello_write',
+  alarm_create: 'set_alarm', alarm_cancel: 'cancel_alarm', alarm_update: 'snooze_alarm', open: 'open',
+};
+import { canonical } from './worker.js';
+import { validateArguments, type TaskTool } from './tools.js';
+import { failed } from './results.js';
+export interface TaskAuthorityContext {
+  isCurrent(taskId: string, revision: number): boolean;
+  taskContext(taskId: string): (TaskIdentity & { ownerTurn: number; exposures: readonly Exposure[] }) | undefined;
+  hostUrls(taskId: string): readonly string[];
+  registry(): ReadonlyMap<string, TaskTool>;
+}
+/** Trusted callbacks capture host state; no provenance or owner words come from the worker. */
+export function createTaskAuthority(authority: Authority, context: TaskAuthorityContext): AuthorityPort {
+  return { async authorize(request, execute, signal) {
+    const stopped = (): ToolResult | undefined => signal.aborted ? failed(REPAIRS.cancelled)
+      : !context.isCurrent(request.task_id, request.task_revision) ? failed(REPAIRS.superseded) : undefined;
+    const early = stopped(); if (early) return early;
+    const task = context.taskContext(request.task_id), tool = context.registry().get(request.tool), effect = TASK_EFFECTS[request.tool];
+    if (!task || !tool || tool.effect === 'none' || !effect) return failed(REPAIRS.invalid_arguments);
+    const validation = validateArguments(tool, request.args);
+    if (!validation.ok) return failed(REPAIRS.invalid_arguments);
+    for (const exposure of task.exposures) authority.expose(task.id, exposure);
+    const args = validation.args;
+    const decision = await authority.authorize({ task, effect, arguments: args, validate: () => true, ownerTurn: task.ownerTurn,
+      ...(effect === 'delete_event' && typeof args.id === 'string' ? { eventId: args.id } : {}),
+      ...(effect === 'open' && args.kind === 'web' && typeof args.target === 'string' ? { webTarget: args.target, toolResultURLs: context.hostUrls(task.id) } : {}),
+    });
+    if (!decision.allow) return failed(decision.repair);
+    const late = stopped(); if (late) return late;
+    const committed = await authority.commit(`${task.id}:${tool.name}:${canonical(args)}`, execute);
+    if (!committed.allow) return failed(committed.repair);
+    return { ...(committed.value as ToolResult), receipt: { operation_id: request.operation_id, state: 'committed' } };
+  } };
+}

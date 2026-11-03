@@ -90,16 +90,19 @@ const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/task
 assert.ok(worker.length <= 3000);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
-  assert.doesNotMatch(text, /["“][^"”]+["”]/);
+  assertNoRecitation(text);
 }
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
 const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
-function assertVoicePolicy(text) {
-  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
+function assertNoRecitation(text) {
   assert.doesNotMatch(text, /["“][^"”]+["”]/);
   // Apostrophes inside words are contractions or possessives, not opening quotation marks.
   assert.doesNotMatch(text, /(?<![\p{L}\p{N}_])['‘](?=\S)[^\n]*?['’](?![\p{L}\p{N}_])/u);
+}
+function assertVoicePolicy(text) {
+  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
+  assertNoRecitation(text);
   for (const name of TASK_TOOL_NAMES) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.doesNotMatch(text, new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'iu'), `voice names registered tool: ${name}`);
@@ -107,14 +110,16 @@ function assertVoicePolicy(text) {
 }
 assertVoicePolicy(voice);
 for (const quote of ["Say 'I have the result.'", "Say 'I'm ready.'", 'Say ‘I have the result.’']) {
-  assert.throws(() => assertVoicePolicy(`${voice}\n\n${quote}`), { name: 'AssertionError' }, `recitation rejected: ${quote}`);
+  assert.throws(() => assertVoicePolicy(`${voice}\n\n${quote}`), { name: 'AssertionError' }, `voice recitation rejected: ${quote}`);
+  assert.throws(() => assertNoRecitation(`${worker}\n\n${quote}`), { name: 'AssertionError' }, `worker recitation rejected: ${quote}`);
 }
 assert.ok(TASK_TOOL_NAMES.size > 0);
 for (const name of TASK_TOOL_NAMES) {
   assert.throws(() => assertVoicePolicy(`${voice}\n\nCall ${name}.`), { name: 'AssertionError' }, `registered tool rejected: ${name}`);
 }
 for (const prose of ["It's the owner's choice; don't invent facts.", "I'm listening, and I won't guess.", "The owners' plans aren't final.", 'She’s listening; it isn’t settled.', "An opened door isn't a tool call."]) {
-  assert.doesNotThrow(() => assertVoicePolicy(`${voice}\n\n${prose}`), `ordinary prose accepted: ${prose}`);
+  assert.doesNotThrow(() => assertVoicePolicy(`${voice}\n\n${prose}`), `ordinary voice prose accepted: ${prose}`);
+  assert.doesNotThrow(() => assertNoRecitation(`${worker}\n\n${prose}`), `ordinary worker prose accepted: ${prose}`);
 }
 console.log(JSON.stringify({ case: 'voice_policy_guard_fixtures', registeredTools: TASK_TOOL_NAMES.size, quotedRecitations: 3, ordinaryProse: 5 }));
 const composed = persona.composeLiveInstruction({ base: persona.NAYA_LIVE_BASE });

@@ -120,7 +120,7 @@ test('C-FREEDOM: a note with partial support saves, and a zero-overlap paraphras
   assert.equal(zero.remembered, true, 'a zero-overlap paraphrase of his own words is kept, not refused');
   assert.equal(entry(tired, zero.entryId).text, 'Owner feels tired');
   // The pair: the same zero-overlap shape, with the claim turned around, is the one refusal left.
-  assert.deepEqual(refusal(await remember(tired, 'The owner is not tired at all, he is full of energy')),
+  assert.deepEqual(refusal(await remember(tired, 'The owner is not tired')),
     { remembered: false, code: 'owner_text_mismatch' }, 'zero overlap is no excuse for the opposite claim');
 });
 

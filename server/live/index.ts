@@ -19,7 +19,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { LIVE_NOT_MODEL_FACING } from '../tools/declarations.js';
 import { type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { findingCount, RESEARCH, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, type ResearchLateFindings, researchRebuildStep, type ResearchBoundary, type ResearchRetention, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
+import { findingCount, RESEARCH_OPERATION, RESEARCH_READ_CEILING_NOTE, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, type ResearchLateFindings, researchRebuildStep, type ResearchBoundary, type ResearchRetention, ResearchLedgerLog, VoiceReplyBook, spokenPageOf } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -779,14 +779,6 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
 }
-
-/** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
-const STEP_SOURCES: Record<string, string> = {
-  gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
-  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web',
-  // C-PERMTIER: a research answer quotes mail, chat and web text, so it advances the exposure fence.
-  research: 'research',
-};
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
@@ -2088,7 +2080,7 @@ export class LiveSessionOwner {
   /** D5: a tool call in flight or an answer owed is open work, so the orb is THINKING through the lookup and
    *  the silence before her reply, whatever the adapter's silence model reports meanwhile. */
   #handleState(handle: ActiveSession): LivePageProjection['state'] {
-    const working = handle.pendingCallIds.size > 0 || handle.awaitingAnswer;
+    const working = handle.tasks?.running || handle.pendingCallIds.size > 0 || handle.awaitingAnswer;
     return handle.rebuilding ? 'rebuilding' : working || handle.thinking ? 'thinking' : handle.speaking ? 'speaking' : handle.consumerState === 'attached' ? 'listening' : 'ended';
   }
 
@@ -4628,7 +4620,7 @@ export class LiveSessionOwner {
     const now = this.#now();
     if (active) {
       if (handle.taskWorkAt !== undefined) return;
-      handle.taskWorkAt = now;
+      handle.taskWorkAt = now; this.#noteState(handle, 'input');
       if (handle.debtTimer && handle.taskDebtPlan) handle.taskPausedDebt = { remaining: Math.max(0, handle.taskDebtPlan.at - now), step: handle.taskDebtPlan.step, generation: handle.taskDebtPlan.generation };
       if (handle.watchdogTimer && handle.taskWatchdogPlan) handle.taskPausedWatchdog = { remaining: Math.max(0, handle.taskWatchdogPlan.at - now), step: handle.taskWatchdogPlan.step, generation: handle.taskWatchdogPlan.generation };
       handle.debtTimer?.cancel(); handle.debtTimer = undefined;
@@ -4636,7 +4628,7 @@ export class LiveSessionOwner {
       return;
     }
     const start = handle.taskWorkAt; if (start === undefined) return;
-    handle.taskWorkAt = undefined;
+    handle.taskWorkAt = undefined; this.#noteState(handle, 'silence');
     for (const key of ['debtSince', 'watchdogSince', 'heardSince'] as const) if (handle[key] !== undefined) handle[key] += now - Math.max(start, handle[key]);
     const debt = handle.taskPausedDebt, watchdog = handle.taskPausedWatchdog;
     handle.taskPausedDebt = undefined; handle.taskPausedWatchdog = undefined;

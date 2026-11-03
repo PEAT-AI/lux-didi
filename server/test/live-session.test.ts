@@ -8654,7 +8654,7 @@ test('C-OPENER: a used opener stays remembered after three calls that opened pla
 test('finalized owner input invokes the task worker without a delegation or promise', async t => {
   const p = progressPort(); const inputs: string[] = [];
   const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async request => { inputs.push(request.input); return { text: '', calls: [], no_action: true }; } });
-  const { session } = await openPort(h);
+  const { session } = await openPort(h, 'task-final');
   p.emit({ type: 'inputTranscription', text: 'Synthetic finalized request', finished: true, finalOrigin: 'provider' });
   await settlePort();
   assert.equal(inputs.length, 1);

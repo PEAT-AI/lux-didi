@@ -175,6 +175,11 @@ export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number]
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'task_effect_check') {
+    if (!closedKeys(value, ['event', 'code'])) return undefined;
+    if (typeof value.code !== 'string' || !['effect_check_failed', 'delete_confirmation_check_failed', 'task_failed'].includes(value.code)) return undefined;
+    return { event: 'task_effect_check', code: value.code };
+  }
   if (value.event === 'task_delivery') {
     if (!closedKeys(value, ['event', 'taskId', 'revision', 'state']) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
@@ -738,17 +743,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.messageKey !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(value.messageKey)) return;
     return { event: 'live_recovery_failed', liveSessionId: value.liveSessionId, generation: value.generation, mode: value.mode, cause: value.cause,
       errorClass: value.errorClass, messageKey: value.messageKey, attempt: value.attempt };
-  }
-  if (value.event === 'research_query_token_dropped') {
-    if (!closedKeys(value, ['event', 'dropped'])) return;
-    if (!Number.isInteger(value.dropped) || (value.dropped as number) < 1) return undefined;
-    return { event: 'research_query_token_dropped', dropped: value.dropped };
-  }
-  if (value.event === 'research_operation_deadline') {
-    // C-LIVE behaviour 4: the host answered an operation its loop had not answered by the deadline.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'ms'])) return;
-    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.ms)) return;
-    return { event: 'research_operation_deadline', liveSessionId: value.liveSessionId, generation: value.generation, ms: value.ms };
   }
   if (value.event === 'live_session_diagnostics') {
     const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',

@@ -700,3 +700,6 @@ test('task effect-check failures have a closed, text-free host audit event', () 
   }
   assert.equal(safeEvent({ event: 'task_effect_check', code: 'synthetic arbitrary error detail' }), undefined);
 });
+test('the unused legacy query-token audit kind is retired too', () => {
+  assert.equal(safeEvent({ event: 'research_query_token_dropped', dropped: 2 }), undefined);
+});

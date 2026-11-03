@@ -418,7 +418,7 @@
   "id": "case-34",
   "finals": [
    "could you",
-   "example.com"
+   "https://example.com"
   ],
   "call": {
    "kind": "site",
@@ -438,9 +438,9 @@
    "target": "https://example.com",
    "tool": "open_web"
   },
-  "code": "allowed",
+  "code": "egress_blocked",
   "fire_at_utc": null,
-  "rebased": "C-NOTEGATE"
+  "rebased": "C-AUTH exact URL provenance"
  },
  {
   "id": "case-36",
@@ -1756,7 +1756,7 @@
  {
   "id": "native-failed",
   "finals": [
-   "example.com please"
+   "https://example.com please"
   ],
   "call": {
    "tool": "open_web",
@@ -1770,7 +1770,7 @@
  {
   "id": "native-timeout",
   "finals": [
-   "example.com please"
+   "https://example.com please"
   ],
   "call": {
    "tool": "open_web",
@@ -1798,7 +1798,7 @@
  {
   "id": "good-scheme",
   "finals": [
-   "that website please"
+   "https://example.com please"
   ],
   "call": {
    "tool": "open_web",

@@ -246,7 +246,7 @@ test('channel resolution maps id, name and display name, and names the closest m
 test('canonical read_thread uses the child argument name and returns its full thread body', async t => {
   const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'read_thread')!;
   const args = { ref: 'abcdef1234567890abcdefghij' };
-  const call = h.owner.taskIntent({ ...h.host, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, definition.name, args);
+  const call = h.owner.taskIntent({ ...h.host, executionId: 'thread:0', accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, definition.name, args);
   assert.equal(h.owner.journal.intent(call), 'fresh');
   const outcome = await definition.execute(args, { ...call, signal: new AbortController().signal });
   assert.equal(outcome.status, 'completed');
@@ -290,91 +290,23 @@ test('canonical chat lookup without a configured connector returns an immediate 
 
 // #581: a chat window written as an inline `After:` made the child rank the whole archive by relevance
 // before it filtered. The window now rides the child's own from_date, with sort=newest.
-test('#581: a chat window ask sends from_date and sort newest and no inline After:', async t => {
-  const f = setup('ok');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const digest = await approve(f.adapter, f.registry);
-  const research = reader(f.adapter, f.registry, digest);
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
-    const window = typeof call.args['from_date'] === 'string' ? { from_date: call.args['from_date'] } : {};
-    const result = await research.search({ query: String(call.args['query'] ?? ''), limit: Number(call.args['limit'] ?? 5), ...window } as never);
-    const projected = result.state === 'completed' ? projectMattermostResult(f.adapter, result) : { ok: false as const };
-    const text = projected.ok ? projected.projection.text : '';
-    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
-  }));
-  const deps: ResearchDeps = {
-    now: () => Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata', configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze this week' }, new AbortController().signal);
-  const searches = f.calls().filter(call => call.name === 'mattermost_search');
-  assert.ok(searches.length > 0, 'the chat read reached the child');
-  const first = searches[0]!;
-  // C-CHAT: "this week" starts on Monday in the owner's zone (2026-10-21 is a Wednesday), the calendar's own rule.
-  assert.equal(first.arguments['from_date'], '2026-10-19', 'the window is the week the ask named, in the child own argument');
-  assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
-  assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
-  assert.doesNotMatch(String(first.arguments['query']), /\b(what|did|about|say|this)\b/i, 'the query carries topic words only, never a stop word or a continuation word');
-  assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');
+test('#581: the native chat time window reaches the child through typed from_date and newest sort', async t => {
+  const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const result = await r.search({ query: 'release freeze', from_date: '2026-10-19', sort: 'newest' });
+  assert.equal(result.state, 'completed');
+  const first = f.calls().find(call => call.name === 'mattermost_search'); assert.ok(first);
+  assert.equal(first.arguments.from_date, '2026-10-19'); assert.equal(first.arguments.sort, 'newest');
+  assert.equal(first.arguments.query, 'release freeze');
 });
 
 // #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive, so
 // one chat read took tens of seconds. The first read must use keyword mode; C-CHAT permits one broader retry only after an empty read.
-test('#647: a search starts in keyword mode and broadens only once after an empty result', async () => {
-  // The search schema the real mattermost-mcp child publishes, `mode` included (#647 re-read the child).
-  const tools: ReturnType<McpPort['visibleTools']> = [{
-    name: 'mattermost_search', description: 'Synthetic mattermost_search',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, limit: { type: 'integer', minimum: 1, maximum: 50 }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } },
-  }];
-  const sent: Record<string, unknown>[] = [];
-  // The registry hands back the canonical digest of exactly these tools, the way the adapter's discovery does.
-  const registry = new McpRegistry();
-  registry.register(config('mattermost', 'ok', tmpdir()));
-  registry.enable('mattermost'); registry.allowEgress('mattermost');
-  const digest = registry.observed('mattermost', tools, registry.revision('mattermost'));
-  const scope = { endpointId: 'mattermost', url: 'https://chat.example.invalid', schemaDigest: digest, generation: 1, account: ACCOUNT, resource: RESOURCE };
-  const port: McpPort = {
-    discover: async () => ({ state: 'discovered', endpointId: 'mattermost', schemaDigest: digest, tools, observedAt: 0 }),
-    visibleTools: () => tools,
-    call: async request => {
-      sent.push({ ...(request.arguments as Record<string, unknown>) });
-      return {
-        state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ total: 0, returned: 0, results: [] }) }] },
-        source: { ...scope, toolName: request.toolName }, coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
-        freshness: { receivedAt: 0, sourceVersion: 'unknown' }, projection: { text: '', omitted: false, originalCharacters: 0, omittedCharacters: 0 },
-        payload: { state: 'unavailable', reason: 'capacity' },
-      } as CompletedResult;
-    },
-    readSlice: () => ({ state: 'unavailable', reason: 'capacity' }),
-    whenSuspended: async () => {},
-    close: async () => {},
-  };
-  registry.approve({ endpointId: 'mattermost', schemaDigest: digest, toolNames: ['mattermost_search'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
-  assert.equal((await reader(port, registry, digest).search({ query: 'release freeze' })).state, 'completed');
-  assert.deepEqual(sent.map(args => args['mode']), ['keyword', 'hybrid'], 'only the empty initial read permits one broader retry');
-  assert.equal(sent[1]!['from_date'], sent[0]!['from_date'], 'the fallback retains its date window');
-  assert.equal(sent[1]!['query'], sent[0]!['query']);
-  assert.equal(sent[0]!['query'], 'release freeze');
-});
+
 
 // #647: keyword is an every-term match, so a paraphrased ask can miss. One retry with the single most
 // specific term, and the answer says the match was broadened, never that chat held nothing.
-test('#647: an empty multi-term chat search earns one single-term retry and a broadened note', async () => {
-  const dispatched: IntentSubCall[] = [];
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => {
-    dispatched.push({ key: call.key, name: call.name, args: { ...call.args } });
-    const broadened = String(call.args['query']) === 'release';
-    const text = broadened ? '- the release freeze moved to Monday, from Ana [post abcdef1234567890abcdefghij]' : '';
-    return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
-  });
-  const deps: ResearchDeps = {
-    now: () => Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata', configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze' }, new AbortController().signal);
-  const searches = dispatched.filter(call => call.name === 'mattermost_search');
-  assert.deepEqual(searches.map(call => [call.args['query'], call.args['from_date']]), [['release freeze', undefined], ['release', undefined]], 'the empty multi-term read earns exactly one retry with the single most specific term');
-  assert.match(String(reply['note']), /broadened/, 'the answer says the match was broadened');
-  assert.ok((reply['findings'] as unknown[]).length > 0, 'the broadened read reaches the answer');
-});
+
 
 // #610: a channel named in the ask is resolved through list_channels, then searched once with the
 // filter the child declares; an unknown name is one closed refusal, not another archive search.

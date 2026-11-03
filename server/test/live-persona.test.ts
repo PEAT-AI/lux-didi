@@ -1701,3 +1701,9 @@ test('C-OPENER: the wait guidance is meta, ties a wait to a real call, and pins 
   assert.doesNotMatch(NAYA_VOICE_TOOLS, /"[^"\n]*\b(?:moment|second|seconds)\b[^"\n]*"/iu,
     'the guidance offers no sample waiting line');
 });
+
+test('client-mode composition retains work and spoken delivery without declared tools', () => {
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE });
+  assert.match(composed.text, /# Work and spoken delivery/);
+  assert.ok(composed.sections.some(section => section.id === 'tools'));
+});

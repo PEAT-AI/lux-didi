@@ -1,6 +1,6 @@
 # Voice alarms
 
-Say “wake me at 8”, “set an alarm for tomorrow morning at eight”, or “wake me in eight hours”. Naya confirms only after the host commits the alarm. An unqualified “set an alarm at 8” asks for morning or evening first. “Wake me” permits the morning default.
+Say “wake me at 8”, “set an alarm for tomorrow morning at eight”, or “wake me in eight hours”. Naya confirms only after the host commits the alarm. If the time is ambiguous, clarify it rather than claiming an alarm was set.
 
 These are **awake-Mac alarms**, not a replacement for a hardware alarm clock. A closed lid, manual sleep, shutdown, unavailable audio output or host failure can prevent ringing; a quit app is brought back for the next alarm ([Waking a quit app](#waking-a-quit-app-107)). The app prevents idle system sleep while alarms are pending or ringing; it does not override a closed lid or manual sleep, change devices or change system volume. Notification delivery is best effort.
 
@@ -12,15 +12,7 @@ The existing scheduler and native delivery still own ringing, wake and acknowled
 
 ## The time contract
 
-The model states the time as a closed object of flat fields and never converts to UTC: `{mode:"wall", date:"today"|"tomorrow"|<weekday name>|"YYYY-MM-DD", local_time:"HH:MM", timezone?}` or `{mode:"relative", amount, unit:"minutes"|"hours"}`. An omitted `date` means today, a weekday name means its next occurrence, and `mode` may be omitted when the fields make it clear. A field left `null`, an empty string or one the mode does not read counts as absent; an unreadable day or a clock that is not HH:MM is refused with a violation naming the field and what it accepts. `create_event` reads the day from his words and accepts the same object when a model sends one. The host converts the wall clock with `Intl` in its own IANA zone, or in the zone the model named when he named one. Each committed alarm stores that zone and a fixed UTC instant; travel and later time-zone changes do not move it.
-
-A narrow checker, `server/tools/time-check.ts`, reads the owner's words of the current ask only. It recognizes anchored clocks ("at 6 pm", "18:00", "eighteen hundred", "half past six", "quarter to seven", "ten to seven", "noon"), day words and simple spans ("in ten minutes"). It never takes the first number of a sentence, so "one-time", "one hour call" and a clock inside the reminder subject yield no clock.
-
-The conflict rules are exact. One owner time executes, and the result names the correction when the model's field differed or was omitted. A partial owner reading combines with compatible model fields, and only the constrained fields are overridden. An inconclusive ask executes a valid model time and reads it back. When neither settles a time, or a bare hour has no model meridian, she asks once, for the time only.
-
-A wall time that already passed today is the next occurrence, whether or not he said "today", and is read back with its day. An hour with no meridian takes the next occurrence of that clock time, and only a time that cannot be a time is refused (C-FREEDOM). A nonexistent daylight-saving wall time is refused rather than silently shifted. With several alarms armed, a cancel acts on the alarm his words name, else the soonest, and the read-back says which.
-
-Every commit result carries the weekday, date, local time, zone and alarm id, and she says that read-back as returned. The label is the model's `label` argument, capped at eighty characters; a missing label leaves the reminder empty and the owner's sentence is never stored as a label.
+The helper resolves the requested time and calls the typed alarm schema with a future ISO timestamp including an explicit timezone offset. The host validates the arguments and the scheduler stores an alarm instant and its zone. A later timezone change does not move a committed one-time alarm. A stored receipt, not a model promise, is the evidence to read back. The task schema is the authority for accepted fields; legacy natural-language time checks are not a second permission layer.
 
 ## Ringing and recovery
 

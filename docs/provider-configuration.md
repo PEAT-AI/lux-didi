@@ -52,7 +52,13 @@ node server/dist/config/cli.js select --config-dir /absolute/private/config --pr
 
 `saveLiveSelection` in `server/config/live.ts` validates the provider's own key and selection. The CLI works on files; deliberately restart the host for its new selection. In-app Settings uses the host's settings path and applies changes to subsequent calls, not the one already in progress.
 
-`liveFeatures` in `server/live/config.ts` separates `composedNotes` from `notesExport`. Composed notes default off. `defaultLiveLimits` owns timer defaults; a private profile can override supported limits only within the validator's bounds. Do not copy timer values or voice lists into another source of truth here.
+Legacy note feature fields are not the task helper's permission boundary. Asked note saves use task authority and write receipts, not a feature-gated spoken readback. `defaultLiveLimits` owns timer defaults; a private profile can override supported limits only within the validator's bounds. Do not copy timer values or voice lists into another source of truth here.
+
+## Helper and permission-check models
+
+`server/config/tasks.ts` loads optional `tasks.json` from the selected private configuration directory. It accepts `worker` and `effect_check` roles; each role has `provider`, `model`, `effort` and `keyReference`. Unspecified roles default to OpenAI `gpt-6.1-terra` at `low` effort using that provider's configured key slot. Selecting Gemini voice does not change these defaults or create an OpenAI credential.
+
+A role can instead select Gemini and a supported model. Use the existing protected credential slot for that provider; no key belongs in `tasks.json` or this repository. The helper and isolated check are separate model roles, not different permission grants. Syntactic configuration validation does not prove remote model availability or speed.
 
 ## Route changes and disclosure
 

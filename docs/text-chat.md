@@ -29,9 +29,9 @@ Accepted context freezes selected memory, owner profile and authority inputs for
 
 Text conversation can use approved source tools through the host's `ChatToolsComposition`. That type shares the host's tool-composition boundary rather than creating a second MCP client. The host validates each read and projects its result before disclosure.
 
-Tool results are evidence, not authority or proof of an effect. Text dispatch uses the model adapter's journal and result gate; [model-adapter.md](model-adapter.md) owns that contract and [tool-owner.md](tool-owner.md) owns the tool surface.
+Tool results are evidence, not authority or proof of an effect. Text dispatch uses task definitions and task authority alongside the model adapter's journal and result gate; [model-adapter.md](model-adapter.md) owns that contract and [tool-owner.md](tool-owner.md) owns the tool surface.
 
-The call helper has a separate task model boundary in `server/tasks/model.ts`; changing its model does not change the text conversation provider. See [model-adapter.md](model-adapter.md).
+The host composes the same task registry and authority for text through `server/tasks/chat.ts`. Text conversation keeps its configured model adapter and consent boundary; the call helper's inference model is configured separately in `server/tasks/model.ts`. See [model-adapter.md](model-adapter.md).
 
 ## Steps, partial answers and recovery
 

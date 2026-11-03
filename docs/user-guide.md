@@ -70,7 +70,7 @@ chmod 600 "$HOME/.config/lux-didi/live.json" "$HOME/.config/lux-didi/openai-prim
   --config-dir "$HOME/.config/lux-didi"
 ```
 
-The selector validates paths, not the API key's remote validity. Restart the app deliberately after editing files. Text chat uses a separately configured Gemini text profile/key; selecting OpenAI voice does not configure text chat. [Provider configuration](provider-configuration.md) covers the operator CLI, Gemini setup, binding changes and other supported voice choices.
+The selector validates paths, not the API key's remote validity. Restart the app deliberately after editing files. The helper uses its own model roles, defaulting to OpenAI, so configure the matching protected key even if voice uses another provider. [Provider configuration](provider-configuration.md#helper-and-permission-check-models) explains `tasks.json`. Text chat uses a separately configured Gemini text profile/key; selecting OpenAI voice does not configure text chat. [Provider configuration](provider-configuration.md) covers the operator CLI, Gemini setup, binding changes and other supported voice choices.
 
 ## 3. Make the first call
 

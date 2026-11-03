@@ -52,7 +52,7 @@ Stop the foreground host with Ctrl-C. Keep the same state directory to inspect r
 
 [Checks](checks.md) is the check catalog and [releases](releases.md) owns release gates. Run the checks that cover the changed owner and its affected integration. Run the owning repository script directly from the checkout. Swift compilation must use `scripts/with-compile-lock.sh` through the canonical producers.
 
-Browser-backed proofs can require installed Playwright browsers and the managed `lux-browser-slot` lease tool. npm dependency installation does not install that host tool, and a missing lease is not permission to bypass it. Read the selected producer's prerequisites before scheduling it.
+Browser-backed proofs can require installed Playwright browsers and the separately installed `lux-browser-slot` tool. npm dependency installation does not install that host tool, and a missing lease is not permission to bypass it. Read the selected producer's prerequisites before scheduling it.
 
 `createArtifactDir` in `web/test/artifacts.mjs` supports `DIDI_ARTIFACT_DIR` as an absolute evidence-output root. Each invocation gets an isolated proof directory; invalid supplied roots fail rather than silently falling back. Choose durable storage when screenshots must outlive operating-system temporary cleanup. This setting changes proof output, not application state or provider configuration.
 

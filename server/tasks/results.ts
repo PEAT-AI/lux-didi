@@ -2,6 +2,7 @@
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
 export interface ToolResult {
+  exposures?: import('./authority.js').Exposure[];
   status: ResultStatus;
   text: string;
   references: Reference[];

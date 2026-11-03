@@ -223,12 +223,15 @@ test('CORE-F1: worker consumes a second Gmail page with a distinct read-cache ke
   assert.equal(result.findings.filter(finding => finding.references.some(reference => reference.id === 'm2')).length, 1);
 });
 
-test('CORE-F1: calendar cursors are consumable and unsupported cursors are not offered', async () => {
+test('CORE-F1: unsupported calendar and search cursors are not offered', async () => {
   const { projectTaskPayload, connectorExecutor } = await import('../tasks/connectors.js');
   const registry = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor([]) });
   const calendar = registry.get('calendar_events')!;
-  assert.deepEqual(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z', cursor: null }), { ok: true, args: { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z' } });
-  assert.equal(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z', cursor: 'page-2' }).ok, true);
+  assert.equal(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z' }).ok, true);
+  assert.equal(validateArguments(calendar, { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z', cursor: 'page-2' }).ok, false);
+  const calendarPage = projectTaskPayload('calendar_events', { events: [{ id: 'e1', summary: 'fixture' }], nextPageToken: 'page-2' }, {});
+  assert.equal(calendarPage.status, 'partial'); assert.equal(calendarPage.next_cursor, null);
+  assert.match(calendarPage.coverage, /not exposed/);
   const unsupported = projectTaskPayload('search_drive', { files: [{ id: 'f1', name: 'fixture' }], nextPageToken: 'page-2' }, { query: 'fixture' });
   assert.equal(unsupported.status, 'partial'); assert.equal(unsupported.next_cursor, null);
   assert.match(unsupported.coverage, /not exposed/); assert.doesNotMatch(unsupported.coverage, /continue with/);

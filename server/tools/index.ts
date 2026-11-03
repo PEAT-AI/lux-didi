@@ -537,7 +537,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return native !== undefined && snapshot.acceptance.connectionIds.includes(item.connectionId) && connectorDescriptor(item.policy.connector)?.declarations(item.policy).some(declaration => declaration.name === native);
         });
         if (!bound) return undefined;
-        if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('task_source_policy_denied');
+        if (!currentPolicies(tx, snapshot, bound.connectionId)) throw Error('task_source_policy_denied');
+        if (!currentProjection(snapshot, bound.connectionId)) throw Error('task_source_projection_changed');
         return { call, bound, snapshotSha256: sha256(canonicalJSON(snapshot)), allowedClasses: snapshot.acceptance.allowedClasses };
       });
       if (scope) { bodyConsumers.add(call.runId); return dispatch.run(scope, body); }

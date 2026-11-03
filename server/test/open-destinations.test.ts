@@ -350,3 +350,20 @@ test('10.10 open dispatches all kinds and preserves native not_found', async () 
   }
   assert.equal((await (api as any).executeOpen(bus, 'synthetic-open', { kind: 'web', target: 'https://user:pass@example.org' })).code, 'not_allowed');
 });
+
+test('10.10 Spotlight passes literal quoted words as argv, returns paths only', async () => {
+  const api = await import('../tools/' + 'find-file.js');
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const result = await api.findFile({ query: 'project "blue" notes' }, {
+    run: async (command: string, args: readonly string[]) => { calls.push({ command, args }); return '/tmp/project blue.txt\0'; },
+    stat: async () => ({ mtime: new Date('2026-01-01T00:00:00Z') }),
+  });
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.command === '/usr/bin/mdfind' && call.args[0] === '-0' && call.args.length === 2));
+  assert.ok(calls[0]!.args[1]!.includes('\\"blue\\"'));
+  assert.equal(result.code, 'found');
+  assert.deepEqual(result.files, [{ path: '/tmp/project blue.txt', name: 'project blue.txt', modified: '2026-01-01T00:00:00.000Z', outsideText: false }]);
+  assert.equal((await api.findFile({ query: '' })).code, 'invalid_arguments');
+  assert.equal((await api.findFile({ query: 'missing' }, { run: async () => '' })).code, 'empty');
+  assert.equal((await api.findFile({ query: 'words' }, { run: async () => { throw new Error('unavailable'); } })).code, 'unavailable');
+});

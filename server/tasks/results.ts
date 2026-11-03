@@ -1,6 +1,7 @@
+import { hostLogEvent } from '../tools/host-events.js';
 import { createHash } from 'node:crypto';
 import { HOST_EVIDENCE } from '../tools/types.js';
-import { redactSecrets } from '../tools/redact.js';
+import { redactSecrets, redactSecretsWithCount } from '../tools/redact.js';
 export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
@@ -40,8 +41,9 @@ export function rankedResult(query: string, items: readonly RankedItem[]): ToolR
 }
 
 /** Redact before any task cache, journal, model or owner-facing projection. Host proofs stay host-only. */
-export function redactTaskResult(result: ToolResult): ToolResult {
-  const safe = redactSecrets(result), disclosure = result[TASK_DISCLOSURE];
+export function redactTaskResult(result: ToolResult, tool: string): ToolResult {
+  const { value: safe, count } = redactSecretsWithCount(result), disclosure = result[TASK_DISCLOSURE];
+  if (count) hostLogEvent({ event: 'tool_redaction', tool, count });
   if (disclosure) {
     const snapshot = redactSecrets(disclosure), evidence = disclosure[HOST_EVIDENCE];
     if (evidence?.kind === 'remote-body') {

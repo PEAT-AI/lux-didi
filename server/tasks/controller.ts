@@ -44,10 +44,10 @@ export class TaskController {
     this.#running = true; this.#held = false;
     return this.#revision;
   }
-  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; ownerTurn: number; precedingOwnerWords?: string | undefined } | undefined {
+  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; latestOwnerWords: string; ownerTurn: number; precedingOwnerWords?: string | undefined } | undefined {
     const current = this.#revision;
     if (!current || current.identity.task_id !== taskId) return undefined;
-    return { id: taskId, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), ownerTurn: current.ownerTurn,
+    return { id: taskId, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), latestOwnerWords: current.ownerWords.at(-1) ?? '', ownerTurn: current.ownerTurn,
       precedingOwnerWords: current.precedingOwnerWords };
   }
   isCurrentTask(taskId: string, revision: number): boolean {

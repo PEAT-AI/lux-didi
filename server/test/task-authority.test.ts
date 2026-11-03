@@ -53,7 +53,7 @@ test('new clause in a revision gets a fresh decision and short follow-up gets pr
   const { authority, calls } = setup();
   authority.expose(task.id, 'web');
   await authority.authorize(request);
-  await authority.authorize({ ...request, task: { ...task, revision: 2, ownerWords: 'And draft the reply', shortFollowUp: true, precedingOwnerWords: task.ownerWords } });
+  await authority.authorize({ ...request, task: { ...task, revision: 2, ownerWords: 'And draft the reply', precedingOwnerWords: task.ownerWords } });
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], { ownerWords: 'And draft the reply', precedingOwnerWords: task.ownerWords, effect: 'draft_email' });
 });
@@ -85,10 +85,9 @@ test('delete stages exact target and requires a later finalized turn', async () 
   const staged = await authority.authorize(deletion);
   assert.equal(staged.allow, false);
   if (!staged.allow) assert.equal(staged.code, 'confirmation_required');
-  assert.equal(authority.confirmDelete(task.id, 'event-b', 2), false);
-  assert.equal(authority.confirmDelete(task.id, 'event-a', 1), false);
-  assert.equal(authority.confirmDelete(task.id, 'event-a', 2), true);
-  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 2 }), { allow: true });
+  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 1 }), refusal('confirmation_required'));
+  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 2, eventId: 'event-b' }), refusal('confirmation_required'));
+  assert.deepEqual(await authority.authorize({ ...deletion, ownerTurn: 3, eventId: 'event-b' }), { allow: true });
 });
 
 test('commit journals before execution and a duplicate resolves without another write', async () => {

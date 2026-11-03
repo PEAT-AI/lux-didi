@@ -63,7 +63,7 @@ export class TaskRuntime {
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, this.options.contentAllowed());
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, 'running'), signal: revision.signal,
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null })), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => {
         const effect = this.registry.get(tool)!.effect;
@@ -85,5 +85,5 @@ export class TaskRuntime {
   }
   attach(identity: RevisionIdentity, binding: string): boolean { return this.controller.attach(identity, binding); }
   ownerSpeaking(): void { this.controller.ownerSpeaking(); }
-  close(): void { this.controller.disconnect(); }
+  close(): void { this.controller.disconnect(); this.options.authority.endCall(); }
 }

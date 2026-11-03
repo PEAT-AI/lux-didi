@@ -30,6 +30,8 @@ export class TaskController {
   #retained: ToolResult[] = [];
   readonly #receipts: ToolResult[] = [];
   constructor(readonly delivery: Delivery, readonly newId: () => string = randomUUID) {}
+  get current(): Revision | undefined { return this.#revision; }
+  get running(): boolean { return this.#running; }
   finalize(words: string, connection_generation: number, ownerTurn = 0): Revision {
     this.#abort?.abort();
     const previous = this.#revision;

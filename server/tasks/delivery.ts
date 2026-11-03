@@ -33,6 +33,7 @@ export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
   #binding: { generation: number; id: string } | undefined;
   #deferredFallback = false;
+  #generation: number | undefined;
   #quiet = true;
   #owner = false;
   #cancel: (() => void) | undefined;
@@ -44,9 +45,13 @@ export class TaskDelivery implements Delivery {
     if (pending && !this.ports.isCurrent(pending.identity)) { this.#stopTimer(); this.#pending = undefined; return undefined; }
     return pending;
   }
+  socket(generation: number): void {
+    this.#generation = generation; this.#binding = undefined;
+    const pending = this.#current(); if (pending && !pending.seeded) pending.command = undefined;
+  }
   attach(identity: RevisionIdentity, binding: string): void {
     if (!this.ports.isCurrent(identity)) return;
-    this.#binding = { generation: identity.connection_generation, id: binding }; this.#drain();
+    this.#binding = { generation: this.#generation ?? identity.connection_generation, id: binding }; this.#drain();
   }
   progress(_identity: RevisionIdentity): void {}
   deliver(identity: RevisionIdentity, answer: WorkerResult): void {
@@ -93,7 +98,7 @@ export class TaskDelivery implements Delivery {
     const pending = this.#current();
     if (!pending || this.#owner || !this.#quiet || pending.command || pending.seeded) return;
     const binding = this.#binding;
-    if (!binding || binding.generation !== pending.identity.connection_generation) { this.#reconnect(); return; }
+    if (!binding || binding.generation !== (this.#generation ?? pending.identity.connection_generation)) { this.#reconnect(); return; }
     const text = pending.chunks[pending.chunk]; if (!text) return;
     pending.command = this.ports.append(binding.id, text);
     if (!pending.command) { this.#fallback(); return; }

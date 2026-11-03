@@ -274,7 +274,8 @@
       "paths": [
         "server/tasks/**",
         "server/test/tasks-*.test.ts",
-        "scripts/check-tasks.sh"
+        "scripts/check-tasks.sh",
+        "scripts/eval-worker-replay.mjs"
       ],
       "checks": [
         "scripts/check-tasks.sh"

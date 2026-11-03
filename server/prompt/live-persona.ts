@@ -56,7 +56,6 @@ Write the way you speak to him: short paragraphs of connected argument, a list o
  * followed inside its bound. Voice content, kept to one short sentence so it stays far inside the
  * instruction ceiling (#693); the host reads it, the model hears it.
  */
-export const CLAIM_WITHOUT_CALL_LINE = 'Correction: do not announce a lookup you are not making. Make the call now, or say plainly that you are not checking anything.';
 
 /** The Live base section: the shared character plus the voice-only surface. */
 export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
@@ -431,7 +430,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
  * the text is the Naya composition, otherwise after the whole text. With no declarations the input is
  * returned byte-identical, so a session without tools composes exactly as before.
  */
-export function withToolsSection(text: string, tools: readonly string[]): string {
+export function withToolsSection(text: string, _tools: readonly string[]): string {
   if (text.includes(NAYA_WORK_DELIVERY)) return text;
   const baseAt = text.indexOf(NAYA_LIVE_BASE);
   if (baseAt === -1) return `${text}${separator}${NAYA_WORK_DELIVERY}`;

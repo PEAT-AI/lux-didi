@@ -1,3 +1,4 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
@@ -19,11 +20,11 @@ import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
-  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
-  { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', args: {} },
-  { id: 'calendar', connector: 'google', tool: 'calendar_list_calendars', args: {} },
-  { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_whoami', args: {} },
-  { id: 'mongoose', connector: 'mongoose', tool: 'list_companies', args: {} },
+  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', task: 'search_knowledge', args: { query: 'synthetic' } },
+  { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', task: 'search_mail', args: { query: 'synthetic', cursor: null } },
+  { id: 'calendar', connector: 'google', tool: 'calendar_list_events', task: 'calendar_events', args: { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' } },
+  { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_search', task: 'search_chat', args: { query: 'synthetic' } },
+  { id: 'mongoose', connector: 'mongoose', tool: 'list_companies', task: 'query_company', args: { resource: 'list_companies', filters: {} } },
 ];
 const pair = ['lux-knowledge', 'gmail'];
 const all = endpoints.map(e => e.id);
@@ -51,11 +52,11 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: entry.id !== 'lux-knowledge' });
-    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 3 }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' }, timeMin: { type: 'string' }, timeMax: { type: 'string' }, calendarId: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: entry.id === 'mattermost' ? { query: { type: 'string' } } : {}, additionalProperties: false } }] : [] }) as never);
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
-      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : entry.id === 'lux-knowledge' ? 'synthetic lux-knowledge read; knowledge results: 1\n**#1** Synthetic result' : `synthetic ${entry.id} read`;
+      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { events: [{ id: 'synthetic', summary: 'Synthetic calendar', start: { dateTime: '2026-11-03T09:00:00Z' }, end: { dateTime: '2026-11-03T10:00:00Z' } }] } }) : entry.id === 'lux-knowledge' ? 'synthetic lux-knowledge read; knowledge results: 1\n**#1** Synthetic result' : entry.id === 'mattermost' ? JSON.stringify({ posts: [{ id: 'synthetic', message: 'synthetic mattermost read' }] }) : `synthetic ${entry.id} read`;
       return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { unclassified_marker: 'synthetic-private-unclassified' }, isError: false } : {}) } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
@@ -110,14 +111,17 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       const hash = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance).sha256);
       chatAuthorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
     }
-    const host: HostContext = { ...acceptance, grants: endpoints.map(e => ({ tool: e.tool, effect: 'read', accountId: e.id, resourceId: e.id })) };
+    const host: HostContext & Pick<RunAcceptance, 'connectionIds'> = { ...acceptance, grants: endpoints.map(e => ({ tool: e.tool, effect: 'read', accountId: e.id, resourceId: e.id })) };
     return { acceptance, host };
   };
-  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext, ids: readonly string[]) => {
+  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext & Pick<RunAcceptance, 'connectionIds'>, ids: readonly string[]) => {
     const selected = ids.map(id => endpoints.find(e => e.id === id)!); const seen: ModelRequest[] = [];
-    const model: ModelPort = { generate: async request => { seen.push(structuredClone(request)); if (seen.length !== 1) return result(); const answer = result(); answer.providerContent.parts = selected.map(e => ({ functionCall: { name: e.tool, args: e.args, id: `call-${e.id}` } })); return answer; } };
-    const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: runtime.owner.definitions(host.runId), host, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
+    const model: ModelPort = { generate: async request => { seen.push(structuredClone(request)); if (seen.length !== 1) return result(); const answer = result(); answer.providerContent.parts = selected.map(e => ({ functionCall: { name: e.task, args: e.args, id: `call-${e.id}` } })); return answer; } };
+    const task = canonicalTaskFixture(store, runtime.owner, host.runId, 'Read the synthetic sources', host.connectionIds);
+    try {
+    const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: task.tools, host: { ...host, grants: task.tools.map(d => ({ tool: d.name, effect: d.effect, accountId: d.accountId, resourceId: d.resourceId })) }, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
     return { outcome, seen };
+    } finally { task.close(); }
   };
   return { logRows: () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
 }
@@ -126,11 +130,13 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const h = await harness(t, builder);
   const initial = await h.start(); const run = await h.accept(initial);
   assert.deepEqual(run.acceptance.connectionIds, pair);
-  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: 'lux-knowledge', resourceId: 'lux-knowledge', callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
+  const probe = canonicalTaskFixture(h.store, initial.owner, run.host.runId, 'Read synthetic knowledge', run.acceptance.connectionIds);
+  const definition = probe.tools.find(d => d.name === 'search_knowledge')!;
+  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: definition.accountId, resourceId: definition.resourceId, callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
   // At the base this throws intent_policy_denied, before any connector is invoked.
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
-  const definition = initial.owner.definitions(run.host.runId).find(d => d.name === intent.toolName)!;
-  const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal }); assert.equal(completed.status, 'completed');
+  const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal });
+  probe.close(); assert.equal(completed.status, 'completed');
   h.revealAll(); await initial.refresh();
   const expanded = initial;
   const beforePair = new Map(h.counts);

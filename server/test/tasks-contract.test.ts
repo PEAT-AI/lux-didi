@@ -24,7 +24,7 @@ test('ranked no match does not present neighbours as matches or open them', () =
   assert.equal(rankedResult('Orchid', []).status, 'empty');
   assert.ok(failed('Try a different id.').repair);
 });
-test('strict schemas, null pruning and writes pass the one authority port', async () => {
+test('strict provider arguments survive validation and executor null translation uses one authority port', async () => {
   const calls: unknown[] = [];
   const authority = new FakeAuthority();
   const registry = createRegistry({ execute: async (name, args) => { calls.push({ name, args }); return documentResult('done', 'fixture'); }, authority });
@@ -41,7 +41,7 @@ test('strict schemas, null pruning and writes pass the one authority port', asyn
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null, extra: true }).ok, false);
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null }).ok, true);
   const read = registry.get('read_mail')!;
-  assert.deepEqual(validateArguments(read, { id: 'm1', cursor: null }), { ok: true, args: { id: 'm1' } });
+  assert.deepEqual(validateArguments(read, { id: 'm1', cursor: null }), { ok: true, args: { id: 'm1', cursor: null } });
   await registry.get('delete_event')!.run({ id: 'e1' }, { task_id: 't', task_revision: 1, operation_id: 'o', connection_generation: 1 }, new AbortController().signal);
   assert.equal(authority.requests.length, 1);
   assert.equal(calls.length, 1);
@@ -204,7 +204,7 @@ test('CORE-F1: worker consumes a second Gmail page with a distinct read-cache ke
   } };
   const registry = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor([{ connector: 'google', policy, reader }]) });
   const tool = registry.get('search_mail')!;
-  assert.deepEqual(validateArguments(tool, { query: 'fixture', cursor: null }), { ok: true, args: { query: 'fixture' } });
+  assert.deepEqual(validateArguments(tool, { query: 'fixture', cursor: null }), { ok: true, args: { query: 'fixture', cursor: null } });
   let hop = 0;
   const result = await runWorker({ registry, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'fixture', signal: new AbortController().signal,
     infer: async request => {

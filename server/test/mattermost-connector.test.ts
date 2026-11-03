@@ -293,7 +293,7 @@ test('canonical chat lookup without a configured connector returns an immediate 
 test('#581: the native chat time window reaches the child through typed from_date and newest sort', async t => {
   const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
-  const result = await r.search({ query: 'release freeze', from_date: '2026-10-19', sort: 'newest' });
+  const result = await r.search({ query: 'release freeze', from_date: '2026-10-19' });
   assert.equal(result.state, 'completed');
   const first = f.calls().find(call => call.name === 'mattermost_search'); assert.ok(first);
   assert.equal(first.arguments.from_date, '2026-10-19'); assert.equal(first.arguments.sort, 'newest');
@@ -481,7 +481,7 @@ async function canonicalMattermostRun(t: TestContext) {
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-  task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic chat');
+  task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic chat', ['mattermost']);
   return { f, store, owner, task, host: live! };
 }
 

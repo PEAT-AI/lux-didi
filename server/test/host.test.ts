@@ -1777,7 +1777,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       const { data: session } = await response.json();
       const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
       assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
-      const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source');
+      const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', ['fixture-search', 'fixture-read']);
       try {
         assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');

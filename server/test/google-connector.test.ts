@@ -420,7 +420,7 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic Google mail');
+    const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic Google mail', ['gmail']);
     try {
       assert.ok(task.tools.some(tool => tool.name === 'search_mail'));
       assert.equal(task.tools.some(tool => tool.name === 'gmail_search_messages'), false, 'native names are not a second model catalog');
@@ -479,7 +479,7 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source')).tools.find(candidate => candidate.name === 'calendar_events');
+    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source', ['calendar'])).tools.find(candidate => candidate.name === 'calendar_events');
     assert(definition?.execute);
     const callArgs = { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' };
     const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'calendar_events', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition!.accountId, resourceId: definition!.resourceId };
@@ -563,7 +563,7 @@ test('#636: a transient helper failure on one mail ask never becomes the reason 
   const h = await stdioMailRuntime('first-mail:credential-refresh-failed');
   try {
     const asks = ['invoice from dana', 'lease renewal', 'standup notes', 'offsite venue', 'flat inspection', 'travel booking', 'contract draft'];
-    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source')).tools.find(candidate => candidate.name === 'search_mail');
+    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source', ['gmail'])).tools.find(candidate => candidate.name === 'search_mail');
     assert(definition?.execute);
     const ownerLine = googleOwnerLine(googleErrorEntry('credential-refresh-failed')!, 'gmail');
     const served: string[] = [];
@@ -593,7 +593,7 @@ test('#636: a dead credential names mail in words the owner can act on, never wi
   let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const h = await stdioMailRuntime('code:credential-missing');
   try {
-    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source')).tools.find(candidate => candidate.name === 'search_mail');
+    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source', ['gmail'])).tools.find(candidate => candidate.name === 'search_mail');
     assert(definition?.execute);
     const deadArgs = { query: 'invoice', cursor: null };
     const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(deadArgs)), callId: 'call-0', accountId: definition!.accountId, resourceId: definition!.resourceId };
@@ -1137,7 +1137,7 @@ test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source')).tools.find(candidate => candidate.name === (family === 'calendar' ? 'calendar_events' : family === 'gmail' ? 'search_mail' : 'search_drive'));
+    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source', [family])).tools.find(candidate => candidate.name === (family === 'calendar' ? 'calendar_events' : family === 'gmail' ? 'search_mail' : 'search_drive'));
     assert(definition?.execute);
     const callArgs = family === 'drive' ? { query: 'synthetic' } : family === 'gmail' ? { query: 'synthetic', cursor: null } : { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' };
     const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: definition!.name, argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition!.accountId, resourceId: definition!.resourceId };

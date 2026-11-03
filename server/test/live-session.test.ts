@@ -2100,7 +2100,7 @@ test('a response the owner barges in on is measured on its own, so two voices ne
   t.after(() => sink());
   const h = await harness(t, {});
   const { session, attachment } = await attached(h);
-  void (async () => {  })();
+  void (async () => { for await (const _chunk of attachment.output) { /* drain playback */ } })();
   // 2000 samples of a 110 Hz tone at 24 kHz: a real voiced frame, not the 8-byte stub.
   const samples = new Int16Array(2000);
   for (let index = 0; index < samples.length; index += 1) samples[index] = Math.round(0.4 * 32767 * Math.sin((2 * Math.PI * 110 * index) / 24000));

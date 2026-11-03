@@ -1,4 +1,12 @@
 
+
+// Per-second audio counters. Numbers only: the journal never sees a sample. One bucket per second
+// per session, flushed on the next bucket so a stall shows as a second with no output. Each output chunk also
+// contributes its level (dBFS RMS, computed by the adapter) so a silent stream is visible as a number, not a guess.
+const audioBuckets = new WeakMap<ActiveSession, { second: number; input: number; output: number; silent: number; rmsMax: number; rmsPower: number; rmsChunks: number }>();
+
+const audioTotals = new WeakMap<ActiveSession, number>();
+
 /** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
 function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
   // C-LIVE N-2: a provider frame of digital silence (below the adapter's audible level) is not conversation.
@@ -303,7 +311,6 @@ function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: n
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
-import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES } from '../tools/compose.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
@@ -313,8 +320,7 @@ import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
 import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
-import { freezeNote } from '../tools/lux-note.js';
+import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { LIVE_NOT_MODEL_FACING } from '../tools/declarations.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
@@ -729,7 +735,6 @@ const CONSUMER_CLOSED_MS = 1_000;
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
 const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
-const UNSPOKEN_REPLY_LIMIT = 1_200;
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
 export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
@@ -828,10 +833,6 @@ export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_
  *  seconds of the 16 kHz s16 mono uplink (32 bytes per millisecond); past it the oldest held frame is the one dropped. */
 export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
-
-/** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map<string, string>([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault'],
-  ...COMPOSE_NAMES.map(name => [name, COMPOSE_IDENTITY.resourceId] as [string, string])]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
@@ -914,7 +915,6 @@ export const EMPTY_RESULT_CLAIM = /\b(?:(?:came|comes|come) back empty|empty res
 export function claimsEmptyResult(text: string, lookupFailed: boolean): boolean {
   return lookupFailed && EMPTY_RESULT_CLAIM.test(text);
 }
-const NON_OWNER_DATA_TOOL_PREFIX = 'open_';
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
 export const DELEGATION_DEADLINE_MS = 25_000;
@@ -981,9 +981,6 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
-
-/** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
-const RESEARCH_PROJECTION_CHARS = 240;
 
 export { liveMigrations } from './schema.js';
 export * from './types.js';
@@ -1424,7 +1421,6 @@ export class LiveSessionOwner {
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
   readonly #store: LiveStorePort;
-  readonly #vault: VaultWriter;
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
@@ -1559,7 +1555,6 @@ export class LiveSessionOwner {
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
     this.#luxWrite = config.vaultTransport ?? createLuxWriteTransport(luxWriteEndpoint());
-    this.#vault = new VaultWriter({ store: this.#store, transport: this.#luxWrite, now: this.#now, log: event => hostLogEvent(event) });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     memoryOwners.set(this.#store, this);
@@ -2590,9 +2585,6 @@ export class LiveSessionOwner {
     this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
     return true;
   }
-
-  /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
-  #delegationKey(handle: ActiveSession): string { return `${handle.liveSessionId}-${handle.generation}`; }
 
   /**
    * S5: the honest end of a backend turn. One typed disposition, `turn_failed` with the provider's own code, and
@@ -4332,7 +4324,7 @@ export class LiveSessionOwner {
     if (debt && debt.generation === handle.generation) this.#scheduleDebt(handle, debt.remaining, debt.step);
     if (watchdog && watchdog.generation === handle.generation) this.#scheduleWatchdog(handle, watchdog.remaining, watchdog.generation, watchdog.step);
   }
-  async #taskReconnect(handle: ActiveSession, text: string): Promise<boolean> {
+  async #taskReconnect(handle: ActiveSession, _text: string): Promise<boolean> {
     if (this.#settled(handle) || handle.rebuilding) return false;
     const remaining = handle.deadlineAt - this.#now(), idle = this.#profile.limits.idleMs;
     if (remaining <= 0) return false;

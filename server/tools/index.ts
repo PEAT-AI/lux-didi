@@ -1,64 +1,38 @@
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
-import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
-
-/** F6a: the resolver's answer and duration, in closed words: a target class, an outcome code and ms. */
-function openResolve(input: { target: 'web' | 'source' | 'file'; outcome: string; ms: number }): void {
-  hostLogEvent({ event: 'open_resolve', target: input.target, outcome: input.outcome, ms: input.ms });
-}
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
-import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
+import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
-import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
+import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, composedGrantedNames, connectorDescriptor, CONNECTOR_COMPOSED_TOOLS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
-import { redactSecretsWithCount } from './redact.js';
 import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
-import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
-import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
+import { HISTORY_IDENTITY,} from './history.js';
+import { type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
-import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
-import { VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
+import { REMEMBER_IDENTITY,} from './remember.js';
+import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
+import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
-import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmNamedBy, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
-import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms,} from './alarm.js';
+import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
-import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
+import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
-/** One closed stage for a dispatched call's unknown outcome: a stage itself, else the policy reason's closest stage. */
-function dispatchedFailureCode(reason: string): ToolFailureCode {
-  if (isMcpFailureStage(reason)) return reason;
-  return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
-}
-const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
-const TIME_PARAMETER = {
-  type: 'object',
-  description: 'The time he stated in this ask, never an earlier one. Wall: his clock and his day. Relative: a span he said.',
-  properties: {
-    mode: { type: 'string', enum: ['wall', 'relative'], description: 'wall or relative; omit it when the fields make it clear.' },
-    date: { type: 'string', description: 'wall only: today, tomorrow, a weekday name, or YYYY-MM-DD. Omit for today.' },
-    local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never UTC.' },
-    timezone: { type: 'string', description: 'Only when he named a zone; an IANA name such as Europe/Berlin.' },
-    amount: { type: 'number', description: 'relative only: a positive count. unit: minutes or hours.' },
-    unit: { type: 'string', enum: ['minutes', 'hours'] },
-  },
-  additionalProperties: false,
-} as const;
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
@@ -187,8 +161,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
   return { event: 'tool_classified_failure', endpointId: input.endpointId, connector: input.connector, tool: input.tool, code: input.code };
 }
 
-export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
-  const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
+export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections { text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   const historyReader = createHistoryReader();
@@ -583,7 +556,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return { connector: policy.connector, reader, policy };
       });
     },
-    observeAlarmOwner: (session, journalId, words, at) => {
+    observeAlarmOwner: (_session, _journalId, words, _at) => {
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },

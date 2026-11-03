@@ -23,19 +23,6 @@ const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 /** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
 const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
-const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
-const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
-// #280: `routed` is the routed start's own driver; it never goes through the selector loop.
-const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
-const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
-// ROUTE-1022 K5: what a brief plan actually read, as a closed set.
-const RESEARCH_PLANS = ['knowledge_only', 'named_sources'];
-// ROUTE-R2: why a source was skipped, so a grant gap is never indistinguishable from an outage.
-const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'];
-// Release 4: why a source result is partial, a closed set, and how many pages it lost.
-const RESEARCH_PARTIAL_REASONS = ['pages_failed'];
-/** L8-Q07: the closed reason a research_source receipt gives for a read that did not answer. */
-const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
@@ -69,17 +56,6 @@ const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
 const isProviderId = (value: unknown): boolean => typeof value === 'string' && PROVIDER_ID.test(value);
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
-/** K6: the layers a routed research call may name, in the model's own words. */
-const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
-/** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
-const LATE_DELIVERIES = ['commentary', 'thinking', 'response', 'ledger', 'dropped'];
-const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
-  'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
-const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
-/** MED-1022: what became of a chat date word, as a closed set, never the operator or the day. */
-const KNOWLEDGE_CHAT_DATE_OPERATORS = ['compiled', 'dropped', 'none'];
-/** ONE-1023: the day filter decision, a closed set, never the day it named. */
-const KNOWLEDGE_DAY_FILTERS = ['none', 'past_window', 'dropped_on_empty'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model', 'history_provenance_unavailable', 'summary_route_class_denied'];
@@ -134,19 +110,6 @@ const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', '
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
 const MAIL_WINDOW_TOKEN = /^(?:newer_than|older_than):\d{1,4}d$|^(?:after|before):\d{4}\/\d{2}\/\d{2}$/u;
-/** W11-R3: a mail search's shape: how many terms, which operators, which window, and one retry of the same. */
-function mailQueryShape(value: unknown): { terms: number; operators: string[]; window?: string } | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const row = value as Record<string, unknown>;
-  const hasWindow = Object.prototype.hasOwnProperty.call(row, 'window');
-  if (Object.keys(row).sort().join(',') !== ['operators', 'terms', ...(hasWindow ? ['window'] : [])].sort().join(',')) return undefined;
-  if (!isSafeCount(row['terms'])) return undefined;
-  const operators = row['operators'];
-  if (!Array.isArray(operators) || operators.length > 12 || !operators.every(operator => typeof operator === 'string' && MAIL_QUERY_OPERATORS.includes(operator))) return undefined;
-  const window = hasWindow ? row['window'] : undefined;
-  if (hasWindow && (typeof window !== 'string' || !MAIL_WINDOW_TOKEN.test(window))) return undefined;
-  return { terms: row['terms'], operators: operators as string[], ...(hasWindow ? { window: window as string } : {}) };
-}
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 /**
  * #689: the live owner stamps a research event's callKey with `scopedTraceKey`, `call:` plus the 64 lowercase hex
@@ -167,8 +130,6 @@ const rejectResearchId = (event: string): Record<string, unknown> => ({ event: '
  * Names only: a value never rides this line, so an entry that carries one is dropped whole.
  */
 const NORMALIZED_PATH = /^(?:question|topic|researchId|sources|direction|cursor|pageCursor|lookups)(?:\[\d{1,2}\])?(?:\.(?:source|query|history|mail))?$/u;
-const isNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
-  && value.every(path => typeof path === 'string' && NORMALIZED_PATH.test(path));
 const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;

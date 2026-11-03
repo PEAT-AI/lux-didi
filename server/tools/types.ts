@@ -1,7 +1,5 @@
 import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
-import type { RememberNotePort } from './remember.js';
-import type { VaultDispatchPort } from './vault-write.js';
 import type { JsonObject as JsonValue } from '../adapters/model/types.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -9,7 +7,7 @@ import type { HistorySourceRef } from '../domain/history-reader.js';
 import type { ResultScope } from '../adapters/mcp/port.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
-import type { DataClass, HostContext, JsonObject, ToolResultBinding, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolResultBinding, ToolCallIntent, ToolCallJournal, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 
 export interface HttpConnectionEndpoint { id: string; url: string; account: string; resource: string; credentialRef: string | null }
 /** Explicit operator-approved local executable binding; credentialRef is strictly null. */

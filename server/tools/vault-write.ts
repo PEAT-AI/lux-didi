@@ -81,9 +81,6 @@ export function vaultAttemptEvent(receipt: VaultReceipt, latencyMs: number): Rec
 /** Case, whitespace and punctuation are not content: the proposal and the uttered note compare equal past them. */
 export const vaultContentKey = (text: string): string => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
-/** An anchored owner ask: a save verb, his demonstrative or none, then lux, the knowledge base or the vault. */
-const SAVE_COMMAND = /^(?:naya\s*,?\s+)?(?:please\s+)?(?:save|remember|put|store|note|write)\s+(?:(?:this|that|it|these|those|them)\s+)?(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|knowledge|vault)\b[^\p{L}\p{N}]*([\s\S]*)$/iu;
-
 export type SaveCommand = { readonly content: string; readonly refers: boolean };
 
 /**
@@ -117,10 +114,6 @@ const REQUEST_WORDS = new Set(['can', 'could', 'would', 'will', 'you', 'please',
   'so', 'and', 'then', 'uh', 'um', 'er', 'hey', 'hi', 'yes', 'no', 'let', 'us', 'we', 'go', 'ahead',
   'save', 'remember', 'put', 'add', 'write', 'store', 'note', 'keep', 'this', 'that', 'it', 'these', 'those', 'them',
   'to', 'in', 'into', 'my', 'the', 'for', 'me', 'lux', 'knowledge', 'base', 'vault', 'memory', 'didi']);
-const requestFragment = (text: string): boolean => {
-  const words = vaultContentKey(text).split(' ').filter(word => word.length > 0);
-  return words.length === 0 || words.every(word => REQUEST_WORDS.has(word));
-};
 
 function receiptFromRow(row: SQLRow): VaultReceipt {
   const state = String(row['state']) as VaultState;

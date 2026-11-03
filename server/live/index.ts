@@ -1,5 +1,48 @@
-
-
+import { TaskCall } from '../tasks/call.js';
+import { incompleteConnectorTools } from '../host/mcp.js';
+import { canarySessions } from './canary.js';
+import * as memory from '../domain/memory.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
+import * as summaries from '../domain/summaries.js';
+import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
+import { readToolOutcomes } from '../services/summarize.js';
+import * as labels from '../domain/labels.js';
+import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
+import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
+import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
+import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
+import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
+import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
+import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
+import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
+import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
+import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
+import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
+import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
+import { type LiveToolStepBody } from '../tools/host-events.js';
+import { validateAcceptedPrompt } from './config.js';
+import { VoiceProfileMeter } from './voice-profile.js';
+import { createHash, randomUUID } from 'node:crypto';
+import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, TurnFailedReason } from '../adapters/live-voice/index.js';
+import type { DebtPhase, DebtReason } from '../trace/kinds.js';
+import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
+import { currentLiveAccent } from '../config/live.js';
+import type { SQLRow, Transaction } from '../contracts/storage.js';
+import { liveProfileIdentity, validateLiveProfile } from './config.js';
+import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
+import { normalizeStopSpeech, stopNameId, stopPhrase, STOP_WORD_LIMIT } from './stop-phrase.js';
+import {
+  LiveError,
+  type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
+  type LiveFragmentPage, type LiveInvalidationReason, type LiveOutputChunk, type LiveOwnerConfig,
+  type AcceptedPromptSnapshot, type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
+  type LiveTerminalOutcome,
+} from './types.js';
+import { ALARM_MODE_MARKER } from './types.js';
+import type { SeriesAlarmSetup } from './types.js';
 // Per-second audio counters. Numbers only: the journal never sees a sample. One bucket per second
 // per session, flushed on the next bucket so a stall shows as a second with no output. Each output chunk also
 // contributes its level (dBFS RMS, computed by the adapter) so a silent stream is visible as a number, not a guess.
@@ -307,51 +350,6 @@ function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: n
   }
   audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 });
 }
-import { TaskCall } from '../tasks/call.js';
-import { incompleteConnectorTools } from '../host/mcp.js';
-import { canarySessions } from './canary.js';
-import * as memory from '../domain/memory.js';
-import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
-import * as summaries from '../domain/summaries.js';
-import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
-import { readToolOutcomes } from '../services/summarize.js';
-import * as labels from '../domain/labels.js';
-import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
-import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
-import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
-import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
-import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
-import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
-import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
-import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
-import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
-
-import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
-import { type LiveToolStepBody } from '../tools/host-events.js';
-import { validateAcceptedPrompt } from './config.js';
-import { VoiceProfileMeter } from './voice-profile.js';
-import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, TurnFailedReason } from '../adapters/live-voice/index.js';
-import type { DebtPhase, DebtReason } from '../trace/kinds.js';
-import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
-import { currentLiveAccent } from '../config/live.js';
-import type { SQLRow, Transaction } from '../contracts/storage.js';
-import { liveProfileIdentity, validateLiveProfile } from './config.js';
-import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
-import { normalizeStopSpeech, stopNameId, stopPhrase, STOP_WORD_LIMIT } from './stop-phrase.js';
-import {
-  LiveError,
-  type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
-  type LiveFragmentPage, type LiveInvalidationReason, type LiveOutputChunk, type LiveOwnerConfig,
-  type AcceptedPromptSnapshot, type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
-  type LiveTerminalOutcome,
-} from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
@@ -375,9 +373,6 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   if (!classes.length) classes.push('recent_thread');
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
-
-import { ALARM_MODE_MARKER } from './types.js';
-import type { SeriesAlarmSetup } from './types.js';
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
   const overview = reminder && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
@@ -706,7 +701,6 @@ export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], a
  * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive
  * record of what it delivered, so it says who is speaking and never reads as something the owner said.
  */
-export const HOST_LEDGER_HEADER = '[host note, not the owner\u2019s words] research this call already delivered:';
 /** The cost cap on a mute: past this the muted session closes benignly, so a long mute costs no provider time. */
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
@@ -3211,16 +3205,12 @@ export class LiveSessionOwner {
    * under `SEED_CHAR_LIMIT`, and the cumulative research ledger rides as a distinct host section after it, so a
    * rebuild keeps the conversation instead of replacing it with the one batch that crossed the threshold.
    */
-  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, deadLine = false, transcript = true): {
+  #rebuildSeed(liveSessionId: string, inputClass: DataClass, deadLine = false, transcript = true): {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
     transcriptChars: number; ledgerChars: number; condensed: boolean } {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
       ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
-    const body = typeof ledger === 'string' ? ledger.trim() : '';
-    const text = body === '' ? undefined : `${HOST_LEDGER_HEADER}\n${body}`;
-    const appended = text === undefined ? [] : [{ role: 'user' as const, text, dataClass: inputClass }];
-    const fitted = fitSeedTurns(seed.turns, appended);
-    return { turns: fitted.turns, chars: fitted.chars, transcriptChars: seed.chars, ledgerChars: body.length, condensed: fitted.condensed };
+    return { turns: seed.turns, chars: seed.chars, transcriptChars: seed.chars, ledgerChars: 0, condensed: false };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
@@ -3493,7 +3483,7 @@ export class LiveSessionOwner {
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
     const savedHandle = saved?.['resumption_handle'];
     const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
-    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, '');
+    const seed = this.#rebuildSeed(handle.liveSessionId, handle.inputClass);
     const reuse = !forceFresh && this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
     const closeCode = outcome?.upstream?.closeCode ?? null;
     const reason = reasonOverride ?? outcome?.code ?? null;
@@ -3556,7 +3546,7 @@ export class LiveSessionOwner {
       if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
       attempt = rung === 1
         ? shrink(attempt)
-        : this.#seedWithLedger(handle.liveSessionId, handle.inputClass, '', false, false);
+        : this.#rebuildSeed(handle.liveSessionId, handle.inputClass, false, false);
       handle.recoveryRefused = false;
       const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, Math.min(remaining, left), idleLeft, window, attempt, reason);
       if (opened) {
@@ -3585,7 +3575,7 @@ export class LiveSessionOwner {
     if (idle <= 0) { this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null); return false; }
     const remaining = Math.min(this.#profile.limits.sessionMs, callRemaining);
     const window = Math.min(10_000, Math.max(1, remaining));
-    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, '');
+    const seed = this.#rebuildSeed(handle.liveSessionId, handle.inputClass);
     handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded'; handle.dropEpisodeAt = undefined;
     const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }

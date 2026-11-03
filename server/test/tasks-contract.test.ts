@@ -130,3 +130,42 @@ test('configured schemas reject floats but accept integer bounds', () => {
   assert.throws(() => createRegistry(ports, [{ name: 'fixture_float', description: 'fixture', fields: { value: { type: 'number', minimum: 0.1 } } }]), /Non-integer/);
   assert.ok(createRegistry(ports, [{ name: 'fixture_integer', description: 'fixture', fields: { value: { type: 'integer', minimum: 1 } } }]).has('fixture_integer'));
 });
+
+test('configured connector executor forwards query operators and whole read bodies', async () => {
+  const { connectorExecutor, configuredCompanyTools } = await import('../tasks/connectors.js');
+  const { declarations } = await import('../tasks/model.js');
+  const { CONNECTOR_DESCRIPTORS } = await import('../connectors/index.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'google',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    toolNames: ['gmail_search_messages', 'gmail_read_message'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const seen: { name: string; args: Record<string, unknown> }[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (name, args) => {
+    seen.push({ name, args });
+    return { state: 'completed', decodedResult: name === 'gmail_search_messages' ? { messages: [{ id: 'm', subject: 'Synthetic' }] } : { body: 'whole '.repeat(2000) } } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  const execute = connectorExecutor([{ connector: 'google', policy, reader }]);
+  assert.equal((await execute('search_mail', { query: 'after:2026/01/01 before:2026/02/01' }, new AbortController().signal)).status, 'ok');
+  assert.deepEqual(seen[0], { name: 'gmail_search_messages', args: { q: 'after:2026/01/01 before:2026/02/01' } });
+  assert.ok((await execute('read_mail', { id: 'm' }, new AbortController().signal)).text.length > 10000);
+  assert.equal((await connectorExecutor([])('read_mail', { id: 'm' }, new AbortController().signal)).status, 'failed');
+  const companyPolicy = { ...policy, connector: 'mongoose', endpoint: { ...policy.endpoint, resource: 'mongoose:knowledge' } };
+  const configured = configuredCompanyTools([{ connector: 'mongoose', policy: companyPolicy, reader }]);
+  const registry = createRegistry({ execute, authority: new FakeAuthority() }, configured);
+  assert.ok(registry.has('query_company'));
+  const source = CONNECTOR_DESCRIPTORS.mongoose!.declarations(companyPolicy).find(tool => tool.name === 'search')!;
+  assert.ok(source);
+  const filters = Object.fromEntries(Object.keys(source.parameters.properties as object).map(key => [key, key === 'query' ? 'Orchid' : null]));
+  assert.equal(validateArguments(registry.get('query_company')!, { resource: 'search', filters }).ok, true);
+  assert.equal(validateArguments(registry.get('query_company')!, { resource: 'search', filters: { ...filters, invented: 'no' } }).ok, false);
+  const request = { instructions: '', input: '', outputs: [], turns: [], tools: [...registry.values()], model: 'fixture', effort: 'low' };
+  for (const provider of ['openai', 'gemini'] as const) {
+    const converted = declarations(request, provider);
+    assert.equal(converted.length, registry.size);
+    const visit = (value: unknown): void => { if (typeof value === 'number') assert.ok(Number.isInteger(value)); if (value && typeof value === 'object') Object.values(value).forEach(visit); };
+    converted.forEach(visit);
+  }
+});

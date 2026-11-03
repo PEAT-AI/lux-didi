@@ -1,3 +1,6 @@
+import { hostTaskFactory } from '../tasks/host.js';
+import { resolveTaskModels } from '../config/tasks.js';
+import type { Infer } from '../tasks/worker.js';
 import { InstalledCanary, canarySessions } from '../live/canary.js';
 import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler.js';
 import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
@@ -130,6 +133,7 @@ interface Harness {
 }
 
 async function harness(t: TestContext, overrides: {
+  taskInfer?: Infer;
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
   socketFactory?: NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
@@ -431,7 +435,9 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile,
+    createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],
+      contentAllowed: () => true, timeZone: 'UTC', infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -8641,4 +8647,16 @@ test('C-OPENER: a used opener stays remembered after three calls that opened pla
   const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary'], NOW - 30 * 60 * 1000));
   assert.equal(history.previous.length, 3, 'the note still carries the three newest openers');
   assert.equal(history.recent.length, 1, 'and the opening used four calls ago is still inside the window');
+});
+
+
+test('finalized owner input invokes the task worker without a delegation or promise', async t => {
+  const p = progressPort(); const inputs: string[] = [];
+  const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async request => { inputs.push(request.input); return { text: '', calls: [], no_action: true }; } });
+  const { session } = await openPort(h);
+  p.emit({ type: 'inputTranscription', text: 'Synthetic finalized request', finished: true, finalOrigin: 'provider' });
+  await settlePort();
+  assert.equal(inputs.length, 1);
+  assert.ok(inputs[0]?.includes('Synthetic finalized request'));
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null);
 });

@@ -330,19 +330,11 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 
 // N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
-test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
-  for (const rule of [
-    'Open a fresh call on one current specific, never a generic ready-to-help line',
-    'after announcing a check, say what it found before the turn ends',
-    'offer it in one short plain statement, not a question and not a stock line',
-    'name any failed source in one clause',
-  ]) assert.equal(instruction.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
-  for (const gone of [
-    'Vary how you start replies; never open two replies in a row with the same word.',
-    'Never hand ordinary continuation back to the owner as a permission question',
-  ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
-  assert.equal(instruction.split('Only the host bridges lookups.').length - 1, 1, 'the silence rule is still stated once');
+test('compiled voice instructions carry the work policy instead of lookup announcements', async () => {
+  const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: [] }).text;
+  assert.equal(instruction.split(NAYA_WORK_DELIVERY).length - 1, 1);
+  assert.doesNotMatch(instruction, /Only the host bridges lookups|after announcing a check|# Research procedure/);
 });
 
 test('public voice and worker policies contain judgments, not lines to recite', async () => {

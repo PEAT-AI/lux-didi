@@ -853,18 +853,20 @@ export function composeLiveSessionInstruction(input: {
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
   /** M2: what the standing section did with its budget, for the build's own receipt. Counts only. */
   readonly standing: { readonly selected: number; readonly omitted: number; readonly chars: number } } {
+  // Rebuild the always-present policy once rather than retaining the frozen copy too.
+  const sourceText = input.text.replace(`${separator}${NAYA_WORK_DELIVERY}`, '');
   const baseMarker = `${NAYA_LIVE_BASE}${separator}`;
-  const baseAt = input.text.indexOf(baseMarker);
+  const baseAt = sourceText.indexOf(baseMarker);
   // The head block, the owner style and the overlay precede the public base, in that order; the accent block
   // the selection froze last start also sits at the front, so it is stripped before the current one is placed.
-  const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).includes(VOICE_HEAD_PREFIX)
-    || ACCENT_BLOCKS.some(block => input.text.startsWith(block)));
+  const native = baseAt !== -1 && (baseAt === 0 || sourceText.slice(0, baseAt).includes(VOICE_HEAD_PREFIX)
+    || ACCENT_BLOCKS.some(block => sourceText.startsWith(block)));
   // The separator before the public base sits in the prefix; it is the join the re-assembly puts back.
-  const frozenPrefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
+  const frozenPrefix = native ? stripLeadingAccent(sourceText.slice(0, baseAt)) : '';
   const prefix = frozenPrefix.endsWith(separator) ? frozenPrefix.slice(0, frozenPrefix.length - separator.length) : frozenPrefix;
   // A frozen voice description closes the accepted prompt after the tail block; it is split off first so the
   // tail is stripped and re-placed once, and the description is re-appended last (PV2).
-  const frozenTail = native ? input.text.slice(baseAt + baseMarker.length) : '';
+  const frozenTail = native ? sourceText.slice(baseAt + baseMarker.length) : '';
   const { region: tailRegion, description } = splitTrailingDescription(frozenTail);
   const body = native ? stripTrailingAccent(tailRegion) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
@@ -881,7 +883,7 @@ export function composeLiveSessionInstruction(input: {
   const lore = owner.filter(section => section.id === 'owner-lore').map(section => clipOwnerLore(section.text));
   // The frozen accepted prompt already carries these profile blocks; emitting them again doubled them
   // (issue #301), so a block the incoming text already holds is not repeated.
-  const held = (block: string): boolean => input.text.includes(block);
+  const held = (block: string): boolean => sourceText.includes(block);
   const emitStyle = style.filter(block => !held(block));
   const emitLore = lore.filter(block => !held(block));
   const emitOverlay = overlay !== undefined && !held(overlay) ? overlay : undefined;
@@ -902,7 +904,7 @@ export function composeLiveSessionInstruction(input: {
     const openers: Entry[] = input.openersNote !== undefined ? [{ id: 'previous-openers', text: input.openersNote }] : [];
     const openingOptions: Entry[] = input.openingOptions?.length ? [{ id: 'opening-options', text: input.openingOptions }] : [];
     if (!native) return [
-      { id: 'base', text: input.text },
+      { id: 'base', text: sourceText },
       // C-MEMORYTRUTH: an armed alarm is a fact of the store, not a warm digest, so a start without a frozen
       // accepted prompt still carries it.
       ...(calendar !== undefined ? [{ id: 'calendar' as const, text: calendar }] : []),

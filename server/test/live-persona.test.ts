@@ -37,7 +37,7 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 // Release 7 W5: the host injects the earlier calls' summaries and the standing memory at every start, so the
 // flat "keep nothing between calls" claim denied what the prompt already gave her. She says what carries over.
 test('W5: the persona says what carries over between calls and what does not', () => {
-  assert.match(NAYA_CHARACTER, /Short summaries, standing memory and saved notes carry over\. You can look back over past conversations word for word through research\. Quote only what research returned; never invent a past quote\./,
+  assert.match(NAYA_CHARACTER, /Short summaries, standing memory and saved notes carry over\. You can look back over past conversations word for word through what the helper returned\. Quote only what the helper returned; never invent a past quote\./,
     'the memory truth names retained conversation access and forbids invented quotes');
   assert.equal(NAYA_CHARACTER.includes('keep nothing between calls'), false, 'the flat denial is gone');
   assert.match(NAYA_CHARACTER, /Never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call\.\s+Never describe a training history/u,
@@ -46,7 +46,7 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '40a5ed25918ced11ebb100a9e778ee0f2a03737108f7cacc52a8a11780f8e931');
+  assert.equal(sha(NAYA_CHARACTER), '6e1b088a0c6fadeb814551c587c7218f4ebce1d700b09b6641d22cf49ac58d70');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -93,7 +93,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
   assert.equal(original.sha256, sha(original.text), 'the hash is the text it labels');
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
-  assert.deepEqual(composed.sections.map(section => section.id), ['voice-head', 'owner-style', 'base', 'owner-lore', 'voice']);
+  assert.deepEqual(composed.sections.map(section => section.id), ['voice-head', 'owner-style', 'base', 'tools', 'owner-lore', 'voice']);
   assert.ok(composed.text.lastIndexOf('\n\nLANGUAGE:') > composed.text.indexOf('untrusted duplicate'));
   assert.ok(composed.text.includes('FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.'));
   assert.ok(composed.text.endsWith(accentPreset(LIVE_DEFAULT_ACCENT)!.tail), 'the accent tail closes the instruction');
@@ -119,7 +119,7 @@ test('composition keeps base -> overlay -> voice order and hashes the exact text
 test('missing and empty overlay sections are stripped, and the hash is stable', () => {
   const a = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
   const b = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
-  assert.deepEqual(a.sections.map(s => s.id), ['voice-head', 'base', 'voice']);
+  assert.deepEqual(a.sections.map(s => s.id), ['voice-head', 'base', 'tools', 'voice']);
   assert.equal(a.sha256, b.sha256, 'same input, same hash');
   assert.equal(a.text, b.text);
   assert.ok(a.text.startsWith(`${accentPreset(LIVE_DEFAULT_ACCENT)!.head}\n\nPUBLIC BASE TEXT\n\n`), 'the accent head leads, then the base');
@@ -260,7 +260,7 @@ test('session composition places bounded whole memory records and pickup before 
   assert.ok(order.every(marker => composed.text.indexOf(marker) < trustedAnchor));
   assert.ok(composed.text.endsWith(baseline.text.slice(baseline.text.lastIndexOf('LANGUAGE:'))));
   const withMemory = composeLiveInstruction({ base: NAYA_LIVE_BASE, memory: 'Fixture memory section' });
-  assert.deepEqual(withMemory.sections.map(section => section.id), ['voice-head', 'base', 'memory', 'voice']);
+  assert.deepEqual(withMemory.sections.map(section => section.id), ['voice-head', 'base', 'tools', 'memory', 'voice']);
   const capped = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
   const memorySection = capped.sections.find(section => section.id === 'memory');
   assert.ok(memorySection, 'an over-long memory input is retained');
@@ -580,13 +580,11 @@ const WRAPPER_3O_CHARS = 6603;
 const WRAPPER_W5_CHARS = 14_869; // PT-1101: +91 for the write paragraph's truth fixes, re-pinned to the measure.
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Do not announce routine lookups or fill the wait with status updates. A wait belongs only to a response that really makes a call, and it says nothing about work you have not started; a direct ask gets the call, not an announcement of it. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask and answer your own question.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
     // asserted where it now lives, at the same strength.
     'Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.',
-    'Write each query for its source, preserve the requested time window, and follow the actual returned coverage.',
     'Depth follows the ask.',
   ];
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_WORK_DELIVERY}`;
@@ -831,7 +829,7 @@ test('PV1: the overlay accent detail follows the block, and the receipt lists st
   assert.ok(frozen.text.startsWith(block), 'the block leads');
   assert.ok(frozen.text.indexOf('SYNTHETIC-ACCENT-DESCRIPTION') > block.length, 'the private accent text still follows it');
   const session = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], overlay, trustedChars: BUDGET, accentSelection: 'indian-strong' });
-  assert.deepEqual(session.sections.map(section => section.id), ['voice-head', 'owner-style', 'overlay', 'base', 'owner-lore', 'voice']);
+  assert.deepEqual(session.sections.map(section => section.id), ['voice-head', 'owner-style', 'overlay', 'base', 'tools', 'owner-lore', 'voice']);
   assert.ok(session.sections.find(section => section.id === 'owner-style')!.chars > 0, 'the style has its own chars');
   assert.ok(session.sections.find(section => section.id === 'owner-lore')!.chars > 0, 'and so does the lore');
   assert.equal(session.text, frozen.text, 'the split labels the same bytes, never a re-arrangement');
@@ -876,7 +874,7 @@ test('S4b: the Gemini composition still carries every NAYA_WORK_DELIVERY sentenc
   const gemini = composeLiveSessionInstruction({ text: 'Synthetic system', tools: ['research'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   const sentences = NAYA_WORK_DELIVERY.split(/(?<=[.?!])\s+|\n+/u).map(sentence => sentence.trim()).filter(sentence => sentence.length > 2);
   for (const sentence of sentences) assert.ok(gemini.text.includes(sentence), `the direct-tool conduct keeps the sentence: ${sentence.slice(0, 40)}...`);
-  for (const sentence of MOVED_PROCEDURE_SENTENCES) assert.ok(gemini.text.includes(sentence), `Gemini keeps the procedure sentence: ${sentence.slice(0, 40)}...`);
+  for (const sentence of MOVED_PROCEDURE_SENTENCES) assert.equal(gemini.text.includes(sentence), false, `helper-only procedure stays out of voice: ${sentence.slice(0, 40)}`);
   assert.ok(gemini.text.includes(NAYA_WORK_DELIVERY), 'the full conduct is carried byte for byte');
 });
 
@@ -1280,9 +1278,8 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
 /** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
 const W5_RULES = [
   'Open a fresh call on one current specific, never a generic ready-to-help line',
-  'after announcing a check, say what it found before the turn ends',
-  'offer it in one short plain statement, not a question and not a stock line',
-  'name any failed source in one clause',
+  'You talk; the work happens behind you.',
+  'MUST be handed off in the same turn',
 ];
 /** The sentences the four rules replace or duplicate: no copy may survive in the conduct. */
 const W5_REPLACED = [
@@ -1313,15 +1310,9 @@ test('W5: each audit rule is stated once in the built GPT-Live voice instruction
   for (const gone of W5_REPLACED) assert.equal(voice.text.includes(gone), false, `replaced sentence is gone: ${gone}`);
 });
 
-test('LAT-1023: the first ack before a lookup names the sources it is reading', () => {
-  // The ack rule already lives in the backchannel policy, so the source name rides the same sentence and
-  // no new speech path, timer or host cue is added.
-  assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/u);
-  assert.match(NAYA_VOICE_SURFACE, /Announcing a lookup, name sources briefly/u);
-  assert.match(NAYA_VOICE_SURFACE, /checking mail/u);
-  assert.match(NAYA_VOICE_SURFACE, /looking in your vault and calendar/u);
-  assert.equal(NAYA_LIVE_BASE.split('name sources briefly').length - 1, 1, 'the rule reaches the live persona once');
-  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
+test('spoken wait guidance replaces the retired lookup announcement policy', () => {
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /after announcing a check|Announcing a lookup|Only the host bridges lookups/);
+  assert.match(NAYA_WORK_DELIVERY, /A hand-off may carry a brief natural acknowledgement or none at all/);
 });
 
 test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
@@ -1366,10 +1357,10 @@ test('#589/#590: the voice surface names the stop phrases and promises no silenc
 // --- HONESTY #665 #666: the voice never claims a lookup that is not running, treats an earlier call as
 // history, labels general knowledge, and never talks over the owner. Each rule is one sentence, stated once.
 const HONESTY_RULES = [
-  'Say a lookup is still running only for a call you just made or one the research tool reports running; if unsure, call research and check.',
-  'Do not promise an unsolicited callback, future monitoring or work after this session.',
-  'What a tool did in an earlier call is history: say last time, and never state a tool\'s present health without checking it now.',
-  'After a lookup failed or timed out, whatever you add from yourself is general knowledge, and you say so.',
+  'Say something happened only when a result says it happened.',
+  'If a result reports a failure, a gap or a partial answer, say that as given.',
+  'Something done in an earlier call is history, and asking whether it worked is a new hand-off.',
+  'Never promise to watch something or call back later; work he already asked for finishes by itself.',
   'No backchannel words while he is speaking, including pauses: no "Hmm", "Yeah" or "Okay"',
 ];
 /** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
@@ -1391,7 +1382,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /host note, not the owner/);
   assert.match(NAYA_LIVE_BASE, /never agree with.*host/i);
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
-  assert.match(NAYA_LIVE_BASE, /progress phrase.*not.*reus/i);
+  assert.match(NAYA_WORK_DELIVERY, /freshly worded and never the same way twice in a call/);
   assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
   assert.match(NAYA_LIVE_BASE, /no backchannel words while.*speaking/i);
   assert.match(NAYA_LIVE_BASE, /put it in a document.*stage_lux_note/i);

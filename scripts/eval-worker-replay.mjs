@@ -187,7 +187,7 @@ function relativeDays(epoch, token) {
 }
 
 function absoluteEpoch(token) {
-  const text = String(token);
+  const text = String(token).replaceAll('/', '-');
   if (/^\d{4}-\d{2}-\d{2}$/u.test(text)) return Math.floor(Date.parse(`${text}T00:00:00Z`) / 1000);
   if (/^\d+$/u.test(text)) return Number(text);
   return null;

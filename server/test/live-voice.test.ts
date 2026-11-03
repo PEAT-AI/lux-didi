@@ -960,7 +960,7 @@ test('Gemini exposes only the blocking delegate request function', async t => {
   const setup = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string; behavior?: string; parameters: unknown }[] }[] } };
   const declarations = setup.setup?.tools?.flatMap(tool => tool.functionDeclarations);
   assert.deepEqual(declarations?.map(tool => tool.name), ['delegate']);
-  assert.equal(setup.tools[0]!.functionDeclarations[0]!.behavior, undefined, 'delegate uses the provider default blocking behavior');
+  assert.equal(setup.setup!.tools![0]!.functionDeclarations[0]!.behavior, undefined, 'delegate uses the provider default blocking behavior');
   assert.deepEqual(declarations?.[0]?.parameters, { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] });
 });
 

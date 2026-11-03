@@ -139,6 +139,7 @@ const f = await fixture(t);
 const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
 t.after(() => session.close());
 await f.frame(1);
+const start = f.frames[0] as unknown as Start;
 assert.deepEqual(start.session['delegation'], { type: 'client' });
 assert.equal(start.session['tools'], undefined);
 assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);

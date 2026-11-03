@@ -55,3 +55,16 @@ test('each finalized helper ask receives a fresh host clock and the owner time z
   assert.equal(inputs.length, 2);
   assert.deepEqual(inputs[1]!.time_context, { now_utc: '2031-01-02T23:46:00.000Z', owner_time_zone: 'Asia/Tokyo' });
 });
+
+test('an unbound finished task reaches the retained-result reconnect at the host boundary', async t => {
+  const { liveTaskFixture } = await import('./live-task-fixture.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const transitions: { event: string; state?: unknown; trigger?: unknown }[] = [];
+  t.after(attachHostLogSink({ event(raw) {
+    const value = raw as Record<string, unknown>;
+    if (value.event === 'task_delivery' || value.event === 'live_rebuild' || value.event === 'live_provider_open') transitions.push({ event: value.event, state: value.state, trigger: value.trigger });
+  } }));
+  const f = await liveTaskFixture(t, async () => ({ text: 'The retained synthetic answer.', calls: [] }));
+  f.finalize('Give the retained synthetic answer.'); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 2, JSON.stringify(transitions));
+});

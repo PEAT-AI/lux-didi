@@ -1,3 +1,4 @@
+import './continuity-replay.test.js';
 import './context-hygiene.test.js';
 import './host-log.test.js';
 import './connector-publication.test.js';

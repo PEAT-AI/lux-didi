@@ -9,7 +9,7 @@ test('helper source text stays out of voice context across an in-flight ordinary
   const outputs: string[] = [];
   const f = await taskLiveFixture(t, async request => {
     calls++;
-    if (calls === 1) return { text: '', calls: [{ id: 'synthetic-memory-read', name: 'search_memory', args: { query: 'syntheticcontext', cursor: null } }] };
+    if (calls === 1) return { text: '', calls: [{ id: 'synthetic-memory-read', name: 'search_memory', args: { query: 'syntheticcontext' } }] };
     outputs.push(JSON.stringify(request.outputs));
     return new Promise<Inference>(resolve => { finish = resolve; });
   });

@@ -963,3 +963,25 @@ test('Gemini exposes only the blocking delegate request function', async t => {
   assert.equal(declarations?.[0]?.behavior, 'BLOCKING');
   assert.deepEqual(declarations?.[0]?.parameters, { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] });
 });
+
+for (const accepted of [false, true]) {
+  test(`Gemini exposes only helper delegation and carries its answer; accepted=${accepted}`, async t => {
+    const { f, session, captured } = await ready(t);
+    const setup = f.frames[0] as { setup: { tools: { functionDeclarations: { name: string }[] }[] } };
+    assert.deepEqual(setup.setup.tools.flatMap(tool => tool.functionDeclarations.map(call => call.name)), ['delegate']);
+    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-call', name: accepted ? 'delegate' : 'legacy_research', args: { request: 'Synthetic owner request' } }] } });
+    if (!accepted) {
+      assert.equal((await session.done).code, 'protocol_error');
+      await captured.done;
+      assert.equal(captured.events.some(event => event.type === 'toolCall'), false);
+      return;
+    }
+    for (let turn = 0; turn < 1000 && !captured.events.some(event => event.type === 'toolCall'); turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(captured.events.some(event => event.type === 'toolCall'), true);
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'synthetic-call', name: 'delegate', response: { text: 'Exact synthetic answer.' } }] }), 'sent');
+    await f.frame(2);
+    const answer = f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: unknown }[] } };
+    assert.deepEqual(answer.toolResponse.functionResponses, [{ id: 'synthetic-call', name: 'delegate', response: { text: 'Exact synthetic answer.' } }]);
+    session.close(); await captured.done;
+  });
+}

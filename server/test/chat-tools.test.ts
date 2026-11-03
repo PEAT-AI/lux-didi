@@ -44,8 +44,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { id: '42', cursor: null } : { query: 'which emails arrived' }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);

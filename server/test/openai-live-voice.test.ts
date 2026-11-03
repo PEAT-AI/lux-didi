@@ -2065,3 +2065,25 @@ test('client delegation carries task answers on its latest id with separate ackn
   assert.ok(f.captured.events.some(event => event.type === 'commentaryRejected' && event.commandId === rejected));
   assert.equal(f.socket.sent.some(sent => JSON.parse(sent as string).type === 'response.create'), false);
 });
+
+for (const rejected of [false, true]) {
+  test(`client commentary acknowledgement preserves command identity; rejected=${rejected}`, async t => {
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t);
+    socket.deliver({ type: 'session.delegation.created', delegation: { id: 'synthetic-binding' } });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(session.sendTaskAnswer!({ delegationId: 'stale-binding', text: 'Do not say this.' }), undefined);
+    const text = 'The synthetic exact answer is 17.';
+    const commandId = session.sendTaskAnswer!({ delegationId: 'synthetic-binding', text });
+    assert.equal(typeof commandId, 'string');
+    if (rejected) socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'content', client_event_id: commandId } });
+    else socket.deliver({ type: 'session.commentary.appended', client_event_id: commandId });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(captured.events.some(event => event.type === (rejected ? 'commentaryRejected' : 'commentaryAccepted') && 'commandId' in event && event.commandId === commandId), true);
+    if (rejected) {
+      assert.equal(receipts().some(event => event.event === 'command_rejected' && event.kind === 'cmt'), true);
+      assert.equal(JSON.stringify(receipts()).includes(text), false, 'command rejection logs metadata, never answer content');
+    }
+    assert.equal(socket.sent.map(frame => JSON.parse(frame)).some(frame => frame.type === 'response.create' || frame.type === 'response.item.create'), false);
+  });
+}

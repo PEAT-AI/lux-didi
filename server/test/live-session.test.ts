@@ -1877,7 +1877,7 @@ test('current deadline query plan measures unrelated terminal history without a 
   const terminal = h.owner.create({ idempotencyKey: 'history-template', inputClass: 'ordinary' }, h.ctx);
   h.owner.revoke(terminal.liveSessionId);
   // Build unrelated history in one fixture transaction, not 1000 prompt compilations and revocations.
-  const columns = h.store.transaction(tx => tx.all('PRAGMA table_info(live_sessions)').map(row => String(row['name'])));
+  const columns = h.store.transaction(tx => Object.keys(tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [terminal.liveSessionId])!));
   const projection = columns.map(name => name === 'live_session_id' || name === 'idempotency_key' ? '?' : `"${name}"`).join(',');
   for (const target of [100, 1000]) {
     const start = target === 100 ? 1 : 100;
@@ -3297,7 +3297,8 @@ test('a finalized request produces one task answer without a provider tool batch
   const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async () => {
     inferences++; return { text: 'Synthetic records were checked.', calls: [] };
   } });
-  await openPort(h, 'helper-answer');
+  const { attachment } = await openPort(h, 'helper-answer');
+  consumeTaskPort(t, attachment);
   p.emit({ type: 'inputTranscription', text: 'Check the synthetic records', finished: true, finalOrigin: 'provider' });
   await settlePort();
   assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
@@ -5975,10 +5976,11 @@ test('live deletion confirmation on a later finalized owner turn commits once', 
 test('a pending task owns silence without an old tool batch or background job', async t => {
   const p = progressPort(), scheduler = new DeadlineClock(), entered = deferred<void>(), release = deferred<void>();
   const h = await harness(t, { port: p.port, provider: 'openai', scheduler,
-    limits: { idleMs: 60000, sessionMs: 120000, responseMs: 1000 }, taskInfer: async () => {
+    limits: { idleMs: 60000, sessionMs: 120000 }, taskInfer: async () => {
       entered.resolve(); await release.promise; return { text: 'The synthetic work finished.', calls: [] };
     } });
-  const { session } = await openPort(h, 'task-silence');
+  const { session, attachment } = await openPort(h, 'task-silence');
+  consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'pending-binding' });
   p.emit({ type: 'inputTranscription', text: 'Check the synthetic facts', finished: true, finalOrigin: 'provider' });
   await fixtureSettled(entered.promise, 'pending worker');
@@ -5998,7 +6000,8 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
     if (inferences === 1) { entered.resolve(); await release.promise; return { text: 'STALE synthetic answer.', calls: [] }; }
     return { text: 'The corrected synthetic answer.', calls: [] };
   } });
-  await openPort(h, 'task-correction');
+  const { attachment } = await openPort(h, 'task-correction');
+  consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'old-binding' });
   p.emit({ type: 'inputTranscription', text: 'Check the first synthetic fact', finished: true, finalOrigin: 'provider' });
   await fixtureSettled(entered.promise, 'first worker');
@@ -6020,7 +6023,8 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
     limits: { idleMs: 60000, sessionMs: 120000 }, taskInfer: async () => {
       inferences++; entered.resolve(); await release.promise; return { text: 'The retained synthetic result.', calls: [] };
     } });
-  await openPort(h, 'task-rebuild');
+  const { attachment } = await openPort(h, 'task-rebuild');
+  consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'old-binding' });
   p.emit({ type: 'inputTranscription', text: 'Read the synthetic record', finished: true, finalOrigin: 'provider' });
   await fixtureSettled(entered.promise, 'retained worker');
@@ -6034,3 +6038,8 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
   assert.equal(p.taskAnswers[0]?.delegationId, 'fresh-binding');
   assert.equal(p.taskAnswers[0]?.text, 'The retained synthetic result.');
 });
+
+function consumeTaskPort(t: TestContext, attachment: Awaited<ReturnType<typeof openPort>>['attachment']): void {
+  const drained = (async () => { for await (const chunk of attachment.output) void chunk; })();
+  t.after(() => drained);
+}

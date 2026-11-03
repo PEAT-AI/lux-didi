@@ -235,3 +235,35 @@ test('each registry write has a closed effect mapping and accepted open schema r
   assert.ok(registry.has('find_file'));
   assert.deepEqual((registry.get('open')!.parameters.properties as Record<string, { enum?: string[] }>).kind!.enum, ['web', 'app', 'file', 'source']);
 });
+
+test('VOICE-R3 deletion confirmation is call-scoped exact-target latest-turn and fails closed', async () => {
+  let current = { id: 'first', revision: 1, ownerWords: 'Delete the synthetic event', latestOwnerWords: 'Delete the synthetic event', ownerTurn: 1, exposures: [] as const };
+  let fail = false, executed = 0; const seen: EffectCheckInput[] = [];
+  const authority = new Authority({ checkEffect: async input => { seen.push(input); if (fail) throw new Error('synthetic timeout'); return input.ownerWords === 'Yes, delete it'; }, log: () => {}, journal: { get: async () => undefined, put: async () => {} } });
+  const port = createTaskAuthority(authority, { isCurrent: () => true, taskContext: () => current, hostUrls: () => [], registry: () => registry });
+  const registry = createRegistry({ authority: port, execute: async () => portResult });
+  const deletion = (eventId = 'event-a') => port.authorize({ task_id: current.id, task_revision: current.revision, operation_id: `op${current.ownerTurn}`, connection_generation: 1, tool: 'delete_event', effect: 'destructive', args: { id: eventId }, outside_text: false }, async () => { executed++; return portResult; }, new AbortController().signal);
+  assert.equal((await deletion()).repair, REPAIRS.confirmation_required);
+  current.latestOwnerWords = 'Yes, delete it';
+  assert.equal((await deletion()).repair, REPAIRS.confirmation_required, 'same turn cannot confirm');
+  assert.equal(seen.length, 0);
+  current = { ...current, id: 'second', ownerTurn: 2, latestOwnerWords: 'What is the weather?' };
+  assert.equal((await deletion()).status, 'failed'); assert.equal(executed, 0);
+  current = { ...current, ownerTurn: 3, latestOwnerWords: 'Yes, delete it' }; fail = true;
+  assert.equal((await deletion()).status, 'failed'); assert.equal(executed, 0);
+  fail = false; current = { ...current, ownerTurn: 4 };
+  assert.equal((await deletion('event-b')).repair, REPAIRS.confirmation_required);
+  assert.equal((await deletion('event-b')).repair, REPAIRS.confirmation_required, 'new target cannot inherit confirmation');
+  current = { ...current, id: 'third', ownerTurn: 5 };
+  assert.equal((await deletion('event-b')).status, 'ok'); assert.equal(executed, 1);
+  assert.deepEqual(seen.at(-1), { effect: 'confirm_delete_event', ownerWords: 'Yes, delete it' });
+  authority.endCall();
+  current = { ...current, id: 'fourth', ownerTurn: 6 };
+  assert.equal((await deletion('event-b')).repair, REPAIRS.confirmation_required, 'stage dies with call');
+});
+
+test('earlier owner context is always available to the ordinary effect check', async () => {
+  const { authority, calls } = setup(); authority.expose(task.id, 'mail');
+  await authority.authorize({ ...request, task: { ...task, precedingOwnerWords: 'Earlier synthetic owner request' } });
+  assert.equal(calls[0]?.precedingOwnerWords, 'Earlier synthetic owner request');
+});

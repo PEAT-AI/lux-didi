@@ -6,6 +6,8 @@ import type {
 /** A test-only port whose capabilities differ from the Gemini adapter, so the host cannot key on a model name. */
 export type FakeLiveVoiceEvent =
   | { type: 'audio'; pcm: Uint8Array; rate: number; audible?: boolean; rmsDbfs?: number }
+  | { type: 'delegation'; delegationId: string }
+  | { type: 'commentaryAccepted' | 'commentaryRejected'; commandId: string }
   | { type: 'modelTurnStarted' }
   | { type: 'generationComplete' } | { type: 'turnComplete' } | { type: 'interrupted' }
   | { type: 'resumptionHandle'; handle: string }
@@ -18,6 +20,7 @@ export interface FakeLiveVoice {
   readonly toolResponses: LiveToolResponse[][];
   /** Every text input the host pushed, so a test can see the dead-air nudge itself (#538). */
   readonly texts: string[];
+  readonly taskAnswers: { delegationId: string; text: string; commandId: string }[];
   /** How many provider sessions the host closed, so a test can tell a nudge from a recreate (#538). */
   readonly closes: number;
   /** Push one event into the open session (a no-op before the first open). */
@@ -43,6 +46,7 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
   const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   const texts: string[] = [];
+  const taskAnswers: { delegationId: string; text: string; commandId: string }[] = [];
   let closes = 0;
   let sessionsOpened = 0;
   let emit: (event: FakeLiveVoiceEvent) => void = () => {};
@@ -79,11 +83,16 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
         events,
         done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return 'sent'; },
+        sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
+          if (closed) return undefined;
+          const commandId = `synthetic-command-${taskAnswers.length + 1}`;
+          taskAnswers.push({ ...input, commandId }); return commandId;
+        },
         sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
         close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, requests, toolResponses, texts, emit: event => emit(event),
+  return { port, requests, toolResponses, texts, taskAnswers, emit: event => emit(event),
     get sessionsOpened() { return sessionsOpened; }, get closes() { return closes; } };
 }

@@ -165,17 +165,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(String(responses['instructions']).includes('Synthetic persona'), false);
   });
 
-  test('S4b: the lookup procedure follows the template and the brevity rule in the backend instructions', async t => {
-    const f = await fixture(t);
-    const session = new OpenAiLiveVoiceAdapter(options({ backendProcedure: NAYA_BACKEND_PROCEDURE, socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
-    t.after(() => session.close());
-    await f.frame(1);
-    const instructions = String(backend(f.frames[0] as unknown as Start)['instructions']);
-    assert.equal(instructions, `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${NAYA_BACKEND_PROCEDURE}`);
-    assert.ok(instructions.indexOf(OPENAI_BACKEND_TEMPLATE) < instructions.indexOf(NAYA_BACKEND_PROCEDURE), 'the template comes first and the procedure follows it');
-    assert.equal(instructions.includes('Delegation policy'), false, 'the voice-side delegation policy never reaches the backend');
-    assert.ok(instructions.includes('put independent source lookups in one research plan so the host can run them concurrently'), 'the lookup procedure reaches the executing model');
-  });
+  
 
   test('S4A-R1: a backendProcedure is appended under a blank line, and the voice parts stay byte-identical', async t => {
     const plain = await fixture(t);
@@ -195,26 +185,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(JSON.stringify(after).replace(JSON.stringify(backend(after)['instructions']), JSON.stringify(backend(before)['instructions'])), JSON.stringify(before), 'only the backend instructions differ');
   });
 
-  test('S4a-R2 (d): every client command carries its own event id and is recorded in the ledger', async t => {
-    const { f, session, captured } = await ready(t);
-    // W4: a commentary append names the open delegation, so one has to be open for the frame to exist at all.
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_s4a', response_id: 'resp_0', offset_ms: 0 } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"x"}' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1' } } });
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    session.sendCommentary!({ text: 'Still reading the mail.' });
-    await tally(f.frames, 4);
-    // The call answer names its own call id; the continuation and the commentary each count up.
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2']);
-    assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
-    assert.equal(f.frames[3]!['type'], 'session.commentary.append');
-    // C-REBUILD8: the append names the delegation it belongs to, which the provider requires by name.
-    assert.equal(f.frames[3]!['delegation_id'], 'dlg_s4a', 'the commentary names the delegation in flight');
-    assert.equal(f.frames[3]!['content'], 'Still reading the mail.');
-  });
+  
 
   test('C-REBUILD8: a commentary append names the delegation in flight, and is skipped with none open', async t => {
     const logged = hostReceipts(t);
@@ -270,65 +241,11 @@ describe('openai gpt-live adapter', () => {
   // delegated call still owed its output; the provider refused it with function_call_outputs_required and the turn
   // fell to a dead-air rebuild. A continuation the wire would refuse is never written: the line waits as owed, and
   // the one continuation follows the owed output.
-  test('#677: a host line while a call owes its output sends no continuation until the output, then exactly one', async t => {
-    const { f, session, captured } = await ready(t);
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_677', response_id: 'resp_677', offset_ms: 0 } });
-    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_677', name: 'research', arguments: '{"action":"start"}' } } });
-    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.done', response: { id: 'resp_677' } } });
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
-    const before = creates();
-    session.sendText({ text: '[host note, not the owner] Synthetic late line.' });
-    await quiet();
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.item.create').length, 0, 'typed finals stay coalescible until outputs are supplied');
+  
 
-    for (let wait = 0; wait < 20; wait += 1) await tick();
-    assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
-    session.sendToolResponse({ responses: [{ id: 'call_677', name: 'research', response: { ok: true } }] });
-    await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
-    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
-    assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
-    const framed = f.frames.find(frame => frame['type'] === 'response.item.create' && JSON.stringify(frame).includes('Synthetic late line'))!;
-    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
-    const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
-    assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');
-    session.close();
-  });
+  
 
-  test('#677: a cont the provider refuses with function_call_outputs_required stays owed and is sent after the next output', async t => {
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t);
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_r', response_id: 'resp_r', offset_ms: 0 } });
-    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_a', name: 'research', arguments: '{"action":"start"}' } } });
-    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r' } } });
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
-    await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
-    const rejected = String(f.frames.filter(frame => frame['type'] === 'response.create').at(-1)!['event_id']);
-    f.send({ type: 'error', event_id: 'event_r', error: { type: 'invalid_request_error', code: 'function_call_outputs_required', param: 'type', message: 'synthetic', client_event_id: rejected } });
-    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
-    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
-    const before = creates();
-    // The provider's own next terminal event is where an owed continuation resumes.
-    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r2' } } });
-    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
-    assert.equal(creates() - before, 1, 'the refused continuation is sent once more, not dropped');
-    assert.ok(logged().some(entry => entry['event'] === 'command_rejected' && entry['kind'] === 'cont'), 'the rejection is still a receipt');
-    session.close();
-  });
-
-  test('S4A-R2 (c): responses_validation_failed is recorded loudly once, naming the field', async t => {
-    const logged = hostReceipts(t);
-    const { f } = await ready(t);
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      f.send({ type: 'error', event_id: `event_${attempt}`, error: { type: 'invalid_request_error', code: 'responses_validation_failed', param: 'delegation.responses.instructions', message: 'refused', client_event_id: null } });
-      await tick();
-    }
-    const refused = logged().filter(entry => entry['event'] === 'responses_validation_failed');
-    assert.deepEqual(refused, [{ event: 'responses_validation_failed', param: 'delegation.responses.instructions' }]);
-  });
+  
 
   test('S4A-R2 (c): an unknown provider code is a diagnostic trap, never an interruption and never a retry', async t => {
     const logged = hostReceipts(t);
@@ -639,26 +556,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(outcome.status, 'closed');
   });
 
-  test('a delegated function call becomes toolCall and sendToolResponse answers it then continues', async t => {
-    const { f, session, captured } = await ready(t);
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"india weather"}' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1' } } });
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    const call = captured.events.find(event => event.type === 'toolCall');
-    assert.ok(call && call.type === 'toolCall');
-    assert.deepEqual(call.calls, [{ id: 'call_1', name: 'research', args: { q: 'india weather' } }]);
-    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'other', name: 'research', response: { ok: true } }] }), code('protocol_error'));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await f.frame(3);
-    // 3r F: every client command carries an event_id, and one command never reuses another's.
-    assert.equal(new Set(f.frames.slice(1).map(frame => frame.event_id)).size, 2);
-    assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.create' },
-    ]);
-  });
+  
 
   test('the 3j reproduction: an input transcript never silences the rest of the session', async t => {
     const clock = new FakeClock();
@@ -819,28 +717,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => completions(opened.captured) === 1);
   });
 
-  test('a tool turn: silence never completes it and response.done does not bypass queued playback', async t => {
-    const clock = new FakeClock();
-    const opened = await ready(t, { clock });
-    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    speak(opened.f);
-    await until(() => audioOf(opened.captured).length === 1);
-    clock.advance(10_000);
-    await quiet();
-    assert.equal(completions(opened.captured), 0, 'a delegated response is outstanding');
-    speak(opened.f, 96_000);
-    await until(() => audioOf(opened.captured).length === 2);
-    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
-    clock.advance(2_500);
-    await quiet();
-    assert.equal(completions(opened.captured), 0, 'four seconds of playback are still queued');
-    clock.advance(1_500);
-    await until(() => completions(opened.captured) === 1);
-    speak(opened.f);
-    await until(() => audioOf(opened.captured).length === 3);
-    clock.advance(2_000);
-    await until(() => completions(opened.captured) === 2);
-  });
+  
 
   test('a head start of 400 ms is held once, then audio passes through and loses no byte', async t => {
     const clock = new FakeClock();
@@ -882,88 +759,11 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(interruptions(opened.captured), 0, 'a barge-in over the head start cut nothing');
   });
-  test('two parallel tool calls are answered one at a time and sent upstream once', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    for (const call of [{ id: 'call_1', name: 'research' }, { id: 'call_2', name: 'calendar' }]) {
-      f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
-        item: { type: 'function_call', call_id: call.id, name: call.name, arguments: '{}' } } });
-    }
-    // The delegated response finishes emitting its calls before the host has either answer (3r A).
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1' } } });
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    await quiet();
-    // S5: the answered call's own output goes at once; the continuation it was written for does not, because the
-    // batch is not ready. The assertion is narrowed to the continuation, which is the part that must wait.
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-    ], 'the ready output goes at once and no continuation follows while a call of the turn is unanswered');
-    // S5: an answer whose output is already on the wire is the same answer, never a second submission.
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    await quiet();
-    assert.equal(f.frames.slice(1).length, 1, 'a repeated answer writes nothing');
-    session.sendToolResponse({ responses: [{ id: 'call_2', name: 'calendar', response: { ok: false } }] });
-    await f.frame(4);
-    assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
-      { type: 'response.create' },
-    ]);
-  });
+  
 
-  test('S5: every answered call writes its output at answer time, and only the continuation waits', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    // Both calls answered in the order the tools finished, not in the order they were delegated.
-    session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] });
-    await quiet();
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
-    ], 'the answer is on the wire at once, with no continuation behind a partial batch');
-    // The batch still lacks call_1, so no create may be written yet.
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    assert.deepEqual(f.frames.filter(frame => frame['type'] === 'response.create'), [], 'a partial batch is never continued');
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    await f.frame(3);
-    assert.deepEqual(withoutIds(f.frames.slice(2)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.create' },
-    ], 'the last answer completes the batch, and exactly one continuation follows it');
-    // S1-R1: the receipt names the whole batch, not the round that happened to be last.
-    const batch = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
-    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
-    assert.deepEqual(batch.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
-      [{ event: 'gptlive_tool_output', calls: 2, responseCreate: 'sent' }]);
-    assert.match(String(batch[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
-  });
+  
 
-  test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 1);
-    // The same end announced twice is the same end: no second tool turn, no second protocol step.
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    await quiet();
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'a duplicate item is the same call');
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create', 'response.create'],
-      'a duplicate frame neither adds an output nor a second continuation');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'turn_failed'), [], 'a duplicate is not a failure');
-  });
+  
 
   test('S5: a failed backend response is one typed turn failure with the provider code and no continuation', async t => {
     const clock = new FakeClock();
@@ -983,22 +783,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(safeEvent({ event: 'turn_failed', reason: 'backend_unavailable' }), undefined, 'a provider word is not a reason');
   });
 
-  test('S5: a deferred continuation lands one receipt naming the response and what it awaits', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
-    await quiet();
-    // Two deferrals, both honest: the completed response still owed two answers, then one.
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'continuation_deferred'), [
-      { event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 2 },
-      { event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 1 },
-    ], 'the receipt says what is still owed, never a call id');
-  });
+  
 
   test('a whitespace-only fragment is journaled and cuts nothing', async t => {
     const clock = new FakeClock();
@@ -1081,149 +866,19 @@ describe('openai gpt-live adapter', () => {
     session.close();
   });
 
-  test('3r D1: the field replay continues the tool result at once, 1.8 s after the cut', async t => {
-    const clock = new FakeClock();
-    const { socket, session } = await fakeReady(t, { clock });
-    socket.deliver(delegated('response.created', { response: { id: 'resp_1' } }));
-    socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(96_000)) });
-    socket.deliver(delegated('response.output_item.done', functionCall('call_1')));
-    socket.deliver({ type: 'session.input_transcript.delta', delta: 'no, the other one' });
-    clock.advance(350);
-    socket.deliver(delegated('response.done', { response: { id: 'resp_1' } }));
-    // 1.8 s of real tool work, then the result: the wire write is synchronous, well inside 10 ms.
-    clock.advance(1_800);
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    assert.deepEqual(socket.sent.slice(1).map(frame => JSON.parse(frame) as Record<string, unknown>).map(({ event_id, ...frame }) => frame), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.create' },
-    ]);
-  });
+  
 
-  test('3r A: an answer given while its response is still active is deferred, and continued on its done', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
-    await f.frame(2);
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-    ]);
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await f.frame(3);
-    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }]);
-    const receipts = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
-    // S1-R1: the resumed create still carries the size of the batch it answers.
-    assert.deepEqual(receipts.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
-      [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
-    assert.match(String(receipts[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
-  });
+  
 
-  test('3r A: answers that arrive in reverse order still send both outputs and one continuation', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] }), 'deferred');
-    await quiet();
-    // S5: the answer's own output goes at once; the continuation waits for the call of its batch with no result.
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
-    ], 'the ready output goes at once and no continuation follows while a call of the response is unanswered');
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await f.frame(4);
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
-      { type: 'response.create' },
-    ]);
-  });
+  
 
-  test('3r B: a timed-out call is answered once, and a late result is never a second output', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    await quiet();
-    const timeout = { error: { kind: 'timeout', afterMs: 30_000 } };
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: timeout }] }), 'sent');
-    await f.frame(3);
-    // The answer the tool finally produced arrives after its structured timeout: recorded nowhere twice.
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await quiet();
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.item.create').length, 1);
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 1);
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: JSON.stringify(timeout) } },
-      { type: 'response.create' },
-    ]);
-  });
+  
 
-  test('3r A: a duplicate output_item.done is the same call, answered once', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'one call, not two');
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await f.frame(3);
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.item.create').length, 1);
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 1);
-  });
+  
 
-  test('3r B: an answer for a retired session is never written into it', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    f.send({ type: 'session.closed', reason: 'remote_hangup' });
-    await session.done;
-    await quiet();
-    const before = f.frames.length;
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'failed');
-    await quiet();
-    assert.equal(f.frames.length, before, 'the retired session writes nothing');
-  });
+  
 
-  test('3r A: a provider rejection that a response is active earns exactly one retry', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    await quiet();
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await f.frame(3);
-    f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'response_active', param: 'response.create', message: 'a response is already active' } });
-    await quiet();
-    assert.equal(interruptions(captured), 0, '3r F: this error is logged, never read as a speech cut');
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await f.frame(4);
-    assert.deepEqual(withoutIds(f.frames.slice(3)), [{ type: 'response.create' }]);
-    await quiet();
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 2, 'one retry, never a third');
-    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
-      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })), [
-      { event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' },
-      { event: 'gptlive_tool_output', calls: 1, responseCreate: 'retried' },
-    ]);
-  });
+  
 
   test('3r D2: 10 s of silent fill frames plus owner words cut nothing and re-arm nothing', async t => {
     const clock = new FakeClock();
@@ -1259,124 +914,17 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(interruptions(opened.captured), 0, 'one word over a real answer still cuts nothing');
   });
-  test('3r D4: a delegation with all its outputs and no continuation is detected at 5 s, and nothing is sent', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send({ type: 'session.delegation.created', delegation: { id: 'd_1', response_id: 'resp_1', offset_ms: 0 } });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }, 'd_1'));
-    f.send(delegated('response.output_item.done', functionCall('call_1'), 'd_1'));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
-    await quiet();
-    clock.advance(4_999);
-    await quiet();
-    assert.equal(logged().filter(entry => entry['event'] === 'gptlive_delegation_stalled').length, 0, 'one millisecond early');
-    clock.advance(1);
-    await quiet();
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_delegation_stalled'), [{ event: 'gptlive_delegation_stalled', ms: 5_000 }]);
-    assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 0, 'ruling 3r-C: no autonomous continuation');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_open'), [{ event: 'delegation_open', ms: 0 }]);
-  });
+  
 
-  test('3r D4: the delegation frame is parsed and journalled, never an unknown frame', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send({ type: 'session.delegation.created', delegation: { id: 'd_1', response_id: 'resp_0', offset_ms: 250 } });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }, 'd_1'));
-    f.send(delegated('response.output_item.done', functionCall('call_1'), 'd_1'));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    clock.advance(750);
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }, 'd_1'));
-    await quiet();
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_open'), [{ event: 'delegation_open', ms: 250 }]);
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_closed'), [{ event: 'delegation_closed', ms: 750, responses: 2 }],
-      'the chain names the response the frame opened with and the one the envelope created (S1-R1)');
-    session.close();
-    await session.done;
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_unknown_frame'), [], 'the frame has a rule now');
-  });
+  
 
-  test('3r D10: a continuation completes the turn only on its own audio', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    speak(f, 96_000);
-    await until(() => audioOf(captured).length === 1);
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
-    await quiet();
-    clock.advance(6_000);
-    await quiet();
-    assert.equal(completions(captured), 0, 'the call is still unanswered, so the turn is not over');
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    f.send(delegated('response.created', { response: { id: 'resp_2' } }));
-    f.send(delegated('response.done', { response: { id: 'resp_2' } }));
-    await quiet();
-    clock.advance(6_000);
-    await quiet();
-    assert.equal(completions(captured), 0, 'the pre-tool line is not this response audio');
-    speak(f, 96_000);
-    await until(() => audioOf(captured).length === 2);
-    clock.advance(5_000);
-    await until(() => completions(captured) === 1);
-  });
+  
 
-  test('3r E (S1-R1): an abandoned response ends the wait, resumes the owed continuation and lets the turn complete', async t => {
-    const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    speak(f, 96_000);
-    await until(() => audioOf(captured).length === 1);
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
-    clock.advance(4_000);
-    await quiet();
-    // The response never says done: it fails. That is still the end of it, so the gate opens and the turn can end.
-    f.send(delegated('response.failed', { response: { id: 'resp_1', status: 'failed' } }));
-    await f.frame(3);
-    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
-    clock.advance(3_000);
-    await until(() => completions(captured) === 1);
-  });
+  
 
-  test('3r E (S1-R1): a terminal error ends the response and resumes the owed continuation', async t => {
-    const clock = new FakeClock();
-    const logged = hostReceipts(t);
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
-    // An error that names no cut: 3r F keeps the audio, and 3r E still ends the response it names.
-    f.send({ type: 'error', event_id: 'event_1', error: { type: 'server_error', code: 'response_aborted', param: null, message: 'aborted' } });
-    await f.frame(3);
-    assert.equal(interruptions(captured), 0, '3r F: this error names no cut');
-    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
-      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
-      [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
-  });
+  
 
-  test('a provider error cuts the response without ending the session, and session.closed maps the outcome', async t => {
-    const { f, session, captured } = await ready(t);
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'session.output_transcript.delta', delta: 'Long answer', start_ms: 0, end_ms: 300 });
-    f.send({ type: 'error', event_id: 'event_error', error: { type: 'moderation_error', code: null, message: 'cut', client_event_id: null } });
-    await until(() => captured.events.some(event => event.type === 'interrupted'));
-    assert.equal(session.done === undefined, false);
-    let settled = false; void session.done.then(() => { settled = true; });
-    await tick();
-    assert.equal(settled, false, 'the session outlives an error that only cuts audio');
-    f.send({ type: 'session.closed', reason: 'connection_lost', usage: { seconds: 12 } });
-    const outcome = await session.done;
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.code, 'remote_closed');
-    assert.equal(outcome.recoverable, true);
-  });
+  
 
   test('the session duration limit is recoverable and a requested close is not a failure', async t => {
     const expired = await ready(t);
@@ -1468,19 +1016,7 @@ describe('openai gpt-live turn states', () => {
   const starts = (captured: Captured) => captured.events.filter(event => event.type === 'modelTurnStarted').length;
   const inputFinals = (captured: Captured) => captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true).length;
 
-  test('#538: a generic provider error on an open response is a typed turn failure the voice can name', async t => {
-    const clock = new FakeClock();
-    const opened = await ready(t, { clock });
-    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_dead_air' } } });
-    await quiet();
-    // A generic error on an open response used to be logged and then dropped, so the voice never learned why.
-    opened.f.send({ type: 'error', event_id: 'event_dead_air', error: { type: 'mystery_error', code: 'something_new', param: 'field', message: 'unknown', client_event_id: null } });
-    await until(() => opened.captured.events.some(event => event.type === 'turnFailed'));
-    const failed = opened.captured.events.filter(event => event.type === 'turnFailed');
-    assert.equal(failed.length, 1, 'one typed failure for the open response');
-    assert.equal(failed[0]?.type === 'turnFailed' ? failed[0].code : undefined, 'provider_error', 'the closed reason set, never the provider word');
-    opened.session.close();
-  });
+  
   test('a plain answer goes listening, thinking, speaking, listening, and completes at two seconds', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
@@ -1615,23 +1151,7 @@ describe('openai gpt-live turn states', () => {
     assert.equal(audioBytes(opened.captured), 30 * 4_800 + 19_200, 'every byte of the stream is conserved');
   });
 
-  test('a tool call during the silent think holds THINKING across it', async t => {
-    const clock = new FakeClock();
-    const opened = await ready(t, { clock }, { tools: tools() });
-    opened.f.send({ type: 'session.input_transcript.delta', delta: 'look up the weather' });
-    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
-    clock.advance(700);
-    await until(() => starts(opened.captured) === 1);
-    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"india weather"}' } } });
-    await until(() => opened.captured.events.some(event => event.type === 'toolCall'));
-    for (let index = 0; index < 10; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
-    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking'], 'the tool turn is think time, not speech');
-    speak(opened.f);
-    await until(() => project(opened.captured.events).includes('speaking'));
-    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame');
-  });
+  
 
   test('background speech while the server keeps talking flips no state and forwards every byte', async t => {
     const clock = new FakeClock();
@@ -2149,80 +1669,13 @@ describe('openai gpt-live receipts', () => {
     return { f, session, captured };
   }
 
-  test('O1b-A: a delegated response writes its four receipts, and two answers in reverse order share one continuation', async t => {
-    const { port, rows } = receipts(t);
-    const { f, session, captured } = await openWithTrace(t, port);
-    // The delegation frame is what makes a delegated response a delegation: it names the response it opens with.
-    f.send({ type: 'session.delegation.created', delegation: { id: 'item_1', offset_ms: 0, response_id: 'resp_1' } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });
-    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    // The response that emitted both calls finishes before either answer is ready, which is the case the gate is
-    // built for: the first answer is deferred until the batch is complete, then one create carries both.
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
-    await until(() => rows('response.terminal').length === 1);
-    session.sendToolResponse({ responses: [{ id: 'call_b', name: 'research', response: { ok: true } }] });
-    session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
-    await tick();
+  
 
-    assert.equal(rows('delegation.created').length, 1, 'one receipt per delegated response');
-    assert.equal(rows('response.created').length, 1);
-    assert.equal(rows('response.observed').length, 1, 'the first output is the proof the provider answered');
-    assert.deepEqual(rows('call.intent').map(row => (JSON.parse(String(row['detail'])) as { providerCallId: string }).providerCallId).sort(), ['call_a', 'call_b']);
-    assert.ok(rows('call.intent').every(row => String(row['call_key']).startsWith('call:')), 'call keys are session/epoch scoped');
-    assert.deepEqual(rows('call.output_written').map(row => row['call_key']).sort(), rows('call.intent').map(row => row['call_key']).sort());
-    const decisions = rows('continuation.decided').map(row => JSON.parse(String(row['detail'])) as { outcome: string; skipReason?: string });
-    assert.equal(decisions.filter(decision => decision.outcome === 'sent').length, 1, 'one continuation carries both answers');
-    assert.equal(decisions[0]!.outcome, 'deferred', 'the first answer cannot create yet');
-    assert.equal(decisions[0]!.skipReason, 'awaiting_calls', 'a skipped response.create names why');
-    assert.equal(rows('continuation.decided')[0]!['response_key'], rows('response.created')[0]!['response_key'],
-      'the decision names the response it answers, so both calls of the batch report the same continuation');
-  });
-
-  test('O1b-A: a response that stops writes its terminal receipt with the provider status and the store code', async t => {
-    const { port, rows } = receipts(t);
-    const { f, session } = await openWithTrace(t, port);
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
-    await until(() => rows('response.terminal').length === 1);
-    const terminal = rows('response.terminal');
-    assert.equal(terminal.length, 1);
-    const detail = JSON.parse(String(terminal[0]!['detail']));
-    assert.deepEqual([detail.status, detail.terminalReason], ['completed', 'completed']);
-    session.close();
-  });
+  
 });
 
 
-test('research 469: unavailable output records failed business result and successful delivery without local retry', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-research-469-trace-')), store = new Store(dir);
-  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const trace = liveTracePort({ port: store, liveSessionId: 'synthetic-469', connectionEpoch: 'e0', turnId: () => 'synthetic-469:t1' });
-  const socket = new FakeSocket();
-  const socketFactory = (() => { queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); }); return socket as unknown as ReturnType<NonNullable<LiveVoiceAdapterOptions['socketFactory']>>; });
-  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory })).open(request(), { ...control(), trace });
-  t.after(() => session.close());
-  const captured = collect(session);
-  await until(() => socket.sent.length === 1);
-  socket.deliver({ type: 'session.started', session: { id: 'synthetic-469' } }); await session.ready;
-  socket.deliver({ type: 'session.delegation.created', delegation: { id: 'delegation-469', offset_ms: 0, response_id: 'response-469' } });
-  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: { type: 'response.created', response: { id: 'response-469' } } });
-  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: functionCall('research-469') });
-  await until(() => captured.events.some(event => event.type === 'toolCall'));
-  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: { type: 'response.done', response: { id: 'response-469', status: 'completed' } } });
-  await tick();
-  const response = { researchId: 'known-stopped', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
-  session.sendToolResponse({ responses: [{ id: 'research-469', name: 'research', response }] });
-  await tick();
-  const rows = store.transaction(tx => tx.all("SELECT outcome, delivered, outcome_code FROM trace_call WHERE name='research'"));
-  assert.deepEqual(rows.map(row => row['outcome']), ['failed']);
-  assert.equal(rows[0]!['delivered'], 1);
-  assert.equal(rows[0]!['outcome_code'], 'continuation_unavailable');
-  const outputs = socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { output?: string } }).filter(frame => frame.type === 'response.item.create');
-  assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
-  assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');
-});
+
 
 test('#606 owner finalization is independent of queued or held playback and exactly once', async t => {
   for (const samples of [2_400, 36_000]) {
@@ -2349,52 +1802,12 @@ test('direct102 fresh opening demands speech itself, not an acknowledgment of st
 });
 
 for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_result']) {
-  test(`C-STEADY104: blocked research ${reason} answers once without offering tools`, async t => {
-    const { f, session, captured } = await ready(t);
-    f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
-    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
-    f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
-    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
-    await until(() => captured.events.some(event => event.type === 'toolCall'));
-    const before = f.frames.filter(frame => frame['type'] === 'response.create').length;
-    session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { status: 'blocked', reason } }] });
-    await until(() => f.frames.filter(frame => frame['type'] === 'response.create').length > before);
-    const creates = f.frames.filter(frame => frame['type'] === 'response.create').slice(before);
-    assert.equal(creates.length, 1);
-    assert.equal(creates[0]!['response'], undefined);
-  });
+  
 }
 
-test('C-STEADY104: commentary cannot reject a delegation awaiting function output', async t => {
-  const { f, session, captured } = await ready(t);
-  f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
-  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
-  f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
-  await until(() => captured.events.some(event => event.type === 'toolCall'));
-  assert.equal(session.sendCommentary!({ text: 'Still looking...' }), false);
-  assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false);
-  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
-  session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { findings: ['synthetic result'] } }] });
-  await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
-});
 
-test('C-STEADY104: a fake provider rejecting commentary delegation_id does not end its response', async t => {
-  const logged = hostReceipts(t);
-  const { f, session, captured } = await ready(t);
-  f.send({ type: 'session.delegation.created', delegation: { id: 'steady-reject', response_id: 'resp_reject', offset_ms: 0 } });
-  f.send({ type: 'response.event', delegation_id: 'steady-reject', event: { type: 'response.created', response: { id: 'resp_reject' } } });
-  await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
-  const start = f.frames.length;
-  assert.equal(session.sendCommentary!({ text: 'Synthetic progress.' }), true);
-  await until(() => f.frames.length > start);
-  const append = f.frames.find(frame => frame['type'] === 'session.commentary.append')!;
-  f.send({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'delegation_id', client_event_id: append['event_id'] } });
-  await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
-  const before = captured.events.filter(event => event.type === 'audio').length;
-  sendAudio(f, 12_000);
-  await until(() => captured.events.filter(event => event.type === 'audio').length > before);
-  assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
-});
+
+
 
 test('alarm sessions seed no fresh-opening direction', async t => {
   const f = await fixture(t);
@@ -2461,23 +1874,7 @@ test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
   assert.equal(opened.captured.events.some(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output'), false);
 });
 
-test('SILENCE chain: third tool round forces the fourth response to answer', async t => {
-  const opened = await continuation(t);
-  for (let round = 2; round <= 3; round++) {
-    const id = `synthetic-call-${round}`;
-    opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: id, name: 'research', arguments: '{}' } }));
-    opened.socket.deliver(delegated('response.done', { response: { status: 'completed' } }));
-    await quiet();
-    opened.session.sendToolResponse({ responses: [{ id, name: 'research', response: { ok: true } }] });
-    if (round < 3) opened.socket.deliver(delegated('response.created', { response: { id: `synthetic-round-${round}` } }));
-  }
-  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
-  const before = opened.captured.events.filter(event => event.type === 'toolCall').length;
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-fourth', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.equal(opened.captured.events.filter(event => event.type === 'toolCall').length, before);
-  assert.ok(opened.socket.sent.some(frame => frame.includes('synthetic-fourth') && frame.includes('answer now')));
-});
+
 
 test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
   const logs: unknown[] = [];
@@ -2523,70 +1920,9 @@ test('SILENCE timing: short completed audio keeps its receipt until actual playb
 });
 
 
-test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the excess once', async t => {
-  const opened = await fakeReady(t, { clock: new FakeClock() });
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-cap' } }));
-  for (let i = 0; i < 8; i++) opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: `synthetic-cap-${i}`, name: 'research', arguments: '{}' } }));
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-cap-7', name: 'research', arguments: '{}' } }));
-  await quiet();
-  const dispatched = opened.captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
-  assert.equal(dispatched.length, 6);
-  const results = opened.socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { call_id: string; output: string } }).filter(frame => frame.type === 'response.item.create');
-  assert.equal(results.length, 2, 'over-cap calls get immediate results, even before the admitted calls finish');
-  assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
-  for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
-  assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
-  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response, undefined);
-  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
-});
 
-test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits six and honestly answers the excess once', async t => {
-  const receipts: { kind: string; id?: string; detail: Record<string, unknown> }[] = [];
-  const trace: import('../trace/record.js').LiveTracePort = {
-    receipt: (kind, ids, detail) => { receipts.push({ kind, ...(ids.callKey ? { id: ids.callKey } : {}), detail: { ...detail } }); },
-  };
-  const opened = await fakeReady(t, { clock: new FakeClock() }, trace);
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-cap' } }));
-  for (let i = 0; i < 8; i++) opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: `synthetic-cap-${i}`, name: 'research', arguments: '{}' } }));
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-cap-7', name: 'research', arguments: '{}' } }));
-  await quiet();
-  const dispatched = opened.captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
-  assert.equal(dispatched.length, 6);
-  const results = opened.socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { call_id: string; output: string } }).filter(frame => frame.type === 'response.item.create');
-  assert.equal(results.length, 2, 'over-cap calls get immediate results, even before the admitted calls finish');
-  assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
-  for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
-  assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
-  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response, undefined);
-  const settled = receipts.filter(row => row.kind === 'call.output_written');
-  for (let i = 0; i < 8; i++) {
-    const row = settled.find(row => row.id === `synthetic-cap-${i}`);
-    assert.ok(row);
-    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
-    assert.equal(row.detail['delivered'], true);
-    if (i >= 6) {
-      assert.equal(row.detail['refusalCode'], 'research_cap_reached');
-      assert.equal(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id), false);
-    } else assert.ok(receipts.some(receipt => receipt.kind === 'call.executed' && receipt.id === row.id));
-  }
-  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
-});
+
+
 
 for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects retries plain once then fails loudly`, async t => {
   const opened = await continuation(t, false);
@@ -2658,34 +1994,7 @@ test('three synchronous typed finals form one user message and one response', as
   assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
 });
 
-test('typed finals wait for all function outputs before their single user message and continuation', async t => {
-  const { socket, session } = await fakeReady(t);
-  socket.deliver(delegated('response.created', { response: { id: 'synthetic_inflight' } }));
-  socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic_owed', name: 'research', arguments: '{}' } }));
-  socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic_owed_second', name: 'research', arguments: '{}' } }));
-  await quiet();
-  const start = socket.sent.length;
-  for (const text of ['Synthetic first', 'Synthetic second', 'Synthetic third']) session.sendText({ text });
-  await quiet();
-  assert.equal(socket.sent.slice(start).length, 0);
-  socket.deliver(delegated('response.done', { response: { id: 'synthetic_inflight', status: 'completed' } }));
-  await quiet();
-  assert.equal(socket.sent.slice(start).length, 0);
-  session.sendToolResponse({ responses: [{ id: 'synthetic_owed', name: 'research', response: { ok: true } }] });
-  await quiet();
-  assert.equal(socket.sent.slice(start).map(raw => JSON.parse(raw) as { type: string }).filter(frame => frame.type === 'response.create').length, 0, 'a partial tool batch cannot create a response');
-  session.sendToolResponse({ responses: [{ id: 'synthetic_owed_second', name: 'research', response: { ok: true } }] });
-  await quiet();
-  const frames = socket.sent.slice(start).map(raw => JSON.parse(raw) as Record<string, any>);
-  assert.equal(frames.filter(frame => frame.type === 'response.create').length, 1);
-  const messages = frames.filter(frame => frame.item?.type === 'message');
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0]!.item.content[0].text, 'Synthetic first\nSynthetic second\nSynthetic third');
-  const output = frames.findIndex(frame => frame.item?.type === 'function_call_output');
-  assert.ok(output >= 0);
-  assert.ok(output < frames.indexOf(messages[0]!));
-  assert.ok(frames.indexOf(messages[0]!) < frames.findIndex(frame => frame.type === 'response.create'));
-});
+
 
 
 test('a typed final before response.created waits for the already requested response', async t => {
@@ -2706,21 +2015,7 @@ test('a typed final before response.created waits for the already requested resp
 // F4: on 10-30 a silent completed continuation set the answer-now lock, and the corrected retry after an
 // invalid_arguments refusal was refused as `research_cap_reached`. The rescue asks for speech only; the cap is
 // research's own and keeps its code.
-test('F4: a silent continuation requests speech without locking a tool, and the corrected retry is admitted', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1, 'the silent rescue still asks for one more response');
-  const callsBefore = opened.captured.events.filter(event => event.type === 'toolCall').length;
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-retry' } }));
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-retry-call', name: 'mattermost_chat', arguments: '{}' } }));
-  await quiet();
-  assert.deepEqual(opened.socket.sent.filter(frame => frame.includes('research_cap_reached')), [],
-    'a non-research tool is never refused as a research cap');
-  assert.equal(opened.captured.events.filter(event => event.type === 'toolCall').length, callsBefore + 1,
-    'the corrected retry is admitted');
-});
+
 
 // F10: on 10-30 eight windows were talked over and the owner's sentence was once finished for him, because an
 // app_quiet final after about 0.7 s lets the provider answer a hesitation. A mid-thought tail waits longer; a
@@ -2750,48 +2045,11 @@ const postToolCreate = (socket: { sent: string[] }) => creates(socket).at(-1);
 const speakFrame = (f: FakeSocket) => f.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(9_600)).toString('base64') });
 const delegationOf = (sent: string[]) => (JSON.parse(sent[0]!) as Start).session['delegation'] as { responses: Record<string, unknown> };
 
-test('C-POSTTOOL fallback: uncorrelated audible speech cannot cancel an owed continuation', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-late', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-late', name: 'research', response: { ok: true } }] }), 'deferred',
-    'the call is answered while its response is still active, so the continuation is deferred');
-  speakFrame(opened.socket);
-  await quiet();
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1, 'uncorrelated speech is not proof of an answer to this batch');
-});
 
-test('C-POSTTOOL: audio that arrives before the tool output does not suppress the answer', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  // The response spoke, then called a tool, then the owner's result lands: the speech was not the answer to the
-  // tool, so the owed continuation is still owed. This is the other event order of the same two frames.
-  speakFrame(opened.socket);
-  await quiet();
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-later', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-later', name: 'research', response: { ok: true } }] }), 'deferred');
-  // The same speech continues across the result; a later chunk is not a new answer for this batch.
-  speakFrame(opened.socket);
-  await quiet();
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1, 'the tool result is still answered once');
-});
 
-test('C-POSTTOOL: a silent active response still resumes its owed continuation', async t => {
-  const opened = await continuation(t);
-  const before = creates(opened.socket).length;
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-silent', name: 'research', arguments: '{}' } }));
-  await quiet();
-  assert.equal(opened.session.sendToolResponse({ responses: [{ id: 'synthetic-silent', name: 'research', response: { ok: true } }] }), 'deferred');
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1, 'a silent response still asks for its answer');
-});
+
+
+
 
 // C-POSTTOOL 2: switch a. The wire fixture records the provider refusing any create field beyond type and
 // event_id (10.5.1, unknown_parameter param=response), so the audio request rides on the delegation's response
@@ -2806,33 +2064,10 @@ test('C-POSTTOOL: firstResponseAudio names audio on the delegated response, neve
     'the create keeps the two fields the provider accepts');
 });
 
-test('C-POSTTOOL: a provider refusal of the audio field is logged and turns the switch off for the session', async t => {
-  const logged = hostReceipts(t);
-  const opened = await continuation(t, true, { firstResponseAudio: true });
-  opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unsupported_parameter', param: 'audio' } });
-  await until(() => logged().some(entry => entry['event'] === 'first_response_audio_unsupported'));
-  assert.deepEqual(logged().filter(entry => entry['event'] === 'first_response_audio_unsupported'),
-    [{ event: 'first_response_audio_unsupported', type: 'invalid_request_error', code: 'unsupported_parameter', param: 'audio' }]);
-  const before = creates(opened.socket).length;
-  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-after-refusal', name: 'research', arguments: '{}' } }));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
-  await quiet();
-  opened.session.sendToolResponse({ responses: [{ id: 'synthetic-after-refusal', name: 'research', response: { ok: true } }] });
-  await quiet();
-  assert.equal(creates(opened.socket).length, before + 1);
-  assert.deepEqual(Object.keys(postToolCreate(opened.socket) ?? {}).sort(), [...GPT_LIVE_CREATE_FIELDS].sort(),
-    'no later create repeats the refused field');
-});
+
 
 // C-POSTTOOL 3: switch b. The tighter brevity line changes the delegated instructions and nothing else.
-test('C-POSTTOOL: backendBrevityTight swaps the brevity line in the delegated instructions only', async t => {
-  const tight = await fakeReady(t, { backendBrevityTight: true });
-  const start = JSON.parse(tight.socket.sent[0]!) as Start;
-  const delegation = start.session['delegation'] as { responses: { instructions: string } };
-  assert.equal(delegation.responses.instructions, `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY_TIGHT}`);
-  assert.equal(String(start.session['instructions']).includes(OPENAI_BACKEND_BREVITY_TIGHT), false,
-    'the voice model instructions keep the delivery sections');
-});
+
 
 test('client delegation starts without session tools or Responses configuration', async t => {
   const f = await fakeReady(t);

@@ -25,6 +25,7 @@ test('helper source text stays out of voice context across an in-flight ordinary
   await f.emit({ type: 'goAway', timeLeftMs: 10000 });
   assert.equal(f.requests.length, 2, 'the transport rebuilt while the same helper work remained pending');
   assert.equal(JSON.stringify(f.requests).includes(marker), false, 'raw tool evidence never becomes voice startup context');
+  await f.emit({ type: 'delegation', delegationId: 'synthetic-rebuilt-delegation' });
   finish!({ text: 'Synthetic concise answer.', calls: [] }); await flushTaskLive();
   assert.equal(calls, 2, 'a transport rebuild does not restart helper inference');
   assert.deepEqual(f.appended, ['Synthetic concise answer.']);

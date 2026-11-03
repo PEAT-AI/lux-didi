@@ -7,6 +7,7 @@ test('a heard task subject survives an ordinary provider rebuild as earlier owne
     inputs.push(request.input);
     return { text: inputs.length === 1 ? 'Synthetic Harbor is the named subject.' : 'Synthetic follow-up answer.', calls: [] };
   });
+  await f.emit({ type: 'delegation', delegationId: 'synthetic-initial-delegation' });
   await f.emit({ type: 'inputTranscription', text: firstWords, finished: true, finalOrigin: 'provider' });
   assert.deepEqual(f.appended, ['Synthetic Harbor is the named subject.']);
   await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });

@@ -131,6 +131,14 @@ Deleting a local memory can scrub later accepted/rebuilt context, but cannot rem
 
 The runtime context carries one compact line of live connector state per family, connected or not signed in or needs approval, rebuilt at every call start and after any sign-in, and Naya may deny or claim a sign-in or a capability only from that line or a live tool check. An open loop older than 24 hours, or one a later summary records as finished, is never an opening option, and an opener never credits a past failure to the owner. When the owner says her voice or accent changed she believes him, says she cannot hear her own output and offers to keep going, never that she is still the same. A line from an earlier conversation's summary is spoken only when it answers what he just asked, and the "okay?" tag is limited to once in a few answers. The summary prompt records a failed request, an unanswered ask and a complaint about Naya herself as open loops.
 
+**A promise is a call (C-PROMISE).** The words that announce work are read as a class, not as a list of
+sentence shapes: a first person present or future, a bare acknowledgement of the action just asked for, and a
+claim that work is running. When a response ends having said one of them and no call followed in that response,
+the host asks the provider for exactly one further response, as a host note, and speaks nothing itself; a turn
+spends one such continuation, and a call inside its beat answers it. A running claim is judged against the
+host's own record, and `live_claim_without_call` counts every one of them. A draft is the same rule: the
+announcement earns `draft_email` or `draft_chat`, and sending stays the owner's click.
+
 ## Research context rebuild
 
 A call keeps the research answers it has been given in the provider conversation, which is what made one call grow from 15k to 44k tokens (LAT-1023). Two things bound that growth, and one of them is not a rebuild.

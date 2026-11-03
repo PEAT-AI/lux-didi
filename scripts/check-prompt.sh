@@ -187,7 +187,7 @@ assert.ok(persona.CLAIM_WITHOUT_CALL_LINE.length > 0 && persona.CLAIM_WITHOUT_CA
 assert.doesNotMatch(persona.CLAIM_WITHOUT_CALL_LINE, /[\u2013\u2014]/, 'no dash prose reaches her voice');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /^Correction: /, 'she hears it as the host correcting her');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /make the call now/i, 'it offers the call');
-assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that you are not checking anything/, 'it offers the plain refusal');
+assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that nothing is running/, 'it offers the plain refusal');
 // C-CLAIMS9 outcome 2: an approval is a closed reason said in plain words, with no invented place to fix it.
 const approval = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
   connectors: [{ connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' }] });

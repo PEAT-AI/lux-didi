@@ -414,6 +414,14 @@ export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], a
  * record of what it delivered, so it says who is speaking and never reads as something the owner said.
  */
 export const HOST_LEDGER_HEADER = '[host note, not the owner\u2019s words] research this call already delivered:';
+/**
+ * C-PROMISE (10.10): the running state a rebuilt generation is handed, and it comes from the host's own record.
+ * A finished run is never described as running, and an empty record is stated plainly, so a fresh provider
+ * window cannot read an old transcript as live work. It rides the same host section as the delivered ledger.
+ */
+export function rebuildResearchSeed(ledger: string, running: readonly string[]): string {
+  return [ledger.trim(), `running state: ${runningStateLine(running)}`].filter(line => line !== '').join('\n');
+}
 /** The cost cap on a mute: past this the muted session closes benignly, so a long mute costs no provider time. */
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
@@ -689,6 +697,27 @@ export function announcesLookup(text: string): boolean {
   return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }
 /**
+ * C-PROMISE (10.10): the promise of work in the shapes the field really said it, read as a class and not as a
+ * list of sentences. A first person present or future is a commitment to act whatever verb it carries, and a
+ * bare acknowledgement of the action he just asked for ("okay, doing that") has no subject to read at all, so
+ * it is named by its shape. "let me know" is a reply, never a promise of work, and it stays out on purpose.
+ */
+const FIRST_PERSON_WORK = /\b(?:i(?:'?ll| will)|we(?:'?ll| will)|i(?:'?m| am)\s+\w+ing|we(?:'?re| are)\s+\w+ing|let (?:me|us)\b(?!\s+know)|let'?s)\b/iu;
+const BARE_WORK_ACK = /^\s*(?:(?:okay|ok|sure|yes|yeah|yep|alright|right|got it|gotcha)[,.!\u2026 ]+)?(?:doing (?:that|it|this)|on (?:that|it|this) now|working on (?:that|it|this)|checking (?:on )?(?:that|it)|sorting (?:that|it)(?: out)?)\b/iu;
+/** A claim that work is in progress. It is the truth only while the host holds running work of its own. */
+const RUNNING_CLAIM = /\b(?:still (?:running|working|going|searching|checking)|(?:is|are|was|were) still (?:running|working|going|searching)|running (?:now|in the background|as we speak))\b/iu;
+export function announcesWork(text: string): boolean {
+  const said = text.replace(/[\u2018\u2019\u02bc]/gu, "'");
+  return announcesLookup(said) || FIRST_PERSON_WORK.test(said) || BARE_WORK_ACK.test(said);
+}
+/**
+ * C-PROMISE: a running claim over an empty host record is the same empty promise, and the host's own record is
+ * the authority: with a real run open the same words are simply true and are never corrected.
+ */
+export function claimsRunningWork(text: string, hostRunning: boolean): boolean {
+  return !hostRunning && RUNNING_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
+}
+/**
  * #797: a retry claim names a second attempt. It is the same empty promise as a lookup claim, but only after
  * a write this owner turn was refused, because that is the only case where the host has a receipt to check
  * it against. "again", "still", "retried" and "tried once more", and nothing new is spoken for it.
@@ -703,7 +732,7 @@ export function claimsRetryWithoutCall(text: string, writeRefused: boolean): boo
  */
 export function claimsWithoutCall(input: { text: string; writeRefused: boolean; toolSeen: boolean }): boolean {
   if (input.toolSeen) return false;
-  return announcesLookup(input.text) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(input.text)
+  return announcesWork(input.text) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(input.text)
     || claimsRetryWithoutCall(input.text, input.writeRefused);
 }
 /**
@@ -2906,7 +2935,10 @@ export class LiveSessionOwner {
     // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
     // and the call it names did run, so the toolSeen silence does not apply to it.
     const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
-    const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
+    // C-PROMISE (10.10): a claim that work is running is judged against the host's own record, so a stale
+    // status after a rebuild is corrected and a real run keeps the same words true.
+    const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen })
+      || (handle.claimToolSeen ? false : claimsRunningWork(handle.claimText, handle.researchAdmission.running().length > 0));
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     if (!(emptyResult || claim) || handle.claimCorrected || handle.muted || (handle.claimToolSeen && !emptyResult)) return;
@@ -3113,7 +3145,12 @@ export class LiveSessionOwner {
     if (type === 'modelTurnStarted' || type === 'modelText' || type === 'outputTranscription' || type === 'audio') {
       // C-DEADAIR: the provider's own latency is out of the host's hands, so it is measured apart from the wait the
       // owner hears: the first announced response after an owed answer stamps owner final to response to first audio.
-      if (handle.responseInProgress !== true) handle.responseCreatedAt = this.#now();
+      if (handle.responseInProgress !== true) {
+        handle.responseCreatedAt = this.#now();
+        // C-PROMISE (10.10): the promise is judged per response, so a call an earlier response made cannot
+        // answer for work this one only announced. The owner turn's one continuation still bounds it.
+        handle.claimToolSeen = false;
+      }
       handle.responseInProgress = true;
       // C-REBUILD C: this turn did ask the provider for an answer, so a mute from here is a real mute.
       handle.turnResponseCreated = true;
@@ -3536,13 +3573,13 @@ export class LiveSessionOwner {
    * under `SEED_CHAR_LIMIT`, and the cumulative research ledger rides as a distinct host section after it, so a
    * rebuild keeps the conversation instead of replacing it with the one batch that crossed the threshold.
    */
-  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, deadLine = false, transcript = true): {
+  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, running: readonly string[], deadLine = false, transcript = true): {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
     transcriptChars: number; ledgerChars: number; condensed: boolean } {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
       ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
     const body = typeof ledger === 'string' ? ledger.trim() : '';
-    const text = body === '' ? undefined : `${HOST_LEDGER_HEADER}\n${body}`;
+    const text = `${HOST_LEDGER_HEADER}\n${rebuildResearchSeed(body, running)}`;
     const appended = text === undefined ? [] : [{ role: 'user' as const, text, dataClass: inputClass }];
     const fitted = fitSeedTurns(seed.turns, appended);
     return { turns: fitted.turns, chars: fitted.chars, transcriptChars: seed.chars, ledgerChars: body.length, condensed: fitted.condensed };
@@ -3583,7 +3620,7 @@ export class LiveSessionOwner {
     const prior = handle.researchRetention;
     handle.researchRebuildSeed = undefined;
     handle.researchRetention = step.retention;
-    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, ledger);
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, ledger, handle.researchAdmission.running());
     hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, ledgerChars: seed.ledgerChars,
       seedTranscriptChars: seed.transcriptChars, rebuilds: step.retention.rebuilds,
       totalContextChars: handle.request.system.text.length + seed.chars + handle.contextToolChars });
@@ -3850,7 +3887,7 @@ export class LiveSessionOwner {
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
     const savedHandle = saved?.['resumption_handle'];
     const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
-    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text());
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), handle.researchAdmission.running());
     const reuse = !forceFresh && this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
     const closeCode = outcome?.upstream?.closeCode ?? null;
     const reason = reasonOverride ?? outcome?.code ?? null;
@@ -3913,7 +3950,7 @@ export class LiveSessionOwner {
       if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
       attempt = rung === 1
         ? shrink(attempt)
-        : this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), false, false);
+        : this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), handle.researchAdmission.running(), false, false);
       handle.recoveryRefused = false;
       const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, Math.min(remaining, left), idleLeft, window, attempt, reason);
       if (opened) {
@@ -3942,7 +3979,7 @@ export class LiveSessionOwner {
     if (idle <= 0) { this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null); return false; }
     const remaining = Math.min(this.#profile.limits.sessionMs, callRemaining);
     const window = Math.min(10_000, Math.max(1, remaining));
-    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text());
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), handle.researchAdmission.running());
     handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded'; handle.dropEpisodeAt = undefined;
     const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
@@ -4831,7 +4868,7 @@ export class LiveSessionOwner {
             error: error instanceof Error ? error.message : 'research_failed',
             cause: 'The research run itself failed before it could answer.',
             next: 'Nothing is running now, and this turn holds no research result from it.',
-            state: runningStateLine([]),
+            state: runningStateLine(handle.researchAdmission.running()),
           };
         }
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution

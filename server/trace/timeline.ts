@@ -143,6 +143,23 @@ const ANNOUNCED_LOOKUPS = ['looking this up', 'looking that up', 'looking it up'
   'one moment', 'just a moment', 'a moment', 'one sec', 'just a sec', 'one second', 'just a second',
   'give me a second', 'give me a moment', 'give me one moment', 'bear with me', 'hold on', 'hang on',
   'one minute', 'just a minute'] as const;
+/** C-PROMISE 10.10: the audit's own reading of the promise grammar, kept beside the phrases it already lists,
+ *  because this file reads the trace store and never loads the live host. A look-up or a wait, a first person
+ *  present or future, a bare acknowledgement of the action just asked for, and a claim that work is running. */
+const PROMISE_SHAPES: readonly RegExp[] = [
+  /\b(?:i(?:'?ll| will)|we(?:'?ll| will)|i(?:'?m| am)\s+\w+ing|we(?:'?re| are)\s+\w+ing|let (?:me|us)\b(?!\s+know)|let'?s)\b/u,
+  /^\s*(?:(?:okay|ok|sure|yes|yeah|yep|alright|right|got it|gotcha)[,.!\u2026 ]+)?(?:doing (?:that|it|this)|on (?:that|it|this) now|working on (?:that|it|this)|checking (?:on )?(?:that|it)|sorting (?:that|it)(?: out)?)\b/u,
+  /\b(?:still (?:running|working|going|searching|checking)|(?:is|are|was|were) still (?:running|working|going|searching)|running (?:now|in the background|as we speak))\b/u,
+];
+function announcesPromise(text: string): boolean {
+  const said = text.replace(/[\u2018\u2019\u02bc]/gu, "'").toLowerCase();
+  return ANNOUNCED_LOOKUPS.some(phrase => {
+    const [head = '', tail] = phrase.split('%');
+    const at = said.indexOf(head);
+    // "one second ... checking" carries the wait with the words apart, which a plain substring cannot hold.
+    return tail === undefined ? at !== -1 : at !== -1 && said.indexOf(tail, at + head.length) !== -1;
+  }) || PROMISE_SHAPES.some(shape => shape.test(said));
+}
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
@@ -210,13 +227,18 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   // C-LABELS 4: the detector matched two fixed phrases, so a call whose model said "let's have a look" or
   // "let's see" reported one unfulfilled announcement where the records held seven. It now counts every way a
   // model announces a look-up it then owes, and still only a turn that ran no call after saying it.
-  const announcedClaimsWithoutCall = Number(read.get(`SELECT COUNT(DISTINCT u.turn_id) AS count
+  // C-PROMISE 10.10: the list of fixed phrasings missed the three shapes the 10.9 call showed, so the rows are
+  // read once and judged here, where the grammar the host enforces can be written at all. The audit still
+  // exports a count and never transcript text.
+  const claimRows = read.all(`SELECT DISTINCT u.turn_id AS turnId, ${claimText} AS said
     FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
     ${journalAvailable ? 'LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id' : ''}
     WHERE t.live_session_id=? AND u.role='model'
       AND (${claimFinal})=1
-      AND (${ANNOUNCED_LOOKUPS.map(phrase => `lower(${claimText}) LIKE '%${phrase.replaceAll("'", "''")}%'`).join('\n        OR ')})
-      AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
+      AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId]);
+  const announcedClaimsWithoutCall = new Set(claimRows
+    .filter(row => announcesPromise(String(row['said'] ?? '')))
+    .map(row => String(row['turnId']))).size;
 
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {

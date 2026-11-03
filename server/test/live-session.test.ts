@@ -6706,7 +6706,7 @@ for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${pro
   await advance(1_000);
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that nothing is running/);
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
   const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
     && String((entry as { text?: string }).text ?? '').includes('again'));

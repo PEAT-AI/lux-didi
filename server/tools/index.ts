@@ -1,5 +1,5 @@
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
-import { nativeTaskReadTool } from '../tasks/connectors.js';
+import { nativeTaskReadTool, isConnectorTaskRead } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
@@ -516,6 +516,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!TASK_TOOL_NAMES.has(name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
         const snapshot = validateCallRun(tx, call); target(snapshot, call, tx);
         return call as ToolCallIntent;
+      });
+    },
+    taskVisible(runId, name) {
+      if (!isConnectorTaskRead(name)) return true;
+      return store.transaction(tx => {
+        const { snapshot } = readRun(tx, runId);
+        return snapshot.connections.some(bound => (nativeTaskReadTool(name, bound.policy.connector) !== undefined || (name === 'query_company' && bound.policy.connector === 'mongoose'))
+          && currentPolicies(tx, snapshot, bound.connectionId) && currentProjection(snapshot, bound.connectionId));
       });
     },
     runTask(call, args, body) {

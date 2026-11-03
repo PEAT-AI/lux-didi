@@ -149,6 +149,7 @@ export interface ToolsOwner {
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
+  taskVisible(runId: string, name: string): boolean;
   runTask<T>(call: ToolCallIntent, args: JsonObject, body: () => T): T;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly import('../adapters/mcp/port.js').SourceDispatchRef[]): ToolResultRef;
 }

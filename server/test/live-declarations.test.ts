@@ -33,6 +33,7 @@ function helperSurface(t: import('node:test').TestContext) {
     bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
   const revision = runtime.begin('Synthetic declaration audit', 1, 1);
   const registry = taskDefinitions(runtime, revision.identity, {
+    taskVisible: () => true,
     runTask: () => { throw Error('declaration audit must not execute'); },
     complete: () => { throw Error('declaration audit must not execute'); },
     taskIntent: () => { throw Error('declaration audit must not execute'); },

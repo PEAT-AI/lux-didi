@@ -1,12 +1,18 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../runtime/store.js';
+import { domainMigrations } from '../domain/schema.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { resolveTaskModels } from '../config/tasks.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { taskDefinitions } from '../tasks/chat.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { chatCapabilities } from '../chat/context.js';
 import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
 import { createHash } from 'node:crypto';
-import { REMEMBER_PARAMETERS } from '../tools/remember.js';
-import { researchDeclaration } from '../tools/research.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 
@@ -21,42 +27,37 @@ function violations(schema: unknown, path: string): string[] {
   return errors;
 }
 
-test('every composed Live connector and built-in declaration conforms to provider schema dialect', () => {
-  // A mongoose descriptor declares one endpoint's envelope, so the policy names a knowledge endpoint.
-  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 },
-    endpoint: { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', account: 'synthetic', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge' } } as unknown as ConnectionPolicy;
-  const originals = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
-  // The one research tool is declared to the Live model alongside remember_note (#241).
-  const intents = [researchDeclaration()].map(({ name, description, parameters, guidance }) => ({ name, description, parameters, guidance }));
-  const registry = [...originals, ...intents, { name: 'remember_note', description: 'Remember a note', parameters: REMEMBER_PARAMETERS }].map(tool => ({ ...tool, effect: 'read' as const, accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' as const }) })) as ToolDefinition[];
-  const before = structuredClone(registry.map(tool => tool.parameters));
-  const derived = declarationsFor(registry);
-  assert.deepEqual(registry.map(tool => tool.parameters), before, 'original validation authority is unchanged');
-  assert.deepEqual([...derived.originalByName.values()], before);
-  const errors = derived.declarations.flatMap(tool => violations(tool.parameters, `${tool.name}.parameters`));
-  assert.deepEqual(errors, [], errors.join('\n'));
-  const chat = chatCapabilities(registry.filter(tool => tool.name !== 'remember_note'), []);
-  assert.deepEqual(chat.declarations.flatMap(tool => violations(tool.parameters, `${tool.name}.parameters`)), []);
-  assert.deepEqual(registry.map(tool => tool.parameters), before, 'chat compilation leaves validation schemas intact');
+function helperSurface(t: import('node:test').TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'task-declarations-synthetic-'));
+  const store = new Store(directory, domainMigrations);
+  const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+    bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
+  const revision = runtime.begin('Synthetic declaration audit', 1, 1);
+  const registry = taskDefinitions(runtime, revision.identity, {
+    complete: () => { throw Error('declaration audit must not execute'); },
+    taskIntent: () => { throw Error('declaration audit must not execute'); },
+  });
+  t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  return registry;
+}
+test('shared helper and chat declarations conform to the provider schema dialect', t => {
+  const registry = helperSurface(t);
+  const { declarations } = declarationsFor(registry);
+  assert.equal(declarations.length, registry.length);
+  for (const declaration of declarations) assert.deepEqual(violations(declaration.parameters, declaration.name), []);
+  assert.ok(declarations.some(tool => tool.name === 'open'));
+  assert.ok(declarations.some(tool => tool.name === 'find_file'));
+  for (const retired of ['research', 'get_insight', 'open_source', 'open_home', 'open_app', 'open_web']) {
+    assert.equal(declarations.some(tool => tool.name === retired), false, `${retired} is not a helper declaration`);
+  }
 });
-
-// X2 (#250): the declared get_insight shape and its boundary validator must agree. The old
-// schema named only `ids` and set additionalProperties:false, while the validator accepted
-// more and refused include_links, which the upstream MCP get_insight itself accepts.
-test('X2: the get_insight declaration names every key its validator accepts', () => {
-  // A mongoose descriptor declares one endpoint's envelope, so the policy names a knowledge endpoint.
-  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 },
-    endpoint: { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', account: 'synthetic', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge' } } as unknown as ConnectionPolicy;
-  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
-  const properties = declaration.parameters['properties'] as Record<string, unknown>;
-  assert.deepEqual(Object.keys(properties).sort(), ['ids', 'include_links'], 'the declared keys are exactly the accepted keys');
-  assert.equal(declaration.parameters['additionalProperties'], true, 'the read schema admits extra keys the validator drops');
-  assert.equal(declaration.validate({ ids: [1], include_links: true }), true, 'the declared include_links key is accepted by the validator');
-  assert.equal(declaration.validate({ ids: [1], nonsense: 1 }), true, 'an unknown read key is dropped, not refused');
-  const live = declarationsFor([{ name: 'get_insight', description: declaration.description, parameters: declaration.parameters } as ToolDefinition]).declarations[0]!;
-  const liveProperties = live.parameters['properties'] as Record<string, unknown>;
-  assert.ok(Object.keys(liveProperties).includes('include_links'), 'the flattened Live schema still names include_links');
-  assert.deepEqual(violations(live.parameters, 'get_insight.parameters'), []);
+test('knowledge reads expose their canonical id/cursor schema, not backend-specific options', t => {
+  const registry = helperSurface(t), knowledge = registry.find(tool => tool.name === 'read_knowledge')!;
+  assert.ok(knowledge);
+  assert.equal(knowledge.validate({ id: '7', cursor: null }), true);
+  assert.equal(knowledge.validate({ id: '7', cursor: null, include_links: true }), false);
+  const declaration = declarationsFor(registry).declarations.find(tool => tool.name === 'read_knowledge')!;
+  assert.deepEqual(Object.keys(declaration.parameters['properties'] as object).sort(), ['cursor', 'id']);
 });
 
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {

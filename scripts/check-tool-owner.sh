@@ -23,7 +23,7 @@ cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors,domain,mail-operators}.ts "$out/source/contracts/"
 cp "$root/server/runtime/"{store,task-schema}.ts "$out/source/runtime/"
 mkdir -p "$out/source/tasks"
-cp "$root/server/tasks/clean.ts" "$out/source/tasks/"
+cp "$root"/server/tasks/*.ts "$out/source/tasks/"
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"
 # server/tools imports the debug journal receipt: copy the module it compiles against.

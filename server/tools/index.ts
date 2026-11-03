@@ -517,6 +517,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
+    taskBindings(connectionIds) {
+      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled));
+      return policies.map(policy => {
+        const descriptor = connectorDescriptor(policy.connector);
+        if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
+        const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+        return { connector: policy.connector, reader, policy };
+      });
+    },
     observeAlarmOwner: (session, journalId, words, at) => {
       ownerRequests.observe(session, journalId, words, at);
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());

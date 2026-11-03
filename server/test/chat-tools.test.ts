@@ -121,7 +121,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
                 const capabilities = chatCapabilities(taskDefinitions(target, revision.identity, composition.owner), f.config.context.sources);
                 const compiled = compilePrompt({ ownerId: f.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
                   preferences: f.config.preferences, capabilities, evidence: [], history: [{ schemaVersion: 1, ownerId: f.store.assistantId, dataClass: 'ordinary', id: 'synthetic-preflight', role: 'user', text: 'Synthetic compiler preflight' }], budgets: f.config.context.budgets });
-                console.error('CHAT_TASK_PROMPT_OK', compiled.trustedChars);
+                console.error('CHAT_TASK_PROMPT_OK', compiled.system.length);
               } catch (error) { console.error('CHAT_TASK_PROMPT', String(error)); }
             }
             return result;

@@ -177,7 +177,7 @@ async function ask(s, text, requireDelegation = true) {
 }
 async function quiet(s, minimum = 1500, maximum = 15000) {
   const start = Date.now();
-  await until(s, () => Date.now() - start >= minimum && Date.now() - Math.max(s.lastText, s.start + (s.lastAudio ?? 0)) >= 3000, maximum);
+  await until(s, () => Date.now() - start >= minimum && Date.now() - Math.max(s.lastText, start) >= 3000, maximum);
 }
 function content(s, id, text, type = 'session.commentary.append') {
   const at = s.ms();

@@ -258,9 +258,9 @@ public actor NativeActions: NativeActionExecuting {
             if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Contents/Info.plist").path) { return candidate }
         }
         // Launch Services has no supported name lookup. Spotlight finds other installed locations.
-        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let escaped = base.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "?", with: "\\?")
         let query = "kMDItemContentType == 'com.apple.application-bundle' && kMDItemFSName == \"\(escaped).app\"cd"
-        return appSearch(query).first
+        return appSearch(query).first { $0.lastPathComponent.caseInsensitiveCompare(base + ".app") == .orderedSame }
     }
 
     public static func spotlightApps(_ query: String) -> [URL] {

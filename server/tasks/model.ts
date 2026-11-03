@@ -2,7 +2,7 @@ import type { Credentials, Transport } from '../adapters/model/types.js';
 import { geminiDialect } from '../tools/declarations.js';
 import type { Infer, InferRequest, Inference, ToolCall } from './worker.js';
 import type { Schema } from './tools.js';
-export const DEFAULT_WORKER_MODEL = 'gpt-6.1-sol';
+export const DEFAULT_WORKER_MODEL = 'gpt-6.1-terra';
 export interface ModelRole { provider: 'openai' | 'gemini'; model: string; effort: 'low' | 'medium' | 'high'; keyReference: string }
 export interface RoleModels { worker: ModelRole; effect_check: ModelRole }
 export interface ModelOptions { role: ModelRole; credentials: Credentials; transport?: Transport }

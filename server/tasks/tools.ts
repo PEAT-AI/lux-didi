@@ -50,7 +50,7 @@ export function pruneNulls(value: unknown): unknown {
 export function validateArguments(tool: TaskTool, value: unknown): { ok: true; args: Record<string, unknown> } | { ok: false; repair: string } {
   return matches(tool.parameters, value) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
-interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside?: boolean }
+export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside?: boolean }
 const definitions: Definition[] = [
   ...['mail', 'chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
   ...['mail', 'knowledge', 'drive'].map(source => ({ name: `read_${source}`, description: `Open ${source} whole; use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),

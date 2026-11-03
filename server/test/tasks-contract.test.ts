@@ -49,7 +49,7 @@ test('strict schemas, null pruning and writes pass the one authority port', asyn
 
 test('both provider ports carry strict typed calls and return a final answer without network', async () => {
   const { createModelPort, DEFAULT_WORKER_MODEL } = await import('../tasks/model.js');
-  assert.equal(DEFAULT_WORKER_MODEL, 'gpt-6.1-sol');
+  assert.equal(DEFAULT_WORKER_MODEL, 'gpt-6.1-terra');
   for (const provider of ['openai', 'gemini'] as const) {
     let calls = 0;
     const registry = createRegistry({ execute: async () => documentResult('whole', 'fixture'), authority: new FakeAuthority() });

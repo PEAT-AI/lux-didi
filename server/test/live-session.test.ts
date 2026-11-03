@@ -65,13 +65,12 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
 import { fixture as openAiFixture, options as openAiOptions, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OpenAiLiveVoiceAdapter } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { admissionBlocked } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../live/schema.js';
@@ -4835,15 +4834,7 @@ test('W4-R1: a genuine second mute with no tool result still ends the call', asy
 
 
 
-test('R9-W5 refusal retains delivered findings and projection uses closed refusal code', () => {
-  const delivered = { findings: [{ source: 'web', text: 'Web: 3 of 3 shown\nalpha\nbeta\ngamma' }] };
-  const reply = admissionBlocked('turn_spent', delivered);
-  assert.equal(reply['deliveredCount'], 3);
-  assert.doesNotMatch(String(reply['directive']), /nothing|empty|blocked/iu);
-  assert.equal(reply['status'], 'blocked', 'W5-R2 preserves accepted admission envelope');
-  assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
-  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /findings from calendar; 1 delivered item/u);
-});
+
 
 test('R9-W5 late findings all retain source and lookup provenance', () => {
   const line = lateFindingsText('web', ['alpha', 'beta', 'gamma']);

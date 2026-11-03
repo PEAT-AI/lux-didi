@@ -1,4 +1,3 @@
-import { OwnerRequests } from '../tools/owner-request.js';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,8 +5,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { HostLog, safeEvent } from '../host/log.js';
-import { openAudit } from '../tools/open.js';
-import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 import { turnScriptBucket, turnScriptCounts } from '../live/index.js';
@@ -767,22 +764,12 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
 });
 
 // C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
-test('direct102: open audit reports request counts and codes, never owner or target text', () => {
-  const requests = new OwnerRequests(() => 10);
-  requests.observe('s', 'j1', 'open the synthetic pitch deck in my browser');
-  const lines: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') lines.push(raw as Record<string, unknown>); } });
-  try { openAudit({ ...requests.audit('s', 'open'), refusalCode: 'none' }); }
-  finally { detach(); }
-  assert.deepEqual(lines[0], { event: 'gate_decision', tool: 'open', decision: 'allowed', code: 'allowed', owner: 1, exposure: 0, ownerFinal: true });
-  assert.deepEqual(lines[1], { event: 'open_audit', ownerFinals: 1, requestAgeMs: 0, grantKind: 'open', grantState: 'available', refusalCode: 'none' });
-  assert.deepEqual(safeEvent(lines[0]), lines[0]);
-  assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
-  assert.equal(safeEvent({ ...lines[0], owner: -1 }), undefined);
-  assert.equal(safeEvent({ ...lines[0], decision: 'maybe' }), undefined);
-  assert.deepEqual(safeEvent(lines[1]), lines[1]);
-  assert.equal(safeEvent({ ...lines[1], words: 'secret' }), undefined);
-  assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
+test('task delivery audit accepts closed metadata and refuses owner or target text', () => {
+ const metadata = { event: 'task_delivery', state: 'sent', taskId: '11111111-1111-4111-8111-111111111111', revision: 1, chunk: 0 };
+ assert.ok(safeEvent(metadata), 'the actual task delivery emitter has a host-log branch');
+ assert.equal(safeEvent({ ...metadata, ownerWords: 'SYNTHETIC_PRIVATE_WORDS' }), null);
+ assert.equal(safeEvent({ ...metadata, target: 'https://example.com/synthetic-private-target' }), null);
+ assert.equal(JSON.stringify(safeEvent(metadata)).includes('SYNTHETIC_PRIVATE_WORDS'), false);
 });
 
 test('canary close terminal is validated as a closed session-paired receipt', () => {

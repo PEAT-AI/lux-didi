@@ -1065,6 +1065,11 @@ const SCENARIOS = [
   },
 ];
 
+/** One lookup for a scenario id, so a case difference cannot quietly skip a scenario. */
+function pickScenario(id) {
+  return SCENARIOS.find(row => row.id.toUpperCase() === String(id).toUpperCase());
+}
+
 // ---------------------------------------------------------------------------------------------
 // Response assembly for the live loop.
 // ---------------------------------------------------------------------------------------------
@@ -1559,6 +1564,7 @@ function selftest() {
   note(refused, 'a pre-6.1 id is refused');
   note(assertLatest('gpt-6.1-sol') === 'gpt-6.1-sol', 'a 6.1 id is allowed');
   note(CONFIGS.every(config => !/^gpt-6(-|\.0)/u.test(config.model)), 'no config names a 6.0 id');
+  note(SCENARIOS.every(scenario => pickScenario(scenario.id) && pickScenario(scenario.id.toUpperCase())), 'every scenario id is found by the shared lookup');
 
   // S2b with two mails from the sender: the day bound has to pick the Tuesday mail out.
   const s2b = SCENARIOS.find(scenario => scenario.id === 'S2b');
@@ -1617,7 +1623,7 @@ function rescore(file) {
   const changed = [];
   const out = rows.map(row => {
     if (row.error) return row;
-    const scenario = SCENARIOS.find(s => s.id.toUpperCase() === String(row.scenario).toUpperCase());
+    const scenario = pickScenario(row.scenario);
     if (!scenario) return row;
     const failure = scenario.check(row.calls ?? [], row.answer ?? '');
     if (Boolean(row.pass) !== (failure === null)) changed.push(`${row.scenario} ${row.config} rep${row.rep}: ${row.failed_check ?? 'pass'} -> ${failure ?? 'pass'}`);
@@ -1741,7 +1747,8 @@ async function live(options) {
   const prices = priceTable();
   console.log(`PRICES=assumed ${Object.entries(prices).map(([m, p]) => `${m}:${p.in}/${p.out}`).join(',')} default:${DEFAULT_PRICE.in}/${DEFAULT_PRICE.out} source=${process.env.EVAL_PRICES ? 'EVAL_PRICES' : 'assumed_overridable'}`);
   console.log(`CEILING_USD=${options.budget.toFixed(2)} MODEL_WALL_CLOCK_START=${new Date().toISOString()}`);
-  const picked = options.scenarios ? options.scenarios.split(',').map(s => s.trim().toUpperCase()) : SCENARIOS.map(s => s.id);
+  // Scenario ids are matched case insensitively, so the default list has to be upcased too.
+  const picked = (options.scenarios ? options.scenarios.split(',') : SCENARIOS.map(s => s.id)).map(s => s.trim().toUpperCase());
   const wanted = options.configs ? options.configs.split(',').map(s => s.trim()) : null;
   const configs = CONFIGS.filter(config => (wanted ? wanted.includes(config.id) : true) && (config.provider !== 'gemini' || geminiApiKey));
   const reps = config => (options.runsExplicit ? options.runs : (config.runs ?? options.runs));
@@ -1765,7 +1772,7 @@ async function live(options) {
     for (const config of configs) {
       if (rep > reps(config)) continue;
       for (const id of picked) {
-        const scenario = SCENARIOS.find(s => s.id.toUpperCase() === id);
+        const scenario = pickScenario(id);
         if (!scenario) { console.log(`SKIP scenario ${id} unknown`); continue; }
         if (spent >= options.budget) { skipped += 1; continue; }
         let result;

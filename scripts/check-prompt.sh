@@ -21,9 +21,10 @@ printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 sources=(server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts
   server/test/runtime-context.test.ts server/test/chat-prompt.test.ts)
+# The plain-JS integration imports the retained Text history tool outside the TS test graph.
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
-  --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$root/server" --outDir "$out/dist" "${sources[@]}"
+  --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$root/server" --outDir "$out/dist" "${sources[@]}" server/tools/history.ts
 tests=()
 for source in "${sources[@]}"; do
   name="${source##*/}"

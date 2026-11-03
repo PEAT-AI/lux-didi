@@ -50,7 +50,7 @@ Native device/engine recovery and host provider recovery are different boundarie
 
 The current code **does** receive typed `didi` script messages: `userContentController` forwards them to `NativeBridge.handle`. Do not repeat the historical claim that no inbound JavaScript handler exists. The bridge must validate its closed message contract and leave capability/authority checks with their owners; its existence is not a general native RPC or arbitrary command grant.
 
-Native open uses the allowed destination/action path in `NativeActions.swift`. Chrome preference and default-browser fallback do not authorize AppleScript, profile manipulation or keystroke automation. A successful native receipt, not assistant prose, proves an open was attempted successfully.
+Native open uses the mechanical action path in `NativeActions.swift`. System default-browser opening do not authorize AppleScript, profile manipulation or keystroke automation. A successful native receipt, not assistant prose, proves an open was attempted successfully.
 
 ## Host lifetime and credentials
 

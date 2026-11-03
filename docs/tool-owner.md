@@ -69,7 +69,7 @@ recurrence the model adds without his words for it is dropped and said in the re
 
 A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
 
-`Sources/LuxDidi/NativeActions.swift` still owns native destination enforcement and browser fallback. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
+`Sources/LuxDidi/NativeActions.swift` owns mechanical native opening and system default-browser behavior, not destination policy. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
 
 ## Local memory and Lux notes
 

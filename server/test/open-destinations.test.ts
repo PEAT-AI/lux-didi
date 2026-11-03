@@ -367,3 +367,33 @@ test('10.10 Spotlight passes literal quoted words as argv, returns paths only', 
   assert.equal((await api.findFile({ query: 'missing' }, { run: async () => '' })).code, 'empty');
   assert.equal((await api.findFile({ query: 'words' }, { run: async () => { throw new Error('unavailable'); } })).code, 'unavailable');
 });
+
+
+test('10.10 named sites use search, then actual dispatch, with no-result pair', async () => {
+  const { executeOpen, NativeActionBus, useWebSearchPort } = await import('../tools/open.js');
+  const bus = new NativeActionBus();
+  const unbind = bus.bind('synthetic-site', frame => {
+    assert.equal(frame.action, 'open_url');
+    assert.equal(frame.target, 'https://example.org');
+    queueMicrotask(() => bus.settle('synthetic-site', { type: 'native_action_result', id: frame.id, code: 'opened' }));
+    return true;
+  });
+  try {
+    useWebSearchPort(() => ({ search: async () => ({ ok: true, evidence: { answer: '', claims: [], retrievedAt: '2026-01-01T00:00:00Z', sources: [{ title: 'Example', url: 'https://example.org/' }] } }) }));
+    assert.equal((await executeOpen(bus, 'synthetic-site', { kind: 'web', target: 'Example' })).code, 'opened');
+    useWebSearchPort(() => ({ search: async () => ({ ok: false, code: 'web_insufficient', reason: 'empty' }) }));
+    assert.equal((await executeOpen(bus, 'synthetic-site', { kind: 'web', target: 'Missing Example' })).code, 'not_found');
+  } finally { useWebSearchPort(undefined); unbind(); }
+});
+
+test('10.10 Spotlight caps newest results and marks only content-only matches outside text', async () => {
+  let call = 0;
+  const paths = Array.from({ length: 25 }, (_, i) => `/tmp/synthetic-${i}.txt`);
+  const result = await findFile({ query: 'synthetic' }, {
+    run: async () => ++call === 1 ? paths[0]! + '\0' : paths.join('\0') + '\0',
+    stat: async path => ({ mtime: new Date(Date.UTC(2026, 0, Number(path.match(/-(\d+)/)![1]) + 1)) }),
+  });
+  assert.equal(result.files.length, 20);
+  assert.equal(result.files[0]!.path, paths[24]);
+  assert.ok(result.files.every(file => file.outsideText));
+});

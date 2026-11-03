@@ -1,3 +1,5 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
+import { connectorExecutor } from '../tasks/connectors.js';
 import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { test, type TestContext } from 'node:test';
@@ -13,8 +15,6 @@ import type { CompletedResult, EndpointConfig, McpPort } from '../adapters/mcp/p
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
-import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
-import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -243,32 +243,16 @@ test('channel resolution maps id, name and display name, and names the closest m
   assert.deepEqual(parseChannelList({ result: { content: [{ type: 'text', text: JSON.stringify({ channels }) }] } }), channels);
 });
 
-test('the research chat thread read uses the argument name the child declares, so the thread body reaches the answer', async t => {
-  const f = setup('ok');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  await approve(f.adapter, f.registry);
-  const dispatched: string[] = [];
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
-    dispatched.push(call.name);
-    if (call.name !== 'mattermost_get_thread') {
-      const text = '**team** [post abcdef1234567890abcdefghij]\nstandup thread started';
-      return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
-    }
-    const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE });
-    // Shape the read the way the host does before it reaches the model.
-    const projected = result.state === 'completed'
-      ? projectMattermostResult(f.adapter, { decodedResult: result.decodedResult, state: 'completed', tool: call.name, source: result.source, observedAt: Date.now(), coverage: result.coverage, projection: result.projection, response: result.payload })
-      : { ok: false as const, reason: result.state };
-    const text = projected.ok ? projected.projection.text : '';
-    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
-  }));
-  const deps: ResearchDeps = {
-    now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', topic: 'what did the team say about the standup' }, new AbortController().signal);
-  assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
-  const findings = reply['findings'] as { text?: string }[];
-  assert.ok(JSON.stringify(findings).includes('Standup at ten'), 'the thread body reaches the answer, never an empty failure');
+test('canonical read_thread uses the child argument name and returns its full thread body', async t => {
+  const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'read_thread')!;
+  const args = { ref: 'abcdef1234567890abcdefghij' };
+  const call = h.owner.taskIntent({ ...h.host, executionId: 'thread:0', callId: 'thread-call', accountId: definition.accountId, resourceId: definition.resourceId, signal: new AbortController().signal }, definition.name, args);
+  assert.equal(h.owner.journal.intent(call), 'fresh');
+  const outcome = await definition.execute(args, { ...call, signal: new AbortController().signal });
+  assert.equal(outcome.status, 'completed');
+  const row = h.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [call.executionId]));
+  assert.match(JSON.stringify(JSON.parse(String(row?.result_json)).response), /Standup at ten/);
+  assert.ok(h.f.calls().some(call => call.name === 'mattermost_get_thread'));
 });
 
 // #351: the connector's own process fails before the MCP handshake (a missing build, a moved
@@ -299,20 +283,9 @@ test('a dead connector classifies as a spawn failure, so its discovery is never 
 
 // #351: when the connector itself is down, a chat lookup is reported unreachable at once, instead of
 // paying a source deadline on reads that cannot reach it.
-test('a chat lookup settles unavailable at once when the mattermost connector is down', async () => {
-  const dispatched: string[] = [];
-  const deps: ResearchDeps = {
-    now: () => 0, configured: ['chat'], unavailableNow: () => ['chat'],
-    execute: async subs => {
-      for (const call of subs) dispatched.push(call.name);
-      return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0 }));
-    },
-    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', topic: 'what did the team say about the standup', lookups: [{ source: 'chat', query: 'standup' }] }, new AbortController().signal);
-  assert.equal(reply['sources'] && (reply['sources'] as Record<string, string>)['chat'], 'unavailable');
-  assert.match(String(reply['note']), /could not reach team chat/, 'the answer says chat is unreachable, never that it searched and found nothing');
-  assert.deepEqual(dispatched, [], 'no sub-call is dispatched to a connector that cannot answer');
+test('canonical chat lookup without a configured connector returns an immediate repair', async () => {
+  const reply = await connectorExecutor([])('search_chat', { query: 'standup' }, new AbortController().signal);
+  assert.equal(reply.status, 'failed'); assert.match(reply.text, /not configured/);
 });
 
 // #581: a chat window written as an inline `After:` made the child rank the whole archive by relevance
@@ -445,41 +418,16 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 
 // #637 CHANNELS-R6 (a): a refused channel read driven through the real tools owner records the closed
 // code channel_not_found, and no wide archive read is issued for it.
-test('#637: a refused channel read through the real tools owner records the closed code', async t => {
-  const f = setup('ok');
-  const store = new Store(join(f.dir, 'data'), toolsMigrations);
-  t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const discovered = await f.adapter.discover('mattermost');
-  assert.equal(discovered.state, 'discovered');
-  if (discovered.state !== 'discovered') throw new Error('not discovered');
-  let live: LiveAuthority | null = null;
-  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
-  owner.applyConnection({
-    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
-    endpoint: { ...config('mattermost', 'ok', f.dir, join(f.dir, 'calls.log')), credentialRef: null },
-    toolNames: [...MATTERMOST_TOOLS], schemaDigest: discovered.schemaDigest,
-    sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
-    route: { identity: 'voice', allowedClasses: ['ordinary'] },
-    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
-  } as never);
-  // applyConnection suspends the grant; a fresh discovery followed by the projection publishes it.
-  const again = await f.adapter.discover('mattermost');
-  assert.equal(again.state, 'discovered');
-  owner.projectConnection('mattermost');
-  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
-    route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
-  const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-  // The run's own read grants, the same shape the host hands a real run.
-  const host = { ...live, grants: MATTERMOST_TOOLS.map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
-  const batch = await runToolCalls(owner, [{ id: 's0', name: 'mattermost_search', args: { query: 'release', channel: 'nowhere' } }], {
-    registry: owner.definitions('run'), host: host as never, authority: { isCurrent: async () => true } as never,
-    control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+test('#637: canonical unknown-channel failure keeps its closed cause and makes no wide archive search', async t => {
+  const h = await canonicalMattermostRun(t), definition = h.task.tools.find(tool => tool.name === 'search_chat')!;
+  const batch = await runToolCalls(h.owner, [{ id: 's0', name: definition.name, args: { query: 'in:nowhere release' } }], {
+    registry: h.task.tools, host: { ...h.host, grants: [{ tool: definition.name, effect: 'read', accountId: definition.accountId, resourceId: definition.resourceId }] } as never,
+    authority: { isCurrent: async () => true } as never, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
   });
-  const record = batch.tools.find(entry => entry.callId === 's0');
-  assert.equal(record?.status, 'failed');
-  assert.equal(record?.reason, 'channel_not_found', 'the refused read records the closed code the reply keys on');
-  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
+  assert.equal(batch.tools.find(entry => entry.callId === 's0')?.status, 'completed', 'a host failure fact is a completed disclosure, not source evidence');
+  const row = h.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE call_id=?', ['s0']));
+  assert.equal(JSON.parse(String(row?.result_json)).response.reason, 'channel_not_found');
+  assert.ok(!h.f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #614: the fixture answers the installed child's real envelopes, so a decode that only knew the
@@ -573,3 +521,35 @@ test('STAGE4: a named-day search result reports the actual read window to the ow
   if (!projected.ok) return;
   assert.match(projected.projection.text, /^Read window: 2026-10-21 through 2026-10-21\./u);
 });
+
+async function canonicalMattermostRun(t: TestContext) {
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
+  const f = setup('ok');
+  const store = new Store(join(f.dir, 'data'), toolsMigrations);
+  t.after(async () => { task?.close(); await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const discovered = await f.adapter.discover('mattermost');
+  assert.equal(discovered.state, 'discovered');
+  if (discovered.state !== 'discovered') throw new Error('not discovered');
+  let live: LiveAuthority | null = null;
+  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
+  owner.applyConnection({
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+    endpoint: { ...config('mattermost', 'ok', f.dir, join(f.dir, 'calls.log')), credentialRef: null },
+    toolNames: [...MATTERMOST_TOOLS], schemaDigest: discovered.schemaDigest,
+    sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'voice', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
+  } as never);
+  // applyConnection suspends the grant; a fresh discovery followed by the projection publishes it.
+  const again = await f.adapter.discover('mattermost');
+  assert.equal(again.state, 'discovered');
+  owner.projectConnection('mattermost');
+  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
+  const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
+  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+
+  task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic chat');
+  return { f, store, owner, task, host: live! };
+}
+

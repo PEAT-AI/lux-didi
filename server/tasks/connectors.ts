@@ -10,7 +10,7 @@ export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
   [tool: string]: ((args: Record<string, unknown>, signal: AbortSignal, context: TaskExecutionContext) => Promise<ToolResult>) | undefined;
 }
-interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>): Record<string, unknown> }
+interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
   search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
@@ -19,7 +19,7 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: a => ({ query: a.query }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: (parameters.properties as { limit: { maximum: number } }).limit.maximum }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: [Number(a.id)] }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref }) },
@@ -98,7 +98,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const binding = bindings.find(binding => binding.connector === mapping.connector && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
-    const mapped = mapping.args(args);
+    const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
     if (result.state !== 'completed') return failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.');

@@ -107,7 +107,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       acceptance = store.transaction(tx => JSON.parse(String(tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])!.acceptance_json)) as RunAcceptance);
     } else {
       // T8-FIX-R1: public owner API until W-U supplies the real ChatService builder.
-      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: runtime.connectionIds() };
+      acceptance = { ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: [...allowedClasses].sort(), policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses }, allowedClasses, connectionIds: runtime.connectionIds().filter(id => (runtime.registry.currentGrant(id)?.toolNames.length ?? 0) > 0) };
       const hash = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance).sha256);
       chatAuthorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
     }
@@ -143,7 +143,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1);
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify(batch.outcome));
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);

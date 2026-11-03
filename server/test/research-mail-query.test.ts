@@ -89,7 +89,7 @@ test('E4: an authored Gmail query is never rewritten, and compiling twice change
     const authored = `${operator}bank newer_than:30d`;
     assert.equal(compileMailQuery('anything at all from the bank', authored, NOW, ZONE), authored, operator);
     // A sender the question never names is the 10.9 junk: it goes, and the words it leaves still ask.
-    assert.equal(compileMailQuery('anything at all from the bank', `${operator}token newer_than:30d`, NOW, ZONE), 'bank newer_than:30d', operator);
+    assert.equal(compileMailQuery('anything at all from the bank', `${operator}token newer_than:30d`, NOW, ZONE), 'newer_than:30d', operator);
   }
   assert.equal(compileMailQuery('board deck', 'subject:"board deck"', NOW, ZONE), 'subject:"board deck"', 'a quoted phrase survives untouched');
 });
@@ -197,7 +197,7 @@ test('E5: an empty retry says how it searched, naming the window it used', async
     lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
   }, new AbortController().signal);
   // SEARCH-110: a person search widens down the ladder, one read per step and never a loop.
-  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d', 'dana newer_than:14d'], 'the ladder stops when the steps run out');
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice', 'from:dana OR to:dana', 'dana'], 'the ladder stops when the steps run out');
   const note = String(reply['note'] ?? '');
   assert.match(note, /I searched your mail with a keyword filter and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
 });

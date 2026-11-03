@@ -175,11 +175,10 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
     // The port carries the original JSON schemas; this adapter owns its own wire dialect.
-    const declarations = request.tools?.map(declaration => ({
-      ...declaration, parameters: geminiDialect(declaration.parameters),
-      ...(this.capabilities.supportsToolScheduling
-        ? { behavior: declaration.name === MEMORY_TOOL ? 'NON_BLOCKING' : 'BLOCKING' } : {}),
-    }));
+    const declarations = [{ name: 'delegate', description: 'Attach to the host task for this owner request and return its spoken answer.',
+      parameters: geminiDialect({ type: 'object', properties: { request: { type: 'string' } }, required: ['request'] }),
+      ...(this.capabilities.supportsToolScheduling ? { behavior: 'BLOCKING' } : {}),
+    }];
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
@@ -422,26 +421,9 @@ class Session implements LiveVoiceSession {
         if (!this.isReady || this.pendingCalls.length || !object(message.toolCall) || !Array.isArray(message.toolCall.functionCalls) || !message.toolCall.functionCalls.length || message.toolCall.functionCalls.length > 16) fail('protocol_error');
         const calls = message.toolCall.functionCalls;
         if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
-        const admitted: LiveToolCall[] = [];
-        const refused: LiveToolResponse[] = [];
-        for (const call of structuredClone(calls) as LiveToolCall[]) {
-          if (call.name === 'research' && this.researchCalls >= 6) {
-            this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
-            refused.push({ id: call.id, name: call.name, response: {
-              status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question',
-            } });
-          } else {
-            if (call.name === 'research') { this.researchCalls += 1; this.researchAdmissions.add(call.id); }
-            admitted.push(call);
-          }
-        }
-        this.researchAwaitingInput = true;
-        this.pendingCalls = admitted;
-        if (refused.length) {
-          const delivered = this.write(JSON.stringify({ toolResponse: { functionResponses: refused } }));
-          for (const call of refused) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
-          if (!delivered) return;
-        }
+        if (calls.some(call => call.name !== 'delegate' || typeof (call.args as ObjectValue).request !== 'string'
+          || !(call.args as ObjectValue).request || Object.keys(call.args as ObjectValue).join(',') !== 'request')) fail('protocol_error');
+        this.pendingCalls = structuredClone(calls) as LiveToolCall[];
         for (const call of this.pendingCalls) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
         this.emit({ type: 'modelTurnStarted' });
         if (admitted.length) this.emit({ type: 'toolCall', calls: structuredClone(admitted) });

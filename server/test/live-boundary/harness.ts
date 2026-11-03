@@ -11,7 +11,7 @@ import type { Infer, Inference } from '../../tasks/worker.js';
 
 let mutate = false;
 export function setMutation(value: boolean): void { mutate = value; }
-function equal(actual: unknown, expected: unknown, message?: string): void {
+function equal(actual: unknown, expected: unknown, message = ""): void {
   if (mutate) { mutate = false; assert.notDeepEqual(actual, expected, message); }
   else assert.deepEqual(actual, expected, message);
 }

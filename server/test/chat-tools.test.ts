@@ -696,13 +696,15 @@ test('real chat turn reads a local reminder and commits a task note through cano
       reason: 'complete', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
   } };
   const f = await fixture(t, ['ordinary', 'private'], { model, context: { budgets: { trustedChars: 40000, contextChars: 12000, historyChars: 12000 }, sources: [] } });
+  let completionError = ''; const complete = f.owner.complete.bind(f.owner);
+  f.owner.complete = (...args) => { try { return complete(...args); } catch (error) { completionError = error instanceof Error ? error.message : 'non_error'; throw error; } };
   f.store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", ['synthetic-reminder', Date.UTC(2030, 0, 2), 'UTC', 'Known reminder label', 'synthetic-journal']));
   const sessionId = f.session(), accepted = f.chat.accept({ sessionId, text: 'List my reminders and keep this note: Synthetic task note body', idempotencyKey: randomUUID() }, f.context);
   let outcome: string | null = null;
   for await (const event of f.chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { outcome = event.run.outcome; break; }
   assert.equal(outcome, 'complete');
   const continuation = observed.flatMap(request => request.contents).flatMap(content => content.parts).flatMap(part => part.functionResponse ? [part.functionResponse.response] : []);
-  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), JSON.stringify({ responses: continuation, calls: f.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls')) }).slice(0, 1600));
+  assert.ok(continuation.some(response => JSON.stringify(response).includes('Known reminder label')), JSON.stringify({ completionError, operations: f.store.transaction(tx => tx.all('SELECT tool,state FROM task_operations')), responses: continuation, calls: f.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls')) }).slice(0, 1600));
   assert.ok(continuation.some(response => JSON.stringify(response).includes('committed')), 'the chat model receives the effect receipt');
   const notes = f.store.transaction(tx => tx.all("SELECT e.text FROM entries e JOIN sessions s ON s.id=e.session_id WHERE s.title='Task note'"));
   assert.deepEqual(notes.map(row => row.text), ['Synthetic task note body']);

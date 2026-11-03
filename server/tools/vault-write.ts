@@ -87,18 +87,6 @@ const SAVE_COMMAND = /^(?:naya\s*,?\s+)?(?:please\s+)?(?:save|remember|put|store
 export type SaveCommand = { readonly content: string; readonly refers: boolean };
 
 /**
- * His words after the ask are the note. A bare ask ("save this to lux") refers to the words he said
- * just before it, and the host resolves those from the journal: the grammar alone is not permission.
- */
-export function parseSaveCommand(text: string): SaveCommand | undefined {
-  const match = SAVE_COMMAND.exec(text.replace(/\s+/g, ' ').trim());
-  if (!match) return undefined;
-  const content = String(match[1] ?? '').replace(/\s+/g, ' ').trim();
-  if (vaultContentKey(content).length >= 2) return { content, refers: false };
-  return content === '' ? { content: '', refers: true } : undefined;
-}
-
-/**
  * A composed note authorizes its own ledger row only after the host confirmed the frozen payload: the
  * row is keyed by the stage, so a second settlement of the same stage inserts nothing and dispatches
  * nothing. Everything after this point is the one dictation path: claim, dispatch, settle.
@@ -134,42 +122,12 @@ const requestFragment = (text: string): boolean => {
   return words.length === 0 || words.every(word => REQUEST_WORDS.has(word));
 };
 
-/** A final owner utterance minted this single-use authorization, or nothing at all. */
-export function mintVaultAuthorization(tx: Transaction, options: { liveSessionId: string; utteranceId: string; text: string; priorText?: string; now: number }): string | undefined {
-  const parsed = parseSaveCommand(options.text);
-  if (!parsed) return undefined;
-  const content = parsed.refers ? (options.priorText ?? '').replace(/\s+/g, ' ').trim() : parsed.content;
-  // W5: a referential ask whose referent is itself part of the request authorizes nothing. The referent
-  // is the answer she gave, which the composed-note path stages and reads back; the host never writes.
-  if (parsed.refers && requestFragment(content)) return undefined;
-  if (vaultContentKey(content).length < 2) return undefined;
-  const opId = randomUUID();
-  tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    [opId, options.liveSessionId, options.utteranceId, VAULT_REMOTE_TOOL, content, vaultContentKey(content), vaultTitle(content), 'authorized', options.now]);
-  const stored = tx.get('SELECT op_id FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.utteranceId]);
-  return stored ? String(stored['op_id']) : undefined;
-}
-
 function receiptFromRow(row: SQLRow): VaultReceipt {
   const state = String(row['state']) as VaultState;
   const insightId = row['insight_id'] === null || row['insight_id'] === undefined ? undefined : String(row['insight_id']);
   if (state === 'confirmed' && validInsightId(insightId)) return { saved: true, insightId };
   if (state === 'failed') return refusal(row['code'] === 'vault_unavailable' ? 'vault_unavailable' : 'write_failed');
   return refusal('outcome_unknown');
-}
-
-/** His ask in this session is the permission, not the exact words: the claim carries her content. */
-export function claimVaultWrite(tx: Transaction, options: { liveSessionId: string; content: string }): VaultClaim {
-  const exact = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND content_key=? ORDER BY created_at DESC, rowid DESC LIMIT 1',
-    [options.liveSessionId, vaultContentKey(options.content)]);
-  if (exact) return claimRow(tx, exact);
-  // C-FREEDOM: saving to the vault is a free local write, so a note she keeps in her own words claims
-  // the newest unclaimed row of this session. The literal save phrase and the exact content match are
-  // gone; a wrong local write is a cost he can correct.
-  const last = tx.get("SELECT * FROM vault_writes WHERE live_session_id=? AND state='authorized' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-    [options.liveSessionId]);
-  if (!last) return { state: 'settled', receipt: refusal('not_owner_requested') };
-  return claimRow(tx, last, options.content);
 }
 
 /** One ledger row is claimed once, atomically, whichever consent minted it. */
@@ -233,16 +191,6 @@ export class VaultWriter {
       externalContextPresent: input.outsideTextSeen, payloadSha: frozen.payloadSha, now: this.#now() }));
     if (claim.state === 'dispatch') return this.dispatch(claim);
     this.#attempt(claim.receipt, 0); return claim.receipt;
-  }
-
-  observe(tx: Transaction, liveSessionId: string, utteranceId: string, text: string, priorText?: string): void {
-    mintVaultAuthorization(tx, { liveSessionId, utteranceId, text, ...(priorText === undefined ? {} : { priorText }), now: this.#now() });
-  }
-
-  claim(liveSessionId: string, content: string): VaultClaim {
-    const claim = this.#store.transaction(tx => claimVaultWrite(tx, { liveSessionId, content }));
-    if (claim.state === 'settled') this.#attempt(claim.receipt, 0);
-    return claim;
   }
 
   /** One line per save attempt: the closed outcome and code, never the note. */

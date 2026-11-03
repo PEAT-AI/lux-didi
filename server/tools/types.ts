@@ -152,8 +152,5 @@ export interface ToolsOwner {
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
-  definitions(runId: string): ToolDefinition[];
-  liveDefinitions(runId: string, rememberNote: RememberNotePort, vaultDispatch?: VaultDispatchPort, stageNote?: StageNotePort, composedNotes?: boolean): ToolDefinition[];
-  liveRememberApproved(): boolean;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

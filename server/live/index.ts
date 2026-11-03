@@ -10,7 +10,6 @@ import * as summaries from '../domain/summaries.js';
 import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
 import * as labels from '../domain/labels.js';
-import { definitionsInTransaction } from '../tools/index.js';
 import { clearOpenLedger, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
@@ -1855,7 +1854,7 @@ export class LiveSessionOwner {
           route: { identity: this.#profileIdentity, provider: this.#profile.provider, modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
           allowedClasses: [...this.#profile.route.dataClasses], connectionIds: this.#connectionIds(tx) };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
-        toolNames = [...definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name).filter(name => name !== 'remember_note'), 'remember_note'];
+        toolNames = ['delegate'];
       }
       const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
@@ -2249,13 +2248,11 @@ export class LiveSessionOwner {
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
     // W6-R2 B1: the stage needs this session's turn facts, so the closure resolves the handle lazily.
-    let stageHandle: ActiveSession | undefined;
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim), (tx, id, args) => this.#stageComposedNote(tx, id, args, stageHandle), this.#composedNotes()).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && OWNER_WRITE_RESOURCES.get(tool.name) === tool.resourceId && tool.accountId === 'gateway:live-voice').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+        grants: [] };
     }
     const deadLine = this.#deadLineBefore(liveSessionId);
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
@@ -2323,7 +2320,6 @@ export class LiveSessionOwner {
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
-    stageHandle = handle;
     const initialSnapshot = this.#readSnapshot(liveSessionId);
     handle.resolveDone = () => {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }

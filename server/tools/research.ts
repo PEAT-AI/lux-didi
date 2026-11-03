@@ -1070,8 +1070,23 @@ export function mailWindow(question: string, nowMs = Date.now(), timeZone?: stri
   // read filters the messages by their own date afterwards.
   const hours = mailHours(question);
   if (hours !== undefined) return hours <= 24 ? 'newer_than:1d' : 'newer_than:2d';
+  // SEARCH-110: a correction names its window in words as often as in digits ("two or three days back"),
+  // and the words are the window, never Gmail terms that match nothing.
+  const spokenDays = spokenDayWindow(text);
+  if (spokenDays !== undefined) return spokenDays;
   for (const [pattern, window] of MAIL_RELATIVE_WINDOWS) if (pattern.test(text)) return window;
   return undefined;
+}
+
+/** The one spoken count of days, weeks or hours a question names: the widest of the numbers it says. */
+const SPOKEN_COUNT: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, twenty: 20, thirty: 30 };
+function spokenDayWindow(text: string): string | undefined {
+  const counts = [...text.matchAll(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty)\s+(days?|weeks?)\b/gu)]
+    .map(match => ({ count: Number(match[1]) || SPOKEN_COUNT[match[1]!] || 0, unit: match[2]! }));
+  const days = counts.filter(entry => entry.count > 0).map(entry => entry.unit.startsWith('week') ? entry.count * 7 : entry.count);
+  if (days.length === 0) return undefined;
+  const widest = Math.max(...days);
+  return widest > 0 ? `newer_than:${Math.min(widest, 60)}d` : undefined;
 }
 
 /** E6 (#609): the hours an ask named when it is under two days, so the read can bound the day it compiled. */
@@ -3791,9 +3806,11 @@ export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 
 export function bareWebTopic(query: string): string | undefined {
   const words = withoutRouteWords(query, RESEARCH_SOURCES)
     .split(/\s+/)
-    .filter(token => token !== '' && !token.includes('@') && !/^-?(?:from|to|cc|bcc|subject|newer_than|older_than|after|before|is|has|label|in|filename):/iu.test(token));
-  const bare = broaderWebQuery(words.join(' '), 120);
-  return bare === undefined || bare === '' ? undefined : bare;
+    .filter(token => token !== '' && token.toUpperCase() !== 'OR' && !token.includes('@')
+      && !/^-?(?:from|to|cc|bcc|subject|newer_than|older_than|after|before|is|has|label|in|filename):/iu.test(token)
+      && !MAIL_FILLER.has(token.toLowerCase()) && !isSourceNameWord(token));
+  const bare = contentKeywords(words.join(' '), 6).filter(word => !MAIL_FILLER.has(word) && !isSourceNameWord(word)).join(' ');
+  return bare === '' ? undefined : bare.slice(0, 120);
 }
 
 /**
@@ -5226,8 +5243,7 @@ function widenStepsOf(run: RunState, read: MailRead): string[] {
 
 /** SEARCH-110: the plain words for a hit only a widened step found, so the reply can ask "is that it?". */
 export function mailWidenedPhrase(step: string): string {
-  const words = step.split(/\s+/).filter(token => !isOperatorToken(token) && token.toUpperCase() !== 'OR');
-  return `the closest I found came from widening${mailSearchPhrase(words.join(' '))}, is that it?`;
+  return `the closest I found came from widening${mailSearchPhrase(step)}, is that it?`;
 }
 
 /** Each source page is dispatched once under one source deadline; received identities stay local. */

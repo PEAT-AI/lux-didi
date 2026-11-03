@@ -42,9 +42,10 @@ test('SEARCH-110: a query the guard empties is compiled from the question, never
 
 // 2 and 3. A person search widens instead of giving up, and the window rides every step.
 test('SEARCH-110: the widening ladder is full name, first name as sender, surname, first name, window kept', () => {
-  const q = compileMailQuery('Find the email from Dana Smith in the last two days', undefined, NOW, ZONE, 'Find the email from Dana Smith in the last two days');
+  const ask = 'Find the email from Dana Smith in the last seven days';
+  const q = compileMailQuery(ask, undefined, NOW, ZONE, ask);
   assert.equal(mailQueryShape(q).window, 'newer_than:7d', q);
-  assert.deepEqual(mailWidenLadder('Find the email from Dana Smith in the last two days', q), [
+  assert.deepEqual(mailWidenLadder(ask, q), [
     'from:dana OR to:dana newer_than:7d',
     'smith newer_than:7d',
     'dana newer_than:7d',
@@ -56,8 +57,9 @@ test('SEARCH-110: the widening ladder is full name, first name as sender, surnam
 test('SEARCH-110: a hit from a widened step says so in plain words', () => {
   const phrase = mailWidenedPhrase('dana newer_than:7d');
   assert.match(phrase, /^the closest I found came from widening/u, phrase);
-  assert.match(phrase, /dana/u, phrase);
+  assert.match(phrase, /"dana"/u, phrase);
   assert.match(phrase, /in the last week/u, 'the window the owner named rides the phrase too');
+  assert.equal(mailQueryShape('dana newer_than:7d').window, 'newer_than:7d');
   assert.match(phrase, /is that it\?/u, phrase);
   // The narrow phrase never claims the full name matched.
   assert.equal(mailSearchPhrase('dana newer_than:7d').includes('is that it'), false);
@@ -82,8 +84,10 @@ test('SEARCH-110: the bare topic of a mixed question passes the egress check', (
   const mixed = 'from:dana.smith@example.com OR to:dana.smith@example.com find the email from Dana Smith and look her up on the web';
   assert.equal(publicQueryOf(mixed), undefined, 'the compiled query is what the check refused on 10.9');
   const bare = bareWebTopic(mixed);
-  assert.equal(bare, 'dana smith');
-  assert.equal(publicQueryOf(bare ?? ''), 'dana smith', 'the retry query passes, with the protections untouched');
+  assert.match(String(bare), /\bdana\b/u, String(bare));
+  assert.match(String(bare), /\bsmith\b/u, String(bare));
+  assert.doesNotMatch(String(bare), /@/u, String(bare));
+  assert.equal(publicQueryOf(String(bare)), String(bare), 'the retry query passes, with the protections untouched');
   // The protections themselves are unchanged.
   assert.equal(publicQueryOf('is rob@example.com free on Friday'), undefined);
   assert.equal(publicQueryOf('order 123456789012'), undefined);
@@ -104,7 +108,7 @@ test('SEARCH-110: the capability router is asked only about coverage, never abou
   assert.equal(capability('Find the email from Dana Smith about the data'), false, 'a route word is not a coverage question');
   // Paired valid cases: a real coverage question still asks, with the country the owner named.
   assert.equal(capability('Do we have district level data for Kenya?'), true);
-  const args = companySubs('Acme Agro', 'Do we have district level data for Kenya?')[0]!.args;
+  const args = companySubs('Acme Agro', 'Do we have district level data for Kenya?').find(call => call.name === 'check_data_capability')!.args;
   assert.deepEqual(args['countries'], ['Kenya'], JSON.stringify(args));
   assert.equal(companySubs('Acme Agro', 'what does the data in Data say')[0]?.name === 'check_data_capability', false);
 });

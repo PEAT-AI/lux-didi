@@ -145,7 +145,7 @@ assert.equal(start.session['tools'], undefined);
 assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
 });
 
-  
+
 
   test('S4A-R1: legacy backendProcedure cannot enter voice instructions or client delegation', async t => {
     const plain = await fixture(t);
@@ -165,7 +165,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.deepEqual(after, before, 'legacy backend options cannot alter the client session');
   });
 
-  
+
 
   test('C-REBUILD8: a commentary append names the delegation in flight, and is skipped with none open', async t => {
  const { f, session, captured } = await ready(t);
@@ -201,11 +201,11 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
   // delegated call still owed its output; the provider refused it with function_call_outputs_required and the turn
   // fell to a dead-air rebuild. A continuation the wire would refuse is never written: the line waits as owed, and
   // the one continuation follows the owed output.
-  
 
-  
 
-  
+
+
+
 
   test('S4A-R2 (c): an unknown provider code is a diagnostic trap, never an interruption and never a retry', async t => {
     const logged = hostReceipts(t);
@@ -407,7 +407,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });
 
-  
+
 
   test('D1: a normal connect with history seeds the opening directive inside the start', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
@@ -416,7 +416,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start');
   });
 
-  
+
 
   test('1023-N3: owner speech cannot reach the provider before the ready settle, so the opener never races him', async t => {
     const f = await fixture(t);
@@ -443,7 +443,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'no opener is requested before the owner speaks');
   });
 
-  
+
 
   test('#1023: a 128-turn warm history still starts, the directive costs the oldest turn', async t => {
     const history = Array.from({ length: 128 }, (_, index) => ({
@@ -490,7 +490,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.equal(outcome.status, 'closed');
   });
 
-  
+
 
   test('the 3j reproduction: an input transcript never silences the rest of the session', async t => {
     const clock = new FakeClock();
@@ -651,7 +651,7 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     await until(() => completions(opened.captured) === 1);
   });
 
-  
+
 
   test('a head start of 400 ms is held once, then audio passes through and loses no byte', async t => {
     const clock = new FakeClock();
@@ -693,15 +693,15 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     await quiet();
     assert.equal(interruptions(opened.captured), 0, 'a barge-in over the head start cut nothing');
   });
-  
 
-  
 
-  
 
-  
 
-  
+
+
+
+
+
 
   test('a whitespace-only fragment is journaled and cuts nothing', async t => {
     const clock = new FakeClock();
@@ -764,21 +764,21 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     assert.equal(interruptions(second.captured), 0, 'and the next session inherits no way to be cut');
     second.session.close();
   });
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
+
+
+
+
+
+
+
+
 
   test('3r D2: 10 s of silent fill frames plus owner words cut nothing and re-arm nothing', async t => {
     const clock = new FakeClock();
@@ -814,17 +814,17 @@ assert.equal(JSON.stringify(start).includes(OPENAI_BACKEND_TEMPLATE), false);
     await quiet();
     assert.equal(interruptions(opened.captured), 0, 'one word over a real answer still cuts nothing');
   });
-  
 
-  
 
-  
 
-  
 
-  
 
-  
+
+
+
+
+
+
 
   test('the session duration limit is recoverable and a requested close is not a failure', async t => {
     const expired = await ready(t);
@@ -916,7 +916,7 @@ describe('openai gpt-live turn states', () => {
   const starts = (captured: Captured) => captured.events.filter(event => event.type === 'modelTurnStarted').length;
   const inputFinals = (captured: Captured) => captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true).length;
 
-  
+
   test('a plain answer goes listening, thinking, speaking, listening, and completes at two seconds', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
@@ -1051,7 +1051,7 @@ describe('openai gpt-live turn states', () => {
     assert.equal(audioBytes(opened.captured), 30 * 4_800 + 19_200, 'every byte of the stream is conserved');
   });
 
-  
+
 
   test('background speech while the server keeps talking flips no state and forwards every byte', async t => {
     const clock = new FakeClock();
@@ -1549,9 +1549,9 @@ describe('openai gpt-live turn states', () => {
 describe('openai gpt-live receipts', () => {
 
 
-  
 
-  
+
+
 });
 
 
@@ -1606,9 +1606,7 @@ test('C-CONTINUITY R-09: a remote close keeps its code and sanitized reason in t
   assert.ok(!reason.includes('sk-live-secret-token'), 'no token reaches the record');
 });
 
-for (const {} of hostConversationScenarios) {
-  
-}
+
 
 
 

@@ -710,9 +710,9 @@ test('P1: 3.8 Live keeps its 800 ms silence window and exposes only helper deleg
     tools: { functionDeclarations: { name: string; behavior?: string }[] }[];
   } }).setup;
   assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 800);
-  
-  
-  
+
+
+
 assert.deepEqual(setup.tools[0]!.functionDeclarations, [{ ...EXPECTED_DELEGATE, behavior: 'BLOCKING' }]);
 });
 

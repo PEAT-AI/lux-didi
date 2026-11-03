@@ -115,4 +115,3 @@ test('C-TOOLTRUTH a refusal code the table does not know says the reason is not 
   assert.match(next, /a_code_this_host_never_closed/u);
   assert.match(refusalCauseOf('not a code').next, /an unnamed code/u);
 });
-

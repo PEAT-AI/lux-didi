@@ -1002,25 +1002,6 @@ test('AC2: a locale with no two-letter language still sends an explicit en setup
   assert.equal(logged?.languageCode, 'en', 'the setup log carries the effective default languageCode');
 });
 
-for (const {} of [
-  { name: 'open_home', args: { app: 'gmail' }, words: 'open my gmail', action: 'open_url', target: 'https://mail.google.com/mail/u/0/' },
-  { name: 'open_source', args: {}, words: 'open this email in my browser', action: 'open_url', target: 'https://mail.google.com/mail/u/0/#all/abc123' },
-  { name: 'open_file', args: { path: '~/synthetic.txt' }, words: 'open this local file', action: 'open_file', target: '~/synthetic.txt' },
-  { name: 'open_app', args: { name: 'Synthetic' }, words: 'open Synthetic app', action: 'open_app', target: 'Synthetic' },
-  { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, words: 'open economist.com in a new tab', action: 'open_url', target: 'https://economist.com/' },
-]) 
-
-for (const {} of [
-  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'Nothing in this session asked for that write, so nothing was written.' },
-  { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
-  { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
-  { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
-  { name: 'maps', turns: ['open the map of Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
-  { name: 'search', turns: ['search for drip irrigation'], kind: 'search', target: 'drip irrigation', url: 'https://www.google.com/search?q=drip+irrigation', say: 'opening' },
-  { name: 'German maps', turns: ['öffne die Karte von Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
-]) 
-
-
 test('#606 a terminal takes priority over queued binary output without draining speech', async () => {
   const frames: unknown[] = [];
   const socket = { readyState: 1, bufferedAmount: 0,

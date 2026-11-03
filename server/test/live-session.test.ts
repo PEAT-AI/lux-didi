@@ -4107,15 +4107,6 @@ test('C-LOG-ENVELOPE: the closing utterance row carries the whole sentence, once
 
 
 
-for (const {} of ['mail', 'calendar'] as const) 
-
-
-
-
-
-
-
-
 test('W6/H12: a second owner utterance closes the open turn as superseded and names it on the next', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'supersede-turn');

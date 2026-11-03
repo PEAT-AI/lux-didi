@@ -26,7 +26,7 @@ async function fixture(t: TestContext) {
   }) };
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   const profile = validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'cedar', keyReference: 'synthetic-reference',
-    audio: { inputRate: 8000, outputRate: 24000 }, route: { dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic task voice', dataClass: 'ordinary' },
+    audio: { inputRate: 8000, outputRate: 24000 }, route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic task voice', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
   const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC',
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],

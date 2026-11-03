@@ -91,7 +91,8 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
     filters: { anyOf: capabilities.map(item => strictSchema(item.parameters)) },
   }, validate: args => capabilities.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
-export function nativeTaskReadTool(name: string, connector: string): string | undefined {
+export function nativeTaskReadTool(name: string, connector: string, args?: Record<string, unknown>): string | undefined {
+  if (name === 'query_company' && connector === 'mongoose' && typeof args?.resource === 'string') return args.resource;
   const mapping = mappings[name];
   return mapping?.connector === connector ? mapping.tool : undefined;
 }

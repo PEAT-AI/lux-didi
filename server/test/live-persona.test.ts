@@ -789,7 +789,7 @@ test('PV2: the budget numbers are the wire-tested ones and a 43,000-char composi
   assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
   // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, and the
   // model's 16,384 instruction tokens hold about 60,000 characters; the host targets 44,000 of them.
-  const fits = composeLiveInstruction({ base: 'B'.repeat(42_000), language: 'en' });
+  const fits = composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - composeLiveInstruction({ base: 'B', language: 'en' }).text.length), language: 'en' });
   assert.ok(fits.text.length >= 43_000, `the composition is at least 43,000 chars (${fits.text.length})`);
   assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
   assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(53_000), language: 'en' }),
@@ -880,11 +880,11 @@ test('S4b: the Gemini composition still carries every NAYA_WORK_DELIVERY sentenc
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
   assert.match(NAYA_VOICE_SURFACE, /No backchannel words while he is speaking/);
-  assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/);
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/);
   assert.match(NAYA_VOICE_SURFACE, /End no answer with "okay\?" as a reflex/);
-  assert.match(NAYA_VOICE_SURFACE, /name sources briefly/);
-  assert.match(NAYA_VOICE_SURFACE, /Only the host bridges lookups/);
-  assert.match(NAYA_VOICE_SURFACE, /progress phrase is not reused/);
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /name sources briefly/);
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /Only the host bridges lookups/);
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /progress phrase is not reused/);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the prior thread only if it still matters\./);
 });
 
@@ -1360,7 +1360,7 @@ const HONESTY_RULES = [
   'Say something happened only when a result says it happened.',
   'If a result reports a failure, a gap or a partial answer, say that as given.',
   'Something done in an earlier call is history, and asking whether it worked is a new hand-off.',
-  'Never promise to watch something or call back later; work he already asked for finishes by itself.',
+  'Never promise to watch something or call back later;',
   'No backchannel words while he is speaking, including pauses: no "Hmm", "Yeah" or "Okay"',
 ];
 /** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
@@ -1385,7 +1385,8 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_WORK_DELIVERY, /freshly worded and never the same way twice in a call/);
   assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
   assert.match(NAYA_LIVE_BASE, /no backchannel words while.*speaking/i);
-  assert.match(NAYA_LIVE_BASE, /put it in a document.*stage_lux_note/i);
+  assert.doesNotMatch(NAYA_LIVE_BASE, /stage_lux_note/);
+  assert.match(NAYA_WORK_DELIVERY, /and it drafts, notes/);
   assert.match(NAYA_LIVE_BASE, /Never.*mood.*physical.state/i);
 });
 

@@ -43,7 +43,10 @@ const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavai
 // Release 4: why a source result is partial, a closed set, and how many pages it lost.
 const RESEARCH_PARTIAL_REASONS = ['pages_failed'];
 /** L8-Q07: the closed reason a research_source receipt gives for a read that did not answer. */
-const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'];
+const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading',
+  // SEARCH-110: a query the host's own egress check refused ran no network, so its closed code rides the
+  // receipt instead of being flattened into an outage the provider never had.
+  'query_refused'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];

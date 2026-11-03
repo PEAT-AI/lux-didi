@@ -238,10 +238,11 @@ export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseP
   let text: string;
   if (items !== undefined && items.length) text = items.join('\n');
   else if (rows !== undefined) text = rows.join('\n');
-  else if (data['outcome'] === 'no_match' && Array.isArray(data['suggestions']) && data['suggestions'].length)
-    // Q-02: a search that matched nothing but offers candidates is a pointer, never a failure.
-    text = `no direct answer, candidates: ${data['suggestions'].map(value => scalar(value) ?? '').filter(value => value !== '').join(', ')}`;
-  else if (data['outcome'] === 'no_match') text = 'no direct answer: nothing matched this ask';
+  else if (data['outcome'] === 'no_match')
+    // SEARCH-110: on 10.9 a no_match carrying fuzzy neighbours was read as three leads, so the host opened
+    // a differently named company, an unrelated one and a closed ticket. A no_match is one line and one
+    // fact: nothing on this name in this source. The neighbours are never offered as entries to open.
+    text = 'no_match: nothing on this name in this source';
   else if (data['body'] === '') text = 'empty_body: true';
   else if (restricted !== undefined) text = restricted;
   else if (typeof data['body'] === 'string') text = data['body'];

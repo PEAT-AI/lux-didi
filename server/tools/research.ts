@@ -333,7 +333,10 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window', 'read_ceiling'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window', 'read_ceiling',
+  // SEARCH-110: the host's own egress check refused the query, so no network ran. Its own closed word,
+  // never provider_failed, which sends her looking for an outage the provider never had.
+  'query_refused'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
@@ -882,11 +885,50 @@ const MAIL_ARTICLES = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'his', 'he
 const OWNER_MAIL_NAMES = new Set(['rob', "rob's", 'robs', 'my', 'me', 'myself']);
 
 /**
+ * SEARCH-110: a source's own name is never a person and never a mail term. On 10.9 a model-written
+ * sender clause named one of the research sources, so Gmail searched for a sender with that name and
+ * matched nothing; the word is dropped at the owner and at the one exit every mail query passes.
+ */
+const SOURCE_NAME_WORDS = new Set([
+  'mail', 'mails', 'email', 'emails', 'e-mail', 'e-mails', 'gmail', 'inbox', 'inboxes',
+  'chat', 'chats', 'mattermost', 'slack', 'mongoose', 'data', 'drive', 'memory', 'web',
+  'knowledge', 'vault', 'calendar', 'replies', 'company', 'lux', 'didi',
+]);
+
+/** Whether a word is a source's own name, the route's word and never the ask's subject. */
+export function isSourceNameWord(word: string): boolean {
+  return SOURCE_NAME_WORDS.has(word.trim().toLowerCase());
+}
+
+/**
+ * SEARCH-110: the one exit every mail query passes. A sender clause is a person the question names or an
+ * address; a source's name or any other word is dropped here, whoever wrote it, so an authored lookup is
+ * covered too. A query the guard empties is not a filter at all, so the caller compiles from the question.
+ */
+export function guardMailSenders(question: string, q: string): string {
+  const said = new Set(contentKeywords(question, 24));
+  const dictated = /\b(?:from|to):\s*([\w.@'-]+)/giu;
+  const named = new Set([...question.matchAll(dictated)].map(match => match[1]!.toLowerCase()));
+  const kept: string[] = [];
+  for (const token of q.split(/\s+/).filter(Boolean)) {
+    const value = /^(?:from|to):(.+)$/iu.exec(token)?.[1];
+    if (value === undefined || value.includes('@')) { kept.push(token); continue; }
+    const word = value.toLowerCase();
+    if (isSourceNameWord(word)) continue;
+    if (!said.has(word) && !named.has(word)) continue;
+    kept.push(token);
+  }
+  // Gmail binds OR tighter than the implicit AND, so a dropped clause must not leave a dangling OR behind.
+  const out = kept.filter((token, index) => token !== 'OR' || (index > 0 && kept[index - 1] !== 'OR' && index < kept.length - 1));
+  return out.join(' ').trim();
+}
+
+/**
  * W15: the roster's addresses for the spoken person, so the mail query names an address rather than a
  * word. An unknown name keeps the connector's own text path exactly as before.
  */
 function mailPersonClause(person: string | undefined): string[] {
-  if (person === undefined) return [];
+  if (person === undefined || isSourceNameWord(person)) return [];
   const snapshot = peopleSnapshot();
   const binding = snapshot === null ? undefined : bindPerson(snapshot, person);
   const addresses = binding?.kind === 'resolved' ? binding.person.email : [];
@@ -901,6 +943,7 @@ function mailPersonName(question: string): string | undefined {
     const bare = words[n]!.replace(/^[^A-Za-z]+|[^A-Za-z'’-]+$/gu, '');
     if (!/^[A-Z][A-Za-z'’-]+$/u.test(bare)) continue;
     if (NOT_A_NAME.has(bare.toLowerCase()) || OWNER_MAIL_NAMES.has(bare.toLowerCase())) continue;
+    if (isSourceNameWord(bare)) continue;
     if (MAIL_ARTICLES.has(words[n - 1]!.toLowerCase().replace(/[^a-z]/gu, ''))) continue;
     return bare.toLowerCase();
   }
@@ -1113,7 +1156,12 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
   // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
-  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) return stripContinuationWords(authored).slice(0, RESEARCH.queryLimitChars);
+  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) {
+    // SEARCH-110: the authored branch is the owning point the junk sender reached the connector from, so
+    // the guard runs here too; a query it empties falls through to the question's own compile below.
+    const guarded = guardMailSenders(question, stripContinuationWords(authored));
+    if (guarded !== '') return guarded.slice(0, RESEARCH.queryLimitChars);
+  }
   // #576: a date the owner said is already the window; it is never also a term Gmail has to match.
   // E6 (#609): an hours phrase is already the window, never also a term.
   const text = (topicText ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/gu, ' ').replace(/\b(?:in\s+)?(?:the\s+)?(?:last|past)\s+\d{1,2}\s+hours?\b/giu, ' ');
@@ -1127,9 +1175,28 @@ export function compileMailQuery(question: string, query: string | undefined, no
   // E6 (#609): the window the caller's own recipe asked for, so a fallback search is compiled here once.
   const window = asked ?? fallbackWindow;
   // A fallback sender/topic search spans all mail, just like the main recipe.
-  if (fallbackWindow !== undefined && (leading.length > 0 || terms.length > 0)) return [...(window === undefined ? [] : [window]), ...leading, ...terms].join(' ').slice(0, RESEARCH.queryLimitChars);
+  if (fallbackWindow !== undefined && (leading.length > 0 || terms.length > 0)) return guardMailSenders(question, [...(window === undefined ? [] : [window]), ...leading, ...terms].join(' ').slice(0, RESEARCH.queryLimitChars));
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${window ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
-  return [...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars);
+  return guardMailSenders(question, [...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars));
+}
+
+/**
+ * SEARCH-110: a person search never gives up at the first empty read. Speech-to-text gets surnames wrong,
+ * so the steps widen from the full name to the widest word, and the window the owner named rides every one
+ * of them. Undefined when the question names no person, which keeps the plain broadener in charge.
+ */
+export function mailWidenLadder(question: string, q: string): string[] | undefined {
+  const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
+  if (person === undefined || isSourceNameWord(person)) return undefined;
+  const window = mailQueryShape(q).window;
+  const said = question.split(/\s+/u).map(word => word.replace(/[^A-Za-z'’-]/gu, '')).filter(Boolean);
+  const at = said.findIndex(word => word.toLowerCase() === person);
+  const surname = said[at + 1]?.toLowerCase();
+  const suffix = window === undefined ? '' : ` ${window}`;
+  const steps = [`from:${person} OR to:${person}${suffix}`];
+  if (surname !== undefined && surname.length > 2 && !MAIL_FILLER.has(surname) && !isSourceNameWord(surname)) steps.push(`${surname}${suffix}`);
+  steps.push(`${person}${suffix}`);
+  return steps;
 }
 
 /** The shape of one mail query for a receipt: term count, operators and window, never the words. */
@@ -1371,7 +1438,9 @@ export function statusAsk(question: string): boolean {
 // E1 (#605): a message is a chat word, never a mail word, so one word no longer pulls two sources.
 const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|wrote|sent|repl(?:y|ies|ied))\b/u;
 // #617: a birthday is a calendar day like a meeting, so naming one reads the calendar.
-const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|birthdays?|free|busy)\b/u;
+// SEARCH-110: a bare "free" or "busy" names no time, meeting, day or calendar, so it no longer pulls the
+// calendar into a mail, company or count question that asked for nothing of the sort.
+const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|birthdays?)\b/u;
 /**
  * #579: a time word is the product's daily language. The router's own class (SCHEDULE_WORDS) never carries
  * one; only this fallback recipe does, and only when no mail or chat word named a source.
@@ -1468,8 +1537,18 @@ const DRIVE_ASK = /\b(?:open|show|find|pull up|bring up)\b[^.?!]*\b(?:decks?|sli
  */
 /** C-CHAT: the chat's own vocabulary is its words plus the person, group and channel ask shapes. */
 const CHAT_ROUTE_WORDS = { test: (text: string): boolean => CHAT_WORDS.test(text) || chatAsk(text) };
+/**
+ * SEARCH-110: the words that make an ask a calendar ask even beside another source's own words: a time, a
+ * meeting, a day or the calendar. A mail or company question with none of them skips the calendar read.
+ */
+const CALENDAR_ASK_WORDS = /\b(?:calendar|schedule|agenda|appointments?|meetings?|itinerary|next week|weekdays?|today|tomorrow|(?:sun|mon|tues|wednes|thurs|fri|satur)day)\b/u;
+function calendarNeeded(text: string): boolean {
+  if (CALENDAR_ASK_WORDS.test(text)) return true;
+  return !MAIL_WORDS.test(text) && !COMPANY_WORDS.test(text) && !CHAT_ROUTE_WORDS.test(text);
+}
+
 const ROUTE_CLASSES: readonly { source: SourceKind; words: { test(text: string): boolean }; needed?: (text: string) => boolean }[] = [
-  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
+  { source: 'calendar', words: SCHEDULE_WORDS, needed: calendarNeeded }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
   { source: 'chat', words: CHAT_ROUTE_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
   // W3: a count of users is routed to the data endpoint, where the number is read, not only to knowledge.
   { source: 'data', words: COUNT_ASK },
@@ -1549,7 +1628,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     && (WEB_WORDS.test(text) || /\b(?:price of|how much is|latest version|who is \p{L}+|when did|release date|population of|exchange rate|score|results of)\b/u.test(text));
   const mailWords = MAIL_WORDS.test(text);
   // #579: a time word alone never replaces the source the ask named with the calendar.
-  const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
+  const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && !COMPANY_WORDS.test(text) && !COUNT_ASK.test(question) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
   const chatWords = chatQuestionWords(question);
   const triage = triageAsk(text) && !mailWords && !chatWords;
   // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
@@ -2057,6 +2136,10 @@ interface MailRead {
   classified?: string;
   /** E5: the one broader read a search that matched nothing ran, so the receipt can name both shapes. */
   retry?: MailRead;
+  /** SEARCH-110: the widened step that found the hit, so the reply can say the match came from widening. */
+  widened?: string;
+  /** SEARCH-110: the owner's words that read was compiled from, so the ladder is built from them. */
+  question?: string;
   /** C-LIVE: the last page's own duration, the totals pages reported, and a page the operation bound did not start. */
   lastPageMs?: number; pageTotals?: number[]; boundStop?: boolean;
 }
@@ -2116,6 +2199,8 @@ export interface RunState {
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>; historyMore: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
+  /** SEARCH-110: the plain-words line for a mail hit only a widened step found, by source kind. */
+  mailWidened?: Map<string, string>;
   /** E6 (#609): the message date a read may not go behind, for an ask that named only hours. */
   mailSince: Map<string, number>;
   /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
@@ -2350,12 +2435,15 @@ export interface ResearchProgress {
 export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
 
 /** ROUTE-R2: the closed reason a run log gives for a skipped source, so a grant gap never reads as an outage. */
-export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'] as const;
+export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed', 'query_refused'] as const;
 export type SkipReason = typeof SKIP_REASONS[number];
 
 /** N6 (#569): a cut web read is its own closed reason, so a deadline never reads as an endpoint outage. */
 function webReasonOf(code: string, reason?: string): string {
   if (code === 'web_insufficient') return `web_insufficient:${reason ?? 'ungrounded'}`;
+  // SEARCH-110: a query the host's own egress check refused ran no network; it keeps its own closed word so
+  // the receipt and the reply say the query was refused, never that the provider was down.
+  if (code === 'web_private_question') return 'query_refused';
   return code === 'web_timeout' ? 'timeout' : code;
 }
 
@@ -2366,6 +2454,8 @@ export function skipReasonOf(rawReason: string | undefined, outcome: LookupOutco
   if (rawReason === 'window_unparsed') return 'window_unparsed';
   // N6 (#569): a reason the read itself stored as timeout is a timeout, never an endpoint outage.
   if (outcome === 'timeout' || rawReason === 'timeout' || rawReason === 'deadline_exhausted' || rawReason === 'cancelled') return 'timeout';
+  // SEARCH-110: a refused query is not an endpoint outage: the endpoint was never asked.
+  if (rawReason === 'query_refused' || rawReason === 'web_private_question') return 'query_refused';
   if (outcome === 'unavailable' || rawReason !== undefined) return 'endpoint_unavailable';
   return 'read_failed';
 }
@@ -3018,7 +3108,7 @@ export function clip(text: string, max: number): string {
  */
 
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window' | 'read_ceiling';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window' | 'read_ceiling' | 'query_refused';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -3038,6 +3128,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   // C-TOOLTRUTH: the host holds no cause for a connector's own failure, so the line says that instead of
   // leaving her to guess one, and it names what did not happen.
   provider_failed: label => `${label} failed and the reason is not known: nothing was read from it`,
+  // SEARCH-110: nothing left the host, so the line says the query was refused rather than the provider.
+  query_refused: label => `the ${label} query was refused before it left the host, so nothing was read from it`,
   skipped_by_route: label => `I did not read ${label} this time`,
   // C-RESEARCH #107: the task's own read ceiling stopped this source before it was read.
   read_ceiling: label => `${label} was cut by this task's read ceiling before I read it`,
@@ -3071,6 +3163,8 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
   if (text === 'read_ceiling') return 'read_ceiling';
   if (/timeout|timed_out/u.test(text)) return 'timed_out';
   if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
+  // SEARCH-110: our own egress check, not the provider's.
+  if (/private_question|query_refused/u.test(text)) return 'query_refused';
   return 'provider_failed';
 }
 
@@ -3482,7 +3576,7 @@ function metricRowLines(text: string): string[] {
   return [`${latest.value} on ${latest.date}, the latest day loaded`];
 }
 
-export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean; widened?: string }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'company_metric') {
     // G2: the data agent answers with a job. Its own status line leads, and the number, ranking,
     // definition and assumptions travel exactly as the endpoint returned them, never recomputed here.
@@ -3629,7 +3723,10 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   // clear inbox.
   const shown0 = Math.max(total, shown.length);
   const leftOut = kind === 'mail_search' && lines.length > shown.length ? `\n${lines.length - shown.length} left out` : '';
-  return { text: `${label}: ${shown.length} of ${shown0} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}${leftOut}`, source, lines: shown, total: shown0 };
+  // SEARCH-110: a hit only a widened step found says so, so the reply can ask "is that it?" instead of
+  // telling him the name he said was the one that matched.
+  const widenedLine = kind === 'mail_search' && options?.widened !== undefined ? `\n${options.widened}` : '';
+  return { text: `${label}: ${shown.length} of ${shown0} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}${leftOut}${widenedLine}`, source, lines: shown, total: shown0 };
 }
 
 
@@ -3682,6 +3779,35 @@ function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): Resea
 
 /** L8-Q06: what one in-process read (the web) did: its outcome, time, result count, closed reason and query. */
 export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 'timeout'; ms: number; results: number; reason?: string; query: string; researchId: string; at: number }
+
+/**
+ * SEARCH-110: the bare topic of a mixed question, the query a web read falls back to when the host's own
+ * egress check refused the compiled one. Addresses, Gmail operators and route words leave; the fillers and
+ * the length bound come from the web layer's own broader query.
+ */
+export function bareWebTopic(query: string): string | undefined {
+  const words = withoutRouteWords(query, RESEARCH_SOURCES)
+    .split(/\s+/)
+    .filter(token => token !== '' && !token.includes('@') && !/^-?(?:from|to|cc|bcc|subject|newer_than|older_than|after|before|is|has|label|in|filename):/iu.test(token));
+  const bare = broaderWebQuery(words.join(' '), 120);
+  return bare === undefined || bare === '' ? undefined : bare;
+}
+
+/**
+ * SEARCH-110: a query the host's own egress check refused ran no network at all, and on 10.9 that cost the
+ * web read of a mixed question. One immediate retry with the bare topic as the query, so the web is still
+ * reached; whichever outcome answers is the one the run reports, with its own closed code.
+ */
+async function webSearchWithBareTopic(deps: ResearchDeps, run: RunState, query: string, signal: AbortSignal, now: () => number): Promise<WebOutcome> {
+  const first = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+  recordWebRead(deps, run, query, first, now(), now);
+  if (first.ok || first.code !== 'web_private_question') return first;
+  const bare = bareWebTopic(query);
+  if (bare === undefined || bare === query) return first;
+  const retry = await deps.web!.search({ query: bare, signal, deadlineMs: webDeadlineMs(bare) });
+  recordWebRead(deps, run, bare, retry, now(), now);
+  return retry;
+}
 
 function recordWebRead(deps: ResearchDeps, run: RunState, query: string, outcome: WebOutcome, started: number, now: () => number): void {
   const write = deps.sourceRead;
@@ -4551,7 +4677,7 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
  * unfamiliar country, a district granularity, a forecast or nowcast, a call-level question, an unsupported
  * crop, or a company the corpus does not know. The brief names them from the served shape's own list.
  */
-const COVERAGE_ASK = /\b(?:forecast|nowcast|call[- ]level|calls?\b|district|admin[- ]level|sub-?district|crop|coverage|available|unfamiliar|do (?:we|you) (?:have|cover))\b/iu;
+const COVERAGE_ASK = /\b(?:forecast|nowcast|call[- ]level|call history|district|admin[- ]level|sub-?district|crop|coverage|incidence|reach|dataset|time series|availabilit(?:y|ies)|available)\b|\bdo (?:we|you) (?:have|cover)\b|\b(?:data|numbers?) (?:on|for|about) [A-Z]/iu;
 
 /** The one capability question the router takes, built only from what the owner's own words name. */
 function capabilityArgs(question: string): JsonObject {
@@ -4568,7 +4694,11 @@ function capabilityArgs(question: string): JsonObject {
 /** The country the owner named, spelled as the owner spelled it, or none when the ask names no place. */
 function metricCountryOf(question: string): string | undefined {
   const match = /\bin ([\p{Lu}][\p{L}]+(?: [\p{Lu}][\p{L}]+)*)/u.exec(question);
-  return match?.[1]?.trim();
+  const country = match?.[1]?.trim();
+  // SEARCH-110: a route word is never a country. On 10.9 this slot held a source's own name and the router
+  // answered an unsupported country for a question that asked no coverage question at all.
+  if (country === undefined || isSourceNameWord(country)) return undefined;
+  return country;
 }
 
 /** A resolved count window: inclusive calendar days, the two dates the endpoint's `inBetween` filter reads. */
@@ -5053,25 +5183,48 @@ function failMailPage(read: MailRead): void { read.failed = true; read.failedPag
 async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: readonly MailRead[], parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   await collectMail(deps, run, parent, remainingMs, now);
   if (parent.aborted) return;
-  const retries = reads.map(read => {
-    if (read.messages.size > 0 || read.failed) return undefined;
-    const q = read.args['q'];
-    // Only a keyword search, or a lone sender filter whose word Gmail can also find as text, is broadened:
-    // any other bare filter has nothing further to ask.
-    if (typeof q !== 'string' || (mailQueryShape(q).terms === 0 && senderFilterWord(q.split(/\s+/).filter(Boolean)) === undefined)) return undefined;
-    const broader = broaderMailQuery(q);
-    if (broader === undefined || broader === q) return undefined;
-    const retry = mailRead(run, { ...read.args, q: broader });
-    read.retry = retry;
-    return retry;
-  });
-  if (retries.every(retry => retry === undefined)) return;
-  await collectMail(deps, run, parent, remainingMs, now);
-  reads.forEach((read, index) => {
-    const retry = retries[index];
-    if (retry === undefined) return;
-    for (const [key, message] of retry.messages) if (!read.messages.has(key)) read.messages.set(key, message);
-  });
+  // SEARCH-110: a person search widens step by step inside the same read and stops at the first step that
+  // finds anything, so a surname the speech-to-text got wrong still finds the mail. A search that names no
+  // person keeps the one broadened try it always had.
+  const steps = reads.map(read => widenStepsOf(run, read));
+  for (let round = 0; round < 4; round += 1) {
+    const retries = reads.map((read, index) => {
+      if (read.messages.size > 0 || read.failed) return undefined;
+      const step = steps[index]?.[round];
+      if (step === undefined) return undefined;
+      const retry = mailRead(run, { ...read.args, q: step });
+      read.retry = retry;
+      return retry;
+    });
+    if (retries.every(retry => retry === undefined)) return;
+    await collectMail(deps, run, parent, remainingMs, now);
+    if (parent.aborted) return;
+    reads.forEach((read, index) => {
+      const retry = retries[index];
+      if (retry === undefined) return;
+      const found = retry.messages.size > 0;
+      if (found && read.widened === undefined) {
+        read.widened = String(retry.args['q']);
+        (run.mailWidened ??= new Map()).set('mail', mailWidenedPhrase(read.widened));
+      }
+      for (const [key, message] of retry.messages) if (!read.messages.has(key)) read.messages.set(key, message);
+    });
+  }
+}
+
+/** SEARCH-110: the widening steps one empty mail read may take, in order, the owner's window kept in each. */
+function widenStepsOf(run: RunState, read: MailRead): string[] {
+  const q = read.args['q'];
+  if (typeof q !== 'string' || (mailQueryShape(q).terms === 0 && senderFilterWord(q.split(/\s+/).filter(Boolean)) === undefined)) return [];
+  const ladder = mailWidenLadder(run.ownerQueries.get(q) ?? '', q) ?? [];
+  const steps = [...ladder, broaderMailQuery(q)];
+  return steps.filter((step, index): step is string => step !== undefined && step !== q && steps.indexOf(step) === index);
+}
+
+/** SEARCH-110: the plain words for a hit only a widened step found, so the reply can ask "is that it?". */
+export function mailWidenedPhrase(step: string): string {
+  const words = step.split(/\s+/).filter(token => !isOperatorToken(token) && token.toUpperCase() !== 'OR');
+  return `the closest I found came from widening${mailSearchPhrase(words.join(' '))}, is that it?`;
 }
 
 /** Each source page is dispatched once under one source deadline; received identities stay local. */
@@ -5382,8 +5535,8 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
       run.unavailableReasons.set('web', 'read_ceiling');
       return { plan };
     }
-    const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
-    recordWebRead(deps, run, query, outcome, readStarted, now);
+    const outcome = await webSearchWithBareTopic(deps, run, query, signal, now);
+    void readStarted;
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -5525,7 +5678,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
     const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
-    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question) });
+    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question), ...(run.mailWidened?.has('mail') === true ? { widened: run.mailWidened.get('mail')! } : {}) });
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     // LOGS.md L-01: only a projection the tool layer itself classified (it carries the closed code) is a
@@ -6818,8 +6971,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
                 run.unavailableReasons.set('web', 'read_ceiling');
                 return empty;
               }
-              const outcome = await deps.web!.search({ query: bound.query, signal: readSignal, deadlineMs: webDeadlineMs(bound.query) });
-              recordWebRead(deps, run, bound.query, outcome, readStarted, now);
+              const outcome = await webSearchWithBareTopic(deps, run, bound.query, readSignal, now);
+              void readStarted;
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -6896,7 +7049,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // one is credited and delivered on its own instead of the whole batch going uncredited.
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
-            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone, { newestFirst: lastMeetingQuestion(question) });
+            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone, { newestFirst: lastMeetingQuestion(question), ...(run.mailWidened?.has('mail') === true && shapeKindOf(part.source, kind) === 'mail_search' ? { widened: run.mailWidened.get('mail')! } : {}) });
             // E5: the mail read's own queries, for the receipt's shape and the reply's "how I searched".
             const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });

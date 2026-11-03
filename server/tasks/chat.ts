@@ -3,9 +3,8 @@ import type { ToolsOwner } from '../tools/types.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import type { RevisionIdentity } from './controller.js';
 import type { TaskRuntime } from './runtime.js';
-import { validateArguments } from './tools.js';
-export const TASK_ACCOUNT = 'gateway:tasks';
-export const TASK_RESOURCE = 'owner-task-tools';
+import { validateArguments, TASK_ACCOUNT, TASK_RESOURCE } from './tools.js';
+export { TASK_ACCOUNT, TASK_RESOURCE } from './tools.js';
 /** The chat model uses the same task registry, schemas, captured evidence and Authority as voice. */
 export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity, owner: Pick<ToolsOwner, 'complete'>): ToolDefinition[] {
   return [...runtime.registry.values()].map(tool => ({

@@ -29,7 +29,8 @@ const maxIncomingBytes = 64 * 1024;
  * Trusted in-process seam only: never accepted by CLI/HTTP/env. `profile` lets auth/wire tests drive a
  * validated LiveProfile while LIVE-GATEWAY-R1 blocks the config file from producing one itself.
  */
-export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
+export interface LiveTesting {
+  createTaskRuntime?: import('../tasks/host.js').HostTaskFactory; credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
@@ -203,7 +204,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     return { service: new UnconfiguredLive(failed), status: failed };
   }
   const vault = new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) });
-  const createTaskRuntime = hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
+  const createTaskRuntime = testing?.createTaskRuntime ?? hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,

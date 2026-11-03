@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
@@ -22,7 +23,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, ownerWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
-import { LIVE_NOT_MODEL_FACING, runToolCalls } from '../tools/declarations.js';
+import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
@@ -43,7 +44,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   let alarmNow = Date.now();
   const owner = createToolsOwner({ alarms: { now: () => alarmNow, recheck() {}, health: () => ({ degraded: false, reasons: [] }) }, grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
   const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
-  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
+  const { service } = composeLive(store, dir, { profile, createTaskRuntime: syntheticTaskFactory(store), socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
@@ -373,7 +374,7 @@ test('C-OPEN11: the shared acquisition merges two finalized owner turns', async 
 });
 
 // C-ALARMFIX: compare the real host catalog with the provider's first wire frame.
-for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog reaches ${provider} wire declarations`, async t => {
+for (const provider of ['gemini', 'openai'] as const) test(`voice ${provider} declares only the host delegation boundary`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-catalog-'));
   const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   const f = await fixture(t);
@@ -390,37 +391,11 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   const session = service.create('ordinary', randomUUID(), context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1);
-  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { responses: { tools?: { name: string }[] } } } };
-  const declarations = provider === 'gemini' ? frame.setup!.tools!.flatMap(group => group.functionDeclarations) : frame.session!.delegation.responses.tools!;
-  const names = declarations.map(tool => tool.name);
-  for (const tool of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
-    if (!Object.hasOwn(LIVE_NOT_MODEL_FACING, tool.name)) assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
-  }
-  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
-  assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
+  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { type: string; responses?: unknown }; tools?: unknown } };
+  if (provider === 'gemini') assert.deepEqual(frame.setup!.tools!.flatMap(group => group.functionDeclarations).map(tool => tool.name), ['delegate']);
+  else { assert.equal(frame.session!.delegation.type, 'client'); assert.equal(frame.session!.delegation.responses, undefined); assert.equal(frame.session!.tools, undefined); }
   f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started', session: { id: 'synthetic-catalog' } });
   await attachment.ready;
-  if (provider === 'gemini') {
-    // The fake provider selects only an advertised tool; the host receives real wire events,
-    // parses the owner's words, journals the call and commits the alarm in a synthetic store.
-    await f.frame(2); // startup nudge
-    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true } } });
-    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
-    await f.frame(3);
-    const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };
-    assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
-    assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
-    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
-    // C-DIAG109: the read-back the model is handed carries the host's clock and minutes away as fields, so
-    // she reads a figure instead of counting from the clock the call opened on, and no line is scripted.
-    const delivered = response.toolResponse.functionResponses[0]!.response;
-    const result = (typeof delivered === 'string' ? JSON.parse(delivered) : delivered) as
-      { status: string; now_local_time: string; minutes_away: number; say: string };
-    assert.equal(result.status, 'set', JSON.stringify(result));
-    assert.match(result.now_local_time, /^\d{2}:\d{2}$/u, JSON.stringify(result));
-    assert.ok(Number.isSafeInteger(result.minutes_away) && result.minutes_away > 0, JSON.stringify(result));
-    assert.doesNotMatch(result.say, /minutes/u, `the confirmation states no computed minutes: ${result.say}`);
-  }
 });
 
 // C-DIAG109 review F1: the read-back clock and the minutes away are the execution clock's, never the ask

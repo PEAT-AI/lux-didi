@@ -1,5 +1,4 @@
-import { TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
-import { TASK_TOOL_NAMES } from '../tasks/tools.js';
+import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';

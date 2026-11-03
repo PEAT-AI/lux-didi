@@ -96,7 +96,7 @@ test('an admitted task operation freezes its first payload and repeats read the 
   assert.deepEqual(again, { saved: true, insightId: 'insight-7' }, 'the stored outcome, past case, spacing and punctuation');
   assert.equal(fake.calls.length, 1, 'the same authorization is never sent twice');
   const after = await save(h, NOTE);
-  assert.deepEqual(after, { saved: true, insightId: 'insight-7' }, 'a newer dictation does not change what a replay of the older one reads');
+  assert.deepEqual(after, { saved: true, insightId: 'insight-7' }, 'different replay arguments do not change the first frozen operation');
   assert.equal(fake.calls.length, 1, 'and it still sends nothing');
 });
 

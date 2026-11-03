@@ -164,7 +164,6 @@ export class VaultWriter {
     })).then(() => {});
   }
 
-  /** Called inside the journal transaction of a final owner transcription. */
   /** Task admission is owned by Authority; this boundary only validates and atomically claims its exact payload. */
   async saveTask(input: { sessionId: string; identity: Identity; content: string; title: string; outsideTextSeen: boolean }): Promise<VaultReceipt> {
     const frozen = freezeNote({ title: input.title, body: input.content, externalContextPresent: input.outsideTextSeen });

@@ -805,7 +805,6 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
-    if (this.answerOnReady || this.openerOnReady)
   }
 
   private audioDelta(message: ObjectValue): Uint8Array | undefined {

@@ -18,7 +18,7 @@ export const CAUSE_NOT_KNOWN = 'the reason is not known';
 
 /**
  * The live layer's own replay refusals. The host holds the cause for both, so neither may fall to the unknown.
- * Every other code a tool refuses with that is not in this table or the research table is reported as unknown.
+ * Every other code a tool refuses with that is not in this closed table is reported as unknown.
  */
 export const HOST_REFUSAL_CODES = ['replay_identity_mismatch', 'recorded_result_unavailable'] as const;
 export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
@@ -26,6 +26,14 @@ export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
 const NOTHING_SEARCHED = 'Nothing was searched.';
 
 export const REFUSAL_CAUSES: Readonly<Record<HostRefusalCode, RefusalCause>> = Object.freeze({
+  replay_identity_mismatch: {
+    cause: 'This call id was already recorded for a different tool, so this call was refused rather than replayed.',
+    next: 'Nothing ran for this call.',
+  },
+  recorded_result_unavailable: {
+    cause: 'The result this call id was recorded with is not available to this session any more.',
+    next: 'Nothing ran for this call.',
+  },
 });
 
 /** The cause and the next line for a closed code, or the honest unknown for a code this host cannot explain. */

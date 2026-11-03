@@ -44,7 +44,7 @@ export function pruneNulls(value: unknown): unknown {
 }
 export function validateArguments(tool: TaskTool, value: unknown): { ok: true; args: Record<string, unknown> } | { ok: false; repair: string } {
   const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
-  return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: pruneNulls(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
+  return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: structuredClone(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
 export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 const definitions: Definition[] = [
@@ -102,7 +102,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
               coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,
               exposures: result.files.some(file => file.outsideText) ? ['drive'] : [] };
           }
-          return ports.execute(tool.name, validation.args, signal, outsideTextSeen, identity);
+          return ports.execute(tool.name, pruneNulls(validation.args) as Record<string, unknown>, signal, outsideTextSeen, identity);
         };
         return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
       },

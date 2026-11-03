@@ -235,11 +235,18 @@ export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number]
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'task_delivery') {
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'state']) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
+      !['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered'].includes(String(value.state))) return;
+    return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
+  }
   if (value.event === 'task_lifecycle') {
-    if (!closedKeys(value, ['event', 'phase', 'revision', 'count', 'ms']) ||
+    if (!closedKeys(value, ['event', 'phase', 'taskId', 'revision', 'generation', 'count', 'ms']) ||
       !['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery'].includes(String(value.phase)) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.generation) ||
       !isSafeCount(value.revision) || !isSafeCount(value.count) || !isSafeCount(value.ms)) return;
-    return { event: 'task_lifecycle', phase: value.phase, revision: value.revision, count: value.count, ms: value.ms };
+    return { event: 'task_lifecycle', phase: value.phase, taskId: value.taskId, generation: value.generation, revision: value.revision, count: value.count, ms: value.ms };
   }
   if (value.event === 'host_ready_ms') {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;

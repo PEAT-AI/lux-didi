@@ -2345,7 +2345,7 @@ export class LiveSessionOwner {
           if (!opened) handle.tasks?.delivery.reconnectFailed();
         }, () => handle.tasks?.delivery.reconnectFailed()); return true;
       },
-      state: (identity, state, chunk) => hostLogEvent({ event: 'task_delivery', state, taskId: identity.task_id, revision: identity.task_revision, generation: handle.generation, chunk }),
+      state: (identity, state) => hostLogEvent({ event: 'task_delivery', state, taskId: identity.task_id, revision: identity.task_revision }),
       working: active => this.#taskWorking(handle, active),
     });
     handle.tasks.socket(handle.generation);

@@ -75,9 +75,9 @@ test('a delivery deadline during other output defers fallback until quiet', () =
 
 test('a reconnect is not sent or accepted until the fresh session is ready', () => {
   const f = fixture(); f.delivery.deliver(identity, answer('Synthetic ready answer.'));
-  assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnecting']);
+  assert.equal(f.reconnects(), 1); assert.deepEqual(f.states, ['reconnect']);
   f.advance(); assert.equal(f.delivery.undelivered, undefined, 'no heard deadline runs before setup acknowledgement');
-  f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnecting', 'sent', 'accepted']);
+  f.delivery.reconnected(); assert.deepEqual(f.states, ['reconnect', 'sent', 'accepted']);
   f.delivery.transcript('Synthetic ready answer.'); f.advance();
   assert.equal(f.states.at(-1), 'heard'); assert.equal(f.delivery.undelivered, undefined);
 });

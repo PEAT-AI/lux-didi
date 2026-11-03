@@ -58,8 +58,8 @@ export class TaskRuntime {
     });
     this.registry = createRegistry({ execute: options.execute, authority }, options.configuredTools);
   }
-  log(phase: string, revision: number, count = 0, ms = 0): void {
-    const event = safeEvent({ event: 'task_lifecycle', phase, revision, count, ms });
+  log(phase: string, revision: number, count = 0, ms = 0, identity = this.controller.current?.identity): void {
+    const event = safeEvent({ event: 'task_lifecycle', phase, taskId: identity?.task_id, generation: identity?.connection_generation, revision, count, ms });
     if (event) this.options.log?.(event);
   }
   begin(words: string, generation: number, ownerTurn = 0): Revision {
@@ -88,13 +88,13 @@ export class TaskRuntime {
     if (this.controller.isCurrent(identity)) {
       this.options.store.finishTask(identity, answer.status, answer, this.options.contentAllowed());
       this.controller.complete(identity, answer);
-      this.log('complete', identity.task_revision, answer.findings.length);
-    } else this.log('stale', identity.task_revision);
+      this.log('complete', identity.task_revision, answer.findings.length, 0, identity);
+    } else this.log('stale', identity.task_revision, 0, 0, identity);
   }
   finalize(words: string, generation: number, ownerTurn = 0): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn), { identity } = revision;
     const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null })), signal: revision.signal,
-      reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms), isCurrent: () => this.controller.isCurrent(identity),
+      reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => {
       this.settle(identity, answer);

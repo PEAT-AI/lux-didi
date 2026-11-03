@@ -12,6 +12,7 @@ export interface TaskRuntimeOptions {
   store: Store; execute: ToolPorts["execute"]; authority: Authority; configuredTools?: Definition[]; infer: Infer; delivery: Delivery;
   /** Host's existing content capture gate, evaluated at each write. */
   contentAllowed(): boolean;
+  timeZone?: string; now?: () => number;
   log?(event: Record<string, unknown>): void;
 }
 /** Host-owned runtime shared by live voice and text chat. */
@@ -93,7 +94,7 @@ export class TaskRuntime {
   }
   finalize(words: string, generation: number, ownerTurn = 0): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn), { identity } = revision;
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null })), signal: revision.signal,
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date((this.options.now ?? Date.now)()).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => {

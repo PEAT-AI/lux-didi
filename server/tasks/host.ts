@@ -14,6 +14,7 @@ import { documentResult, failed } from './results.js';
 import { TaskRuntime } from './runtime.js';
 import { canonical, type Infer } from './worker.js';
 export interface HostTaskOptions {
+  now?: () => number;
   store: Store; credentials: Credentials; models: RoleModels;
   bindings(): readonly BoundConnector[];
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
@@ -37,7 +38,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, delivery, authority, infer, contentAllowed: options.contentAllowed,
-      configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
+      timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
         if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });

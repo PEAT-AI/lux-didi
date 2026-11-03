@@ -1,6 +1,6 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
-import type { Authority, Effect, Identity } from './authority.js';
+import type { AuthorityPort, Effect, Identity } from './authority.js';
 import { failed, type ToolResult } from './results.js';
 export type Schema = Record<string, unknown>;
 export interface TaskTool {
@@ -10,7 +10,7 @@ export interface TaskTool {
 }
 export interface ToolPorts {
   execute(name: string, args: Record<string, unknown>, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
-  authority: Authority;
+  authority: AuthorityPort;
 }
 const string: Schema = { type: 'string', minLength: 1 };
 const optionalString: Schema = { type: ['string', 'null'] };

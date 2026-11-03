@@ -1,3 +1,4 @@
+import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TaskDelivery, splitSpokenText, DELIVERY_HEARD_MS } from '../tasks/delivery.js';
@@ -8,7 +9,7 @@ function fixture() {
   const delivery = new TaskDelivery({ isCurrent: () => current,
     append: (id, text) => { const command = `c${sends.length}`; sends.push({ id, text, command }); return command; },
     reconnect: text => { reconnectTexts.push(text); reconnects++; return true; },
-    state: (_identity, state) => states.push(state),
+    state: (identity, state) => { const event = safeEvent({ event: 'task_delivery', taskId: identity.task_id, revision: identity.task_revision, state }); assert.ok(event, `delivery state ${state} must survive safeEvent`); states.push(String(event.state)); },
     after: (_ms, callback) => { pending.add(callback); return () => { pending.delete(callback); }; },
   });
   return { delivery, sends, states, reconnectTexts, stale: () => { current = false; }, reconnects: () => reconnects,
@@ -85,4 +86,16 @@ test('reconnect instructions contain only the not-yet-heard answer chunks', () =
   f.delivery.attach(identity, 'd'); f.delivery.deliver(identity, answer(first + ' Second sentence.'));
   f.delivery.transcript(first); f.delivery.rejected('c1'); f.delivery.rejected('c2');
   assert.deepEqual(f.reconnectTexts, ['Second sentence.']);
+});
+
+test('VOICE-R15: every delivery state and lifecycle identity survives closed safe audit serialization', () => {
+  for (const state of ['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']) {
+    const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 2, state };
+    assert.deepEqual(safeEvent(event), event);
+    assert.equal(safeEvent({ ...event, text: 'Synthetic forbidden payload' }), undefined);
+  }
+  const lifecycle = { event: 'task_lifecycle', taskId: 'synthetic-task', revision: 2, generation: 3, phase: 'complete', count: 1, ms: 2 };
+  assert.deepEqual(safeEvent(lifecycle), lifecycle);
+  assert.equal(safeEvent({ ...lifecycle, text: 'Synthetic forbidden payload' }), undefined);
+  assert.equal(safeEvent({ event: 'task_delivery', taskId: 'synthetic-task', revision: 2, state: 'unknown' }), undefined);
 });

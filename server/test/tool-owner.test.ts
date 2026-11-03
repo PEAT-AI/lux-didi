@@ -1468,3 +1468,13 @@ test('AL-R1 every declared tool accepts a value built only from its declaration'
       `every declared tool accepts a value built only from its declaration: ${tried.join(' | ')}`);
   } finally { detach(); }
 });
+
+test('task bindings use configured validated connector readers without the research tool', async t => {
+  const f = await fixture(t);
+  const bindings = f.owner.taskBindings(['lux']);
+  assert.equal(bindings.length, 1); assert.equal(bindings[0]?.connector, 'lux-knowledge');
+  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1 }, f.signal);
+  assert.equal(read.state, 'completed'); assert.equal(f.calls.length, 1);
+  f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
+  assert.equal(f.owner.taskBindings(['lux']).length, 0);
+});

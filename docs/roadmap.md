@@ -1,6 +1,6 @@
 # Roadmap
 
-The first stable release is merged in [PR #683](https://github.com/PEAT-AI/lux-didi/pull/683). [Implementation status](implementation-status.md) describes what that source provides; this page separates follow-up work from shipped behavior. It is not a delivery schedule or a promise that every historical proposal will be built.
+Release 10.10 replaces voice-directed research and wording gates with a host-owned helper. [Implementation status](implementation-status.md) describes what that source provides; this page separates follow-up work from shipped behavior. It is not a delivery schedule or a promise that every historical proposal will be built.
 
 ## Follow-up areas
 
@@ -9,7 +9,7 @@ The first stable release is merged in [PR #683](https://github.com/PEAT-AI/lux-d
 | Voice resilience | `LiveSessionOwner` in `server/live/index.ts` includes recovery | Remaining provider-error and real-network failure cases need targeted evidence, not a blanket claim that recovery cannot fail |
 | Installation and distribution | `scripts/build-macos-app.sh` and `scripts/install-macos-app.sh` build and install locally | Cross-Mac distribution, signing and notarization need a separately verified release path |
 | Account onboarding | Existing connector setup and browser consent flows | A universal sign-in experience must not be claimed for helpers that still use their own account authorization commands |
-| New effects | Read-only registry connectors, narrowly gated Trello and note writes | Sending mail, arbitrary computer control or additional remote writes require explicit authority design, implementation and tests |
+| New effects | Typed helper tools for source reads, drafts, notes, events, alarms, board changes and opening things | Sending mail, arbitrary computer control or additional remote writes require explicit authority design, implementation and tests |
 | Portability | The current application is a Mac app | Other operating systems and multi-owner hosting require their own product and authority contracts |
 
 These are boundaries for future decisions, not evidence that a feature exists. A new capability is documented as shipped only after its code and acceptance evidence are on the release branch.

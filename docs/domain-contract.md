@@ -47,4 +47,4 @@ The host supplies `resolveTarget` to the domain composition. With a target, remi
 
 ## Verification
 
-`bash scripts/check-domain.sh` is the focused domain check. It uses the repository's compiled runtime and synthetic fixtures, not private account records. Follow [checks.md](checks.md) for check selection and [local-development.md](local-development.md) before running it. This documentation wagon does not claim to have rerun domain tests.
+`bash scripts/check-domain.sh` is the focused domain check. It uses the repository's compiled runtime and synthetic fixtures, not private account records. Follow [checks.md](checks.md) for check selection and [local-development.md](local-development.md) before running it. A documentation check does not prove domain runtime behavior.

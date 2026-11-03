@@ -50,14 +50,14 @@ Stop the foreground host with Ctrl-C. Keep the same state directory to inspect r
 
 ## Select checks, do not invent another build path
 
-[Checks](checks.md) is the check catalog and [releases](releases.md) owns release gates. Run the checks that cover the changed owner and its affected integration. In a managed worker, use the declared controller check rather than invoking its producer directly. Swift compilation must use `scripts/with-compile-lock.sh` through the canonical producers.
+[Checks](checks.md) is the check catalog and [releases](releases.md) owns release gates. Run the checks that cover the changed owner and its affected integration. Run the owning repository script directly from the checkout. Swift compilation must use `scripts/with-compile-lock.sh` through the canonical producers.
 
-Browser-backed proofs can require installed Playwright browsers and the managed `lux-browser-slot` lease tool. npm dependency installation does not install that host tool, and a missing lease is not permission to bypass it. Read the selected producer's prerequisites before scheduling it.
+Browser-backed proofs can require installed Playwright browsers and the separately installed `lux-browser-slot` tool. npm dependency installation does not install that host tool, and a missing lease is not permission to bypass it. Read the selected producer's prerequisites before scheduling it.
 
 `createArtifactDir` in `web/test/artifacts.mjs` supports `DIDI_ARTIFACT_DIR` as an absolute evidence-output root. Each invocation gets an isolated proof directory; invalid supplied roots fail rather than silently falling back. Choose durable storage when screenshots must outlive operating-system temporary cleanup. This setting changes proof output, not application state or provider configuration.
 
 ## Real-account and installed-app work
 
-`scripts/smoke.sh` is a real-path probe, not an offline unit check: it can exercise configured connectors and model turns. It requires explicit owner authorization and the appropriate declared check in a managed run. Do not run it repeatedly, against private accounts without approval, or as a substitute for focused tests.
+`scripts/smoke.sh` is a real-path probe, not an offline unit check: it can exercise configured connectors and model turns. It requires explicit owner authorization. Do not run it repeatedly, against private accounts without approval, or as a substitute for focused tests.
 
 Never launch, quit or relaunch an installed owner app merely to verify a documentation change. The docs hygiene gate is `bash scripts/check-docs.sh`; it proves only the patterns it checks, not runtime behavior. [Debugging](debugging.md) explains how to collect safe operational evidence.

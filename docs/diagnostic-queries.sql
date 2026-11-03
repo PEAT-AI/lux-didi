@@ -3,7 +3,7 @@
 -- Start with the CLI views, not with these: they merge the logs and the store into one ordered print, and
 -- they count what they could not attribute instead of guessing.
 --   node scripts/didi-timeline call <liveSessionId|latest> [--content]
---       one call's story: owner and model turns, tool calls with ms and outcome, research phases, silences
+--       one call's story: owner and model turns, tool calls with ms and outcome, tool phases, silences
 --       with their cause, connector events and the terminal, across host.log (and its rotated files),
 --       native-live.log, audio.log and state.sqlite. Every line says how it joined the call: by callId,
 --       by liveSessionId, or by the pid and time window of that session's own lines. --content is off by
@@ -113,13 +113,9 @@ SELECT 'playback', p.segment_seq, p.received_at, NULL, p.termination_reason, NUL
 ORDER BY at, mono_ms, kind;
 
 -- name: call_owner_content
--- The content half of `didi-timeline call --content`: utterance text and research question/web query text
+-- The content half of `didi-timeline call --content`: utterance text
 -- for one session. This is the query the view runs when the store's content gate allows it; content class C
 -- lives here and never in a log, which is why it is separate from call_timeline.
 SELECT 'utterance' AS kind, t.turn_index AS ordinal, u.role AS detail, u.at AS at, u.final AS final, u.text AS text
   FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id WHERE t.live_session_id=:session
-UNION ALL
-SELECT 'research', 0, x.kind, x.at, NULL, x.text
-  FROM trace_research_text x
-  WHERE x.research_id IN (SELECT research_id FROM trace_call WHERE live_session_id=:session AND research_id IS NOT NULL)
 ORDER BY at;

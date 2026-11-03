@@ -99,5 +99,9 @@ The old live authority remains until the task adapter switches. Callers of the w
 search port must pass the host-owned `exposed` state and `ownerWords` so invented
 URLs and site operators are removed after outside reads. `publicQueryOf` still
 keeps addresses, long digit sequences, markup and pasted passages out of queries;
-ordinary short questions remain valid. URL opens reject unproven or private targets
-rather than rewriting them. A URL appearing in a retrieved passage is not consent.
+ordinary short questions remain valid. On clean tasks any public HTTPS URL may open, without a URL in spoken owner words.
+Credentials, localhost and private ranges are refused. After outside exposure, open
+is an effect under the same isolated check. Its URL must also be byte-exact to a
+string in a tool result or a connector canonical link. Synthesized or extended
+URLs are rejected rather than rewritten. The legacy live open path stays unchanged
+until C-VOICE wires the task authority.

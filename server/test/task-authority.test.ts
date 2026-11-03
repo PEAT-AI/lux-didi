@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Authority, configuredEffectCheck, type EffectCheckInput, type JournalRecord } from '../tasks/authority.js';
+import { Authority, configuredEffectCheck, refusal, REPAIRS, type RefusalCode, type EffectCheckInput, type JournalRecord } from '../tasks/authority.js';
 
 import type { ModelPort, ModelRequest } from '../adapters/model/types.js';
 
@@ -118,6 +118,53 @@ test('timeout signal fails open and logs without a clock wait or provider call',
   authority.expose(task.id, 'mail');
   assert.deepEqual(await authority.authorize(request), { allow: true });
   assert.deepEqual(fake.events, ['effect_check_failed']);
+});
+
+const refusalCodes: RefusalCode[] = ['invalid_arguments', 'unknown_tool', 'source_unavailable', 'not_owner_asked', 'confirmation_required', 'egress_blocked', 'cancelled', 'superseded', 'deadline_exceeded', 'write_failed', 'outcome_unknown'];
+test('closed refusal vocabulary has no legacy phrase, expiry or research codes', () => {
+  assert.deepEqual(Object.keys(REPAIRS).sort(), [...refusalCodes].sort());
+});
+for (const code of refusalCodes) {
+  test(`refusal ${code} carries actionable repair and does not block a valid clean task`, async () => {
+    const result = refusal(code);
+    assert.equal(result.allow, false);
+    if (!result.allow) {
+      assert.equal(result.code, code);
+      assert.ok(result.repair.length > 20);
+      assert.match(result.repair, /correct|choose|try|report|ask|use|wait|check|describe/i);
+    }
+    assert.deepEqual(await setup().authority.authorize(request), { allow: true });
+  });
+}
+
+test('unknown effect is refused while a registered effect runs', async () => {
+  const { authority } = setup();
+  const denied = await authority.authorize({ ...request, effect: 'send_mail' as typeof request.effect });
+  assert.equal(denied.allow, false);
+  if (!denied.allow) assert.equal(denied.code, 'unknown_tool');
+  assert.deepEqual(await authority.authorize(request), { allow: true });
+});
+
+test('known failed write is not repeated while a different action can succeed', async () => {
+  const { authority, records } = setup();
+  records.set('failed-action', { status: 'failed' });
+  const failed = await authority.commit('failed-action', async () => assert.fail('must not repeat'));
+  assert.equal(failed.allow, false);
+  if (!failed.allow) assert.equal(failed.code, 'write_failed');
+  assert.equal((await authority.commit('new-action', async () => ({ saved: true }))).allow, true);
+});
+
+test('uncertain connector failure is not retried; a separate valid action succeeds', async () => {
+  const { authority } = setup();
+  let attempts = 0;
+  const execute = async () => { attempts++; throw new Error('remote outcome lost'); };
+  for (let i = 0; i < 2; i++) {
+    const result = await authority.commit('uncertain-action', execute);
+    assert.equal(result.allow, false);
+    if (!result.allow) assert.equal(result.code, 'outcome_unknown');
+  }
+  assert.equal(attempts, 1);
+  assert.equal((await authority.commit('separate-action', async () => 'saved')).allow, true);
 });
 
 test('pending outcome is never executed a second time', async () => {

@@ -156,3 +156,12 @@ mentions from text. Atlassian documents that mentions notify users in
 [commenting on cards](https://support.atlassian.com/trello/docs/commenting-on-cards/).
 Trello watchers can also receive service-generated activity notifications; stripping
 mentions is not a promise that shared-board activity is silent.
+
+`assertRegistryExposure(registry)` validates declared exposure for every read entry
+(`effect: null`). C-VOICE calls it on the actual registry once that registry exists.
+`Authority.authorize` accepts host-owned `webTarget`, `toolResultURLs` and
+`canonicalURLs` for web opens. Clean spoken tasks may open any public HTTPS URL
+without credentials or private addresses. After exposure, both the owner effect
+check and byte-exact result/canonical provenance apply. Worker arguments must never
+be used as provenance. The legacy open implementation and fixtures stay at base
+behavior. C-VOICE owns removal of the vault speech grammar with its caller bridge.

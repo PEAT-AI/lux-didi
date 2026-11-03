@@ -11,7 +11,7 @@ cd "$out"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$root/server/node_modules" "$out/node_modules"
 mkdir -p "$out/scripts" "$out/test/fixtures"
-cp "$root/server/test/fixtures/stdio-mattermost-people-child.mjs" "$root/server/test/fixtures/mattermost-draft-tools-list.json" "$root/server/test/fixtures/google-tools-list.json" "$root/server/test/fixtures/stdio-mcp-child.mjs" "$root/server/test/fixtures/google-write-child.mjs" "$out/test/fixtures/"
+cp "$root/server/test/fixtures/stdio-mattermost-people-child.mjs" "$root/server/test/fixtures/mattermost-draft-tools-list.json" "$root/server/test/fixtures/google-tools-list.json" "$root/server/test/fixtures/stdio-mcp-child.mjs" "$root/server/test/fixtures/google-write-child.mjs" "$root/server/test/fixtures/host-compose-mattermost-child.mjs" "$root/server/test/fixtures/google-mcp-child.mjs" "$out/test/fixtures/"
 cp "$root/scripts/eval-worker-replay.mjs" "$out/scripts/"
 node_test_files --test-timeout=15000 "$out/test/task-vault.test.js" "$out/test/task-chat.test.js" "$out/test/task-call.test.js" "$out/test/task-delivery.test.js" "$out/test/tasks-contract.test.js" "$out/test/tasks-lifecycle.test.js" "$out/test/tasks-store.test.js" "$out/test/live-shape.test.js"
 

@@ -59,7 +59,7 @@ const callsOf = (pidFile: string): { tool: string; args: Record<string, unknown>
 };
 const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => call.tool);
 /** The owner's tool table for one accepted synthetic run: the same call the Live host makes. */
-const taskRuntime = (h: Host, connectionIds = [...h.mcp.connectionIds()]) => hostTaskFactory({
+const taskRuntime = (h: Host, connectionIds: readonly string[] = [...h.mcp.connectionIds()]) => hostTaskFactory({
   store: h.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
   bindings: () => h.mcp.owner.taskBindings(connectionIds), contentAllowed: () => false, timeZone: 'UTC',
   effectCheck: async () => true,

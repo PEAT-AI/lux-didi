@@ -568,7 +568,7 @@ test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () 
 test('C-OPEN11: Gmail public HTTPS references retain literal message, thread and settings fragments', () => {
  for (const fragment of ['#all/SYNTHETIC_THREAD', '#inbox/SYNTHETIC_MESSAGE', '#settings']) {
    const url = 'https://mail.google.com/mail/u/0/' + fragment;
-   assert.deepEqual(openDestination(url), { kind: 'web', url }, 'public HTTPS fragments are structural references, not lexical owner intent');
+   assert.deepEqual(openDestination(url), { kind: 'gmail', url }, 'public HTTPS fragments are structural references, not lexical owner intent');
  }
 });
 

@@ -12,6 +12,8 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
+mkdir -p dist/scripts
+cp "$root/scripts/eval-worker-replay.mjs" dist/scripts/
 # Real web assets once for the affected host-composition assertion (asset build only; no browser is launched).
 (cd "$root" && npm --prefix web ci --ignore-scripts --no-audit --no-fund && npm --prefix web run build)
 # The gateway suite runs with the accepted Live owner/adapter and the affected HTTP/chat authorization regressions.

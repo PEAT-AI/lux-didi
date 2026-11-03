@@ -96,8 +96,10 @@ use fakes, never a provider. Delete confirmation binds the exact staged calendar
 event to a later finalized owner turn.
 
 The old live authority remains until the task adapter switches. Callers of the web
-search port must pass the host-owned `exposed` state and `ownerWords` so invented
-URLs and site operators are removed after outside reads. `publicQueryOf` still
+search port must pass the host-owned `exposed` state. After outside reads the
+query is split on whitespace and every whole token containing `://`, `www.` or
+`site:` is removed, case-insensitively and regardless of punctuation. There is no
+owner-word URL exemption. Clean tasks are untouched. `publicQueryOf` still
 keeps addresses, long digit sequences, markup and pasted passages out of queries;
 ordinary short questions remain valid. On clean tasks any public HTTPS URL may open, without a URL in spoken owner words.
 Credentials, localhost and private ranges are refused. After outside exposure, open

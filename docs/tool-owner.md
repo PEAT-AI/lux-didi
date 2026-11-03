@@ -145,9 +145,11 @@ check. It must receive the same configured model port used by the task core, wit
 its fastest current model selected for this role. No model identifier belongs in
 a tool or an authority test.
 
-The web search port accepts host-owned exposure state and owner words. Clean
-ordinary questions are not locally refused. After exposure, invented raw URLs and
-`site:` operators are removed. Private pasted-passage protections remain.
+The web search port accepts host-owned exposure state. Clean tasks are untouched.
+After exposure, split on whitespace and remove each whole token containing a
+scheme separator (`://`), `www.` or `site:`, in any case or punctuation. There is
+no owner-word comparison or exemption. Ordinary exposed questions still pass;
+private pasted-passage protections remain.
 
 Calendar creation constructs a closed dispatch object with no attendees and no
 update fields, even if surplus input has such fields. Trello write shapes do not

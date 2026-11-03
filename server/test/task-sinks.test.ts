@@ -51,9 +51,6 @@ test('registry exposure completeness is parameterized and renamed read tools can
   assert.throws(() => assertRegistryExposure([{ name: 'unknown_read', effect: null, exposure: 'unknown' }]), /unknown_read/);
 });
 
-// The temporary three-argument call below reproduces the returned implementation's behavior.
-// AUTH-R6 removes the unused owner-word parameter in the implementation commit.
-const searchAfterExposure = (query: string, exposed: boolean): string => searchQueryAfterExposure(query, '', exposed);
 for (const token of [
   'https://example.com/a;outside', 'https://example.com/a,outside',
   '(HTTPS://example.com/a)', '[ftp://example.com/a]', 'prefix(https://example.com/a)suffix',
@@ -62,17 +59,17 @@ for (const token of [
   '"site:example.com"', "'https://example.com/a'", 'arbitrary://value',
 ]) {
   test(`AUTH-R6 exposed search drops the entire unsafe token: ${token}`, () => {
-    assert.equal(searchAfterExposure(`release ${token} notes`, true), 'release notes');
-    assert.equal(searchAfterExposure(`release ${token} notes`, false), `release ${token} notes`);
+    assert.equal(searchQueryAfterExposure(`release ${token} notes`, true), 'release notes');
+    assert.equal(searchQueryAfterExposure(`release ${token} notes`, false), `release ${token} notes`);
   });
 }
 
 test('AUTH-R6 ordinary exposed question passes whole and clean task retains a site operator', () => {
   const ordinary = 'What is the latest (stable) release of TypeScript?';
-  assert.equal(searchAfterExposure(ordinary, true), ordinary);
-  assert.equal(searchAfterExposure('release site:example.com', false), 'release site:example.com');
-  assert.equal(searchAfterExposure('  release (SITE:example.com)  ', false), '  release (SITE:example.com)  ');
-  assert.equal(searchAfterExposure('(site:example.com) https://example.com www.example.com', true), '');
+  assert.equal(searchQueryAfterExposure(ordinary, true), ordinary);
+  assert.equal(searchQueryAfterExposure('release site:example.com', false), 'release site:example.com');
+  assert.equal(searchQueryAfterExposure('  release (SITE:example.com)  ', false), '  release (SITE:example.com)  ');
+  assert.equal(searchQueryAfterExposure('(site:example.com) https://example.com www.example.com', true), '');
 });
 
 test('Trello strips mentions and never retains a member assignment', () => {

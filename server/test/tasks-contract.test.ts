@@ -273,6 +273,7 @@ test('worker inference receives public instructions followed by presentation sty
   assert.match(received, /SYNTHETIC STYLE/);
   assert.doesNotMatch(received, /SYNTHETIC LORE/);
   received = '';
-  await runWorker({ ...options, profile: undefined });
+  const withoutProfile = { ...options, profile: undefined };
+  await runWorker(withoutProfile);
   assert.equal(received, WORKER_INSTRUCTIONS);
 });

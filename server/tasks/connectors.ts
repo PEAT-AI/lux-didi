@@ -58,8 +58,8 @@ function eventTime(value: unknown): string {
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
-  if ((name === 'search_knowledge' || name === 'search_company') && typeof data === 'string') {
-    const rows = rankedText(data);
+  if (typeof data === 'string' && !name.startsWith('read_')) {
+    const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {

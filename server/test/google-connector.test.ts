@@ -120,9 +120,10 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     payloadPorts.set(read, adapter);
     const readEnvelope = envelopeOf(read);
     const readProjection = renderGoogleTool('gmail_read_message', (readEnvelope['data'] as Record<string, unknown>));
-    assert.equal(readProjection.partial, true);
+    assert.equal(readProjection.partial, false);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
-    assert.match(readProjection.text, /body truncated|\[omitted: \d+ received characters of body omitted from this display/);
+    assert.ok(readProjection.text.includes('b'.repeat(20000)), 'every received body character remains available');
+    assert.doesNotMatch(readProjection.text, /\[omitted:/);
 
     const events = completed(await calendar.gcalList({ calendarId: 'primary' }));
     payloadPorts.set(events, adapter);

@@ -585,6 +585,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
         return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
+          if (descriptor.status) {
+            const status = descriptor.status(evidence, policy.endpoint);
+            options.reportToolStatus?.(policy.connectionId, status ?? null);
+            if (status?.log) options.log?.(status.log);
+          }
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
           return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id),
             recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },

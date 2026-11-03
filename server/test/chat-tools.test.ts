@@ -150,7 +150,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));
   assert.equal(rows.length, 1); assert.equal(rows[0]?.state, 'completed');
-  assert.match(JSON.stringify(f.requests.slice(1)), /ACCEPTED/);
+  assert.match(JSON.stringify(f.requests.slice(1)), /ACCEPTED/, JSON.stringify(f.requests.slice(1), (key, value) => ['system', 'tools'].includes(key) ? undefined : value));
   assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED|UNCLASSIFIED/);
   assert.doesNotMatch(JSON.stringify(run), /REJECTED|UNCLASSIFIED/);
   assert.match(JSON.stringify(f.chat.get(run.runId, f.context)), /ACCEPTED/);

@@ -1,3 +1,4 @@
+import { redactTaskResult } from './results.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
 import type { AuthorityPort, Effect, Identity } from './authority.js';
@@ -103,7 +104,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
           }
           return ports.execute(tool.name, pruneNulls(validation.args) as Record<string, unknown>, signal, outsideTextSeen, identity);
         };
-        return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
+        return redactTaskResult(await (effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal)));
       },
     };
     if (!integerSchema(tool.parameters)) throw new Error(`Non-integer numeric schema literal in ${tool.name}`);

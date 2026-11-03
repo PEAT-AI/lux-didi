@@ -594,7 +594,15 @@ test('Q-02: an empty read is projected as empty_body, never as complete evidence
   assert.match(renderMongooseTool({ outcome: 'ok', complete: true, body: '' }).text, /empty_body: true/u);
 });
 
-test('Q-02: a no_match that carries suggestions is a pointer to read, never a failure', () => {
+test('SEARCH-110: a no_match with fuzzy neighbours is one fact, never a list to read through', () => {
   const text = renderMongooseTool({ outcome: 'no_match', suggestions: ['Plantix Indonesia', 'Plantix Brazil'] }).text;
-  assert.match(text, /no direct answer, candidates: Plantix Indonesia, Plantix Brazil/u);
+  assert.match(text, /no_match: nothing on this name in this source/u, text);
+  assert.doesNotMatch(text, /Plantix/u, 'a neighbour is never offered as an entry to open');
+});
+
+test('SEARCH-110: evidence still renders and a related handle is never an entry to open', () => {
+  assert.match(renderMongooseTool({ outcome: 'no_match', items: [{ type: 'company', ref: 'company:1', name: 'Acme Agro' }] }).text, /Acme Agro/u);
+  const text = renderMongooseTool({ outcome: 'no_match', related: ['company:2'] }).text;
+  assert.match(text, /no_match: nothing on this name in this source/u, text);
+  assert.doesNotMatch(text, /company:2/u, 'a related handle is not a match');
 });

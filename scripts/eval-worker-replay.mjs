@@ -9,10 +9,17 @@
  *   node scripts/eval-worker-replay.mjs --selftest        # no network, no key, USD 0.00
  *   node scripts/eval-worker-replay.mjs --live --out /tmp/eval.jsonl
  *   node scripts/eval-worker-replay.mjs --baseline        # host engine, fixtures, no model
+ *   node scripts/eval-worker-replay.mjs --probe --env-file <env>     # is each model id offered?
  *
- * The key comes from OPENAI_API_KEY or secrets/.env, read exactly as scripts/probe-gpt-live.mjs
- * reads it, and is never printed, logged or written to the output file. Hard spend ceiling: USD 3
- * (EVAL_CEILING_USD). Every run prints the running estimate; the loop stops at the ceiling.
+ * Keys come from the environment or from the file given to --env-file, read as
+ * scripts/probe-gpt-live.mjs reads them (OPENAI_API_KEY, and the GEMINI_API_KEY name that
+ * server/config/index.ts declares), and are never printed, logged or written to the output file.
+ * Hard spend ceiling: USD 3 (EVAL_CEILING_USD). Every run prints the running estimate; the loop
+ * stops at the ceiling.
+ *
+ * Two providers answer the same tools, fixtures, instructions and checks: the OpenAI Responses API
+ * and Gemini generateContent with functionDeclarations and a thinking budget. The config list names
+ * 6.1 generation ids only; a pre-6.1 id is refused before any request is made.
  *
  * Prices are an assumption, not a measurement: EVAL_PRICES="model:in:out,..." overrides the table
  * below, per one million tokens. An unlisted model is charged the conservative default so the
@@ -27,15 +34,25 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ENDPOINT = 'https://api.openai.com/v1/responses';
 const CEILING = Number(process.env.EVAL_CEILING_USD ?? 3);
 const ASSUMED_PRICES = {
-  'gpt-6-luna': { in: 1.25, out: 10 },
-  'gpt-6-sol': { in: 3, out: 15 },
+  'gpt-6.1-terra': { in: 1.25, out: 10 },
+  'gpt-6.1-luna': { in: 0.4, out: 3.2 },
+  'gpt-6.1-sol': { in: 3, out: 15 },
+  'gemini-3.8-flash': { in: 0.3, out: 2.5 },
 };
+// The Gemini endpoint and key name are the ones server/config/index.ts declares for its gemini slot.
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_KEY_NAME = 'GEMINI_API_KEY';
+const OPENAI_BASE = 'https://api.openai.com/v1';
 const DEFAULT_PRICE = { in: 5, out: 30 };
 const DAY = 86_400;
 const NOW = Math.floor(Date.now() / 1000);
 const TODAY = new Date(NOW * 1000).toISOString().slice(0, 10);
 // The mail fixture and the "last Tuesday" correction must agree on what that day is.
-const LAST_TUESDAY = at(-(((new Date(NOW * 1000).getUTCDay() - 2 + 7) % 7) || 7), 10);
+const LAST_TUESDAY_OFFSET = -(((new Date(NOW * 1000).getUTCDay() - 2 + 7) % 7) || 7);
+const LAST_TUESDAY = at(LAST_TUESDAY_OFFSET, 10);
+// A second mail from the same sender that is not on that Tuesday: an unbounded search offers it as
+// the recent one from him, so only the day bound makes the answer right.
+const GUERENA_SECOND_TS = NOW - 3_600;
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures. Synthetic only: no owner content, no real person, no real organisation.
@@ -140,6 +157,15 @@ const MAIL = [
     subject: 'Sampling plan for the north block',
     labels: ['INBOX'],
     body: 'The north block sampling plan is attached. Two replicates per plot, and the assay runs in the second week.\nDavid',
+  },
+  {
+    id: 'm_guerena_later',
+    ts: GUERENA_SECOND_TS,
+    from: { name: 'David Guerena', address: 'd.guerena@sample-institute.example' },
+    to: [{ name: 'Owner', address: 'owner@example.test' }],
+    subject: 'Kit order for the field team',
+    labels: ['INBOX'],
+    body: 'The kit order for the field team goes in tomorrow: four hundred tubes, twice the last order. I need the cost centre code before it ships.\nDavid',
   },
   {
     id: 'm_lucia_ferrante',
@@ -415,13 +441,13 @@ function absoluteEpoch(token) {
   return null;
 }
 
-function searchMail({ query, after, before }) {
+function searchMail({ query }) {
   // Gmail honours OR between groups; the host's own compiler emits it, so the fixture must too.
   const groups = String(query ?? '').split(/\s+OR\s+/iu).map(part => part.trim()).filter(Boolean);
   if (groups.length > 1) {
     const seen = new Map();
     for (const group of groups) {
-      for (const hit of searchMail({ query: group, after, before }).hits) seen.set(hit.id, hit);
+      for (const hit of searchMail({ query: group }).hits) seen.set(hit.id, hit);
     }
     const hits = [...seen.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
     return { status: hits.length ? 'ok' : 'empty', total: hits.length, hits };
@@ -429,11 +455,12 @@ function searchMail({ query, after, before }) {
   const parsed = parseMailQuery(query);
   const positives = parsed.filter(p => !p.negate);
   const negatives = parsed.filter(p => p.negate);
-  if (positives.length === 0 && (after === undefined || after === null) && (before === undefined || before === null)) {
+  // The window lives in the query only: after:/before: operators, no typed arguments.
+  if (positives.length === 0) {
     return { status: 'ok', total: 0, hits: [] };
   }
-  let lower = typeof after === 'number' ? after : null;
-  let upper = typeof before === 'number' ? before : null;
+  let lower = null;
+  let upper = null;
   const tests = [];
   let impossible = false;
   for (const p of positives) {
@@ -504,13 +531,34 @@ function calendarEvents(args) {
   return { status: events.length ? 'ok' : 'empty', count: events.length, window: { start, end }, events };
 }
 
-function searchChat({ query, after, before }) {
-  const words = String(query ?? '').toLowerCase().split(/\s+/u).filter(Boolean);
+/** The window in chat lives in the query too: after:/before: operators, no typed arguments. */
+function chatWindow(query) {
+  let lower = null;
+  let upper = null;
+  let impossible = false;
+  const words = [];
+  for (const part of parseMailQuery(query)) {
+    if (part.negate) continue;
+    if (part.op === 'after' || part.op === 'before') {
+      const at = relativeDays(NOW, part.value) ?? absoluteEpoch(part.value);
+      if (at === null) impossible = true;
+      else if (part.op === 'after') lower = lower === null ? at : Math.max(lower, at);
+      else upper = upper === null ? at : Math.min(upper, at);
+      continue;
+    }
+    if (part.op === 'term' || part.op === 'phrase') words.push(...part.value.toLowerCase().split(/\s+/u).filter(Boolean));
+  }
+  return { words, lower, upper, impossible };
+}
+
+function searchChat({ query }) {
+  const { words, lower, upper, impossible } = chatWindow(query);
   const hits = [];
+  if (impossible) return { status: 'empty', total: 0, hits };
   for (const thread of CHAT) {
     for (const msg of thread.messages) {
-      if (after !== undefined && msg.ts < after) continue;
-      if (before !== undefined && msg.ts > before) continue;
+      if (lower !== null && msg.ts < lower) continue;
+      if (upper !== null && msg.ts > upper) continue;
       const text = msg.text.toLowerCase();
       if (words.length && !words.every(word => text.includes(word))) continue;
       hits.push({ channelId: thread.channelId, rootId: thread.rootId, author: msg.author, ts: new Date(msg.ts * 1000).toISOString(), text: msg.text });
@@ -596,8 +644,8 @@ const epoch = description => ({ type: 'integer', description });
 const TOOLS = [
   {
     name: 'search_mail',
-    description: 'Search the mailbox. Gmail-style operators are honoured inside the query: from:, to:, subject:, in:, after:, before:, newer_than:, older_than:. The after and before parameters are the same window written as integer epoch seconds: after is the earliest time to include, before is the latest, and null on either side means that side is open. Set them whenever a time is known, so a search stays inside it.',
-    params: { query: str('Mail query. Operators allowed.'), after: epoch('Earliest message time, epoch seconds.'), before: epoch('Latest message time, epoch seconds.') },
+    description: 'Search the mailbox. Gmail-style operators go inside the query and are the only way to bound a search: from:, to:, subject:, in:, after:, before:, newer_than:, older_than:. Put the time the owner gave in the query as after: and before:. There are no separate time arguments, and this tool has none for that reason: in the last measured run of this eval the typed after and before arguments were ignored 12 times in 14 while the same window in the query was honoured.',
+    params: { query: str('Mail query. Operators allowed, and a time window belongs in here as after:/before:.') },
     required: ['query'],
     run: searchMail,
   },
@@ -617,8 +665,8 @@ const TOOLS = [
   },
   {
     name: 'search_chat',
-    description: 'Search team chat messages. Every term in the query must appear in the message.',
-    params: { query: str('Words to match.'), after: epoch('Earliest message time, epoch seconds.'), before: epoch('Latest message time, epoch seconds.') },
+    description: 'Search team chat messages. Every term in the query must appear in the message. A time window goes inside the query as after: or before:, like mail; there are no separate time arguments.',
+    params: { query: str('Words to match, plus after:/before: for a window.') },
     required: ['query'],
     run: searchChat,
   },
@@ -745,7 +793,7 @@ const INSTRUCTIONS = [
   '',
   'Scope. Use tools for mail, calendar, chat, company records, people, notes or the web. If the ask needs no lookup, answer directly with no tool call.',
   '',
-  'Searching. Start wide, then narrow. Send independent searches in one wave. Operators and time bounds narrow a search, never widen it; a time the owner gives, in any form, bounds every search that follows. An empty result means widen: drop invented terms, keep his, try another layer.',
+  'Searching. Start wide, then narrow. Send independent searches in one wave. Operators narrow a search, never widen it. A time window belongs in the query as after: and before:, for mail and for chat alike; calendar events take typed start and end. A time the owner gives, in any form, bounds every search that follows. An empty result means widen: drop invented terms, keep his, try another layer.',
   '',
   'Matches. A sender or record that plausibly fits is the candidate: open it, then report what you found under its real name. Never report that a person or thing does not exist when a near match was there to open.',
   '',
@@ -958,7 +1006,7 @@ const SCENARIOS = [
   },
   {
     id: 'S2b',
-    aim: 'Held out: correction giving a time in words only.',
+    aim: 'Held out: correction giving a time in words only, with two mails from the sender in reach.',
     prompts: ['any mail from David Guerena?', 'no, the one from last Tuesday'],
     history: [
       { role: 'user', content: 'any mail from David Guerena?' },
@@ -968,12 +1016,10 @@ const SCENARIOS = [
     check(log, answer) {
       const searches = log.filter(c => c.name === 'search_mail');
       if (!searches.length) return 'no search at all';
-      const windowed = searches.filter(c => {
-        if (typeof c.args.after === 'number' || typeof c.args.before === 'number') return true;
-        return /(after|before|newer_than|older_than|within):/iu.test(String(c.args.query ?? ''));
-      });
+      const windowed = searches.filter(c => /(after|before|newer_than|older_than|within):/iu.test(String(c.args.query ?? '')));
       if (!windowed.length) return 'no search bounded to the stated day';
       if (FORBIDDEN_ASK.test(String(answer))) return 'asked the owner to repeat';
+      if (/(kit order|cost cent)/iu.test(answer)) return 'answered from the other mail from the same sender';
       if (!/north block/iu.test(answer)) return 'answer does not report the mail from that day';
       return null;
     },
@@ -1018,17 +1064,33 @@ const SCENARIOS = [
 // Response assembly for the live loop.
 // ---------------------------------------------------------------------------------------------
 
-function key(envFile) {
-  if (typeof process.env.OPENAI_API_KEY === 'string' && process.env.OPENAI_API_KEY.length) return { value: process.env.OPENAI_API_KEY, source: 'environment' };
+/** Reads one named key: the environment first, then the file given to --env-file. Never logged. */
+function readKey(name, envFile) {
+  if (typeof process.env[name] === 'string' && process.env[name].length) return { value: process.env[name], source: 'environment' };
   const candidates = envFile ? [envFile] : [join(ROOT, 'secrets', '.env')];
   for (const file of candidates) {
     let text;
     try { text = readFileSync(file, 'utf8'); } catch { continue; }
-    const line = text.split('\n').map(row => row.trim()).find(row => row.startsWith('OPENAI_API_KEY='));
-    const value = line?.slice('OPENAI_API_KEY='.length).replace(/^["']|["']$/gu, '');
+    const line = text.split('\n').map(row => row.trim()).find(row => row.startsWith(`${name}=`));
+    const value = line?.slice(name.length + 1).replace(/^["']|["']$/gu, '');
     if (value) return { value, source: 'env-file' };
   }
-  throw new Error(envFile ? 'no OPENAI_API_KEY in the environment and none in the file given to --env-file' : 'no OPENAI_API_KEY in the environment and no secrets/.env');
+  throw new Error(envFile ? `no ${name} in the environment and none in the file given to --env-file` : `no ${name} in the environment and no secrets/.env`);
+}
+
+function key(envFile) {
+  return readKey('OPENAI_API_KEY', envFile);
+}
+
+function geminiKey(envFile) {
+  return readKey(GEMINI_KEY_NAME, envFile);
+}
+
+/** The owner's rule: the latest version only, so no 6.0 generation id may run. */
+function assertLatest(model) {
+  const m = /^gpt-(\d+)(?:\.(\d+))?-/iu.exec(String(model));
+  if (m && m[2] === undefined) throw new Error(`model_not_allowed:${model} is a pre-6.1 id and the owner requires the latest version`);
+  return model;
 }
 
 function instructionsSha() {
@@ -1048,16 +1110,151 @@ async function postResponses(body, apiKey) {
   return { json: JSON.parse(text), wallMs, headers: { tier: response.headers.get('x-service-tier') ?? '' } };
 }
 
+/** Gemini wants an OpenAPI subset: a single type name, no strict flag, required only where declared. */
+function geminiParameters(params, required) {
+  const properties = {};
+  for (const [name, schema] of Object.entries(params)) {
+    const type = Array.isArray(schema.type) ? (schema.type.find(entry => entry !== 'null') ?? 'string') : schema.type;
+    properties[name] = { type: String(type).toUpperCase(), description: schema.description };
+  }
+  const parameters = { type: 'OBJECT', properties };
+  if (required.length) parameters.required = required;
+  return parameters;
+}
+
+const GEMINI_DECLARATIONS = TOOLS.map(tool => ({
+  name: tool.name,
+  description: tool.description,
+  parameters: geminiParameters(tool.params, tool.required),
+}));
+
+// Thinking budget replaces the OpenAI effort knob; the two rows the plan asks for are low and medium.
+const THINKING_BUDGET = { minimal: 0, low: 0, medium: 2_048 };
+
+async function postGemini(model, body, apiKey) {
+  const started = Date.now();
+  const response = await fetch(`${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const wallMs = Date.now() - started;
+  if (!response.ok) throw new Error(`gemini http ${response.status} after ${wallMs} ms: ${text.slice(0, 400)}`);
+  return { json: JSON.parse(text), wallMs };
+}
+
+/** Runs the calls of one wave and records them once, so both providers share the tool step. */
+function executeCalls(calls, hop) {
+  const rows = [];
+  const parsed = [];
+  for (const call of calls) {
+    let args = {};
+    let parseError = null;
+    try { args = call.arguments ? JSON.parse(call.arguments) : {}; } catch { parseError = 'unparsable_json'; }
+    const outcome = parseError ? { ok: false, error: parseError, args: {} } : runTool(call.name, args);
+    const usedArgs = outcome.args ?? normalizeArgs(args);
+    rows.push({ hop, name: call.name, args: usedArgs, ok: outcome.ok, error: outcome.error, result: outcome.result });
+    parsed.push({ name: call.name, callKey: call.callKey, outcome });
+  }
+  return { rows, parsed };
+}
+
+/** OpenAI Responses session: one hop per call, tool outputs appended after the items they answer. */
+function openAiSession({ model, effort, tier, turns, apiKey }) {
+  const input = turns.map(turn => ({ role: turn.role, content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: turn.content }] }));
+  let items = [];
+  return {
+    async hop() {
+      const body = {
+        model,
+        instructions: INSTRUCTIONS,
+        input,
+        tools: TOOL_SCHEMAS,
+        tool_choice: 'auto',
+        parallel_tool_calls: true,
+        store: false,
+        max_output_tokens: 1_200,
+        reasoning: { effort },
+      };
+      if (tier) body.service_tier = tier;
+      const { json, wallMs } = await postResponses(body, apiKey);
+      items = Array.isArray(json.output) ? json.output : [];
+      const calls = items.filter(item => item.type === 'function_call').map(item => ({ name: item.name, arguments: item.arguments, callKey: item.call_id }));
+      const texts = items.filter(item => item.type === 'message').flatMap(item => (item.content ?? []).filter(c => c.type === 'output_text').map(c => c.text));
+      return {
+        calls,
+        texts,
+        ms: wallMs,
+        tier: typeof json.service_tier === 'string' ? json.service_tier : '',
+        usage: { input: Number(json.usage?.input_tokens ?? 0), output: Number(json.usage?.output_tokens ?? 0) },
+        done: json.status === 'incomplete' ? 'incomplete' : 'answered',
+      };
+    },
+    record(parsed) {
+      input.push(...items);
+      for (const call of parsed) input.push({ type: 'function_call_output', call_id: call.callKey, output: JSON.stringify(call.outcome.ok ? call.outcome.result : { error: call.outcome.error }) });
+    },
+  };
+}
+
+/**
+ * Gemini generateContent session. Parallel function calls arrive as several functionCall parts of
+ * one candidate, and every part of the wave is answered in a single user turn of functionResponse
+ * parts, which is how generateContent carries parallel calls.
+ */
+function geminiSession({ model, effort, turns, apiKey }) {
+  const contents = turns.map(turn => ({ role: turn.role === 'assistant' ? 'model' : 'user', parts: [{ text: turn.content }] }));
+  let parts = [];
+  return {
+    async hop() {
+      const body = {
+        systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
+        contents,
+        tools: [{ functionDeclarations: GEMINI_DECLARATIONS }],
+        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        generationConfig: { maxOutputTokens: 1_200, thinkingConfig: { thinkingBudget: THINKING_BUDGET[effort] ?? 0 } },
+      };
+      const { json, wallMs } = await postGemini(model, body, apiKey);
+      const candidate = json.candidates?.[0] ?? {};
+      parts = candidate.content?.parts ?? [];
+      const calls = parts.filter(part => part.functionCall).map((part, index) => ({
+        name: part.functionCall.name,
+        arguments: JSON.stringify(part.functionCall.args ?? {}),
+        callKey: `${index}:${part.functionCall.name}`,
+      }));
+      const texts = parts.filter(part => part.thought !== true && typeof part.text === 'string').map(part => part.text);
+      const used = json.usageMetadata ?? {};
+      return {
+        calls,
+        texts,
+        ms: wallMs,
+        tier: '',
+        usage: { input: Number(used.promptTokenCount ?? 0), output: Number(used.candidatesTokenCount ?? 0) + Number(used.thoughtsTokenCount ?? 0) },
+        done: candidate.finishReason === 'MAX_TOKENS' ? 'incomplete' : 'answered',
+      };
+    },
+    record(parsed) {
+      contents.push({ role: 'model', parts: parts.filter(part => part.thought !== true) });
+      contents.push({ role: 'user', parts: parsed.map(call => ({ functionResponse: { name: call.name, response: call.outcome.ok ? call.outcome.result : { error: call.outcome.error } } })) });
+    },
+  };
+}
+
 /**
  * One model run: hop until the model stops asking for tools. Returns the log, the answer and the
  * measured counters. This is the only place that spends money.
  */
-async function runLive({ scenario, model, effort, tier, apiKey, maxHops = 8 }) {
+async function runLive({ scenario, model, provider = 'openai', effort, tier, apiKey, maxHops = 8 }) {
+  assertLatest(model);
   // S2 hands the failed prior turn in as history, so it already ends with the correction; every other
   // scenario turns its prompt list into the user turns.
   const turns = scenario.history ?? scenario.prompts.map(prompt => ({ role: 'user', content: prompt }));
-  const input = turns.map(turn => ({ role: turn.role, content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: turn.content }] }));
+  const session = provider === 'gemini'
+    ? geminiSession({ model, effort, turns, apiKey })
+    : openAiSession({ model, effort, tier, turns, apiKey });
   const log = [];
+  const hopMs = [];
   let hops = 0;
   let waves = 0;
   let wallMs = 0;
@@ -1066,45 +1263,22 @@ async function runLive({ scenario, model, effort, tier, apiKey, maxHops = 8 }) {
   let stopReason = 'answered';
   let tierEcho = '';
   while (hops < maxHops) {
-    const body = {
-      model,
-      instructions: INSTRUCTIONS,
-      input,
-      tools: TOOL_SCHEMAS,
-      tool_choice: 'auto',
-      parallel_tool_calls: true,
-      store: false,
-      max_output_tokens: 1_200,
-      reasoning: { effort },
-    };
-    if (tier) body.service_tier = tier;
-    const { json, wallMs: hopMs } = await postResponses(body, apiKey);
-    if (typeof json.service_tier === 'string' && json.service_tier) tierEcho = json.service_tier;
+    const step = await session.hop();
     hops += 1;
-    wallMs += hopMs;
-    if (json.usage) {
-      usage.input_tokens += Number(json.usage.input_tokens ?? 0);
-      usage.output_tokens += Number(json.usage.output_tokens ?? 0);
-    }
-    const items = Array.isArray(json.output) ? json.output : [];
-    const calls = items.filter(item => item.type === 'function_call');
-    const texts = items.filter(item => item.type === 'message').flatMap(item => (item.content ?? []).filter(c => c.type === 'output_text').map(c => c.text));
-    if (texts.length) answer = texts.join('\n').trim();
-    if (!calls.length) { stopReason = json.status === 'incomplete' ? 'incomplete' : 'answered'; break; }
+    wallMs += step.ms;
+    hopMs.push(step.ms);
+    if (step.tier) tierEcho = step.tier;
+    usage.input_tokens += step.usage.input;
+    usage.output_tokens += step.usage.output;
+    if (step.texts.length) answer = step.texts.join('\n').trim();
+    if (!step.calls.length) { stopReason = step.done; break; }
     waves += 1;
-    input.push(...items);
-    for (const call of calls) {
-      let args = {};
-      let parseError = null;
-      try { args = call.arguments ? JSON.parse(call.arguments) : {}; } catch { parseError = 'unparsable_json'; }
-      const outcome = parseError ? { ok: false, error: parseError, args: {} } : runTool(call.name, args);
-      const usedArgs = outcome.args ?? normalizeArgs(args);
-      log.push({ hop: hops, name: call.name, args: usedArgs, ok: outcome.ok, error: outcome.error, result: outcome.result });
-      input.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(outcome.ok ? outcome.result : { error: outcome.error }) });
-    }
+    const { rows, parsed } = executeCalls(step.calls, hops);
+    log.push(...rows);
+    session.record(parsed);
   }
   if (hops >= maxHops) stopReason = 'hop_cap';
-  return { log, answer, hops, waves, wallMs, usage, stopReason, tierEcho };
+  return { log, answer, hops, waves, wallMs, hopMs, usage, stopReason, tierEcho };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1182,7 +1356,7 @@ const PASSING = {
   },
   S2b: {
     answer: 'Last Tuesday the mail is the north block sampling plan: two replicates per plot and the assay in the second week.',
-    script: [[['search_mail', { query: 'from:guerena', after: LAST_TUESDAY - DAY, before: LAST_TUESDAY + DAY }]]],
+    script: [[['search_mail', { query: `from:guerena after:${LAST_TUESDAY - DAY} before:${LAST_TUESDAY + DAY}` }]]],
   },
   S2c: {
     answer: 'The invoice mail from Priya says Q2 invoices total 14,200 with the summary attached.',
@@ -1302,25 +1476,27 @@ function selftest() {
   const gorell = searchMail({ query: 'from:David Gorell' });
   note(gorell.hits.length === 0, 'unknown from: returns nothing', JSON.stringify(gorell.status));
   const guerena = searchMail({ query: 'from:guerena' });
-  note(guerena.hits.length === 3, 'from:guerena returns every institute mail', String(guerena.hits.length));
+  note(guerena.hits.length === 4, 'from:guerena returns every institute mail', String(guerena.hits.length));
   const plain = searchMail({ query: 'Guerena' });
-  note(plain.hits.length === 3, 'plain display name matches', String(plain.hits.length));
+  note(plain.hits.length === 4, 'plain display name matches', String(plain.hits.length));
   const bodyTerm = searchMail({ query: 'phosphorus' });
   note(bodyTerm.hits.length === 1, 'plain body term matches', String(bodyTerm.hits.length));
-  const windowed = searchMail({ query: 'from:guerena', after: NOW - 4 * DAY });
-  note(windowed.hits.length === 2, 'window keeps both recent mails', String(windowed.hits.length));
-  const narrowWindow = searchMail({ query: 'from:guerena', after: NOW - 1 * DAY - 3600 });
-  note(narrowWindow.hits.length === 1, 'window excludes the older mail', String(narrowWindow.hits.length));
+  // S2b carries two mails from one sender, one on last Tuesday and one an hour old, so the operator
+  // window has to pick the day out rather than the latest message.
+  const windowed = searchMail({ query: `from:guerena after:${NOW - DAY}` });
+  note(!windowed.hits.some(hit => hit.id === 'm_guerena_0418'), 'an epoch after: operator excludes the older mail', String(windowed.hits.length));
+  const tuesdayWindow = searchMail({ query: `from:guerena after:${LAST_TUESDAY} before:${LAST_TUESDAY + DAY}` });
+  note(tuesdayWindow.hits.length === 1 && tuesdayWindow.hits[0].id === 'm_guerena_tue', 'the Tuesday window holds only the Tuesday mail', String(tuesdayWindow.hits.length));
   const opAfter = searchMail({ query: 'from:guerena after:2d' });
-  note(opAfter.hits.length === 1, 'after: operator honoured', String(opAfter.hits.length));
+  note(opAfter.hits.length === 2, 'after: operator honoured', String(opAfter.hits.length));
   const subjectOp = searchMail({ query: 'subject:"soil trial protocol"' });
   note(subjectOp.hits.length === 1, 'quoted subject operator honoured', String(subjectOp.hits.length));
   const negated = searchMail({ query: 'acme -tomas' });
   note(negated.hits.length === 1 && negated.hits[0].id === 'm_sam_0402', 'negation honoured', String(negated.hits.length));
   const ored = searchMail({ query: 'from:guerena OR subject:"invoice summary"' });
-  note(ored.hits.length === 4, 'OR unions two groups', String(ored.hits.length));
+  note(ored.hits.length === 5, 'OR unions two groups', String(ored.hits.length));
   const orHost = searchMail({ query: 'from:david OR to:david' });
-  note(orHost.hits.length === 3, 'the host compiled query shape matches on a first name', String(orHost.hits.length));
+  note(orHost.hits.length === 4, 'the host compiled query shape matches on a first name', String(orHost.hits.length));
 
   const today = calendarEvents({});
   note(today.count === 8, 'today holds eight events', String(today.count));
@@ -1348,6 +1524,38 @@ function selftest() {
   note(runTool('read_mail', {}).ok === false, 'missing required argument is reported as a failure');
 
   // Each scenario passes its own check on the passing script and fails on the failing one.
+  // The tools lost their typed window, the instructions and the descriptions say so, and the Gemini
+  // declarations carry the same meaning without a type union.
+  const mailTool = TOOLS.find(tool => tool.name === 'search_mail');
+  const chatTool = TOOLS.find(tool => tool.name === 'search_chat');
+  note(!('after' in mailTool.params) && !('before' in mailTool.params), 'search_mail takes no typed window');
+  note(!('after' in chatTool.params) && !('before' in chatTool.params), 'search_chat takes no typed window');
+  note(/12 times in 14/u.test(mailTool.description), 'the mail description states the ignored-bounds count');
+  note((TOOLS.find(tool => tool.name === 'calendar_events').params.start ?? null) !== null, 'calendar keeps its typed start and end');
+  const mailDecl = GEMINI_DECLARATIONS.find(decl => decl.name === 'search_mail');
+  note(mailDecl.parameters.properties.query.type === 'STRING', 'the gemini schema converts the string type');
+  note(!('after' in mailDecl.parameters.properties), 'the gemini mail declaration carries no typed window');
+  note(JSON.stringify(GEMINI_DECLARATIONS.map(decl => decl.name)) === JSON.stringify(TOOLS.map(tool => tool.name)), 'both providers declare the same tools');
+  note(GEMINI_DECLARATIONS.every(decl => Object.values(decl.parameters.properties).every(prop => typeof prop.type === 'string')), 'no gemini property carries a type union');
+
+  // The chat window lives in the query, so after:0 must be read as an operator and not as a word.
+  const chatAll = searchChat({ query: 'a' }).total;
+  note(chatAll > 0 && searchChat({ query: 'a after:0' }).total === chatAll, 'the chat after: operator is honoured', String(chatAll));
+  note(searchChat({ query: 'a before:0' }).total === 0, 'the chat before: operator is honoured');
+
+  // The owner's rule: a pre-6.1 id is refused, and no config names one.
+  let refused = false;
+  try { assertLatest('gpt-6-sol'); } catch { refused = true; }
+  note(refused, 'a pre-6.1 id is refused');
+  note(assertLatest('gpt-6.1-sol') === 'gpt-6.1-sol', 'a 6.1 id is allowed');
+  note(CONFIGS.every(config => !/^gpt-6(-|\.0)/u.test(config.model)), 'no config names a 6.0 id');
+
+  // S2b with two mails from the sender: the day bound has to pick the Tuesday mail out.
+  const s2b = SCENARIOS.find(scenario => scenario.id === 'S2b');
+  const boundLog = [{ hop: 1, name: 'search_mail', args: { query: 'from:guerena after:2026-10-01 before:2026-10-02' }, ok: true }];
+  note(s2b.check(boundLog, 'The mail from that Tuesday is the north block sampling plan.') === null, 'S2b passes on a bounded answer');
+  note(s2b.check(boundLog, 'The kit order for the field team from David.') !== null, 'S2b rejects the other mail from the same sender');
+
   for (const scenario of SCENARIOS) {
     const good = scriptedRun(scenario, PASSING[scenario.id]);
     const verdict = scenario.check(good.log, good.answer);
@@ -1455,25 +1663,30 @@ async function baseline() {
 // ---------------------------------------------------------------------------------------------
 
 const CONFIGS = [
-  { id: 'luna-low', model: 'gpt-6-luna', effort: 'low' },
-  { id: 'luna-medium', model: 'gpt-6-luna', effort: 'medium' },
-  { id: 'sol-low', model: 'gpt-6-sol', effort: 'low' },
+  { id: 'gemini-flash-low', provider: 'gemini', model: 'gemini-3.8-flash', effort: 'low', runs: 5 },
+  { id: 'terra-low', provider: 'openai', model: 'gpt-6.1-terra', effort: 'low', runs: 5 },
+  { id: 'sol-low-control', provider: 'openai', model: 'gpt-6.1-sol', effort: 'low', runs: 3 },
+  { id: 'gemini-flash-medium', provider: 'gemini', model: 'gemini-3.8-flash', effort: 'medium', runs: 5 },
+  { id: 'terra-medium', provider: 'openai', model: 'gpt-6.1-terra', effort: 'medium', runs: 5 },
 ];
+for (const config of CONFIGS) assertLatest(config.model);
 
 function parseArgs(argv) {
-  const options = { mode: 'selftest', runs: 5, out: '', scenarios: '', configs: '', tier: '', budget: CEILING, envFile: '' };
+  const options = { mode: 'selftest', runs: 5, runsExplicit: false, out: '', scenarios: '', configs: '', tier: '', budget: CEILING, envFile: '', coldStart: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[++i];
     if (arg === '--selftest') options.mode = 'selftest';
     else if (arg === '--live') options.mode = 'live';
     else if (arg === '--baseline') options.mode = 'baseline';
-    else if (arg === '--runs') options.runs = Number(next());
+    else if (arg === '--probe') options.mode = 'probe';
+    else if (arg === '--runs') { options.runs = Number(next()); options.runsExplicit = true; }
     else if (arg === '--out') options.out = next();
     else if (arg === '--scenarios') options.scenarios = next();
     else if (arg === '--configs') options.configs = next();
     else if (arg === '--tier') options.tier = next();
     else if (arg === '--env-file') options.envFile = next();
+    else if (arg === '--cold-start') options.coldStart = true;
     else if (arg === '--rescore') { options.mode = 'rescore'; options.out = next(); }
     else if (arg === '--check') options.mode = 'check';
     else if (arg === '--show-instructions') options.mode = 'instructions';
@@ -1490,6 +1703,13 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/** Nearest-rank p90, which needs no interpolation and matches what a single run can promise. */
+function p90(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(0.9 * sorted.length) - 1)];
+}
+
 async function live(options) {
   let apiKey;
   try {
@@ -1501,11 +1721,20 @@ async function live(options) {
     process.exitCode = 2;
     return;
   }
+  let geminiApiKey = '';
+  try {
+    geminiApiKey = geminiKey(options.envFile).value;
+    console.log('GEMINI_KEY=present');
+  } catch (error) {
+    console.log(`GEMINI_KEY=absent reason=${error.message}`);
+  }
   const prices = priceTable();
   console.log(`PRICES=assumed ${Object.entries(prices).map(([m, p]) => `${m}:${p.in}/${p.out}`).join(',')} default:${DEFAULT_PRICE.in}/${DEFAULT_PRICE.out} source=${process.env.EVAL_PRICES ? 'EVAL_PRICES' : 'assumed_overridable'}`);
-  console.log(`CEILING_USD=${options.budget.toFixed(2)} RUNS_PER_CONFIG=${options.runs} MODEL_WALL_CLOCK_START=${new Date().toISOString()}`);
+  console.log(`CEILING_USD=${options.budget.toFixed(2)} MODEL_WALL_CLOCK_START=${new Date().toISOString()}`);
   const picked = options.scenarios ? options.scenarios.split(',').map(s => s.trim().toUpperCase()) : SCENARIOS.map(s => s.id);
-  const configs = options.configs ? CONFIGS.filter(c => options.configs.split(',').map(s => s.trim()).includes(c.id)) : CONFIGS;
+  const wanted = options.configs ? options.configs.split(',').map(s => s.trim()) : null;
+  const configs = CONFIGS.filter(config => (wanted ? wanted.includes(config.id) : true) && (config.provider !== 'gemini' || geminiApiKey));
+  const reps = config => (options.runsExplicit ? options.runs : (config.runs ?? options.runs));
   const runs = [];
   let spent = 0;
   if (options.out) {
@@ -1519,16 +1748,20 @@ async function live(options) {
     } catch { /* no prior output */ }
   }
   let skipped = 0;
+  const lastEnd = new Map();
   // Repetition outermost: a ceiling stop leaves a balanced sample rather than one covered config.
-  for (let rep = 1; rep <= options.runs; rep += 1) {
+  const maxReps = Math.max(...configs.map(reps));
+  for (let rep = 1; rep <= maxReps; rep += 1) {
     for (const config of configs) {
+      if (rep > reps(config)) continue;
       for (const id of picked) {
         const scenario = SCENARIOS.find(s => s.id.toUpperCase() === id);
         if (!scenario) { console.log(`SKIP scenario ${id} unknown`); continue; }
         if (spent >= options.budget) { skipped += 1; continue; }
         let result;
         try {
-          result = await runLive({ scenario, model: config.model, effort: config.effort, tier: options.tier, apiKey });
+          result = await runLive({ scenario, model: config.model, provider: config.provider ?? 'openai', effort: config.effort, tier: options.tier, apiKey: config.provider === 'gemini' ? geminiApiKey : apiKey });
+          lastEnd.set(config.id, Date.now());
         } catch (error) {
           const row = { scenario: scenario.id, config: config.id, rep, error: error.message, spent };
           console.log(`RUN ${id} ${config.id} rep=${rep} ERROR=${error.message}`);
@@ -1543,6 +1776,7 @@ async function live(options) {
           scenario: scenario.id,
           config: config.id,
           model: config.model,
+          provider: config.provider ?? 'openai',
           effort: config.effort,
           tier: options.tier || 'auto',
           tier_echo: result.tierEcho || '',
@@ -1556,6 +1790,8 @@ async function live(options) {
           waves: result.waves,
           stop_reason: result.stopReason,
           wall_ms: result.wallMs,
+          hop_ms: result.hopMs,
+          cold_start_ms: null,
           calls: result.log.map(c => ({ hop: c.hop, name: c.name, args: c.args, ok: c.ok, error: c.error })),
           answer: result.answer,
           usage: result.usage,
@@ -1570,16 +1806,59 @@ async function live(options) {
     }
   }
   console.log(`SKIPPED_RUNS_AT_CEILING=${skipped}`);
+  if (options.coldStart) {
+    // One first hop per config after a 60 s idle: the only measurement that shows a cold start.
+    const scenario = SCENARIOS.find(row => row.id === 'S1');
+    console.log('COLD_START=begin idle_s=60 scenario=S1');
+    for (const config of configs) {
+      const idle = 60_000 - (Date.now() - (lastEnd.get(config.id) ?? 0));
+      if (idle > 0) await new Promise(resolve => setTimeout(resolve, idle));
+      try {
+        const result = await runLive({ scenario, model: config.model, provider: config.provider ?? 'openai', effort: config.effort, tier: options.tier, apiKey: config.provider === 'gemini' ? geminiApiKey : apiKey });
+        const cost = costOf(config.model, result.usage, prices);
+        spent += cost.usd;
+        const pass = scenario.check(result.log, result.answer) === null;
+        console.log(`COLD_START ${config.id} first_hop_ms=${result.hopMs[0]} hops=${result.hops} wall_ms=${result.wallMs} pass=${pass} usd=${cost.usd.toFixed(4)}`);
+        runs.push({ scenario: scenario.id, config: config.id, model: config.model, provider: config.provider ?? 'openai', effort: config.effort, rep: 0, pass, hops: result.hops, wall_ms: result.wallMs, hop_ms: result.hopMs, cold_start_ms: result.hopMs[0], usage: result.usage, usd: Number(cost.usd.toFixed(6)) });
+      } catch (error) {
+        console.log(`COLD_START ${config.id} ERROR=${error.message}`);
+      }
+      lastEnd.set(config.id, Date.now());
+    }
+  }
   summarize(runs);
 }
 
 function summarize(runs) {
-  const done = runs.filter(row => !row.error);
+  const done = runs.filter(row => !row.error && row.rep !== 0);
+  const cold = runs.filter(row => row.cold_start_ms !== null && row.cold_start_ms !== undefined);
   const byScenario = {};
   for (const row of done) {
     byScenario[row.scenario] ??= [];
     byScenario[row.scenario].push(row);
   }
+  const configs = [...new Set(done.map(row => row.config))];
+  const leading = ['S1', 'S1c', 'S2b', 'S6', 'S9'];
+  const cell = (group, id) => {
+    const rows = group.filter(row => row.scenario === id);
+    return rows.length ? `${rows.filter(row => row.pass).length}/${rows.length}` : '-';
+  };
+  const seconds = value => (value === null ? 'n/a' : (value / 1000).toFixed(1));
+  console.log('');
+  console.log('CONFIG MODEL PASS S1 S1c S2b S6 S9 MEDIAN_S P90_S WORST_S HOPS_MED HOP_MED_MS IN_TOK OUT_TOK USD USD_PER_PASS');
+  for (const config of configs) {
+    const group = done.filter(row => row.config === config);
+    const passed = group.filter(row => row.pass).length;
+    const walls = group.map(row => row.wall_ms);
+    const usd = group.reduce((sum, row) => sum + row.usd, 0);
+    const hopMs = group.flatMap(row => row.hop_ms ?? []);
+    const inTok = group.reduce((sum, row) => sum + Number(row.usage?.input_tokens ?? 0), 0);
+    const outTok = group.reduce((sum, row) => sum + Number(row.usage?.output_tokens ?? 0), 0);
+    console.log(`${config} ${group[0]?.model ?? ''} ${passed}/${group.length} ${leading.map(id => cell(group, id)).join(' ')} ${seconds(median(walls))} ${seconds(p90(walls))} ${seconds(Math.max(...walls))} ${median(group.map(row => row.hops))} ${median(hopMs)} ${inTok} ${outTok} ${usd.toFixed(4)} ${passed ? (usd / passed).toFixed(4) : 'n/a'}`);
+  }
+  console.log('');
+  console.log('COLD_START CONFIG FIRST_HOP_MS HOPS WALL_MS');
+  for (const row of cold) console.log(`COLD_START ${row.config} ${row.cold_start_ms} ${row.hops} ${row.wall_ms}`);
   console.log('');
   console.log('SCENARIO CONFIG PASS_RATE MEDIAN_HOPS WORST_HOPS MEDIAN_MS WORST_MS');
   for (const [id, rows] of Object.entries(byScenario).sort()) {
@@ -1593,6 +1872,12 @@ function summarize(runs) {
       console.log(`${id} ${config} ${passed}/${group.length} ${median(group.map(r => r.hops))} ${Math.max(...group.map(r => r.hops))} ${median(group.map(r => r.wall_ms))} ${Math.max(...group.map(r => r.wall_ms))}`);
     }
   }
+  console.log('');
+  console.log('FAILING_RUNS');
+  for (const row of done.filter(row => !row.pass)) {
+    const calls = (row.calls ?? []).map(call => `${call.hop}:${call.name}${call.ok ? '' : `(${call.error})`}${call.args?.query ? `[${String(call.args.query).slice(0, 60)}]` : ''}`).join(' ');
+    console.log(`FAIL ${row.config} ${row.scenario} rep=${row.rep} check=${row.failed_check} hops=${row.hops} ms=${row.wall_ms} calls=${calls || 'none'}`);
+  }
   const universal = Object.entries(byScenario).filter(([, rows]) => rows.length > 0).filter(([, rows]) => {
     const configs = new Set(rows.map(r => r.config));
     return [...configs].every(config => rows.filter(r => r.config === config).every(r => !r.pass));
@@ -1604,9 +1889,64 @@ function summarize(runs) {
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Model id probe: list the models each config names and report whether the id is offered, or the
+ * exact error the API returns for it. No configuration row falls back to an older generation.
+ */
+async function probeModels(options) {
+  let openAiKeyValue = null;
+  let geminiKeyValue = null;
+  try { openAiKeyValue = key(options.envFile).value; console.log('OPENAI_KEY=present'); } catch (error) { console.log(`OPENAI_KEY=absent reason=${error.message}`); }
+  try { geminiKeyValue = geminiKey(options.envFile).value; console.log('GEMINI_KEY=present'); } catch (error) { console.log(`GEMINI_KEY=absent reason=${error.message}`); }
+  const seen = new Set();
+  for (const config of CONFIGS) {
+    const tag = `${config.provider}:${config.model}`;
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    const value = config.provider === 'gemini' ? geminiKeyValue : openAiKeyValue;
+    if (!value) { console.log(`MODEL ${config.model} provider=${config.provider} offered=unknown detail=no key`); continue; }
+    try {
+      const result = await probeOne(config.provider, config.model, value);
+      console.log(`MODEL ${config.model} provider=${config.provider} offered=${result.offered ? 'yes' : 'no'} detail=${result.detail}`);
+    } catch (error) {
+      console.log(`MODEL ${config.model} provider=${config.provider} offered=unknown detail=${error.message}`);
+    }
+  }
+}
+
+async function probeOne(provider, model, apiKey) {
+  if (provider === 'gemini') {
+    const response = await fetch(`${GEMINI_ENDPOINT}?pageSize=200`, { headers: { 'x-goog-api-key': apiKey } });
+    const text = await response.text();
+    if (!response.ok) return { offered: false, detail: `list http ${response.status}: ${text.slice(0, 240)}` };
+    const names = (JSON.parse(text).models ?? []).map(row => String(row.name).replace(/^models\//u, ''));
+    if (names.includes(model)) return { offered: true, detail: 'listed' };
+    const call = await fetch(`${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }] }),
+    });
+    const body = await call.text();
+    return { offered: false, detail: `not listed; probe http ${call.status}: ${body.slice(0, 240)}` };
+  }
+  const response = await fetch(`${OPENAI_BASE}/models`, { headers: { authorization: `Bearer ${apiKey}` } });
+  const text = await response.text();
+  if (!response.ok) return { offered: false, detail: `list http ${response.status}: ${text.slice(0, 240)}` };
+  const ids = (JSON.parse(text).data ?? []).map(row => String(row.id));
+  if (ids.includes(model)) return { offered: true, detail: 'listed' };
+  const call = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, input: 'ping', max_output_tokens: 16, store: false }),
+  });
+  const body = await call.text();
+  return { offered: false, detail: `not listed; probe http ${call.status}: ${body.slice(0, 240)}` };
+}
+
 const options = parseArgs(process.argv.slice(2));
 if (options.mode === 'selftest') selftest();
 else if (options.mode === 'baseline') await baseline();
+else if (options.mode === 'probe') await probeModels(options);
 else if (options.mode === 'check') {
   try {
     const found = key(options.envFile);

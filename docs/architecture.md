@@ -50,3 +50,29 @@ Composed Lux notes are an explicit gated write flow. `liveDefinitions` in `serve
 | Package or release | [releases.md](releases.md) |
 
 This page describes the merged release. Future work belongs in [roadmap.md](roadmap.md), not in the runtime contract. Historical designs remain under [history/](history/README.md).
+
+## Host-owned task core (10.10, not connected to live sessions yet)
+
+`server/tasks/` owns typed tool results, the configurable text worker loop and revision lifecycle.
+`runtime.ts` composes `Store`, the pure controller and the delivery interface; no live adapter calls it yet.
+The model port supports OpenAI Responses and Gemini generateContent over host-resolved credential references.
+Each role has one provider, model id and effort configuration; the measured default is one named constant in
+`tasks/model.ts`. Provider continuation retains reasoning and thought signatures. No provider call runs in the task suites.
+
+Finalized owner words start or revise work without a language classifier. Revision cancellation stops new admissions
+and aborts inference. Read results are canonically deduplicated within a revision and retained across its corrections;
+effect receipts are not a read cache. A stale revision or connection generation cannot deliver.
+Connector, inference and revision deadlines are 12, 12 and 36 seconds. There is no call or hop cap.
+The model decides queries. Mail and chat windows are query operators; calendar has typed start and end.
+
+`results.ts` separates empty, no_match, partial and failed from successful results. Ranked knowledge and company
+candidates are labelled exact or neighbour by normalized full-title equality with the query. No-match opens nothing.
+Opened documents carry up to 24,000 characters per result and an explicit character cursor; search items stay concise.
+`clean.ts` contains shared structural mail cleaning. `tools/live-shape.ts` retains its legacy voice limits,
+calendar and attendee formatting, search projections, omission annotations and research compatibility exports until C-VOICE.
+
+Task migrations belong to `runtime/task-schema.ts` and are applied by `Store` only. Owner words, arguments,
+results and final answers use the host content-capture gate; metadata and delivery attempts remain recorded.
+Content is pruned at 30 days, metadata at 90, matching trace retention. Pending operations become unknown at restart.
+Closed-field `task_lifecycle` events never include queries or bodies. Delivery completion here means acceptance by
+an injected delivery interface, not proof of spoken audio. The voice wagon owns actual transport acknowledgement.

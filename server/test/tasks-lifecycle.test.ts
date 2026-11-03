@@ -102,3 +102,13 @@ test('ambiguous write is not replayed by the worker', async () => {
     } });
   assert.equal(writes, 1); assert.equal(final.text, 'Outcome unverified');
 });
+
+test('outside text is tracked by the host across inference turns', async () => {
+  const authority = new FakeAuthority(); let hop = 0;
+  const registry = createRegistry({ authority, execute: async () => documentResult('synthetic outside evidence', 'm') });
+  await runWorker({ registry, identity, input: 'fixture', signal: new AbortController().signal, infer: async () => {
+    hop++;
+    return hop === 1 ? { text: '', calls: [{ id: 'read', name: 'read_mail', args: { id: 'm', cursor: null } }] } : hop === 2 ? { text: '', calls: [{ id: 'write', name: 'delete_event', args: { id: 'e' } }] } : { text: 'done', calls: [] };
+  } });
+  assert.equal(authority.requests[0]?.outside_text, true);
+});

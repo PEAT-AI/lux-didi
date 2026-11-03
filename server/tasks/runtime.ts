@@ -35,7 +35,7 @@ export class TaskRuntime {
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, this.options.contentAllowed());
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     const result = runWorker({ registry: this.options.registry, infer: this.options.infer, identity, input: workerInput(revision, 'running'), signal: revision.signal,
-      reads: revision.reads, isCurrent: () => this.controller.isCurrent(identity),
+      reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => {
         const effect = this.options.registry.get(tool)!.effect;
         // An unacknowledged effect is unknown, never proof of failure and never an automatic retry.

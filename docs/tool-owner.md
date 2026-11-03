@@ -134,3 +134,28 @@ The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` 
 Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
 
 Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
+
+## Task worker boundary (10.10)
+
+The dormant `server/tasks/` registry is separate from the legacy research tool. Structural argument validation
+uses the repository MCP SDK schema validator; nullable optional fields are removed before connector execution.
+Configured company resources compile into `query_company(resource, filters)` from `CONNECTOR_DESCRIPTORS`.
+Read results declare whether they count as outside text. The host tracks that fact between inference turns;
+model output never changes authority. Every effect passes exactly one injected `Authority.authorize` port.
+C-AUTH supplies production admission and commit journaling. `FakeAuthority` is for synthetic tests only.
+
+`open(kind, target)` shares one simple schema. Alarm create, list, cancel and update remain distinct:
+their required fields differ and a combined action schema would add unused optional fields. Trello reuses
+its existing read and write parameters and validators. Local executors, memory, people and web tools are
+injected as bound existing executors by the eventual host composition, never discovered from model text.
+No automatic retry of an unacknowledged write is safe. Such an outcome remains unknown until reconciled.
+
+Follow-ups outside this registry: calendar event updates, invitation responses, sending email or chat,
+Drive writes, connector configuration and connector administrative capabilities. They are not silently
+translated into another action. Unconfigured tools return actionable repair text, not an opaque batch error.
+
+The offline task check is `bash scripts/check-tasks.sh`. It includes contract, lifecycle and synthetic Store
+integration suites, the retained live-shape regression suite and the check-map selftest. Synthetic replay
+fixtures in `scripts/eval-worker-replay.mjs` reuse the probe's Gmail data and search semantics; they do not
+prove that a real model chooses the right calls or behaves correctly. Real model replay and installation
+remain separate acceptance work, never an implicit effect of this check.

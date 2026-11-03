@@ -14,7 +14,7 @@ export function taskGeminiSchema(schema: Schema): Schema {
   const type = types.find(item => item !== 'null');
   const converted = geminiDialect({ ...schema, type, ...(types.includes('null') ? { nullable: true } : {}) });
   converted.type = String(type).toUpperCase();
-  if (schema.enum) converted.enum = schema.enum;
+  if (Array.isArray(schema.enum)) converted.enum = schema.enum.filter(value => value !== null);
   if (schema.items) converted.items = taskGeminiSchema(schema.items as Schema);
   if (schema.properties) converted.properties = Object.fromEntries(Object.entries(schema.properties as Record<string, Schema>).map(([key, value]) => [key, taskGeminiSchema(value)]));
   return converted;

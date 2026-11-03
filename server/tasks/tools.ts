@@ -6,10 +6,10 @@ export type Schema = Record<string, unknown>;
 export interface TaskTool {
   name: string; description: string; parameters: Schema; effect: Effect; outside_text: boolean;
   validate?(args: Record<string, unknown>): boolean;
-  run(args: Record<string, unknown>, identity: Identity, signal: AbortSignal): Promise<ToolResult>;
+  run(args: Record<string, unknown>, identity: Identity, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
 }
 export interface ToolPorts {
-  execute(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult>;
+  execute(name: string, args: Record<string, unknown>, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
   authority: Authority;
 }
 const string: Schema = { type: 'string', minLength: 1 };
@@ -74,12 +74,12 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
       name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside ?? true, ...(definition.validate ? { validate: definition.validate } : {}),
-      async run(args, identity, signal) {
+      async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) return failed(validation.repair);
         if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
         const execute = () => ports.execute(tool.name, validation.args, signal);
-        return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: tool.outside_text }, execute, signal);
+        return effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal);
       },
     };
     if (registry.has(tool.name)) throw new Error(`Duplicate task tool ${tool.name}`);

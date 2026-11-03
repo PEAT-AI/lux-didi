@@ -28,6 +28,8 @@ export interface WorkerOptions {
   model?: string; effort?: string; clock?: Clock;
   reads?: Map<string, ToolResult>;
   isCurrent?: () => boolean;
+  outsideTextSeen?: boolean;
+  event?: (phase: 'inference' | 'calls' | 'dedupe' | 'deadline' | 'cancel', count: number, ms: number) => void;
   operation?: (identity: Identity, name: string, args: Record<string, unknown>, result: ToolResult | null) => void;
 }
 export function canonical(value: unknown): string {
@@ -40,10 +42,11 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const clock = options.clock ?? realClock, start = clock.now();
   const abort = new AbortController();
   let expired = false;
+  let outsideTextSeen = options.outsideTextSeen ?? false;
   const stop = (): void => abort.abort();
   options.signal.addEventListener('abort', stop, { once: true });
   if (options.signal.aborted) stop();
-  const expire = (): void => { expired = true; stop(); };
+  const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
   const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
   const pending = new Map<string, Promise<ToolResult>>();
@@ -72,7 +75,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const identity = { ...options.identity, operation_id: randomUUID() };
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
-      try { result = await bounded(signal => tool.run(call.args as Record<string, unknown>, identity, signal), CONNECTOR_DEADLINE_MS); }
+      try { result = await bounded(signal => tool.run(call.args as Record<string, unknown>, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch { result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.'); }
       options.operation?.(identity, tool.name, validation.args, result);
       if (result.status !== 'failed') {
@@ -84,7 +87,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     let result: ToolResult;
     if (tool.effect === 'none') {
       const cached = reads.get(key);
-      if (cached) { result = cached; if (!findings.includes(cached)) findings.push(cached); }
+      if (cached) { options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
       else {
         let work = pending.get(key);
         if (!work) { work = execute(); pending.set(key, work); }
@@ -97,12 +100,16 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     while (current()) {
       let inference: Inference;
       try {
+        options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: WORKER_INSTRUCTIONS, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
       } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete' }; }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings };
-      outputs.push(...await Promise.all(inference.calls.map(call)));
+      options.event?.('calls', inference.calls.length, clock.now() - start);
+      const completed = await Promise.all(inference.calls.map(call));
+      if (completed.some(output => output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text)) outsideTextSeen = true;
+      outputs.push(...completed);
     }
     return finish();
   } finally { clearRevision(); options.signal.removeEventListener('abort', stop); }

@@ -1,3 +1,4 @@
+import './context-hygiene.test.js';
 import './host-log.test.js';
 import './connector-publication.test.js';
 import './live-declarations.test.js';

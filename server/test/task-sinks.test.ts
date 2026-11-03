@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveWebOpen } from '../tools/open.js';
+import { normalizeTrelloWrite } from '../tools/trello.js';
 import { publicQueryOf, searchQueryAfterExposure } from '../tools/web-search.js';
 
 for (const target of ['https://example.com/leak?text=secret', 'http://localhost/a', 'http://127.0.0.1/', 'http://10.0.0.1/', 'http://[::1]/', 'https://user:pass@example.com/']) {
@@ -23,6 +24,14 @@ test('query exposure removes invented URL and site operator but preserves owner 
   assert.equal(searchQueryAfterExposure('release site:example.com', 'Search site:example.com for release', true), 'release site:example.com');
   assert.equal(searchQueryAfterExposure('release site:example.com', 'Find releases', false), 'release site:example.com');
   assert.equal(searchQueryAfterExposure('https://evil.example', 'Find releases', true), '');
+});
+
+test('Trello strips mentions and never retains a member assignment', () => {
+  const result = normalizeTrelloWrite({ action: 'create', list: 'Inbox', name: 'Review @board release', description: 'Ask @synthetic-person about this', idMembers: ['synthetic-member'] });
+  assert.equal(result.args.name, 'Review release');
+  assert.equal(result.args.description, 'Ask about this');
+  assert.equal(result.args.idMembers, undefined);
+  assert.equal(normalizeTrelloWrite({ action: 'create', list: 'Inbox', name: 'Review release', description: 'Ask about this' }).args.name, 'Review release');
 });
 
 test('ordinary asks remain public queries while pasted passages and addresses stay local', () => {

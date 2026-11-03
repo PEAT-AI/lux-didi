@@ -1231,3 +1231,12 @@ test('F4 Gemini: the research cap never refuses a non-research tool', async t =>
   assert.equal(JSON.stringify(responses).includes('"synthetic-retry-call"') && JSON.stringify(responses.at(-1)).includes('research_cap_reached'), false,
     'and it is never answered with the research cap code');
 });
+
+test('Gemini exposes only the blocking delegate request function', async t => {
+  const { f } = await providerReady(t);
+  const setup = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string; behavior?: string; parameters: unknown }[] }[] } };
+  const declarations = setup.setup?.tools?.flatMap(tool => tool.functionDeclarations);
+  assert.deepEqual(declarations?.map(tool => tool.name), ['delegate']);
+  assert.equal(declarations?.[0]?.behavior, 'BLOCKING');
+  assert.deepEqual(declarations?.[0]?.parameters, { type: 'OBJECT', properties: { request: { type: 'STRING' } }, required: ['request'] });
+});

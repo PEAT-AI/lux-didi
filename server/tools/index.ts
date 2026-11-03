@@ -2,7 +2,6 @@ import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js'
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
-import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
 
@@ -30,7 +29,6 @@ import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConn
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
-import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmNamedBy, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
@@ -190,7 +188,6 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
-  const ownerRequests = new OwnerRequests(undefined, () => options.alarms?.now() ?? Date.now());
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -528,7 +525,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     },
   });
   const owner: ToolsOwner & LiveRunConnections = {
-    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
+    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
     taskIntent(context, name, args) {
       return store.transaction(tx => {
         const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
@@ -587,7 +584,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
     },
     observeAlarmOwner: (session, journalId, words, at) => {
-      ownerRequests.observe(session, journalId, words, at);
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },

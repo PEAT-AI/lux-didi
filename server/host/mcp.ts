@@ -8,7 +8,6 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
-import { configureProjectNames } from '../tools/research.js';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
@@ -322,7 +321,6 @@ export async function composeMcpRuntime(options: {
   const selection = loadMcpEndpoints({ configDir });
   // V-R2: the owner's project names ride in the same provider catalogue as the grant mode; they are the
   // only source of a knowledge project hint, so a catalogue without the key leaves the hint set empty.
-  configureProjectNames(selection.state === 'configured' ? selection.catalog.researchProjects : undefined);
   // W2B-R1: the enabled entries of mcp.json are the connections a run may hold. A readable catalog with
   // no entry for a stored row retires it; a catalog that is missing retires nothing, because it says nothing.
   const configuredConnectionIds = selection.state === 'missing'

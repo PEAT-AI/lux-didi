@@ -46,3 +46,27 @@ test('strict schemas, null pruning and writes pass the one authority port', asyn
   assert.equal(authority.requests.length, 1);
   assert.equal(calls.length, 1);
 });
+
+test('both provider ports carry strict typed calls and return a final answer without network', async () => {
+  const { createModelPort, DEFAULT_WORKER_MODEL } = await import('../tasks/model.js');
+  assert.equal(DEFAULT_WORKER_MODEL, 'gpt-6.1-sol');
+  for (const provider of ['openai', 'gemini'] as const) {
+    let calls = 0;
+    const registry = createRegistry({ execute: async () => documentResult('whole', 'fixture'), authority: new FakeAuthority() });
+    const infer = createModelPort({ role: { provider, model: provider === 'openai' ? DEFAULT_WORKER_MODEL : 'gemini-fixture', effort: 'low', keyReference: 'fixture-reference' }, credentials: { resolve: async reference => { assert.equal(reference, 'fixture-reference'); return 'synthetic-key'; } },
+      transport: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        assert.ok(body.tools.length);
+        assert.doesNotMatch(JSON.stringify(body.tools), /"type":"STRING,NULL"/);
+        calls++;
+        const call = { name: 'read_mail', args: { id: 'm', cursor: null } };
+        const payload = provider === 'openai'
+          ? { status: 'completed', output: calls === 1 ? [{ type: 'function_call', call_id: 'c', name: call.name, arguments: JSON.stringify(call.args) }] : [{ type: 'message', content: [{ type: 'output_text', text: 'verified final' }] }] }
+          : { candidates: [{ finishReason: 'STOP', content: { parts: calls === 1 ? [{ functionCall: call }] : [{ text: 'verified final' }] } }] };
+        return new Response(JSON.stringify(payload));
+      } });
+    const { runWorker } = await import('../tasks/worker.js');
+    const result = await runWorker({ registry, infer, identity: { task_id: 't', task_revision: 1, connection_generation: 1 }, input: 'fixture', signal: new AbortController().signal });
+    assert.equal(result.text, 'verified final'); assert.equal(calls, 2);
+  }
+});

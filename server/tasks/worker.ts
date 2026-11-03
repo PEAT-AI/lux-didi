@@ -6,7 +6,8 @@ import { WORKER_INSTRUCTIONS } from './instructions.js';
 export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
-export const DEFAULT_WORKER_MODEL = 'gpt-6-sol';
+import { DEFAULT_WORKER_MODEL } from './model.js';
+export { DEFAULT_WORKER_MODEL } from './model.js';
 export const DEFAULT_WORKER_EFFORT = 'low';
 export interface ToolCall { id: string; name: string; args: unknown }
 export interface Output { id: string; name: string; result: ToolResult }

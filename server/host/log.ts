@@ -1,7 +1,6 @@
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
-import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, RESEARCH_SOURCES as RESEARCH_SOURCE_KINDS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
@@ -23,13 +22,6 @@ const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 /** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
 const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
-// LAT-1022: the run, progress and source receipts name a source by the tool layer's own SourceKind, so the
-// closed set is derived from that list and never a second copy of it. The copied list had gone stale (it
-// lacked `data`, the company-numbers source), and one source outside the set refused the whole line: every
-// research_run line naming an unread `data` source was dropped silently for four days while research_source
-// kept firing. `drive` and `memory` are named here because the receipts may carry them for a configured
-// connector, and they are not research read kinds.
-const RESEARCH_SOURCES = [...new Set<string>([...RESEARCH_SOURCE_KINDS, 'memory', 'drive'])];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -175,9 +167,6 @@ const rejectResearchId = (event: string): Record<string, unknown> => ({ event: '
  * Names only: a value never rides this line, so an entry that carries one is dropped whole.
  */
 const NORMALIZED_PATH = /^(?:question|topic|researchId|sources|direction|cursor|pageCursor|lookups)(?:\[\d{1,2}\])?(?:\.(?:source|query|history|mail))?$/u;
-/** A padded call names more paths than any one line wants, so a closed maximum is kept and the rest is dropped: the
- *  whole line is never lost, and every kept entry is still a name from a closed list. */
-const RESEARCH_NORMALIZED_MAX = RESEARCH_ARGUMENT_FIELDS.length - 1 + 4 * RESEARCH_LIMITS.maxLoggedLookups;
 const isNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && NORMALIZED_PATH.test(path));
 const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
@@ -803,13 +792,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'dropped'])) return;
     if (!Number.isInteger(value.dropped) || (value.dropped as number) < 1) return undefined;
     return { event: 'research_query_token_dropped', dropped: value.dropped };
-  }
-  if (value.event === 'research_blocked') {
-    // C-LIVE behaviour 1: a research call no owner turn admitted, by action and closed reason.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'action', 'reason'])) return;
-    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation)) return;
-    if (!isSafeMember(value.action, ['start', 'continue', 'stop']) || !isSafeMember(value.reason, [...ADMISSION_BLOCK_REASONS])) return;
-    return { event: 'research_blocked', liveSessionId: value.liveSessionId, generation: value.generation, action: value.action, reason: value.reason };
   }
   if (value.event === 'research_operation_deadline') {
     // C-LIVE behaviour 4: the host answered an operation its loop had not answered by the deadline.
@@ -1482,35 +1464,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms)) return;
     return { event: value.event, ms: value.ms };
   }
-  if (value.event === 'research_refused') {
-    // C-RESEARCH-CONTRACT T-04: the refusal names the closed reason and the call's shape as lengths and closed
-    // source names. Field text, question text and lookup values never enter a log line.
-    // C-ENTITY: an `entity_rewrite` refusal also carries the three name counts, numbers and never the words.
-    const counts = value.reason === 'entity_rewrite' ? ['namesKept', 'namesDropped', 'namesAdded'] : [];
-    // C-FILLER adds the closed property paths a normalisation dropped: names only, never a value.
-    const normalized = value.normalized === undefined ? undefined : value.normalized;
-    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources', ...counts, ...(normalized === undefined ? [] : ['normalized'])])) return;
-    if (!counts.every(key => isSafeCount(value[key]))) return;
-    if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
-    if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
-    if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
-    if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
-    if (!isSafeCount(value.topicChars) || !isSafeCount(value.questionChars)) return;
-    // F5: the shape carries one entry per lookup, and a refused call may name more than the limit allows, so the
-    // ceiling is the call's own lookup count (already closed and counted) rather than the limit it broke.
-    const entries = Math.min(value.lookupCount, RESEARCH_LIMITS.maxLoggedLookups);
-    if (!Array.isArray(value.queryChars) || value.queryChars.length > entries || !value.queryChars.every(isSafeCount)) return;
-    if (!Array.isArray(value.lookupSources) || value.lookupSources.length > entries) return;
-    if (!value.lookupSources.every(source => (LOOKUP_SOURCES as readonly unknown[]).includes(source))) return;
-    if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) return;
-    const fields = value.fields as Record<string, unknown>;
-    if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
-    return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
-      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
-      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources],
-      ...(counts.length > 0 ? { namesKept: value.namesKept, namesDropped: value.namesDropped, namesAdded: value.namesAdded } : {}),
-      ...(normalized === undefined ? {} : { normalized: normalized.slice(0, RESEARCH_NORMALIZED_MAX) }) };
-  }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
     const base = ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'];
@@ -1548,194 +1501,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.msInFlight === null || isSafeCount(value.msInFlight))) return;
     return { event: 'tool_cancelled', tool: value.tool, id: value.id, msInFlight: value.msInFlight };
   }
-  if (value.event === 'research_progress') {
-    // 241: run phase and source kinds only, never question text, evidence or item ids.
-    const hasCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
-    const progressKeys = [...['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'], ...(hasCall ? ['callKey'] : [])];
-    if (Object.keys(value).sort().join(',') !== progressKeys.sort().join(',')) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
-    if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
-    if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
-    if (hasCall && !isCallKey(value.callKey)) return;
-    return { event: 'research_progress', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
-  }
-  if (value.event === 'research_run') {
-    // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
-    // never question text, evidence or item ids.
-    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
-    // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
-    // one of the four; any other value refuses the whole event, as the closed sets above do. #280:
-    // a routed start writes its own line and names `routed`.
-    const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
-    if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
-    // K14/K8a/L10: three optional closed counts, so a run line says how many whole bodies it sent, whether
-    // a contentless start stood in for a continue, and how many dispatches a supersession aborted.
-    const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
-    if (has('bodyReplies') && !isSafeCount(value.bodyReplies)) return;
-    if (has('metaStartAsContinue') && typeof value.metaStartAsContinue !== 'boolean') return;
-    if (has('supersededAborts') && !isSafeCount(value.supersededAborts)) return;
-    // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
-    if (has('plan') && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan', 'roundCapHit', 'answerCompacted'].filter(has);
-    if (Object.keys(value).sort().join(',') !== [...keys, ...optionals].sort().join(',')) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
-    if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
-    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
-    if (typeof value.fallbackUsed !== 'boolean') return;
-    if (!isSafeCount(value.rounds) || !isSafeCount(value.ops) || !isSafeCount(value.elapsedMs) || !isSafeCount(value.deadAirMs) || !isSafeCount(value.selectorMs) || !isSafeCount(value.replyBytes)) return;
-    const pUseful = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
-    if (!Array.isArray(value.perRound) || value.perRound.length > 8) return;
-    const perRound: { candidates: { kind: string; pUseful: number }[]; chosen: string[] }[] = [];
-    for (const round of value.perRound) {
-      if (!round || typeof round !== 'object' || Array.isArray(round)) return;
-      const row = round as Record<string, unknown>;
-      if (Object.keys(row).sort().join(',') !== ['candidates', 'chosen'].sort().join(',')) return;
-      if (!Array.isArray(row.chosen) || !row.chosen.every(kind => isSafeMember(kind, RESEARCH_CANDIDATES))) return;
-      if (!Array.isArray(row.candidates) || row.candidates.length > 16) return;
-      const candidates: { kind: string; pUseful: number }[] = [];
-      for (const candidate of row.candidates) {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
-        const cell = candidate as Record<string, unknown>;
-        if (Object.keys(cell).sort().join(',') !== ['kind', 'pUseful'].sort().join(',')) return;
-        if (!isSafeMember(cell.kind, RESEARCH_CANDIDATES) || !pUseful(cell.pUseful)) return;
-        candidates.push({ kind: cell.kind, pUseful: cell.pUseful });
-      }
-      perRound.push({ candidates, chosen: row.chosen });
-    }
-    if (!Array.isArray(value.sources) || value.sources.length > 16) return;
-    const sources: { kind: string; disposition: string; latencyMs: number; reason?: string }[] = [];
-    for (const source of value.sources) {
-      if (!source || typeof source !== 'object' || Array.isArray(source)) return;
-      const row = source as Record<string, unknown>;
-      const keys = Object.keys(row).sort().join(',');
-      const skipped = row.disposition === 'skipped';
-      if (![['kind', 'disposition', 'latencyMs'], ['kind', 'disposition', 'latencyMs', 'reason']].some(shape => shape.sort().join(',') === keys)) return;
-      if (!isSafeMember(row.kind, RESEARCH_SOURCES) || !isSafeMember(row.disposition, RESEARCH_DISPOSITIONS) || !isSafeCount(row.latencyMs)) return;
-      if (Object.prototype.hasOwnProperty.call(row, 'reason') && (!skipped || !isSafeMember(row.reason, RESEARCH_SKIP_REASONS))) return;
-      sources.push({ kind: row.kind as string, disposition: row.disposition as string, latencyMs: row.latencyMs as number, ...(skipped && row.reason !== undefined ? { reason: row.reason as string } : {}) });
-    }
-    if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
-    if (typeof value.canContinue !== 'boolean') return;
-    if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
-    // LAT-1023: the round cap and the compaction are closed counts, never a query, an item or its text.
-    if (has('roundCapHit') && !isSafeCount(value.roundCapHit)) return;
-    if (has('answerCompacted')) {
-      const compacted = value.answerCompacted;
-      if (!compacted || typeof compacted !== 'object' || Array.isArray(compacted)) return;
-      const cell = compacted as Record<string, unknown>;
-      if (Object.keys(cell).sort().join(',') !== ['chars', 'items'].sort().join(',')) return;
-      if (!isSafeCount(cell['items']) || !isSafeCount(cell['chars']) || cell['items'] === 0) return;
-    }
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(has('roundCapHit') ? { roundCapHit: value.roundCapHit as number } : {}), ...(has('answerCompacted') ? { answerCompacted: value.answerCompacted as { items: number; chars: number } } : {}), ...(hasDriver ? { driver: value.driver } : {}), ...(has('bodyReplies') ? { bodyReplies: value.bodyReplies } : {}), ...(has('metaStartAsContinue') ? { metaStartAsContinue: value.metaStartAsContinue } : {}), ...(has('supersededAborts') ? { supersededAborts: value.supersededAborts } : {}), ...(has('plan') ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
-  }
-  if (value.event === 'research_routed') {
-    // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
-    const routedCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
-    const normalized = value.normalized === undefined ? undefined : value.normalized;
-    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : []), ...(normalized === undefined ? [] : ['normalized'])];
-    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
-    if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
-    if (routedCall && !isCallKey(value.callKey)) return;
-    if (!isSafeCount(value.lookups)) return;
-    if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
-    if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
-    if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
-    return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes,
-      ...(normalized === undefined ? {} : { normalized: normalized.slice(0, RESEARCH_NORMALIZED_MAX) }) };
-  }
-  if (value.event === 'research_source') {
-    // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
-    // given, so a read cut short can be judged against the time the source really had. Never a query.
-    // K1: a knowledge read also reports the body window it asked for, so a named-layer read can be told
-    // apart from a snippet lookup. Optional, a token and counts only; without this the whole receipt, the
-    // deadline and coalesced count included, was refused and never reached host.log.
-    const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
-    const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
-    const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
-    // #610/F7: a chat read also reports its own shape, because a slow chat search was invisible in the
-    // log and every chat receipt was refused here. Counts and closed tokens only, never a query word.
-    const hasChat = Object.prototype.hasOwnProperty.call(value, 'chat');
-    // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
-    const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
-    const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
-    const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
-    if (hasReason && !isSafeMember(value.reason, RESEARCH_SOURCE_REASONS)) return;
-    const hasStartedAt = Object.prototype.hasOwnProperty.call(value, 'startedAt');
-    if (hasStartedAt && !isSafeCount(value.startedAt)) return;
-    if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : []), ...(hasStartedAt ? ['startedAt'] : [])].sort().join(',')) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
-    if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
-    if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
-    if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
-    // MED-1022: the receipt also names the query's term count, whether the day filter was applied and what
-    // became of the chat date operator. ONE-1023: the day filter is a closed token and deduped is a count.
-    let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: string; chatDateOperator: string; deduped: number } | undefined;
-    if (hasKnowledge) {
-      const row = value.knowledge as Record<string, unknown> | null | undefined;
-      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
-      const fields = ['detail', 'maxChars', 'deadlineMs', 'truncated', 'queryTerms', 'dayFilter', 'chatDateOperator', 'deduped'];
-      if (Object.keys(row).sort().join(',') !== fields.sort().join(',')) return;
-      if (!isSafeToken(row['detail']) || !isSafeCount(row['maxChars']) || !isSafeCount(row['deadlineMs']) || typeof row['truncated'] !== 'boolean') return;
-      if (!isSafeCount(row['queryTerms']) || !isSafeCount(row['deduped'])) return;
-      if (typeof row['dayFilter'] !== 'string' || !KNOWLEDGE_DAY_FILTERS.includes(row['dayFilter'])) return;
-      if (typeof row['chatDateOperator'] !== 'string' || !KNOWLEDGE_CHAT_DATE_OPERATORS.includes(row['chatDateOperator'])) return;
-      knowledge = {
-        detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'],
-        queryTerms: row['queryTerms'], dayFilter: row['dayFilter'], chatDateOperator: row['chatDateOperator'], deduped: row['deduped'],
-      };
-    }
-    let mail: { terms: number; operators: string[]; window?: string; retried?: { terms: number; operators: string[]; window?: string } } | undefined;
-    if (hasMail) {
-      const row = value.mail as Record<string, unknown> | null | undefined;
-      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
-      const hasRetried = Object.prototype.hasOwnProperty.call(row, 'retried');
-      const shape = mailQueryShape(hasRetried ? Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'retried')) : row);
-      if (shape === undefined) return;
-      if (!hasRetried) mail = shape;
-      else {
-        const retried = mailQueryShape(row['retried']);
-        if (retried === undefined) return;
-        mail = { ...shape, retried };
-      }
-    }
-    let chat: { terms: number; operators: string[]; limit: number; sort: string } | { reason: string } | undefined;
-    if (hasChat) {
-      const row = value.chat as Record<string, unknown> | null | undefined;
-      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
-      // R3: a refused read records one closed reason; a search records its shape. Never both, and
-      // never a free-text cause.
-      if (Object.prototype.hasOwnProperty.call(row, 'reason')) {
-        if (Object.keys(row).length !== 1 || typeof row['reason'] !== 'string' || !CHAT_RECEIPT_REASONS.includes(row['reason'])) return;
-        chat = { reason: row['reason'] };
-      } else {
-        const fields = ['terms', 'operators', 'limit', 'sort'];
-        if (Object.keys(row).some(key => !fields.includes(key))) return;
-        const terms = row['terms'], operators = row['operators'], limit = row['limit'], sort = row['sort'];
-        if (!Number.isSafeInteger(terms) || (terms as number) < 0) return;
-        if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !CHAT_QUERY_OPERATORS.includes(operator))) return;
-        if (!Number.isSafeInteger(limit) || (limit as number) < 1) return;
-        if (sort !== 'newest' && sort !== 'relevance') return;
-        chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
-      }
-    }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms,
-      ...(hasStartedAt ? { startedAt: value.startedAt as number } : {}), deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
-  }
-  if (value.event === 'research_first_answer') {
-    // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
-    // reply and the ones it named as pending. R7 adds only how it answered and the owner's wait. Never a
-    // query, never a finding.
-    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending', 'kind', 'elapsedMs'])) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_first_answer');
-    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
-    if (!['early', 'hard_stop'].includes(String(value.kind))) return;
-    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
-    if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
-    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending, kind: value.kind as string, elapsedMs: value.elapsedMs };
-  }
   if (value.event === 'research_answer') {
     // R7: a call whose sources all settled before its answer point: how it answered and how long the owner waited.
     if (!closedKeys(value, ['event', 'researchId', 'kind', 'elapsedMs'])) return;
@@ -1751,17 +1516,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
     if (typeof value.spoken !== 'boolean') return;
     return { event: 'research_still_searching', researchId: value.researchId, elapsedMs: value.elapsedMs, spoken: value.spoken };
-  }
-  if (value.event === 'research_late_findings') {
-    // R6: one line per source that settled after the first answer: how long it took, how many items it
-    // really returned, and how the host delivered them. Never the text of one.
-    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'destination', 'reason'])) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_late_findings');
-    if (!isSafeMember(value.source, RESEARCH_SOURCES)) return;
-    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
-    if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
-    if (!isSafeMember(value.destination, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
-    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, destination: value.destination, reason: value.reason };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
@@ -1916,15 +1670,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'param'])) return;
     if (!isSafeToken(value.param)) return;
     return { event: 'responses_validation_failed', param: value.param };
-  }
-  if (value.event === 'research_joined') {
-    // Metadata only: the run id a research call joined and the scheduler branch that answered it. No question,
-    // no result text. The branch is optional, so a join logged without one still reaches the log.
-    if (!closedKeys(value, ['event', 'researchId']) && !closedKeys(value, ['event', 'researchId', 'research_branch'])) return;
-    if (!isSafeId(value.researchId)) return rejectResearchId('research_joined');
-    const branch = RESEARCH_BRANCHES.includes(value.research_branch as ResearchBranch) ? value.research_branch as ResearchBranch : undefined;
-    if (value.research_branch !== undefined && branch === undefined) return;
-    return { event: 'research_joined', researchId: value.researchId, ...(branch === undefined ? {} : { research_branch: branch }) };
   }
   if (value.event === 'warm_prewarm') {
     // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:

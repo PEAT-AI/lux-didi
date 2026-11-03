@@ -5,7 +5,6 @@
  * host's own record through `runningStateLine`, so a rebuilt session cannot tell her something is happening
  * when nothing is. A code whose honest cause the host does not hold says exactly that and never guesses.
  */
-import type { AdmissionBlockReason, ResearchRefusalReason } from './research.js';
 
 export interface RefusalCause {
   /** One plain statement of why this call was refused, repeatable by the model as it stands. */
@@ -26,7 +25,7 @@ export type HostRefusalCode = typeof HOST_REFUSAL_CODES[number];
 
 const NOTHING_SEARCHED = 'Nothing was searched.';
 
-export const REFUSAL_CAUSES: Readonly<Record<AdmissionBlockReason | ResearchRefusalReason | HostRefusalCode, RefusalCause>> = Object.freeze({
+export const REFUSAL_CAUSES: Readonly<Record<string, RefusalCause>> = Object.freeze({
   // The admission blocks (C-RESEARCH-CONTRACT T-03 codes, unchanged): one research operation per owner turn.
   no_owner_turn: {
     cause: 'No owner turn has started in this session, so there is no owner question to research.',

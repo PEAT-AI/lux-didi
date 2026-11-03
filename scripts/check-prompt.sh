@@ -28,7 +28,8 @@ cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/sour
 cp server/domain/history-turns.ts server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
-cp server/tools/vault-write.ts "$out/source/tools/"
+cp server/tools/vault-write.ts server/tools/lux-note.ts "$out/source/tools/"
+cp server/tasks/authority.ts server/tasks/results.ts "$out/source/tasks/"
 # W7: the Trello tool descriptions are voice content too.
 cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"

@@ -116,7 +116,7 @@ export interface McpRuntimeComposition {
   owner: ToolsOwner;
   /** W1030: the write surface the owner's compose tools call, built by this host, never injected. */
   compose: ComposeDispatch;
-  draftChat(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): ReturnType<ComposeDispatch['draftChat']>;
+  draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): ReturnType<ComposeDispatch['draftChat']>;
   connectionIds(): string[];
   status(): { endpoints: (McpEndpointReport & { connector: string; retrying: boolean })[] };
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */

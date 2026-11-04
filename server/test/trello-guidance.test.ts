@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
-import { NAYA_WORK_DELIVERY } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import { sessionTerminalHooks } from '../host/runtime.js';
 
@@ -50,9 +49,8 @@ test('the Live settle ends the board session and the summary never blocks it (F1
   assert.deepEqual(ended, ['live-8'], 'the ledger is cleared even when the summary cannot be scheduled');
 });
 
-test('no contradiction with the persona: she never promises a callback, and a write that did not happen is never claimed', () => {
-  assert.match(NAYA_WORK_DELIVERY, /Do not promise an unsolicited callback/);
-  assert.match(NAYA_WORK_DELIVERY, /If a requested write is unavailable, say so rather than claiming it happened/);
+// Voice policy belongs to prompt.test; task lifecycle/delivery tests cover actual outcomes.
+test('the write tool never offers an autonomous reminder or callback', () => {
   assert.doesNotMatch(TRELLO_WRITE_DESCRIPTION, /\bI will (?:remind|call)\b/i);
 });
 

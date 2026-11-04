@@ -534,3 +534,12 @@ test('a no-tool answer with no completed reads can compose for thirteen seconds'
   assert.equal(answer.text, 'Synthetic long answer without source reads.');
   assert.deepEqual(answer.findings, []);
 });
+
+for (const provider of ['openai', 'gemini'] as const) for (const text of ['', ' ', '\n']) test(`C-SILENCE: ${provider} empty text parts are trimmed ${JSON.stringify(text)}`, async () => {
+  const infer = createModelPort({ role: { provider, model: 'synthetic-model', effort: 'low', keyReference: 'synthetic-reference' }, credentials: { resolve: async () => 'synthetic-key' },
+    transport: async () => new Response(JSON.stringify(provider === 'openai'
+      ? { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }
+      : { candidates: [{ finishReason: 'STOP', content: { parts: [{ text }] } }] })) });
+  const answer = await infer({ instructions: 'Synthetic instructions', input: 'Synthetic ask', outputs: [], tools: [], model: 'synthetic-model', effort: 'low' }, new AbortController().signal);
+  assert.equal(answer.text, ''); assert.deepEqual(answer.calls, []);
+});

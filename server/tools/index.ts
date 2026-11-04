@@ -562,6 +562,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (interpreted.status === 'ready') { at = interpreted.fireAtUtc; rule = interpreted.series ?? rule; }
         }
         if (rule) { try { at = seriesNextFireAt(rule, now); } catch { return taskFailed('Invalid recurrence. Nothing changed.'); } }
+        if (at !== undefined) at = Math.max(at, now + 60_000);
         const label = typeof args.text === 'string' ? args.text.trim() : undefined;
         if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
         if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');

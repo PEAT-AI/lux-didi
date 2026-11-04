@@ -20,7 +20,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   if (row.finals.length === 0) {
     const port = createTaskAuthority(owner, { isCurrent: () => true, taskContext: () => undefined, hostUrls: () => [], registry: () => new Map() });
     let executions = 0;
-    const result = await port.authorize({ task_id: row.id, task_revision: 1, operation_id: 'synthetic-operation', tool: 'remember_note', effect: 'local', args: {}, outside_text: false }, async () => { executions++; return failed('unexpected execution'); }, new AbortController().signal);
+    const result = await port.authorize({ task_id: row.id, task_revision: 1, connection_generation: 1, operation_id: 'synthetic-operation', tool: 'remember_note', effect: 'local', args: {}, outside_text: false }, async () => { executions++; return failed('unexpected execution'); }, new AbortController().signal);
     assert.equal(result.status, 'failed', row.id);
     assert.equal(executions, 0, 'no finalized task means no executor invocation');
     assert.ok(result.repair, 'task refusal supplies a repair instead of a retired per-tool speech template');

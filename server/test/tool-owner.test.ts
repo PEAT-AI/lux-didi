@@ -18,7 +18,7 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { COMPOSE_IDENTITY, draftChatResult, draftEmailResult } from '../tools/compose.js';
+import { draftChatResult, draftEmailResult } from '../tools/compose.js';
 import { ALARM_IDENTITY } from '../tools/alarm.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';

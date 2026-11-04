@@ -23,9 +23,11 @@ import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, owne
 import type { LiveAuthority } from '../tools/types.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
+import { createRegistry } from '../tasks/tools.js';
+import { documentResult } from '../tasks/results.js';
 import { parseAlarmTime } from '../tools/alarm.js';
 import { alarmHarness } from './alarm-atomic.test.js';
-import { Authority, type JournalRecord } from '../tasks/authority.js';
+import { Authority, FakeAuthority, type JournalRecord } from '../tasks/authority.js';
 import { CONNECTOR_COMPOSED_TOOLS } from '../connectors/index.js';
 import { argumentViolations, argumentViolationsOf } from '../tools/declarations.js';
 import { normalizeArguments, type ToolDeclaration } from '../tools/normalize.js';
@@ -44,6 +46,40 @@ test('A2: task builtins reject undeclared arguments before any effect', async t 
   }
   assert.equal(dispatched, 0);
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
+});
+
+test('A2: current builtin declarations dispatch exact arguments through the task port', async () => {
+  const authority = new FakeAuthority();
+  const dispatched: { name: string; args: Record<string, unknown> }[] = [];
+  const tools = createRegistry({ authority, execute: async (name, args) => {
+    dispatched.push({ name, args }); return documentResult('synthetic receipt', 'synthetic');
+  } });
+  const fixtures: Record<string, Record<string, unknown>> = {
+    search_mail: { query: 'synthetic', cursor: null }, search_chat: { query: 'synthetic' },
+    search_knowledge: { query: 'synthetic' }, search_company: { query: 'synthetic' }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
+    read_mail: { id: 'synthetic-mail', cursor: null }, read_knowledge: { id: 'synthetic-knowledge', cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
+    read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
+    calendar_events: { start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z' }, people_lookup: { query: 'Synthetic' },
+    remember_note: { text: 'synthetic fact' }, save_to_vault: { title: 'synthetic title', text: 'synthetic note' },
+    draft_email: { to: ['synthetic@example.invalid'], subject: 'synthetic', body: 'synthetic draft' },
+    draft_chat: { target: '#synthetic', text: 'synthetic draft' },
+    create_event: { title: 'synthetic event', start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z', calendar_id: null },
+    delete_event: { id: 'synthetic-event' },
+  };
+  const identity = { task_id: 'synthetic-builtin-task', task_revision: 1, operation_id: 'synthetic-operation', connection_generation: 1 };
+  for (const [name, args] of Object.entries(fixtures)) {
+    const tool = tools.get(name); assert.ok(tool, name);
+    const result = await tool.run(args, identity, new AbortController().signal);
+    assert.equal(result.status, 'ok', `${name}: ${result.repair}`);
+    assert.deepEqual(dispatched.at(-1), { name, args: Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null)) });
+    if (tool.effect !== 'none') {
+      const request = authority.requests.at(-1); assert.ok(request);
+      assert.equal(request.tool, name); assert.deepEqual(request.args, args);
+      assert.equal(request.task_id, identity.task_id); assert.equal(request.task_revision, identity.task_revision);
+    }
+  }
+  // Renamed tool spellings are deliberately absent, not silently routed to aliases.
+  for (const retired of ['research', 'stage_lux_note', 'open_web', 'set_alarm', 'snooze_alarm']) assert.equal(tools.has(retired), false, retired);
 });
 
 test('A2: current task identity and exact alarm arguments own the durable intent', async t => {

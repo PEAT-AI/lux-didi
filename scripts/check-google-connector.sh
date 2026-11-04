@@ -52,6 +52,13 @@ printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 inputs=()
 while IFS= read -r -d '' f; do inputs+=("$f"); done < <(find "$out/source" -name '*.ts' -print0)
+# Stage the complete production import closure, as the whole-server build does.
+find "$root/server" -mindepth 1 -maxdepth 1 -type d \
+  ! -name node_modules ! -name dist ! -name test \
+  -exec cp -R {} "$out/source/" \;
+mkdir -p "$out/source/test/fixtures"
+cp "$root"/server/test/{synthetic-task,canonical-task-fixture}.ts "$out/source/test/"
+cp "$root/server/test/fixtures/task-chat-reader.ts" "$out/source/test/fixtures/"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${inputs[@]}"

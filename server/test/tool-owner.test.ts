@@ -1014,7 +1014,7 @@ type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSche
  * the model as that prose. Reading it back is what a model does with the same text.
  */
 const declaredShape = (schema: DeclaredSchema): DeclaredSchema => {
-  if (schema.properties !== undefined) return schema; // The actual strict object, not its historical description, owns required/null fields.
+  if (schema.properties !== undefined && String(schema.type).toUpperCase() === 'OBJECT') return schema; // The actual strict object, not its historical description, owns required/null fields.
   const description = typeof schema.description === 'string' ? schema.description : '';
   const at = description.lastIndexOf('Original schema: ');
   if (at < 0) return schema;
@@ -1091,8 +1091,11 @@ const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
   // Strict task schemas require every property, using null for omitted optional
   // fields. Generate complete objects, not legacy sparse calls or stringified
   // nullable type arrays. No tool-specific payload is supplied by the test.
-  const nullable = (field: DeclaredSchema): boolean => (Array.isArray(field.type) && field.type.some(value => String(value).toLowerCase() === 'null'))
-    || (Array.isArray(field.anyOf) && (field.anyOf as DeclaredSchema[]).some(branch => branch.type === 'null'));
+  const nullable = (field: DeclaredSchema): boolean => {
+    const shape = declaredShape(field);
+    return (Array.isArray(shape.type) && shape.type.some(value => String(value).toLowerCase() === 'null'))
+      || (Array.isArray(shape.anyOf) && (shape.anyOf as DeclaredSchema[]).some(branch => branch.type === 'null'));
+  };
   const optional = keys.filter(key => nullable(properties[key] ?? {}));
   const requiredKeys = keys.filter(key => !optional.includes(key));
   const complete = (chosen: readonly string[]) => Object.fromEntries(keys.map(key => [key, requiredKeys.includes(key) || chosen.includes(key) ? sampleOf(properties[key] ?? {}) : null]));
@@ -1205,7 +1208,7 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
   try {
   const revision = runtime.begin('synthetic reminder task', 1);
   let operation = 0;
-  const call = (name: string, args: Record<string, unknown>) => runtime.runTool(name, args,
+  const call = (name: string, args: Record<string, unknown>) => runtime.runTool(name, name === 'alarm_create' || name === 'alarm_update' ? { recurrence: null, ...args } : args,
     { ...revision.identity, operation_id: `synthetic-alarm-${++operation}` }, revision.signal);
   const bad = await call('alarm_create', { text: 'Synthetic reminder', at: 'not a time' });
   assert.equal(bad.status, 'failed'); assert.equal(rechecks, 0);

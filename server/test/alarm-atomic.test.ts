@@ -35,7 +35,8 @@ export function alarmHarness(t: TestContext, recheck: () => void = () => {}, now
   const call = async (name: string, args: Record<string, unknown>, words: string) => {
     task.ownerWords = words;
     const tool = tools.get(name); assert.ok(tool);
-    return tool.run(args, { task_id: task.id, task_revision: task.revision, operation_id: randomUUID(), connection_generation: 1 }, new AbortController().signal);
+    const omitted = Object.fromEntries(Object.entries(tool.parameters.properties as Record<string, { type?: unknown }>).filter(([, schema]) => Array.isArray(schema.type) && schema.type.includes('null')).map(([key]) => [key, null]));
+    return tool.run({ ...omitted, ...args }, { task_id: task.id, task_revision: task.revision, operation_id: randomUUID(), connection_generation: 1 }, new AbortController().signal);
   };
   return { store, directory, migrations, call, task, tools, owner };
 }

@@ -165,7 +165,7 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
     assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
     if (parsed.status !== 'ready') throw new Error('Expected a resolved owner corpus time');
     assert.equal(parsed.fireAtUtc, row.fire_at_utc);
-    const args = { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString() };
+    const args = { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString(), recurrence: null };
     let result;
     if (row.id === 'turn-time-not-dispatch-time') {
       const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'UTC',
@@ -316,9 +316,10 @@ test('SOURCE DEFECT C-DIAG109: delayed tasks preserve the ask-time target and re
     infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
     delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
   const revision = runtime.begin('wake me in five minutes', 1);
+  assert.equal(revision.askAtUtc, askAt, 'the real task captures ask time before dispatch advances');
   now += 3 * 60_000;
   let result;
-  try { result = await runtime.runTool('alarm_create', { text: 'synthetic reminder', at: new Date(askAt + 5 * 60_000).toISOString() },
+  try { result = await runtime.runTool('alarm_create', { text: 'synthetic reminder', at: new Date(askAt + 5 * 60_000).toISOString(), recurrence: null },
     { ...revision.identity, operation_id: 'synthetic-readback' }, revision.signal); }
   finally { runtime.close(); }
   assert.equal(result.status, 'ok');

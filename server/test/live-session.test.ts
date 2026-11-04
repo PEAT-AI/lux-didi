@@ -693,20 +693,15 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
 });
 
-test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
-  const web = { search: async () => { throw new Error('not called at start'); } };
+test('L8-10: delegated voice does not advertise a retired direct tool table', async t => {
   const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
-  const { attachment: withAttachment } = await attached(withWeb);
-  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
-  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
-  assert.ok(connected.split(', ').includes('his private notes'), `the knowledge read stays named: ${connected}`);
-  withAttachment.close(); await withAttachment.done;
-  const without = await harness(t, { tools: true, system: native });
-  const { attachment } = await attached(without);
-  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
-  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
-  attachment.close(); await attachment.done;
+  for (const researchWeb of [undefined, { search: async () => { throw new Error('not called at start'); } }]) {
+    const h = await harness(t, { tools: true, ...(researchWeb ? { researchWeb } : {}), system: native });
+    const { attachment } = await attached(h);
+    assert.equal(h.requests[0]!.tools?.length ?? 0, 0, 'connector operations belong to the task worker, never the voice wire');
+    assert.match(h.requests[0]!.system.text, /^Connected now: none\.$/m, 'legacy connector configuration must not invent direct voice reads');
+    attachment.close(); await attachment.done;
+  }
 });
 
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
@@ -1418,10 +1413,10 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['his private notes', 'memory'],
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
@@ -1911,7 +1906,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
-    import { lateFindingsText, researchProjection, createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
     import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
     const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
@@ -3128,7 +3123,7 @@ test('U1: calendar and Gmail model text carries no raw url and names each source
     { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
   ] });
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
-  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#all/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/owner@example.test/#all/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });
 

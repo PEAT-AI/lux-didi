@@ -15,15 +15,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { Authority } from '../tasks/authority.js';
-import { TaskRuntime } from '../tasks/runtime.js';
+import { TaskRuntime, type TaskRuntimeOptions } from '../tasks/runtime.js';
 import { TaskCall } from '../tasks/call.js';
 import type { Infer, Inference } from '../tasks/worker.js';
-function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai', after?: (ms: number, callback: () => void) => () => void) {
+function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai', after?: (ms: number, callback: () => void) => () => void, execute?: TaskRuntimeOptions['execute']) {
   const directory = mkdtempSync(join(tmpdir(), 'task-call-synthetic-')), store = new Store(directory);
   const sent: { id: string | null; text: string }[] = [], responses: unknown[] = []; let reconnects = 0;
   const call = new TaskCall({ provider, ...(after ? { after } : {}),
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer, contentAllowed: () => true,
-      authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }), execute: async () => { throw new Error('unexpected fixture tool'); } }),
+      authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }), execute: execute ?? (async () => { throw new Error('unexpected fixture tool'); }) }),
     append: (_generation, id, text) => { sent.push({ id, text }); return `c${sent.length}`; },
     respond: (_generation, values) => { responses.push(values); return 'sent'; },
     state: () => {},
@@ -153,4 +153,32 @@ for (const bound of [false, true]) test(`C-DELIVERY: no-action terminal fact wit
   pending.resolve({ text: '', calls: [], no_action: true }); await result;
   assert.equal(f.sent.length, bound ? 1 : 0);
   if (bound) assert.match(f.sent[0]!.text, /No lookup is needed/);
+});
+
+test('C-DELIVERY: tool evidence is delivered even if the voice already answered without a delegation', async t => {
+  const first = deferred(); let inferences = 0;
+  const f = fixture(t, async () => ++inferences === 1 ? first.promise : { text: 'Synthetic evidence answer.', calls: [] }, 'openai', undefined,
+    async () => ({ status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }));
+  const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
+  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', limit: 1 } }] });
+  const result = await running; assert.equal(result.findings.length, 1); assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0]!.text, 'Synthetic evidence answer.');
+});
+test('C-DELIVERY: a correction during a running read revises only after transcript quiet', async t => {
+  const clock = quietClock(); let release!: () => void; let reads = 0; let inferences = 0;
+  const read = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(t, async () => ++inferences === 1
+    ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', limit: 1 } }] }
+    : { text: 'Synthetic corrected result.', calls: [] }, 'openai', clock.after,
+    async () => { reads++; await read; return { status: 'ok', text: 'Synthetic read result.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }; });
+  t.after(release);
+  f.call.ownerWords(); f.call.finalized('Read the synthetic source.', 1); clock.advance(1_200);
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(reads, 1); const first = f.call.runtime.controller.current!.identity;
+  f.call.ownerWords(); f.call.finalized('Synthetic correction.', 2); clock.advance(1_199);
+  assert.equal(f.call.runtime.controller.isCurrent(first), true);
+  clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(f.call.runtime.controller.isCurrent(first), false); release();
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(reads, 1); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, 'Synthetic corrected result.');
 });

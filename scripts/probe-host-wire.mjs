@@ -198,7 +198,7 @@ async function trial(scenario, number) {
   const finalText = outputs.map(e => e.text).join('');
   const latency = t.ownerEnds.map(end => ({ ownerEndMs: end, firstAudioMs: t.audio.find(at => at >= end) ?? null, latencyMs: (t.audio.find(at => at >= end) ?? NaN) - end }));
   const rebuild = t.logs.filter(e => e.event === 'live_rebuild').length;
-  const result = { scenario, number, error: t.error ?? null, live_rebuild: rebuild, providerSessions: t.sessions,
+  const result = { audibleAudio: t.audio, ownerEnds: t.ownerEnds, scenario, number, error: t.error ?? null, live_rebuild: rebuild, providerSessions: t.sessions,
     delegations: t.events.filter(e => /delegation/i.test(e.type)), commentary: t.commentary, chunks: t.commentary.length, acks: t.acks,
     helperStatus: t.logs.filter(e => /task/.test(e.event ?? '')), helperCalls: t.helper.length, tools: t.tools, latency,
     answerTimeMs: t.audio.length ? t.audio.at(-1) - (t.audio.find(at => at >= t.ownerEnds[0]) ?? t.audio[0]) : null,

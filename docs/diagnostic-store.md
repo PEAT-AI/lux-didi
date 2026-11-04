@@ -55,7 +55,7 @@ For the operational sequence and content-free logs, use [debugging.md](debugging
 
 ## Helper task records
 
-Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; task arguments and results remain private content, not a safe support attachment.
+Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; retained task arguments are private content, not a safe support attachment. In 10.11, task result bodies are not retained, only their closed category and byte size.
 
 ## Helper task diagnostics (10.11)
 

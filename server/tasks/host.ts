@@ -38,7 +38,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
     const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
-    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer, 
+    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer,
       timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');

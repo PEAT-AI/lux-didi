@@ -4954,7 +4954,7 @@ test('alarm session speaks its reminder, repeats after silence and acknowledges 
   assert.ok(fake.texts.every(text => text.startsWith('[host note, not the owner] ')), 'wake and acknowledgement guidance are marked host notes');
   assert.equal(scheduler.list().find(row => row.id === other.id)!.state, 'ringing');
   const count = fake.texts.length;
-  clock.now += 30000; clock.runDue();
+  clock.now += 30000; clock.runDue(); await settlePort();
   assert.equal(fake.texts.length, count, 'acknowledgement stops wake prompts');
   assert.equal(h.owner.current().state, 'listening', 'acknowledgement leaves the call open');
   h.owner.revoke(session.liveSessionId);

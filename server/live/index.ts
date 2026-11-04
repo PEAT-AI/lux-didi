@@ -69,8 +69,6 @@ interface ActiveSession {
   taskWords?: string;
   taskOutputQuiet?: boolean;
   taskOwnerOpen?: boolean;
-  taskMicAt?: number;
-  taskSilenceTimer?: ReturnType<JobTimer>;
   taskWorkAt?: number | undefined;
   taskDebtPlan?: { at: number; step: 'rung' | 'rebuild'; generation: number };
   taskWatchdogPlan?: { at: number; step: 'nudge' | 'recover'; generation: number };
@@ -3530,7 +3528,6 @@ export class LiveSessionOwner {
     this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
   }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
-    handle.taskMicAt = this.#now();
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
     // A late mic frame after the session settled is dropped and counted, never thrown:
     // throwing here makes the HTTP layer close the socket generic 1002 before the typed terminal frame.
@@ -4170,7 +4167,7 @@ export class LiveSessionOwner {
     if (event.type === 'commentaryAccepted') tasks.delivery.accepted(event.commandId);
     if (event.type === 'commentaryRejected') tasks.delivery.rejected(event.commandId);
     if (event.type === 'outputTranscription' && event.text.trim()) tasks.spoke();
-    if (event.type === 'audio' && event.audible) { tasks.spoke(); handle.taskOutputQuiet = false; handle.taskSilenceTimer?.cancel(); }
+    if (event.type === 'audio' && event.audible) { tasks.spoke(); handle.taskOutputQuiet = false; }
     if (event.type === 'turnComplete' || event.type === 'interrupted') handle.taskOutputQuiet = true;
     if (event.type === 'interrupted') handle.taskOwnerOpen = true;
     tasks.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: handle.taskOwnerOpen === true });
@@ -4200,7 +4197,7 @@ export class LiveSessionOwner {
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
-    handle.taskSilenceTimer?.cancel(); handle.tasks?.close(); this.#tools?.owner.closeTaskCall(handle.liveSessionId);
+    handle.tasks?.close(); this.#tools?.owner.closeTaskCall(handle.liveSessionId);
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.timer?.cancel();
     this.#alarmSessions.delete(handle.liveSessionId);
     handle.terminalOutcome = outcome;

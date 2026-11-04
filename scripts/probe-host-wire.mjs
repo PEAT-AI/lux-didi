@@ -84,7 +84,7 @@ async function trial(scenario, number) {
   active = { start: Date.now(), textChars: 0, helperCost: 0, scenario, number, sessions: 0, events: [], logs: [], commentary: [], acks: [], tools: [], helper: [], audio: [], ownerEnds: [], stopped: false };
   const t = active;
   raw({ trial: `${scenario}-${number}`, start: new Date().toISOString(), prompt, longRecord: scenario === 'C' || scenario === 'F' ? longRecord : undefined });
-  const log = e => { t.logs.push(e); raw({ at: Date.now() - t.start, host: e }); };
+  const log = e => { t.logs.push({ at: Date.now() - t.start, ...e }); raw({ at: Date.now() - t.start, host: e }); };
   const detach = attachHostLogSink({ event: log });
   const adapter = new OpenAiLiveVoiceAdapter({ modelId: 'gpt-live-1', voice: 'marin', keyReference: 'synthetic', credentials, route,
     socketFactory: (url, config) => {
@@ -129,7 +129,7 @@ async function trial(scenario, number) {
     const usage = result.usage;
     // Keep at least the conservative reservation; account additional usage if it is larger.
     const actual = ((usage?.input_tokens ?? inputChars / 3) + (usage?.output_tokens ?? 4000)) * 30 / 1e6;
-    t.helperCost += Math.max(0, actual - (inputChars / 3 * 30 / 1e6 + 0.12));
+    if (usage?.input_tokens !== undefined && usage?.output_tokens !== undefined) t.helperCost += actual - (inputChars / 3 * 30 / 1e6 + 0.12);
     t.helper.push({ http: response.status, usage, result });
     raw({ helperResponse: result, at: Date.now() - t.start });
     return response;
@@ -150,7 +150,9 @@ async function trial(scenario, number) {
   async function quiet(ms) { await until(() => false, ms); }
   async function answerDone(ms = 35000) {
     const after = lastWord;
-    await until(() => t.events.some(e => e.at >= after && e.type === 'turnComplete'), ms);
+    await until(() => t.logs.some(e => e.at >= after && e.event === 'task_lifecycle' && e.phase === 'complete'), ms);
+    const delivered = t.logs.filter(e => e.event === 'task_delivery' && e.at >= after).at(-1)?.at ?? after;
+    await until(() => t.events.some(e => e.at >= delivered && e.type === 'turnComplete'), ms);
   }
   try {
     const session = owner.create({ idempotencyKey: `synthetic-${scenario}-${number}`, inputClass: 'ordinary' }, context);
@@ -161,7 +163,9 @@ async function trial(scenario, number) {
       try { guard(); attachment.sendAudio({ pcm: frameQueue.shift() ?? Buffer.alloc(1440) }); }
       catch (error) { t.stopped = true; t.error = error.message; clearInterval(timer); }
     }, 30);
-    await quiet(600);
+    // The real host opens model-first. Let that opening finish before measuring an owner ask.
+    await until(() => t.events.some(e => e.type === 'turnComplete'), 20000);
+    await quiet(1000);
     if (scenario.startsWith('A')) {
       await say('Why does the moon'); await quiet(scenario === 'A1' ? 1000 : 3000); await say('look larger when it is near the horizon?');
     } else await say(questions[scenario]);
@@ -182,14 +186,18 @@ async function trial(scenario, number) {
     spent = Math.min(cap, estimate()); active = undefined; persist();
   }
   const outputs = t.events.filter(e => e.type === 'outputTranscription');
-  const finalText = outputs.filter(e => e.finished).map(e => e.text).join('\n') || outputs.map(e => e.text).join('');
+  // Adapter transcription events are deltas; finished markers can contain only a newline.
+  const finalText = outputs.map(e => e.text).join('');
   const latency = t.ownerEnds.map(end => ({ ownerEndMs: end, firstAudioMs: t.audio.find(at => at >= end) ?? null, latencyMs: (t.audio.find(at => at >= end) ?? NaN) - end }));
   const rebuild = t.logs.filter(e => e.event === 'live_rebuild').length;
   const result = { scenario, number, error: t.error ?? null, live_rebuild: rebuild, providerSessions: t.sessions,
     delegations: t.events.filter(e => /delegation/i.test(e.type)), commentary: t.commentary, chunks: t.commentary.length, acks: t.acks,
     helperStatus: t.logs.filter(e => /task/.test(e.event ?? '')), helperCalls: t.helper.length, tools: t.tools, latency,
     answerTimeMs: t.audio.length ? t.audio.at(-1) - (t.audio.find(at => at >= t.ownerEnds[0]) ?? t.audio[0]) : null,
-    audioLastMs: t.audio.at(-1) ?? null, transcript: finalText, outputEvents: outputs, cumulativeEstimatedUSD: spent };
+    audioLastMs: t.audio.at(-1) ?? null, transcript: finalText, outputEvents: outputs, cumulativeEstimatedUSD: spent,
+    estimatedHelperUSD: t.helperCost, elapsedMs: Date.now() - t.start,
+    repeatAssessment: 'Review full delta transcript for repeated facts; no semantic model judge is used.',
+    announcements: (finalText.match(/look(?:ing)? (?:it |that )?up|check(?:ing)?|find(?:ing)?|search(?:ing)?/gi) ?? []).length };
   raw({ result });
   note(`| ${scenario}-${number} | REVIEW | ${rebuild} | ${t.sessions} | ${t.commentary.length}/${t.acks.length} | ${t.helper.length} | ${latency.map(x => Number.isFinite(x.latencyMs) ? x.latencyMs : 'none').join(',')} | ${result.answerTimeMs} | ${spent.toFixed(4)} |`);
   console.log(JSON.stringify({ scenario, number, error: result.error, sessions: t.sessions, helper: t.helper.length, cost: spent, transcript: finalText }));

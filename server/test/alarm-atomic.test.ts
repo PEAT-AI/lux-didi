@@ -153,7 +153,7 @@ test('atomic alarm receipt rolls back with the alarm and respects disabled conte
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM task_effect_journal')?.n), 0);
   const journal = h.store.taskEffectJournal();
   commitAlarmEffect(h.store, identity, () => value);
-  assert.equal(h.store.transaction(tx => tx.get('SELECT value FROM task_effect_journal')?.value), null);
+  assert.deepEqual(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT value FROM task_effect_journal')?.value))), { size_bytes: Buffer.byteLength(JSON.stringify(value)), category: 'ok' });
   return journal.get(identity).then(record => {
     assert.equal(record?.status, 'succeeded');
     assert.doesNotMatch(JSON.stringify(record), /synthetic receipt content/);

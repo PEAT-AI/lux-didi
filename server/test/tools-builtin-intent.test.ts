@@ -60,7 +60,7 @@ test('A2: current builtin declarations dispatch exact arguments through the task
     search_mail: { query: 'synthetic', cursor: null }, search_chat: { query: 'synthetic' },
     search_knowledge: { query: 'synthetic' }, search_company: { query: 'synthetic' }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
     read_mail: { id: 'synthetic-mail', cursor: null }, read_knowledge: { id: 'synthetic-knowledge', cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
-    read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
+    read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', depth: null, cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
     calendar_events: { start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z' }, people_lookup: { query: 'Synthetic' },
     remember_note: { text: 'synthetic fact' }, save_to_vault: { title: 'synthetic title', text: 'synthetic note' },
     draft_email: { to: ['synthetic@example.invalid'], subject: 'synthetic', body: 'synthetic draft' },
@@ -90,7 +90,10 @@ test('A2: current task identity and exact alarm arguments own the durable intent
   const first = await h.call('alarm_create', { text: 'synthetic first', at }, 'set an alarm in one minute');
   assert.equal(first.status, 'ok');
   const same = await h.call('alarm_create', { text: 'synthetic first', at }, 'set an alarm in one minute');
-  assert.deepEqual(same.references, first.references);
+  assert.equal(same.status, 'ok');
+  assert.deepEqual(same.references, [], 'replay does not retain reference content');
+  assert.equal(same.text, '', 'replay does not retain receipt text');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, 'identical arguments replay without creating an alarm');
   const other = await h.call('alarm_create', { text: 'synthetic second', at }, 'also a second alarm');
   assert.notDeepEqual(other.references, first.references, 'changed arguments are a distinct operation, not a replay');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 2);

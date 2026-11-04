@@ -174,7 +174,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   const grant = f.registry.currentGrant('fixture-endpoint')!;
   assert.deepEqual(proof.source, { endpointId: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', schemaDigest: grant.schemaDigest,
     toolName: 'search_knowledge', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
-  const expectedSources = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }];
+  const expectedSources = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
   assert.deepEqual(run.toolEvidence?.flatMap(value => value.sources), expectedSources, 'completed run retains exact gated source metadata');
   assert.deepEqual(f.chat.get(run.runId, f.context)?.toolEvidence?.flatMap(value => value.sources), expectedSources, 'Chat.get projects the same exact source metadata');
 

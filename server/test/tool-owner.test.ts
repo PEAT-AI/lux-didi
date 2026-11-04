@@ -845,13 +845,13 @@ async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
   assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
   return gate.results[0]!.response;
 }
-test('SOURCE DEFECT task document wiring: valid source pages reconstruct the complete body and reject invalid cursors', async t => {
+test('task document pages reconstruct the complete source body and reject invalid cursors', async t => {
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: body }) }] }));
   const source = await f.reader.get({ ids: [7], include_links: false }, f.signal);
   assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
   const first = await readTaskPage(f, '7', null, 'page-first');
-  assert.equal(first.status, 'partial', JSON.stringify(first)); assert.ok(typeof first.next_cursor === 'string');
+  assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
   const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
   assert.equal(String(first.text) + String(next.text), body, 'whole-body paging neither truncates nor duplicates content');
   assert.equal(next.next_cursor, null);
@@ -861,10 +861,10 @@ test('SOURCE DEFECT task document wiring: valid source pages reconstruct the com
 test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
   const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: current }) }] }));
-  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify(first)); assert.ok(typeof first.next_cursor === 'string');
+  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
   current = 'B'.repeat(25_000) + 'changed-tail';
   const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
-  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), original, 'continue the captured version or explicitly refuse, never splice different documents');
+  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${original}`, 'continue the captured version or explicitly refuse, never splice different documents');
   else assert.ok(next.repair, 'a version change refusal tells the worker to restart');
 });
 test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {

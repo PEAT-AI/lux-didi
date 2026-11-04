@@ -693,20 +693,16 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
 });
 
-test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
-  const web = { search: async () => { throw new Error('not called at start'); } };
+test('retired backend injections do not advertise unbound source capabilities to the Live session', async t => {
   const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
-  const { attachment: withAttachment } = await attached(withWeb);
-  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
-  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
-  assert.ok(connected.split(', ').includes('his private notes'), `the knowledge read stays named: ${connected}`);
-  withAttachment.close(); await withAttachment.done;
-  const without = await harness(t, { tools: true, system: native });
-  const { attachment } = await attached(without);
-  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
-  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
-  attachment.close(); await attachment.done;
+  const web = { search: async () => { throw new Error('retired injection must not execute'); } };
+  for (const options of [{ researchWeb: web }, {}]) {
+    const h = await harness(t, { tools: true, system: native, ...options });
+    const { attachment } = await attached(h);
+    const connected = /^Connected now: (.*)\.$/mu.exec(h.requests[0]!.system.text)?.[1];
+    assert.equal(connected, 'none', 'legacy dependencies are not an accepted helper capability binding');
+    attachment.close(); await attachment.done;
+  }
 });
 
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
@@ -1421,7 +1417,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['his private notes', 'memory'],
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
@@ -1911,7 +1907,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
-    import { lateFindingsText, researchProjection, createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
     import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
     const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
@@ -3128,7 +3124,7 @@ test('U1: calendar and Gmail model text carries no raw url and names each source
     { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
   ] });
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
-  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#all/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/owner@example.test/#all/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });
 
@@ -4291,88 +4287,8 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
   ]) assert.equal(announcesLookup(said), false, `no lookup announced: ${said}`);
 });
 
-// C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
-// one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
-// C-ARGS: a lookup the host refused executed nothing, so a claim that its result came back empty is a
-// claim about a read that never ran, and the existing claim guard corrects it once, in its own words.
-
-
-
-
-
-for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-without-call');
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
-  });
-  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
-    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
-  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
-  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
-  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
-  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
-  h.f.send({ serverContent: { outputTranscription: { text: progress, finished: true }, turnComplete: true } });
-  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
-  assert.ok(armed(), 'the announced lookup armed its three-second bound');
-  await advance(2_000);
-  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
-  assert.deepEqual(counted(), [], 'and nothing is logged yet');
-  await advance(1_000);
-  assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
-  assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
-  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
-  const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
-    && String((entry as { text?: string }).text ?? '').includes('again'));
-  for (let attempt = 0; attempt < 200 && !againSaid(); attempt++) await tick();
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
-  assert.equal(counted().length, 1, 'and it is logged once');
-  h.owner.revoke(session.liveSessionId);
-});
-
-
-
-// C-CLAIMS9 outcome 1, live path: at 10:23:49Z she said "Let me look into that." and made no call for thirty
-// seconds. The host gives the announcement the same beat and corrects it once.
-test('C-CLAIMS9: "Let me look into that." with no call gets the correction inside the deadline', async t => {
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-look-into');
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.includes('Correction:');
-  });
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did the synthetic partner say about the contract', finished: true } } });
-  await settlePort();
-  h.f.send({ serverContent: { outputTranscription: { text: 'Let me look into that.', finished: true }, turnComplete: true } });
-  await settlePort();
-  assert.equal(corrections().length, 0, 'the announcement is given its beat before anything is said');
-  await advance(2_999);
-  assert.equal(corrections().length, 0, 'the deterministic clock has not reached the correction deadline');
-  await advance(1);
-  assert.equal(corrections().length, 1, 'the announced lookup with no call behind it is corrected inside the deadline');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /make the call now/i, 'and it offers the call');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /^\[host note, not the owner\] Correction:/u, 'W6 keeps the W3 correction separate from owner speech');
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the same announcement is corrected only once');
-  h.owner.revoke(session.liveSessionId);
-});
-
-// #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
-// next. A start before the first owner input is answered at once and reaches no source at all.
-
-
-
+// R25 retires C-TURN8's three speech-only corrections and C-CLAIMS9's research-claim
+// timer. Explicit task lifecycle/progress and its closed audit are covered by tasks-live.
 test('OPEN2-5: an open claim the turn did not make gets one correction, never two', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-openclaim-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));

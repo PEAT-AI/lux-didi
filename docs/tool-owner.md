@@ -34,7 +34,7 @@ its created-or-named selector.
 
 The one guard left on the free tier is the injection fence. The host keeps one monotonic order per
 session for the owner's finalized words and for third-party text. Mail bodies, chat messages, web
-pages and research results advance the exposure position immediately before the model sees them;
+document pages and other connector results advance the exposure position immediately before the model sees them;
 reading his own calendar, alarms, notes, vault and Trello does not. A free write executes only when
 the latest owner final is newer than the latest exposure; otherwise it is refused `external_text_only`
 with the fact of what happened and what clears it: "Outside text arrived after your last words, so
@@ -119,7 +119,7 @@ The shared task registry is the model-facing read/write catalog. Chat derives it
 
 ## Registered calendar schema and safe rejection evidence
 
-Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
+The helper's `calendar_events` tool takes typed `start` and `end` bounds. The connector maps those bounds to Google's `timeMin` and `timeMax`; it does not construct a second query vocabulary from an orchestration engine's schema guesses. Tool arguments must satisfy the registered task-tool schema before execution. Diagnostic logging is a redacted projection, not input validation or proof of a live provider's rejection cause.
 
 Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
 

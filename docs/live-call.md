@@ -55,7 +55,7 @@ Three shapes were measured on the 10-25 to 11-01 window (19 owner rebuilds): 7 t
 
 ## Recovery is not replay
 
-Provider-drop handling is implemented by `#recoverFromDrop` and `#openRecovery` inside `LiveSessionOwner`. Failed resumption can fall back to a fresh open; exhausted recovery settles with `provider_recovery_exhausted`. Neither path grants another research operation or permission to replay an uncertain remote write.
+Provider-drop handling is implemented by `#recoverFromDrop` and `#openRecovery` inside `LiveSessionOwner`. Failed resumption can fall back to a fresh open; exhausted recovery settles with `provider_recovery_exhausted`. Neither path grants authority to repeat a helper action or replay an uncertain remote write.
 
 The public `LiveSessionOwner.recover()` method has a different purpose: it sweeps interrupted durable sessions at host startup. Do not confuse that startup bookkeeping with opening a replacement provider connection.
 
@@ -129,19 +129,13 @@ Deleting a local memory can scrub later accepted/rebuilt context, but cannot rem
 
 The runtime context carries one compact line of live connector state per family, connected or not signed in or needs approval, rebuilt at every call start and after any sign-in, and Naya may deny or claim a sign-in or a capability only from that line or a live tool check. An open loop older than 24 hours, or one a later summary records as finished, is never an opening option, and an opener never credits a past failure to the owner. When the owner says her voice or accent changed she believes him, says she cannot hear her own output and offers to keep going, never that she is still the same. A line from an earlier conversation's summary is spoken only when it answers what he just asked, and the "okay?" tag is limited to once in a few answers. The summary prompt records a failed request, an unanswered ask and a complaint about Naya herself as open loops.
 
-## Research context rebuild
+## Helper results and recovery context
 
-A call keeps the research answers it has been given in the provider conversation, which is what made one call grow from 15k to 44k tokens (LAT-1023). Two things bound that growth, and one of them is not a rebuild.
+The Live voice receives speech-ready results from the host-owned helper rather than calling source tools itself. The helper performs the typed tool work; the voice reads its result completely, retaining names, numbers, dates and qualifications. A partial result, a gap or a failure must remain explicit rather than becoming a claim that the work succeeded.
 
-**The reply cap (C-CONTINUITY T-11).** Every `research` result delivered into the voice session is capped at `RESEARCH.voiceReplyChars` (3,000 chars) after final serialization, envelope and cursor included, findings first. The cut is deterministic and lands on a whole line, never mid-word, and it is marked (`cut: voice_reply_chars`). The full result stays host-side for the call: a `continue` with the reply's `cursor` pages the stored answer and re-runs no search, and a cursor this call does not hold is the closed error `cursor_unavailable`, never a new question the owner did not ask. The cap is applied once, in `capVoiceReply`, on the one path a research result takes into the session, so a deadline partial and a resumed run obey it too.
+The 3,000-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
 
-**The rebuild.** The host counts exactly the research text it hands the provider. Once that count passes `RESEARCH.rebuildThresholdChars` (60,000 delivered chars), the next safe boundary rebuilds the session through the existing `fresh_seeded` recovery. The new session is seeded by one builder for every `fresh_seeded` open, including the mute recovery and the drop recovery: the `#seedHistory` transcript (bounded by `SEED_CHAR_LIMIT`, 8,000 chars, with the latest owner and the latest assistant utterance always surviving) and then the research ledger as a distinct, host-attributed section (`HOST_LEDGER_HEADER`), at most `RESEARCH.ledgerChars` (6,000 chars). The conversation therefore survives the rebuild instead of being replaced by it.
-
-The ledger is cumulative: `ResearchLedgerLog` accumulates one extractive record from every successful research batch and continuation in the call (the question, per source id lines, the excerpt lines that survived, the gaps, the cursors), oldest evicted first, and a record it had to cut is marked. A refused or failed batch adds nothing to the ledger and nothing to the rebuild counter, so it can never replace earlier records with an empty header; it does count in the total-context figure the `research_context_rebuild` line carries. Every successfully opened fresh session resets the counter and drops a pending seed, and only after the provider says the new session is ready, so a mute recovery no longer buys a second destructive rebuild seconds later.
-
-The rebuild is spent at the response boundary and never from the batch that filled the conversation, and it is deferred rather than dropped: while the assistant is streaming, a response is pending, a barge in is open or a recovery is in flight, the seed waits for the next boundary, and one crossing fires at most one rebuild. Recovery, the connection epoch, barge in and the 6,000 ms operation deadline are unchanged.
-
-The receipts are content free and truthful. The rebuild logs `live_rebuild trigger=research_context cause=host`; `line_dropped` is no longer the arm everything falls into, and a reason the host does not know is a typed error. The `research_context_rebuild` line reaches `host.log` with retained chars, ledger chars, seed transcript chars, rebuild count and the call's total context. Every socket close records its close code and a sanitized reason (no URLs, no tokens) on the outcome, and the next rebuild or recovery line carries them.
+Fresh session recovery uses the call transcript seed built by `LiveSessionOwner.#rebuildSeed` and `#seedHistory`. The current seed contains transcript turns only; it adds no separate helper-result ledger. Session recovery and a helper's follow-up tool reads are distinct operations, and recovery does not grant authority to replay an uncertain remote write.
 
 ## Verification
 

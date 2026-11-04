@@ -14,6 +14,7 @@ import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { createToolsOwner } from '../tools/index.js';
 import { runToolCalls } from '../tools/declarations.js';
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 const FIXTURE_NOW = Date.parse('2026-10-25T09:00:00Z');
 const ACCOUNT = 'local';
@@ -77,7 +78,13 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live = { ...acceptance, acceptedRunHash: accepted.sha256 };
   const host = { ...live, grants: [...f.names, MATTERMOST_CHAT_TOOL].map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
-  const definitions = owner.definitions('chat-sequence');
+  const task = canonicalTaskFixture(store, owner, 'chat-sequence', 'Read the synthetic chat sources', ['mattermost']);
+  t.after(() => task.close());
+  const definitions = task.tools;
+  const canonicalCall = (id: string, args: Record<string, unknown>) => {
+    const { intent, ...fields } = args;
+    return { id, name: `chat_${String(intent)}`, args: { ...fields, from_date: fixtureDaysAgo(7) } };
+  };
   const sequence = [
     { intent: 'channel', channel: 'Builders', query: 'pilot' },
     { intent: 'person', person: 'Ada', query: 'pilot' },
@@ -87,7 +94,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   ];
   for (const [step, args] of sequence.entries()) {
     await t.test(`original-sequence-${step}`, async () => {
-    const batch = await runToolCalls(owner, [{ id: `chat-${step}`, name: MATTERMOST_CHAT_TOOL, args: { ...args, from_date: fixtureDaysAgo(7) } }], {
+    const batch = await runToolCalls(owner, [canonicalCall(`chat-${step}`, args)], {
       registry: definitions, host: host as never, authority: { isCurrent: async () => true } as never,
       control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
     });
@@ -119,7 +126,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   for (const replay of replays) {
     await t.test(replay.id, async () => {
     for (const [index, words] of replay.finals.entries()) owner.observeAlarmOwner('chat-sequence', `${replay.id}-final-${index}`, words, FIXTURE_NOW);
-    const batch = await runToolCalls(owner, [{ id: replay.id, name: MATTERMOST_CHAT_TOOL, args: { ...replay.args, from_date: fixtureDaysAgo(7) } }], {
+    const batch = await runToolCalls(owner, [canonicalCall(replay.id, replay.args)], {
       registry: definitions, host: host as never, authority: { isCurrent: async () => true } as never,
       control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: step++, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
     });

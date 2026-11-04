@@ -471,3 +471,24 @@ test('tool execution telemetry is closed and includes duration and cache joins',
     assert.equal(safeEvent({ ...events[0], args: { secret: 'PRIVATE_QUERY' } }), undefined);
   } finally { detach(); }
 });
+
+test('task cancellation still aborts reads and emits a cancelled terminal event', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe?.event === 'task_tool') events.push(safe); } });
+  const started = taskDeferred<AbortSignal>(), reply = taskDeferred<import('../tasks/results.js').ToolResult>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async (_name, _args, signal) => { started.resolve(signal); return reply.promise; } });
+  const abort = new AbortController(), clock = new TaskTestClock();
+  const work = runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: abort.signal,
+    infer: async () => ({ text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] }) });
+  try {
+    const signal = await started.promise;
+    abort.abort();
+    assert.equal(signal.aborted, true);
+    assert.equal((await work).status, 'cancelled');
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    assert.ok(events.some(event => event.category === 'cancelled'));
+  } finally { reply.resolve(documentResult('synthetic', 'entry:1')); await work; detach(); }
+});

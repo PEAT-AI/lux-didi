@@ -5,7 +5,7 @@ import { fixtureUntil } from './live-voice-fixture.js';
 
 for (const call of ['save_to_vault', 'remember_note'] as const) {
   test(`natural finalized words reach ${call} through task inference and persist the full note`, async t => {
-    const body = `Synthetic dictated note. ${'Full retained evidence. '.repeat(40)}`;
+    const body = `Synthetic dictated note. ${'Full retained evidence. '.repeat(40)}`.trim();
     let inputs = '';
     const f = await liveTaskFixture(t, async request => {
       inputs = request.input;

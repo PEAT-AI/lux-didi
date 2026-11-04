@@ -875,14 +875,23 @@ function intervalSince(from: number | null, to: number | null, flag: AuditTurnFl
 }
 
 /**
- * #1011: when the answer finished playing, from the turn's own playback segments. `trace_turn.playback_drained_at`
- * is the EARLIEST drain (record.ts keeps the smaller stamp), so it cannot stand for completion: an answer is
- * complete only when the turn has segments and every one of them drained, and then at the last drain. A segment
- * still playing, interrupted or never reported leaves the measure missing instead of naming an earlier response.
+ * #1011: when the answer finished playing, or nothing when the record cannot say. Two things must hold.
+ * First, the segments: the turn needs at least one, and every segment must have drained without interruption,
+ * because `trace_turn.playback_drained_at` is the EARLIEST drain (record.ts keeps the smaller stamp) and cannot
+ * stand for completion. Second, the responses: every response the log heard produce audio must own one of those
+ * drained segments, or a continuation whose playback receipt never reached the store would be hidden behind the
+ * first response's drain. Either gap leaves the measure missing instead of naming an earlier response.
  */
-function answerCompleteAt(segments: readonly PlaybackView[]): number | null {
+function answerCompleteAt(track: TurnTrack, lines: readonly LogLine[]): number | null {
+  const segments = track.playback;
   if (segments.length === 0) return null;
   if (segments.some(segment => segment.drainedAt === null || segment.interruptedAt !== null)) return null;
+  const drainedKeys = new Set(segments.map(segment => segment.responseKey));
+  for (const line of lines) {
+    if (line.event !== 'response_first_audio' || line.turnId !== track.turn.turnId) continue;
+    if (count(line.record.firstAudioAt) === null) continue;
+    if (!drainedKeys.has(String(line.record.responseKey))) return null;
+  }
   return Math.max(...segments.map(segment => segment.drainedAt!));
 }
 
@@ -899,7 +908,7 @@ function auditTurnRow(track: TurnTrack, lines: readonly LogLine[]): AuditTurnRow
   const flags: AuditTurnFlag[] = [];
   const finalToProviderFirstSoundMs = intervalSince(ownerFinalAt, providerFirstAudioAt, 'final_after_provider_audio', flags);
   const finalToNativeFirstSoundMs = intervalSince(ownerFinalAt, nativeFirstAudibleAt, 'final_after_native_audible', flags);
-  const finalToAnswerCompleteMs = intervalSince(ownerFinalAt, answerCompleteAt(track.playback), 'final_after_answer_complete', flags);
+  const finalToAnswerCompleteMs = intervalSince(ownerFinalAt, answerCompleteAt(track, lines), 'final_after_answer_complete', flags);
   const missingReason: AuditMissingReason | null = ownerFinalAt === null ? 'no_owner_final'
     : providerFirstAudioAt === null && nativeFirstAudibleAt === null ? 'no_provider_audio'
     : nativeFirstAudibleAt === null ? 'no_native_receipt'

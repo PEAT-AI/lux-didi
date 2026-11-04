@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { alarmHarness } from './alarm-atomic.test.js';
 import { eventWindow, namedOthers } from '../tools/compose.js';
 import { checkOwnerTime } from '../tools/time-check.js';
-import { parseAlarmTime, validateAlarmArguments } from '../tools/alarm.js';
+import { parseAlarmTime, alarmArguments } from '../tools/alarm.js';
 
 interface CorpusRow {
   id: string; words: string; now: string; tz: string; args: Record<string, unknown>;
@@ -20,13 +20,14 @@ test('C-TIME corpus: all owner interpretations and task ISO commits', async t =>
   assert.ok(corpus.length >= 60);
   for (const row of corpus) await t.test(row.id, async rowT => {
     const args = row.words2 === undefined ? row.args : (row.args2 ?? {});
-    assert.ok(validateAlarmArguments(args), `${row.id}: legacy proposal is well formed`);
+    const proposal = alarmArguments(args);
+    assert.ok(proposal, `${row.id}: legacy proposal is well formed`);
     const words = row.words2 === undefined ? row.words : `${row.words} ${row.words2}`;
     if (row.words2 !== undefined) {
-      assert.ok(validateAlarmArguments(row.args));
-      assert.notEqual(parseAlarmTime(row.words, Date.parse(row.now), row.tz, row.args.time).status, 'ready');
+      const firstProposal = alarmArguments(row.args); assert.ok(firstProposal);
+      assert.notEqual(parseAlarmTime(row.words, Date.parse(row.now), row.tz, firstProposal.time).status, 'ready');
     }
-    const parsed = parseAlarmTime(words, Date.parse(row.now), row.tz, args.time);
+    const parsed = parseAlarmTime(words, Date.parse(row.now), row.tz, proposal.time);
     if (row.expects.status !== undefined) {
       assert.equal(parsed.status, row.expects.status);
       assert.equal(parsed.status === 'clarify' ? parsed.reason : undefined, row.expects.reason);

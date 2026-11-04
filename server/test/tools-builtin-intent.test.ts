@@ -7,7 +7,7 @@ import './alarm-logs.test.js';
 import './alarm-atomic.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,10 +19,11 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, ownerWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
+import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, ownerWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions, validateOpenWeb, openTarget } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
+import { parseAlarmTime } from '../tools/alarm.js';
 import { alarmHarness } from './alarm-atomic.test.js';
 import { Authority, type JournalRecord } from '../tasks/authority.js';
 import { CONNECTOR_COMPOSED_TOOLS } from '../connectors/index.js';
@@ -99,6 +100,74 @@ test('A2: native failure is a closed task failure and never announced as opened'
   assert.equal(result.status, 'failed');
   assert.match(result.repair ?? '', /browser_not_running/);
   assert.doesNotMatch(result.text, /Opened\./);
+});
+
+interface OwnerCorpusRow {
+  id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
+  call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
+}
+const ownerCorpus: OwnerCorpusRow[] = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8'));
+
+test('A2 owner corpus: alarm interpretation and real task persistence', async t => {
+  for (const row of ownerCorpus.filter(row => row.call.tool === 'set_alarm')) await t.test(row.id, async rowT => {
+    const now = row.now ?? Date.UTC(2026, 9, 30, 6);
+    const words = row.finals.join(' ');
+    const h = alarmHarness(rowT, () => {}, () => now + (row.toolDelayMs ?? 0), 'UTC');
+    if (row.code === 'no_owner_request') {
+      const tool = h.tools.get('alarm_create'); assert.ok(tool);
+      assert.equal((await tool.run({ text: 'synthetic missing task', at: new Date(now + 60_000).toISOString() }, { task_id: 'synthetic-absent-task', task_revision: 1, operation_id: row.id, connection_generation: 1 }, new AbortController().signal)).status, 'failed');
+      return;
+    }
+    const parsed = parseAlarmTime(words, now + (row.finalOffsetsMs?.at(-1) ?? 0), 'UTC');
+    if (row.code !== 'ready') {
+      assert.equal(parsed.status, 'clarify');
+      assert.equal(parsed.status === 'clarify' ? parsed.reason : undefined, row.code);
+      return;
+    }
+    assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
+    if (parsed.status !== 'ready') throw new Error('Expected a resolved owner corpus time');
+    assert.equal(parsed.fireAtUtc, row.fire_at_utc);
+    const result = await h.call('alarm_create', { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString() }, words);
+    assert.equal(result.status, 'ok', result.repair ?? result.text);
+    assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), row.fire_at_utc);
+  });
+});
+
+test('A2 owner corpus: named opens use the unified task operation and native receipts', async t => {
+  for (const row of ownerCorpus.filter(row => row.call.tool.startsWith('open_'))) await t.test(row.id, async rowT => {
+    const h = alarmHarness(rowT);
+    let dispatched = 0;
+    rowT.mock.method(nativeActions, 'dispatch', async () => { dispatched++; return row.nativeCode === 'native_timeout' ? 'native_timeout' as const : row.nativeCode ? 'failed' as const : 'opened' as const; });
+    beginHandleSession(h.task.id); rowT.after(() => endHandleSession(h.task.id));
+    const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/synthetic', sourceType: 'gmail' });
+    assert.ok(line); exposeHandles(line);
+    const { tool, ...args } = row.call;
+    let kind: string, target: string;
+    if (tool === 'open_web') {
+      assert.ok(validateOpenWeb(args));
+      const resolved = await resolveWebOpen(args, row.finals.join(' '), new AbortController().signal);
+      if (!('target' in resolved)) {
+        // A forbidden scheme is a host refusal, never a native action. The old
+        // target_not_authorized label is replaced by the closed task failure.
+        assert.equal(row.code, 'target_not_authorized'); assert.equal(dispatched, 0); return;
+      }
+      kind = 'web'; target = resolved.target.target;
+    } else if (tool === 'open_source') { kind = 'source'; target = line.match(/L[0-9]+/)![0]; }
+    else if (tool === 'open_app') { kind = 'app'; assert.equal(typeof args.name, 'string'); target = String(args.name); }
+    else if (tool === 'open_file') { kind = 'file'; assert.equal(typeof args.path, 'string'); target = String(args.path); }
+    else {
+      assert.equal(tool, 'open_home');
+      const resolved = openTarget('open_home', { app: String(args.app) });
+      assert.ok('target' in resolved); kind = 'web'; target = resolved.target.target;
+    }
+    const result = await h.call('open', { kind, target }, row.finals.join(' '));
+    const expected = row.nativeCode || row.code === 'target_not_authorized' ? 'failed' : 'ok';
+    assert.equal(result.status, expected, result.repair ?? result.text);
+    assert.equal(dispatched, 1);
+    if (result.status === 'failed') {
+      assert.ok(result.repair); assert.doesNotMatch(result.text, /Opened\./);
+    }
+  });
 });
 
 test('A3: partial owner transcription accumulates without borrowing tool text', async () => {

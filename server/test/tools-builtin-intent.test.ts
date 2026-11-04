@@ -308,8 +308,19 @@ for (const provider of ['gemini', 'openai'] as const) test(`voice ${provider} de
 // so the receipt must say 12:03 and 2 minutes, and the confirmation repeats no computed figure.
 test('SOURCE DEFECT C-DIAG109: the alarm read-back uses the execution clock', async t => {
   const askAt = Date.parse('2026-03-05T11:00:00Z');
-  const h = alarmHarness(t, () => {}, () => askAt + 3 * 60_000, 'Europe/Berlin');
-  const result = await h.call('alarm_create', { text: 'synthetic reminder', at: new Date(askAt + 5 * 60_000).toISOString() }, 'wake me in five minutes');
+  let now = askAt;
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'Europe/Berlin',
+    execute: connectorExecutor([], h.owner.taskExecutors('synthetic-readback-task')),
+    authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+  const revision = runtime.begin('wake me in five minutes', 1);
+  now += 3 * 60_000;
+  let result;
+  try { result = await runtime.runTool('alarm_create', { text: 'synthetic reminder', at: new Date(askAt + 5 * 60_000).toISOString() },
+    { ...revision.identity, operation_id: 'synthetic-readback' }, revision.signal); }
+  finally { runtime.close(); }
   assert.equal(result.status, 'ok');
   const reply = JSON.parse(result.text);
   assert.equal(Date.parse(reply.at), askAt + 5 * 60_000);

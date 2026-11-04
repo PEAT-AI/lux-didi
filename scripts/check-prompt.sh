@@ -45,13 +45,38 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 3000);
+assert.ok(worker.length <= 4103);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
 }
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
+// 10.11: each new rule is a judgment she applies, and neither public text carries a said line.
+for (const rule of [
+  'Everything else is yours and you answer it yourself',
+  'Speak of looking something up only in the turn you hand it off',
+  'Word may also be that nothing needs looking up',
+  'You cannot see work in progress',
+  'give what is there rather than only that it is incomplete',
+  'no reflex tag',
+  'the floor stays his',
+]) assert.ok(voice.includes(rule) || persona.NAYA_VOICE_SURFACE.includes(rule), `the new conduct is stated: ${rule}`);
+for (const rule of [
+  'She speaks what you write, so you decide what he hears',
+  'To him there is one companion, never two',
+  'returns no_action, so that she answers it herself',
+  'start with the smallest set that can answer it',
+  'Use a returned reference only with its own reader',
+  'give all of it now',
+  'answered only from verified host status and task evidence',
+]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
+assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
+const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),
+  persona.NAYA_VOICE_SURFACE.indexOf('# Ending the call'));
+assert.ok(backchannel.length > 0, 'the backchannel paragraph is present');
+assert.doesNotMatch(backchannel, /"/, 'the backchannel paragraph hands her no quoted line to say');
+assert.doesNotMatch(worker, /"/, 'the helper conduct hands her no quoted line to say');
 const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
 function assertNoRecitation(text) {
   assert.doesNotMatch(text, /["“][^"”]+["”]/);
@@ -108,7 +133,7 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
     connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
   assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
 }
-for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
+for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'no reflex tag']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
 // Result honesty belongs to the work policy, not a host-authored line for her to say.

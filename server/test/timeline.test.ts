@@ -615,7 +615,7 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 4\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
-    assert.match(text, /missing no_native_receipt/);
+    assert.match(text, /missing 0 no_native_receipt/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -953,7 +953,7 @@ const tracedScan = (finals: readonly number[], providerFirstSoundAt: number): st
   firstSoundLine(providerFirstSoundAt),
   responseLine(T0 + 1_000, 'r1', 'first', T0 + 2_500),
   responseLine(T0 + 4_000, 'r2', 'continuation', T0 + 5_000),
-]);
+];
 
 test('#1011: first sound and the completed answer are separate measures', () => {
   withStore(store => {
@@ -977,9 +977,12 @@ test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
     assert.deepEqual([row.finalToProviderFirstSoundMs, row.finalToNativeFirstSoundMs, row.finalToAnswerCompleteMs],
       [null, null, null], 'an interval that runs backwards is not a measurement');
     assert.deepEqual([...row.flags].sort(), ['final_after_answer_complete', 'final_after_native_audible', 'final_after_provider_audio']);
-    const text = renderCallAudit(audit);
-    assert.equal(/0ms/u.test(text), false, 'an impossible interval is never printed as zero');
-    assert.match(text, /final_after_provider_audio final_after_native_audible final_after_answer_complete/u);
+    // The row itself: three missing measures, the segments the store holds, and the three flags in order.
+    const lines = renderCallAudit(audit).split('\n');
+    const printed = lines[lines.findIndex(entry => entry.startsWith('turns turn ')) + 1]!;
+    assert.match(printed, /^t1 \S+ \S+ \S+ missing missing missing 1 /u);
+    assert.match(printed, /final_after_provider_audio final_after_native_audible final_after_answer_complete$/u);
+    assert.equal(/\b0ms\b/u.test(printed), false, 'an impossible interval is never printed as zero');
   });
 });
 

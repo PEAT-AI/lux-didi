@@ -427,3 +427,13 @@ test('C-FREEDOM: her own sentence never clears the open she was asked for', () =
   noteModelOutput(run);
   assert.match(ownerWords(run), /open my inbox in the browser/, 'a session long ask still opens');
 });
+
+// The canary floor is a retained safety requirement, not a retired wire detail.
+test('SOURCE DEFECT C-SAFETY: a one-second alarm cannot bypass the sixty-second canary floor', async t => {
+  const now = Date.parse('2030-01-02T00:00:00Z');
+  const h = alarmHarness(t, () => {}, () => now);
+  await h.call('alarm_create', { text: 'synthetic canary', at: new Date(now + 1_000).toISOString() }, 'wake me in one second');
+  const alarm = h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms'));
+  assert.ok(alarm, 'the canary remains an alarm creation, not a silently dropped request');
+  assert.ok(Number(alarm.fire_at_utc) >= now + 60_000, 'the owner must not get an alarm less than sixty seconds after the canary ask');
+});

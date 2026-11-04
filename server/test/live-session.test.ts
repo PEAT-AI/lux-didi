@@ -5506,8 +5506,9 @@ for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: adapter and host 
   const clock = { now: () => scheduler.now,
     setTimer: (ms: number, fire: () => void) => scheduler.schedule(fire, ms),
     clearTimer: (token: unknown) => (token as ReturnType<DeadlineClock['schedule']>).cancel() };
-  const h = await harness(t, { provider: 'openai', scheduler,
-    portFactory: socketFactory => new OpenAiLiveVoiceAdapter(openAiOptions({ socketFactory, clock })),
+  const limits = { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 };
+  const h = await harness(t, { provider: 'openai', scheduler, limits,
+    portFactory: socketFactory => new OpenAiLiveVoiceAdapter(openAiOptions({ socketFactory, clock, limits })),
     taskInfer: async request => { starts.push(scheduler.now - start); inputs.push(request.input); return { text: 'Synthetic fragment answer.', calls: [] }; },
   });
   const session = h.owner.create({ idempotencyKey: `synthetic-quiet-${gap}`, inputClass: 'ordinary' }, h.ctx);

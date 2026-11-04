@@ -173,7 +173,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
     const callArgs = { query: 'synthetic' };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
     assert.equal(owner.journal.intent(intent), 'fresh');
     const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
     const definition = task.tools.find(candidate => candidate.name === 'search_mail');

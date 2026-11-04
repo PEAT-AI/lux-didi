@@ -1,3 +1,7 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { Authority } from '../tasks/authority.js';
+import { connectorExecutor } from '../tasks/connectors.js';
+import { taskDefinitions, TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -41,7 +45,7 @@ function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic' }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
@@ -86,16 +90,28 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live.acceptedRunHash = accepted.sha256;
   const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1,
-    grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' })) };
+    grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE })) };
   const signal = new AbortController().signal;
-  const definitions = () => owner.definitions('run');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
-    executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: 'account', resourceId: 'resource' });
+  const taskRuns = new Map<string, { runtime: TaskRuntime; identity: ReturnType<TaskRuntime['begin']>['identity'] }>();
+  const allDefinitions = (runId = 'run') => {
+    let task = taskRuns.get(runId);
+    if (!task) {
+      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)),
+        authority: new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+      task = { runtime, identity: runtime.begin('Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
+    }
+    return taskDefinitions(task.runtime, task.identity, owner, runId);
+  };
+  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_knowledge' || tool.name === 'read_knowledge');
+  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic' }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+    executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
+  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
@@ -263,7 +279,7 @@ test('result ref, execution/name/call/scope/hash binding and detached immutable 
 
 test('search/get strict arguments, provenance and requested IDs remain unverified', async t => {
   const f = await fixture(t);
-  const search = f.definitions()[0]!;
+  const search = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   assert.equal(search.parameters['additionalProperties'], false);
   assert.equal(search.validate({ query: 'x', limit: 4 }), false); assert.equal(search.validate({ query: 'x', limit: 1, account: 'foreign' }), false);
   assert.equal(search.validate({ query: 'x', limit: 1 }), true);
@@ -306,11 +322,11 @@ for (const [label, result, memoryBytes] of [
 test('abort before dispatch is zero calls; forwarded abort after remote dispatch remains unknown and late completion denied', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic', limit: 1 }, before.signal)).status, 'unknown'); assert.equal(f.calls.length, 0);
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'unknown'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic', limit: 1 }, after.signal)).status, 'unknown');
+  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'unknown');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   f.owner.journal.fail(call, 'unknown', 'cancelled');
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
@@ -380,7 +396,7 @@ test('canonical UTF8 JSON rejects unsupported data without accessors; array orde
 });
 
 test('actual reader defaults remain untouched; trusted typed restrictions constrain separate classified snapshot', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic' }, f.signal);
   assert.equal(evidence.state, 'completed');
   if (evidence.state !== 'completed') return;
   assert.equal(evidence.classification, 'unknown'); assert.equal(evidence.capability, 'local-only');
@@ -396,7 +412,7 @@ test('actual reader defaults remain untouched; trusted typed restrictions constr
 });
 
 test('bounded complete slice reader denies expired, missing, partial, hash and source scope mismatches', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic' }, f.signal);
   if (evidence.state !== 'completed') { assert.fail('nonempty fixture must complete'); }
   for (const state of ['expired', 'unavailable', 'refused'] as const) {
     assert.throws(() => projectLuxResult(evidence, policy(), { ...f.port, readSlice: () => ({ state, reason: 'synthetic' }) }));
@@ -544,7 +560,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
   store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: 'account', resourceId: 'resource' }), /intent_policy_denied/);
+  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }), /intent_policy_denied/);
   assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
   assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
@@ -569,7 +585,7 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
 });
 
 test('a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
   // ROUTE-R2: an unclassified dispatched failure takes the closed stage from the adapter's own
@@ -581,14 +597,14 @@ test('a thrown MCP transport failure is logged without exception payload and rep
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(outcome.status, 'uncertain');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
 test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); }, result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   assert.equal(outcome.status, 'complete');
@@ -763,7 +779,7 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
-  f.owner.ownerRequests.answered?.('run', 'How long should the block be?');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
   assert.equal(created.status, 'completed');
@@ -844,7 +860,7 @@ test('Text body owner integration: independent parents, unknown and cross-run cu
   assert(two.accepted.every(result => (result.response['bodySlices'] as JsonObject[])[0]!['offset'] === 0)); assert.equal(f.calls.length, 2);
   const unknown = await f.dispatch([{ name: 'read_received_body', args: { cursor: 'unknown-synthetic-cursor' } }]); assert.equal(unknown.tools[0]!.status, 'refused'); assert.equal(unknown.error, undefined);
   const accepted = { ...f.acceptance, runId: 'second-run' }, hash = f.store.transaction(tx => f.owner.snapshotRun(tx, accepted)); f.setLive({ ...accepted, acceptedRunHash: hash.sha256 });
-  const definitions = f.owner.definitions('second-run'), host = { ...f.host, runId: 'second-run', grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+  const definitions = f.allDefinitions('second-run'), host = { ...f.host, runId: 'second-run', grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
   const crossed = await runToolCalls(f.owner, [{ id: 'cross-run', name: 'read_received_body', args: { cursor: f.cursor } }], { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, step: 1, contentIndex: 0, seenIds: new Set(), authorize: true, baseClasses: ['ordinary'] });
   assert.equal(crossed.tools[0]!.status, 'refused'); assert.equal(crossed.error, undefined); assert.equal(f.calls.length, 2);
 });
@@ -857,8 +873,8 @@ for (const effect of ['read', 'write'] as const) {
     t.after(detach);
     const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', limit: 1 } }], {
-      registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: 'account', resourceId: 'resource' }] },
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic' } }], {
+      registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
     });
@@ -892,7 +908,7 @@ for (const channel of ['eng', 'synthetic-missing']) {
     const tool = f.definitions().find(tool => tool.name === 'mattermost_chat')!;
     assert.ok(tool, 'the chat capability is published');
     const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 3 } }], {
-      registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
+      registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
     });
     assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
@@ -920,7 +936,7 @@ test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and
   const events: { event?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   const batch = await runToolCalls(f.owner, [{ id: 'observed', name: tool.name, args: observed }], {
-    registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
+    registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
     authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
     seenIds: new Set(), step: 1, invalidAttempts: new Set(),
   } as never);
@@ -980,7 +996,7 @@ function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
 const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
   ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
 });
-const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
+const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.allDefinitions();
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
 type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
 const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ExecutableCall, args: Record<string, unknown>, step = 1) => {
@@ -1036,14 +1052,14 @@ test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a 
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
-  f.owner.ownerRequests.answered?.('run');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
   const names = liveTools(f).map(definition => definition.name);
   assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
-  f.owner.ownerRequests.answered?.('run');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
   // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
   // still never posts, and the result says so.
@@ -1083,12 +1099,12 @@ test('W1030 delete_event: an id this session never created is refused with a clo
   assert.match(String(invented.result_json), /event_not_created_here/);
   assert.match(String(invented.result_json), /in this session/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
-  f.owner.ownerRequests.answered?.('run');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
   assert.equal(created.status, 'completed');
   assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
-  f.owner.ownerRequests.answered?.('run');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
@@ -1102,7 +1118,7 @@ test('W1030 delete_event: a block the owner names is removed only when this sess
   const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
   assert.equal(removed.status, 'completed');
   assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
-  f.owner.ownerRequests.answered?.('run');
+  // Model output does not mutate the host-owned task identity or finalized words.
   f.owner.observeAlarmOwner('run', 'j2', 'cancel that meeting', 2_000);
   const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
   assert.equal(none.status, 'completed');
@@ -1473,7 +1489,7 @@ test('task bindings use configured validated connector readers without the resea
   const f = await fixture(t);
   const bindings = f.owner.taskBindings(['lux']);
   assert.equal(bindings.length, 1); assert.equal(bindings[0]?.connector, 'lux-knowledge');
-  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1 }, f.signal);
+  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic' }, f.signal);
   assert.equal(read.state, 'completed'); assert.equal(f.calls.length, 1);
   f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
   assert.equal(f.owner.taskBindings(['lux']).length, 0);

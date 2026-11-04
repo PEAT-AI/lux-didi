@@ -320,9 +320,17 @@ def validate_plist(raw):
     return problems
 
 
-def lint(path):
-    result = subprocess.run(['plutil', '-lint', path], capture_output=True, text=True)
-    return result.returncode == 0
+def lint(path, executable=shutil.which('plutil')):
+    if executable:
+        result = subprocess.run([executable, '-lint', path], capture_output=True, text=True)
+        return result.returncode == 0
+    # Linux CI has no plutil. Parse the bytes rather than skipping syntax validation.
+    try:
+        with open(path, 'rb') as handle:
+            plistlib.load(handle)
+        return True
+    except Exception:  # Malformed or unreadable boundary input is not a valid plist.
+        return False
 
 
 def render_writer(tree):
@@ -487,6 +495,11 @@ def selftest():
                           handle)
         expect(validate_plist(open(valid, 'rb').read()) == [] and lint(valid),
                'the plist validator refused a valid agent')
+        expect(lint(valid, executable=None), 'portable parser refused a valid plist')
+        malformed = os.path.join(work, 'malformed.plist')
+        with open(malformed, 'wb') as handle:
+            handle.write(b'not a property list')
+        expect(not lint(malformed, executable=None), 'portable parser accepted malformed bytes')
         year = os.path.join(work, 'year.plist')
         with open(year, 'wb') as handle:
             plistlib.dump({'Label': 'com.lux.didi.alarm.synthetic', 'RunAtLoad': True,

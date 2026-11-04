@@ -1208,8 +1208,11 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
   try {
   const revision = runtime.begin('synthetic reminder task', 1);
   let operation = 0;
-  const call = (name: string, args: Record<string, unknown>) => runtime.runTool(name, name === 'alarm_create' || name === 'alarm_update' ? { recurrence: null, ...args } : args,
-    { ...revision.identity, operation_id: `synthetic-alarm-${++operation}` }, revision.signal);
+  const call = (name: string, args: Record<string, unknown>) => {
+    const tool = runtime.registry.get(name)!;
+    const omitted = Object.fromEntries(Object.entries(tool.parameters.properties as Record<string, { type?: unknown }>).filter(([, schema]) => Array.isArray(schema.type) && schema.type.includes('null')).map(([key]) => [key, null]));
+    return runtime.runTool(name, { ...omitted, ...args }, { ...revision.identity, operation_id: `synthetic-alarm-${++operation}` }, revision.signal);
+  };
   const bad = await call('alarm_create', { text: 'Synthetic reminder', at: 'not a time' });
   assert.equal(bad.status, 'failed'); assert.equal(rechecks, 0);
   const created = await call('alarm_create', { text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() });

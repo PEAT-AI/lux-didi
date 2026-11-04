@@ -158,3 +158,31 @@ test('atomic alarm receipt rolls back with the alarm and respects disabled conte
     assert.doesNotMatch(JSON.stringify(record), /synthetic receipt content/);
   });
 });
+
+for (const action of ['update', 'cancel'] as const) {
+  test(`alarm ${action}: missing and stale ids fail honestly, active id still commits`, async t => {
+    const now = Date.UTC(2026, 10, 4, 12);
+    const h = alarmHarness(t, () => {}, () => now);
+    h.store.transaction(tx => {
+      for (const [id, state] of [['synthetic-active', 'pending'], ['synthetic-stale', 'cancelled']]) {
+        tx.run('INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,?,?)',
+          [id!, now + 120_000, 'UTC', 'Synthetic reminder', state!, 'synthetic-seed']);
+      }
+    });
+    const args = (id: string) => action === 'update' ? { id, text: 'Updated synthetic reminder' } : { id };
+    for (const id of ['synthetic-missing', 'synthetic-stale']) {
+      const result = await h.call(`alarm_${action}`, args(id), `Please ${action} that alarm`);
+      assert.equal(result.status, 'failed');
+      assert.match(result.repair ?? '', /That alarm is not active/);
+      assert.match(result.repair ?? '', /synthetic-active/, 'repair includes the still-active alternatives');
+      assert.doesNotMatch(result.repair ?? '', /outcome.*unknown|unknown.*outcome/i);
+      assert.equal(h.store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM task_effect_journal WHERE status IN ('pending','unknown','outcome_unknown')"))?.n, 0);
+      assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', ['synthetic-active']))?.state, 'pending');
+    }
+    const valid = await h.call(`alarm_${action}`, args('synthetic-active'), `Please ${action} that alarm`);
+    assert.equal(valid.status, 'ok', valid.repair ?? valid.text);
+    const active = h.store.transaction(tx => tx.get('SELECT state,label FROM alarms WHERE id=?', ['synthetic-active']));
+    assert.equal(active?.state, action === 'cancel' ? 'cancelled' : 'pending');
+    if (action === 'update') assert.equal(active?.label, 'Updated synthetic reminder');
+  });
+}

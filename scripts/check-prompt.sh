@@ -45,7 +45,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 4061);
+assert.ok(worker.length <= 4103);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
@@ -64,6 +64,7 @@ for (const rule of [
 ]) assert.ok(voice.includes(rule) || persona.NAYA_VOICE_SURFACE.includes(rule), `the new conduct is stated: ${rule}`);
 for (const rule of [
   'She speaks what you write, so you decide what he hears',
+  'To him there is one companion, never two',
   'returns no_action, so that she answers it herself',
   'start with the smallest set that can answer it',
   'Use a returned reference only with its own reader',

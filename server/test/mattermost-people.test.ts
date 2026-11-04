@@ -12,12 +12,11 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
-  CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
+  CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader,
   connectorDescriptor, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOPIC_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
-import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
+import type { MattermostAttention, MattermostChatRead, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
-import { shapeMattermost } from '../tools/live-shape.js';
 import { installPeople, parsePeople, type PeopleSnapshot } from '../people/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));

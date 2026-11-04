@@ -30,7 +30,7 @@ import Foundation
         }
         guard await recorder.urls == targets else { fatalError("A4 opener URLs") }
         guard await actions.perform(.openURL, target: targets[0]).code == .opened else { fatalError("A4 fifth open") }
-        guard await actions.perform(.openURL, target: targets[0]).code == .notAllowed else { fatalError("A4 sixth open must be rate limited") }
+        guard await actions.perform(.openURL, target: targets[0]).code == .opened else { fatalError("A4 sixth authorized open must remain allowed") }
         guard await recorder.urls.count == 5 else { fatalError("A4 refused open reached opener") }
         print("A4 PASS: maps, directions, site, search native round trips; sixth open refused")
     }

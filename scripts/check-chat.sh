@@ -28,7 +28,7 @@ cp -R server/test/fixtures "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 mapfile_compat=()
 while IFS= read -r file; do mapfile_compat+=("$file"); done < <(find "$out/source" -name '*.ts' -type f)
-cp server/test/{synthetic-task,canonical-task-fixture}.ts "$out/source/test/"
+cp server/test/{synthetic-task,canonical-task-fixture,openai-live-voice-fixture}.ts "$out/source/test/"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck \
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${mapfile_compat[@]}"

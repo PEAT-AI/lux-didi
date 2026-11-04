@@ -26,7 +26,7 @@ export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffec
   } as unknown as Store;
   const sent: { id: string | null; text: string; generation: number }[] = [];
   const states: string[] = [];
-  let reconnects = 0;
+
   const call = new TaskCall({ provider: 'openai',
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer,
       contentAllowed: () => false,
@@ -38,7 +38,7 @@ export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffec
     state: (_identity, state) => { states.push(state); },
   });
   call.socket(1);
-  return { call, sent, states, revisions, operations, reconnects: () => reconnects };
+  return { call, sent, states, revisions, operations };
 }
 function deferred() {
   let resolve!: (value: Inference) => void;
@@ -84,7 +84,7 @@ export const cases: Record<string, () => Promise<void>> = {
   },
   async 'no-delegation'() {
     const f = fixture(async () => ({ text: 'Synthetic answer.', calls: [] }));
-    try { await f.call.input('Synthetic request', 1); equal(f.reconnects(), 0); equal(f.sent[0]?.id, null); equal(f.call.pendingAnswer()?.text, 'Synthetic answer.'); }
+    try { await f.call.input('Synthetic request', 1); equal(f.sent[0]?.id, null); equal(f.call.pendingAnswer()?.text, 'Synthetic answer.'); }
     finally { f.call.close(); }
   },
   async 'correction-during-wait'() {
@@ -142,10 +142,10 @@ export const cases: Record<string, () => Promise<void>> = {
     const f = fixture(async () => ({ text: 'Synthetic answer.', calls: [] }));
     try {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
-      f.call.delivery.rejected('wrong-command'); equal(f.reconnects(), 0);
+      f.call.delivery.rejected('wrong-command');
       f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
       f.call.delivery.rejected('c1'); assert.ok(f.states.includes('retry')); equal(f.sent.length, 2);
-      f.call.delivery.rejected('c2'); equal(f.reconnects(), 0); assert.ok(f.states.includes('undelivered'));
+      f.call.delivery.rejected('c2'); assert.ok(f.states.includes('undelivered'));
       equal(f.states.includes('heard'), false);
     } finally { f.call.close(); }
   },

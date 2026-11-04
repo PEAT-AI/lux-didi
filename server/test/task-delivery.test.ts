@@ -10,7 +10,7 @@ function fixture() {
   const delivery = new TaskDelivery({ isCurrent: () => current,
     append: (id, text) => { const command = `c${sends.length}`; sends.push({ id, text, command }); return command; },
     state: (_identity, state) => { assert.ok(safeEvent({ event: 'task_delivery', taskId: 't', revision: 1, state })); states.push(state); } });
-  return { delivery, sends, states, stale: () => { current = false; }, reconnects: () => 0 };
+  return { delivery, sends, states, stale: () => { current = false; } };
 }
 test('spoken chunks preserve text and remain at most 450 characters', () => {
   const text = `${'Synthetic sentence. '.repeat(70)}${'x'.repeat(500)}`;
@@ -65,7 +65,7 @@ test('VOICE-R15: every delivery state and lifecycle identity survives closed saf
 test('C-DELIVERY: a generation without delegation appends on the open line', () => {
   const f = fixture(); f.delivery.socket(1);
   f.delivery.deliver(identity, answer('Synthetic open line answer.'));
-  assert.equal(f.reconnects(), 0);
+
   assert.equal(f.sends.length, 1);
   assert.equal(f.sends[0]?.id, null);
 });
@@ -79,7 +79,7 @@ test('C-DELIVERY: acceptance advances chunks without transcript and never replay
   const count = f.sends.length;
   f.delivery.socket(2); f.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
   assert.equal(f.sends.length, count);
-  assert.equal(f.reconnects(), 0);
+
 });
 test('C-DELIVERY: a rejection retries once on the same line and then fails', () => {
   const f = fixture(); f.delivery.socket(1); f.delivery.attach(identity, 'd1');
@@ -87,7 +87,7 @@ test('C-DELIVERY: a rejection retries once on the same line and then fails', () 
   f.delivery.rejected(f.sends[0]!.command);
   f.delivery.rejected(f.sends[1]!.command);
   assert.equal(f.sends.length, 2);
-  assert.equal(f.reconnects(), 0);
+
   assert.equal(f.states.at(-1), 'undelivered');
 });
 

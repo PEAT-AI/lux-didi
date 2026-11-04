@@ -20,7 +20,7 @@ import { TaskCall } from '../tasks/call.js';
 import type { Infer, Inference } from '../tasks/worker.js';
 function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai', after?: (ms: number, callback: () => void) => () => void, execute?: TaskRuntimeOptions['execute']) {
   const directory = mkdtempSync(join(tmpdir(), 'task-call-synthetic-')), store = new Store(directory);
-  const sent: { id: string | null; text: string }[] = [], responses: unknown[] = []; let reconnects = 0;
+  const sent: { id: string | null; text: string }[] = [], responses: unknown[] = [];
   const call = new TaskCall({ provider, ...(after ? { after } : {}),
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer, contentAllowed: () => true,
       authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }), execute: execute ?? (async () => { throw new Error('unexpected fixture tool'); }) }),
@@ -29,7 +29,7 @@ function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = '
     state: () => {},
   });
   call.socket(1); t.after(() => { call.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, store, sent, responses, reconnects: () => reconnects };
+  return { call, store, sent, responses };
 }
 function deferred() { let resolve!: (value: Inference) => void; const promise = new Promise<Inference>(done => { resolve = done; }); return { promise, resolve }; }
 test('delegation before final input and duplicates do not start a worker', async t => {
@@ -55,7 +55,7 @@ test('a correction suppresses the stale worker answer', async t => {
 });
 test('no delegation still executes finalized input and appends on the open line', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic answer.', calls: [] }));
-  await f.call.input('Synthetic request', 1); assert.equal(f.reconnects(), 0);
+  await f.call.input('Synthetic request', 1);
   assert.equal(f.call.pendingAnswer()?.text, 'Synthetic answer.');
 });
 test('Gemini delegate attaches to the finalized task and carries its spoken answer', async t => {
@@ -63,7 +63,7 @@ test('Gemini delegate attaches to the finalized task and carries its spoken answ
   f.call.functions([{ id: 'fn1', name: 'delegate', args: { request: 'Model words are not the owner request' } }]);
   assert.equal(inference, 0); await f.call.input('Actual finalized owner words', 1);
   assert.deepEqual(f.responses, [[{ id: 'fn1', name: 'delegate', response: { status: 'complete', text: 'Synthetic spoken answer.' } }]]);
-  assert.equal(f.sent.length, 0); assert.equal(f.reconnects(), 0);
+  assert.equal(f.sent.length, 0);
 });
 
 

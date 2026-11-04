@@ -1,3 +1,4 @@
+import { FAILURE_CATEGORIES } from '../tasks/results.js';
 import { taskMigrations, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
@@ -73,7 +74,13 @@ const runtimeSchema = [
   'CREATE TABLE IF NOT EXISTS runtime_requests(assistant_id TEXT NOT NULL, client_id TEXT NOT NULL, request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(assistant_id,client_id,request_key))',
   'CREATE TABLE IF NOT EXISTS runtime_sessions(token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, csrf_token TEXT NOT NULL, expires_at INTEGER NOT NULL)',
 ];
-const alarmReceiptContentPolicy = new WeakMap<object, () => boolean>();
+function taskResultMetadata(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const result = typeof value === 'object' ? value as Record<string, unknown> : {};
+  const candidate = result.status === 'failed' ? result.failure_category : result.status;
+  const category = ['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES].includes(String(candidate)) ? String(candidate) : 'upstream_error';
+  return JSON.stringify({ size_bytes: Buffer.byteLength(JSON.stringify(value)), category });
+}
 
 export class Store {
   #db: DatabaseSync | undefined;
@@ -173,29 +180,29 @@ export class Store {
     finally { this.#inTransaction = false; }
   }
   /** Content capture is explicitly supplied by the host gate, never inferred from model text. */
-  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, contentAllowed: boolean, now = Date.now()): void {
+  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, now = Date.now()): void {
     this.transaction(tx => {
       tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status) VALUES (?,?,?,?,?)
         ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status`,
         [identity.task_id, now, now, identity.task_revision, 'running']);
       tx.run('INSERT INTO task_revisions(task_id,task_revision,connection_generation,created_at,owner_words,evidence) VALUES (?,?,?,?,?,?)',
-        [identity.task_id, identity.task_revision, identity.connection_generation, now, contentAllowed ? JSON.stringify(ownerWords) : null, contentAllowed ? JSON.stringify(evidence) : null]);
+        [identity.task_id, identity.task_revision, identity.connection_generation, now, JSON.stringify(ownerWords), taskResultMetadata(evidence)]);
     });
   }
-  saveTaskOperation(operation: OperationRecord, contentAllowed: boolean, now = Date.now()): void {
+  saveTaskOperation(operation: OperationRecord, now = Date.now()): void {
     this.transaction(tx => {
       tx.run(`INSERT INTO task_operations(operation_id,task_id,task_revision,connection_generation,tool,effect,state,arguments,result,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,result=excluded.result,updated_at=excluded.updated_at`,
         [operation.operation_id, operation.task_id, operation.task_revision, operation.connection_generation, operation.tool, operation.effect, operation.state,
-          contentAllowed ? JSON.stringify(operation.args) : null, contentAllowed ? JSON.stringify(operation.result) : null, now, now]);
+          JSON.stringify(operation.args), taskResultMetadata(operation.result), now, now]);
       if (operation.effect !== 'none' && operation.state !== 'pending') tx.run(`INSERT INTO task_receipts(operation_id,state,receipt,created_at) VALUES (?,?,?,?)
         ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,receipt=excluded.receipt`,
-        [operation.operation_id, operation.state, contentAllowed ? JSON.stringify(operation.result) : null, now]);
+        [operation.operation_id, operation.state, taskResultMetadata(operation.result), now]);
     });
   }
-  finishTask(identity: TaskRecord, status: string, answer: unknown, contentAllowed: boolean, now = Date.now()): boolean {
+  finishTask(identity: TaskRecord, status: string, answer: unknown, now = Date.now()): boolean {
     return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=?,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
-      [status, contentAllowed ? JSON.stringify(answer) : null, now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
+      [status, JSON.stringify(typeof answer === 'string' ? answer : answer && typeof answer === 'object' && 'text' in answer && typeof answer.text === 'string' ? answer.text : ''), now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
   }
   saveTaskDelivery(identity: TaskRecord, attemptId: string, state: 'attached' | 'pending' | 'delivered' | 'closed' | 'failed', now = Date.now()): void {
     this.transaction(tx => { tx.run(`INSERT INTO task_deliveries(attempt_id,task_id,task_revision,connection_generation,state,updated_at) VALUES (?,?,?,?,?,?)
@@ -203,8 +210,7 @@ export class Store {
       [attemptId, identity.task_id, identity.task_revision, identity.connection_generation, state, now]); });
   }
   /** Sole durable writer for permission commits; argument-bearing identity strings are hashed at entry. */
-  taskEffectJournal(contentAllowed: () => boolean): import('../tasks/authority.js').AuthorityPorts['journal'] {
-    alarmReceiptContentPolicy.set(this, contentAllowed);
+  taskEffectJournal(): import('../tasks/authority.js').AuthorityPorts['journal'] {
     const key = (identity: string): string => createHash('sha256').update(identity).digest('hex');
     const redacted = { status: 'ok', text: '', references: [], next_cursor: null, coverage: 'Previously committed; content not retained.', repair: null };
     return {
@@ -213,10 +219,10 @@ export class Store {
         if (!row) return undefined;
         if (row.status === 'pending') return { status: 'pending' as const };
         if (row.status === 'failed') return { status: 'failed' as const };
-        return { status: 'succeeded' as const, value: row.value === null ? redacted : JSON.parse(String(row.value)) as unknown };
+        return { status: 'succeeded' as const, value: redacted };
       }),
       put: async (identity, record) => this.transaction(tx => {
-        const value = record.status === 'succeeded' && contentAllowed() ? JSON.stringify(record.value) : null;
+        const value = record.status === 'succeeded' ? taskResultMetadata(record.value) : null;
         tx.run('INSERT INTO task_effect_journal(identity_hash,status,value,updated_at) VALUES (?,?,?,?) ON CONFLICT(identity_hash) DO UPDATE SET status=excluded.status,value=excluded.value,updated_at=excluded.updated_at',
           [key(identity), record.status, value, Date.now()]);
       }),
@@ -250,7 +256,7 @@ export function commitAlarmEffect(store: import('../contracts/storage.js').Store
     return store.transaction(tx => {
       const value = mutate(tx);
       tx.run("INSERT INTO task_effect_journal(identity_hash,status,value,updated_at) VALUES (?,'succeeded',?,?) ON CONFLICT(identity_hash) DO UPDATE SET status=excluded.status,value=excluded.value,updated_at=excluded.updated_at",
-        [createHash('sha256').update(identity).digest('hex'), alarmReceiptContentPolicy.get(store)?.() ? JSON.stringify(value) : null, Date.now()]);
+        [createHash('sha256').update(identity).digest('hex'), taskResultMetadata(value), Date.now()]);
       return value;
     });
   }

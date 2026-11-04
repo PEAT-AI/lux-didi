@@ -12,7 +12,7 @@ import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 async function fixture(t: TestContext, configured = true) {
   const directory = mkdtempSync(join(tmpdir(), 'task-draft-synthetic-')), store = new Store(directory, domainMigrations);
   const calls: { input: Parameters<ComposeDispatch['draftChat']>[0]; scope: readonly string[] | undefined }[] = [];
-  const options = { store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [], contentAllowed: () => false, timeZone: 'UTC',
+  const options = { store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [], timeZone: 'UTC',
     ...(configured ? { draftChat: async (input: Parameters<ComposeDispatch['draftChat']>[0], scope?: readonly string[]): Promise<ComposeOutcome> => {
       calls.push({ input, scope }); return { state: 'done', response: { saved: true, draftId: 'synthetic-remote-draft', destination: 'Mattermost', sent: false } };
     } } : {}), effectCheck: async () => true };

@@ -189,9 +189,8 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
     if (row.id === 'turn-time-not-dispatch-time') {
       const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'UTC',
         execute: connectorExecutor([], h.owner.taskExecutors('synthetic-corpus-task')),
-        authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
-        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
-        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+        authority: new Authority({ journal: h.store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
       const revision = runtime.begin(words, 1);
       try { result = await runtime.runTool('alarm_create', args, { ...revision.identity, operation_id: 'synthetic-alarm-create' }, revision.signal); }
       finally { runtime.close(); }
@@ -344,9 +343,8 @@ test('SOURCE DEFECT C-DIAG109: delayed tasks preserve the ask-time target and re
   const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
   const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'Europe/Berlin',
     execute: connectorExecutor([], h.owner.taskExecutors('synthetic-readback-task')),
-    authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
-    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
-    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+    authority: new Authority({ journal: h.store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
   const revision = runtime.begin('wake me in five minutes', 1);
   assert.equal(revision.askAtUtc, askAt, 'the real task captures ask time before dispatch advances');
   now += 3 * 60_000;

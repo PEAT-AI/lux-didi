@@ -20,7 +20,6 @@ export interface HostTaskOptions {
   store: Store; credentials: Credentials; models: RoleModels;
   bindings(): readonly BoundConnector[];
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
-  contentAllowed(): boolean;
   timeZone: string;
   executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
@@ -36,10 +35,10 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
   const checkEffect = options.effectCheck ?? createEffectRole({ role: options.models.effect_check, credentials: options.credentials });
   return (sessionId, delivery, connectionIds) => {
     const bindings = () => options.bindings().filter(binding => !connectionIds || connectionIds.includes(binding.policy.connectionId));
-    const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(options.contentAllowed),
+    const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
-    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer, contentAllowed: options.contentAllowed,
+    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer, 
       timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');

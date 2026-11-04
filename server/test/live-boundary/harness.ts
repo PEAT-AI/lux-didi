@@ -29,7 +29,6 @@ export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffec
   let reconnects = 0;
   const call = new TaskCall({ provider: 'openai',
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer,
-      contentAllowed: () => false,
       authority: new Authority({ checkEffect: async () => allowEffect, journal: { get: async () => undefined, put: async () => {} }, log: () => {} }),
       execute: execute ?? (async () => { throw new Error('Unexpected connector I/O'); }),
     }),

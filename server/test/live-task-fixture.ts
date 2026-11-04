@@ -32,7 +32,7 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
       route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
       prompt: { text: 'Synthetic persona', dataClass: 'ordinary' } }),
     createTaskRuntime: hostTaskFactory({ store, vault, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-      bindings: () => [], contentAllowed: () => true, timeZone: 'UTC', infer,
+      bindings: () => [], timeZone: 'UTC', infer,
       executors: () => options.executors ?? {}, effectCheck: async () => options.approved ?? true }),
   });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });

@@ -129,7 +129,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     }
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }
-  const { service: live } = composeLive(store, config, { createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], contentAllowed: () => true, timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
+  const { service: live } = composeLive(store, config, { createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();

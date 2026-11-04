@@ -308,9 +308,8 @@ test('R29 an actual native attention read advances task exposure, while invalid 
   const f = setup('window');
   const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
   const store = new Store(join(f.dir, 'task-state'));
-  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {}, journal: store.taskEffectJournal(() => false) }),
-    infer: async () => { throw Error('No inference in an explicit read fixture'); }, contentAllowed: () => false,
-    delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
+  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {}, journal: store.taskEffectJournal() }),
+    infer: async () => { throw Error('No inference in an explicit read fixture'); }, delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
   });
   t.after(async () => { runtime.close(); store.close(); await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const revision = runtime.begin('Read what is waiting for me', 1, 1);

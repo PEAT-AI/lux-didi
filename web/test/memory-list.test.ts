@@ -183,3 +183,18 @@ test('memory deletion with a conversation open never reads the saved-entry list'
   assert.equal(harness.context.entries.length, 1, 'the open conversation still supplies the list');
   assert.equal(harness.context.entriesMore, true, 'the conversation paging flag is untouched');
 });
+
+// Review finding 1: a conversation opened earlier in the launch must not replace Memory's list. The view
+// the owner is looking at picks the read, not whether some session happens to be open.
+test('memory deletion keeps the saved-note list after an earlier conversation was opened', async () => {
+  const harness = memoryDeletionHarness({ tab: 'Memory', session: { id: 'old-session' }, entries: [], memorySummaries: [], summaryIds: new Set() },
+    async path => path === '/sessions'
+      ? { items: [{ id: 'capture-note' }], nextCursor: null }
+      : path === '/sessions/capture-note'
+        ? { entries: [{ id: 'kept', text: 'kept note' }] }
+        : { session: { id: 'old-session' }, entries: [{ id: 'stale', text: 'stale conversation entry' }], nextCursor: null });
+  await harness.context.deleteMemory('synthetic-entry');
+  assert.deepEqual(harness.calls, ['/sessions', '/sessions/capture-note'], 'Memory reloads saved entries and never the previously opened conversation');
+  assert.deepEqual(Array.from(harness.context.entries, (entry: { text: string }) => entry.text), ['kept note'], 'the other saved notes stay on the page');
+  assert.equal(harness.context.error, '', 'the reload reports no failure');
+});

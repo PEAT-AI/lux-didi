@@ -821,10 +821,12 @@ async function deleteMemory(id: string) {
       deleted: message => {if(version===authorityVersion())notify(message);},
       reload: async () => {
         assertAuthority(version);
-        const current = session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
+        // The view the owner is looking at decides the read: Memory shows saved entries even when a
+        // conversation was opened earlier in the launch, so a stale session never replaces that list.
+        const fromMemory = tab === 'Memory';
+        const saved = fromMemory ? await loadEntries() : undefined;
         assertAuthority(version);
-        // Memory reads saved entries with no conversation open, so the same refresh has to cover it.
-        const saved = !session && tab === 'Memory' ? await loadEntries() : undefined;
+        const current = !fromMemory && session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
         assertAuthority(version);
         const results = recall ? await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft)}&limit=50`, { signal }) : undefined;
         assertAuthority(version);

@@ -1510,7 +1510,7 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
     authority: new Authority({ journal: f.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
     infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
     delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
-  t.after(() => runtime.close());
+  try {
   const revision = runtime.begin('synthetic reminder task', 1);
   let operation = 0;
   const call = (name: string, args: Record<string, unknown>) => runtime.runTool(name, args,
@@ -1526,4 +1526,5 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
   assert.equal(rechecks, 3);
   const row = f.store.transaction(tx => tx.get('SELECT state,label,fire_at_utc FROM alarms WHERE id=?', [id]));
   assert.equal(row?.state, 'cancelled'); assert.equal(row?.label, 'Updated reminder'); assert.equal(row?.fire_at_utc, now + 7200000);
+  } finally { runtime.close(); }
 });

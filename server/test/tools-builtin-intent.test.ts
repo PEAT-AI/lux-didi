@@ -174,8 +174,8 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
         infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
         delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
       const revision = runtime.begin(words, 1);
-      rowT.after(() => runtime.close());
-      result = await runtime.runTool('alarm_create', args, { ...revision.identity, operation_id: 'synthetic-alarm-create' }, revision.signal);
+      try { result = await runtime.runTool('alarm_create', args, { ...revision.identity, operation_id: 'synthetic-alarm-create' }, revision.signal); }
+      finally { runtime.close(); }
     } else result = await h.call('alarm_create', args, words);
     assert.equal(result.status, 'ok', result.repair ?? result.text);
     assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), row.fire_at_utc);

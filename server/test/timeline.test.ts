@@ -192,7 +192,7 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.equal(older.terminal, null);
 });
 
-test('#699: a stale server/dist is rebuilt before the read, and a failed build stops the CLI (#752)', () => {
+test('#1011: a stale server/dist is reported with the build command, and the read never builds (#699, #752)', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-build-')));
   try {
     const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
@@ -205,7 +205,7 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     chmodSync(join(tree, 'scripts', 'didi-timeline'), 0o755);
     writeFileSync(join(tree, 'server', 'package.json'), '{ "name": "synthetic-server", "private": true }\n');
     writeFileSync(join(tree, 'server', 'settings.ts'), 'export const settings = 1;\n');
-    // The built module is the real one, so a skipped rebuild still answers and the assertion cannot pass by crashing.
+    // The built module is the real one, so a refused read cannot pass by crashing on a missing import.
     writeFileSync(join(dist, 'timeline.js'), `export * from ${JSON.stringify(timelineModule)};\n`);
     const older = new Date(Date.now() - 3600000);
     const newer = new Date();
@@ -213,20 +213,21 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     mkdirSync(bin);
     const calls = join(root, 'npm-calls');
     const npm = join(bin, 'npm');
-    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(calls)}\nprintf 'tsc: synthetic compile error\\n' >&2\nexit 7\n`);
+    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(calls)}\nexit 0\n`);
     chmodSync(npm, 0o755);
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
     const cli = join(tree, 'scripts', 'didi-timeline');
     const dataDir = join(root, 'data');
-    // A checkout that fetched a newer source over an older build.
+    // A checkout that fetched a newer source over an older build: a read must not repair it.
     utimesSync(join(dist, 'timeline.js'), older, older);
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), newer, newer);
-    const failed = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
-    assert.equal(failed.status, 7, 'the build exit status is the CLI status');
-    assert.match(failed.stderr, /tsc: synthetic compile error/, "the build's own error is shown");
-    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build'], 'the documented build ran');
-    // A fresh dist is authority: no build runs and the real module answers.
-    rmSync(calls, { force: true });
+    const stale = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
+    assert.equal(stale.status, 1, stale.stderr);
+    assert.match(stale.stderr, /server\/dist is older than its source/u);
+    assert.match(stale.stderr, /run: npm --prefix server run build/u);
+    assert.equal(stale.stdout, '', 'a stale dist answers nothing');
+    assert.equal(existsSync(calls), false, 'the read ran no build in the shared checkout');
+    // A fresh dist is authority: no build runs, and the real module answers.
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
     utimesSync(join(dist, 'timeline.js'), newer, newer);
     const fresh = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
@@ -570,8 +571,8 @@ test('C-LOGS11: the across-sessions summary reports counts per tool and p50/p90 
     assert.deepEqual(summary.latencyPerTool['gmail_search_messages'], { count: 3, p50: 60, p90: 80 });
     assert.deepEqual(summary.latencyPerTool['research'], { count: 1, p50: 6100, p90: 6100 });
     assert.deepEqual(summary.refusalsByCode, { grant_not_permitted: 1 });
-    // Both sessions' owner-final-to-audio waits: 1700 in session A, 5000 in session B.
-    assert.deepEqual(summary.finalToAudio, { count: 2, p50: 1700, p90: 5000 });
+    // Both sessions' owner-final-to-first-sound waits: 1700 in session A, 5000 in session B.
+    assert.deepEqual(summary.firstSoundProvider, { count: 2, p50: 1700, p90: 5000 });
   });
 });
 
@@ -581,7 +582,7 @@ test('C-LOGS11: a summary with no session since the date is empty, not a zeroed 
     const summary = buildAuditSummary(readOf(store), scanOf([]), T0 + 10_000_000);
     assert.equal(summary.sessions, 0);
     assert.deepEqual(summary.callsPerTool, {});
-    assert.deepEqual(summary.finalToAudio, { count: 0, p50: null, p90: null });
+    assert.deepEqual(summary.firstSoundProvider, { count: 0, p50: null, p90: null });
   });
 });
 
@@ -947,7 +948,7 @@ function tracedTurn(store: Store, audibleAt: number, drainedAt: number): void {
   record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:2' }, { drainedAt });
 }
 
-const tracedScan = (finals: readonly number[], providerFirstSoundAt: number) => scanOf([
+const tracedScan = (finals: readonly number[], providerFirstSoundAt: number): string[] => [
   ...finals.map(finalLine),
   firstSoundLine(providerFirstSoundAt),
   responseLine(T0 + 1_000, 'r1', 'first', T0 + 2_500),
@@ -957,7 +958,7 @@ const tracedScan = (finals: readonly number[], providerFirstSoundAt: number) => 
 test('#1011: first sound and the completed answer are separate measures', () => {
   withStore(store => {
     tracedTurn(store, T0 + 5_120, T0 + 9_000);
-    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), tracedScan([T0 + 800, T0 + 900], T0 + 2_500));
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 800, T0 + 900], T0 + 2_500)));
     const row = audit.turns[0]!;
     assert.equal(row.ownerFinalAt, T0 + 900, 'the last final of a split utterance is the anchor');
     assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'the wait before her voice existed');
@@ -971,7 +972,7 @@ test('#1011: first sound and the completed answer are separate measures', () => 
 test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
   withStore(store => {
     tracedTurn(store, T0 + 3_120, T0 + 4_000);
-    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), tracedScan([T0 + 6_000], T0 + 2_500));
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 6_000], T0 + 2_500)));
     const row = audit.turns[0]!;
     assert.deepEqual([row.finalToProviderFirstSoundMs, row.finalToNativeFirstSoundMs, row.finalToAnswerCompleteMs],
       [null, null, null], 'an interval that runs backwards is not a measurement');
@@ -1009,7 +1010,7 @@ test('#878: a receipt that joined no turn is named, not left as a bare missing',
     // The host had no turn to name when this segment arrived, so the receipt recorded outside every turn.
     record(store, 'playback.received', { liveSessionId: SESSION, playbackKey: 'play:9' }, { segmentSeq: 9, receivedAt: T0 + 5_000 });
     record(store, 'playback.audible', { liveSessionId: SESSION, playbackKey: 'play:9' }, { audibleAt: T0 + 5_120 });
-    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), tracedScan([T0 + 900], T0 + 2_500));
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
     const row = audit.turns[0]!;
     assert.equal(row.finalToNativeFirstSoundMs, null);
     assert.equal(row.missingReason, 'no_native_receipt');

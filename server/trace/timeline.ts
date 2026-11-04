@@ -728,11 +728,19 @@ export function renderCallList(rows: readonly CallRow[]): string {
 // the host log's turn and call keys, and prints a missing measurement as missing, never as zero.
 
 /** The audit's own schema number. A field added or a meaning changed bumps it, so a reader pins a shape. */
-export const CALL_AUDIT_SCHEMA_VERSION = 3;
+export const CALL_AUDIT_SCHEMA_VERSION = 4;
 
 /** Why one measurement is absent. Closed, so "missing" is a reason and never a duration of zero. */
 export const AUDIT_MISSING_REASONS = ['no_owner_final', 'no_provider_audio', 'no_native_receipt'] as const;
 export type AuditMissingReason = (typeof AUDIT_MISSING_REASONS)[number];
+
+/**
+ * #1011: an interval whose end receipt is stamped before the final it is measured from. The clocks can order
+ * two receipts wrongly, so the audit names the pair and leaves the measurement missing instead of clamping
+ * the interval to a zero nobody measured.
+ */
+export const AUDIT_TURN_FLAGS = ['final_after_provider_audio', 'final_after_native_audible', 'final_after_answer_complete'] as const;
+export type AuditTurnFlag = (typeof AUDIT_TURN_FLAGS)[number];
 
 /**
  * C-DIAG109: how soon after a silent owner final another owner final must arrive for the first to be a

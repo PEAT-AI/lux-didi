@@ -124,7 +124,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code }; };
     const hostRepair = connectorFailures.get(result);
     if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
-    if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error');
+    if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
     if (binding.project) {
       try {
         const snapshot = binding.project(result);

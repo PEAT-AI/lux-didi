@@ -158,6 +158,12 @@ for check in "${selected[@]}"; do
     verdict=failed
     failed=$((failed + 1))
     echo "== FAIL: $check (exit $status, ${elapsed}s)" >&2
+    # Repeat structured diagnostics after long passing output so the receipt ends with its cause.
+    echo "== failure diagnostics: $check (exit $status)" >&2
+    if ! grep -n -E -A 16 '^not ok |^[[:space:]]*[✖×]|error TS[0-9]+|^Error:|^AssertionError|^.*CHECK (FAIL|BLOCKED)|^.*FAIL:' "$log" >&2; then
+      echo "== no structured failure line was emitted; final check output follows" >&2
+      tail -n 80 "$log" >&2
+    fi
     if [ -z "$group" ]; then
       exit "$status"
     fi

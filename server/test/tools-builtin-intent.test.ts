@@ -27,7 +27,7 @@ import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } fro
 import { fixture } from './live-voice-fixture.js';
 import { createRegistry } from '../tasks/tools.js';
 import { documentResult } from '../tasks/results.js';
-import { parseAlarmTime } from '../tools/alarm.js';
+import { parseAlarmTime, readTimeSpec } from '../tools/alarm.js';
 import { alarmHarness } from './alarm-atomic.test.js';
 import { Authority, FakeAuthority, type JournalRecord } from '../tasks/authority.js';
 import { CONNECTOR_COMPOSED_TOOLS } from '../connectors/index.js';
@@ -146,6 +146,19 @@ interface OwnerCorpusRow {
 }
 const ownerCorpus: OwnerCorpusRow[] = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8'));
 
+// Scripted helper proposals, independent from each row's expected durable timestamp.
+// These are model inputs, not an assertion that a deterministic parser infers every spoken form.
+const corpusAlarmProposals: Readonly<Record<string, string>> = {
+  'AL-1': '2026-10-30T23:40:00Z',
+  'AL-3': '2026-10-30T03:10:00Z',
+  'AL-4': '2026-10-30T17:10:00Z',
+  'AL-3-part-0': '2026-10-30T03:10:00Z',
+  'AL-3-part-1': '2026-10-30T03:10:00Z',
+  'AL-3-part-2': '2026-10-30T03:10:00Z',
+  'alarm-model-fallback': '2026-10-30T06:10:00Z',
+  'alarm-owner-conflict': '2026-10-30T06:10:00Z',
+};
+
 test('A2 owner corpus: alarm interpretation and real task persistence', async t => {
   for (const row of ownerCorpus.filter(row => row.call.tool === 'set_alarm')) await t.test(row.id, async rowT => {
     const now = row.now ?? Date.UTC(2026, 9, 30, 6);
@@ -156,16 +169,20 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
       assert.equal((await tool.run({ text: 'synthetic missing task', at: new Date(now + 60_000).toISOString() }, { task_id: 'synthetic-absent-task', task_revision: 1, operation_id: row.id, connection_generation: 1 }, new AbortController().signal)).status, 'failed');
       return;
     }
-    const parsed = parseAlarmTime(words, now + (row.finalOffsetsMs?.at(-1) ?? 0), 'UTC');
+    const proposedAt = corpusAlarmProposals[row.id];
+    const proposal = proposedAt === undefined ? undefined : readTimeSpec({ mode: 'wall', date: proposedAt.slice(0, 10), local_time: proposedAt.slice(11, 16), timezone: 'UTC' });
+    if (proposal) assert.equal(proposal.state, 'read', 'the helper proposed a valid typed time');
+    const parsed = parseAlarmTime(words, now + (row.finalOffsetsMs?.at(-1) ?? 0), 'UTC', proposal?.state === 'read' ? proposal.spec : undefined);
     if (row.code !== 'ready') {
       assert.equal(parsed.status, 'clarify');
       assert.equal(parsed.status === 'clarify' ? parsed.reason : undefined, row.code);
+      assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'unresolved time never arms a guessed alarm');
       return;
     }
     assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
     if (parsed.status !== 'ready') throw new Error('Expected a resolved owner corpus time');
     assert.equal(parsed.fireAtUtc, row.fire_at_utc);
-    const args = { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString(), recurrence: null };
+    const args = { text: 'synthetic corpus reminder', at: proposedAt ?? new Date(parsed.fireAtUtc).toISOString(), recurrence: null };
     let result;
     if (row.id === 'turn-time-not-dispatch-time') {
       const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'UTC',
@@ -180,6 +197,19 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
     assert.equal(result.status, 'ok', result.repair ?? result.text);
     assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), row.fire_at_utc);
   });
+});
+
+test('alarm helper proposals cannot override a clear owner time or manufacture an unresolved time', async t => {
+  const now = Date.UTC(2030, 0, 1);
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const result = await h.call('alarm_create', { text: 'Synthetic clear owner time', at: new Date(now + 60 * 60_000).toISOString() }, 'Set an alarm in five minutes');
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), now + 5 * 60_000, 'clear owner words beat the conflicting helper proposal');
+  const unresolved = 'Set an alarm at 7:45 and at 8:45';
+  assert.equal(parseAlarmTime(unresolved, now, 'UTC').status, 'clarify', 'conflicting words without a valid proposal do not settle one time');
+  const invalid = await h.call('alarm_create', { text: 'Synthetic unresolved time', at: 'not a valid proposal' }, unresolved);
+  assert.equal(invalid.status, 'failed');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, 'the unresolved negative case commits nothing');
 });
 
 test('A2 owner corpus: named opens use the unified task operation and native receipts', async t => {

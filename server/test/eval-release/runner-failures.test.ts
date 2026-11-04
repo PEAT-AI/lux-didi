@@ -35,9 +35,8 @@ const drivenBounds = (): BoundTimers => {
   let now = 1_000_000;
   return {
     now: () => now,
-    setTimer: (ms, fire) => { now += Math.max(1, ms); queueMicrotask(fire); return ms; },
-    clearTimer: () => {},
-    tick: () => { now += 50; return Promise.resolve(); },
+    // Ten milliseconds of seam time per step, and the step still yields to the event loop so socket frames arrive.
+    tick: () => { now += 10; return new Promise(resolve => { setImmediate(resolve); }); },
   };
 };
 

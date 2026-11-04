@@ -95,16 +95,12 @@ export interface RunScenarioOptions {
 /** The timers a scenario's bounds are measured with. The default is the wall clock; a test supplies its own. */
 export interface BoundTimers {
   readonly now: () => number;
-  readonly setTimer: (ms: number, fire: () => void) => unknown;
-  readonly clearTimer: (handle: unknown) => void;
   /** One step of a polling wait: the wall clock sleeps a millisecond, a test seam advances its own time. */
   readonly tick: () => Promise<void>;
 }
 
 const WALL_TIMERS: BoundTimers = {
   now: () => Date.now(),
-  setTimer: (ms, fire) => setTimeout(fire, ms),
-  clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
   tick: () => new Promise(resolve => { setTimeout(resolve, 1); }),
 };
 
@@ -258,11 +254,18 @@ async function waitFor(
   return true;
 }
 
-/** A bounded await: a fixture that never settles fails the run by name instead of hanging the check. */
+/** A bounded await: a fixture that never settles fails the run by name instead of hanging the check. The wait polls
+ * the seam, so a test can reach the bound in a few steps and real I/O still progresses between steps. */
 async function settle<T>(bounds: BoundTimers, timeoutMs: number, pending: Promise<T>, what: string): Promise<T> {
-  let timer: unknown;
-  const wall = new Promise<never>((_, reject) => {
-    timer = bounds.setTimer(timeoutMs, () => reject(new Error(`eval timeout: waited ${timeoutMs} ms for ${what}`)));
-  });
-  try { return await Promise.race([pending, wall]); } finally { bounds.clearTimer(timer); }
+  let done = false;
+  let failure: { error: unknown } | undefined;
+  const tracked = pending.then(value => { done = true; return value; }, error => { done = true; failure = { error }; throw error; });
+  tracked.catch(() => {});
+  const deadline = bounds.now() + timeoutMs;
+  while (!done) {
+    if (bounds.now() > deadline) throw new Error(`eval timeout: waited ${timeoutMs} ms for ${what}`);
+    await bounds.tick();
+  }
+  if (failure !== undefined) throw failure.error;
+  return tracked;
 }

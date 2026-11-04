@@ -134,7 +134,11 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
-        if (hostRepair) return failure(hostRepair.repair, hostRepair.code);
+        if (hostRepair) {
+          const shaped = failure(hostRepair.repair, hostRepair.code);
+          const repair = `${hostRepair.repair} ${shaped.repair ?? ''}`;
+          return { ...shaped, repair, [TASK_CONNECTOR_FAILURE]: repair };
+        }
         if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
         if (binding.project) {
           try {

@@ -181,8 +181,9 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     assert.equal(owner.journal.intent(intent), 'fresh');
     assert.ok(definition?.execute);
     const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
-    assert.equal(outcome.status, 'completed', 'a classified failure is still a completed call (its text is the reason)');
-    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
+    assert.equal(outcome.status, 'completed', 'the model tool transport completes even when the contained read fails');
+    assert.equal(task.results[0]?.status, 'failed', 'the actual canonical read is failed, never an empty success');
+    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_failure');
     assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
     assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'scope_missing' });
     assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');

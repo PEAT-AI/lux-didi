@@ -103,10 +103,11 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   }
   const owner = async (text, acknowledgeId) => {
     if (acknowledgeId) {
-      let index = f.frames.length;
+      const start = f.frames.length;
+      let index = start;
       f.send({ serverContent: { turnComplete: true } });
       f.send({ serverContent: { inputTranscription: { text, finished: true } } });
-      while (!f.frames.slice(index).some(frame => JSON.stringify(frame).includes('This alarm is acknowledged'))) await f.frame(++index);
+      while (!f.frames.slice(start).some(frame => JSON.stringify(frame).includes('This alarm is acknowledged'))) await f.frame(++index);
       assert.equal(rows().find(row => row.id === acknowledgeId).state, 'done', 'owner speech acknowledges only the announced occurrence');
     }
     runtime(); workerWords = text;

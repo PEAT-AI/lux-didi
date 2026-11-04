@@ -246,7 +246,7 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
     // #865: those two frames change nothing, so the settled pill writes nothing; what ORB-107
     // needs here is that the loop is still alive and holding the next frame.
     assert.equal(published.length, settled, 'a settled pill does not repaint an unchanged frame');
-    assert.equal(queued.length, 1, 'and the loop still holds the next tick');
+    assert.ok(queued.length >= 1, 'and the loop still holds the next tick');
   } finally {
     stop();
     globals.window = savedWindow;

@@ -44,7 +44,9 @@ const require = createRequire(join(repo, 'server/package.json'));
 const WebSocket = require('ws');
 const { startHost } = await import(pathToFileURL(join(resources, 'server/node_modules/@lux-didi/service/dist/host/runtime.js')));
 const { fixture, CANARY } = await import(pathToFileURL(join(repo, 'server/dist/test/live-voice-fixture.js')));
-const { canonicalTaskFixture } = await import(pathToFileURL(join(repo, 'server/dist/test/canonical-task-fixture.js')));
+const serviceDist = join(resources, 'server/node_modules/@lux-didi/service/dist');
+const { hostTaskFactory } = await import(pathToFileURL(join(serviceDist, 'tasks/host.js')));
+const { resolveTaskModels } = await import(pathToFileURL(join(serviceDist, 'config/tasks.js')));
 const cleanup = [];
 let step = 'fake provider';
 try {
@@ -87,12 +89,16 @@ try {
   for (const [kind, _target, turns, url, _say] of cases) {
     step = `${kind} native receipt and model response`;
     for (const text of turns) f.send({ serverContent: { inputTranscription: { text, finished: true } } });
-    const task = canonicalTaskFixture(host.store, host.tools.owner, id, turns.join(' '), []);
+    const runtime = hostTaskFactory({ store: host.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+      bindings: () => [], executors: () => host.tools.owner.taskExecutors(id), contentAllowed: () => false, timeZone: 'UTC',
+      effectCheck: async () => true, infer: async () => { throw Error('No model call in installed native task fixture'); }
+    })(id, { attach() {}, progress() {}, deliver() {}, closed() {} });
+    const revision = runtime.begin(turns.join(' '), 1, 1);
     let result;
     try {
-      result = await task.runtime.runTool('open', { kind: 'web', target: url },
-        { ...task.revision.identity, operation_id: `synthetic-${kind}` }, new AbortController().signal);
-    } finally { task.close(); }
+      result = await runtime.runTool('open', { kind: 'web', target: url },
+        { ...revision.identity, operation_id: `synthetic-${kind}` }, new AbortController().signal);
+    } finally { runtime.close(); }
     assert.equal(result.status, 'ok', `canonical open must reach the attached native peer: ${JSON.stringify(result)}`);
     assert.equal(urls.at(-1), url);
     assert.equal(result.text, 'Opened.');

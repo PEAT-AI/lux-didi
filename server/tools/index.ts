@@ -29,7 +29,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -559,14 +559,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
         if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
         if (at !== undefined) {
-          const interpreted = parseAlarmTime(effect.ownerWords, now, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+          const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const proposed = alarmReadBack(at, zone);
+          const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
+          const interpreted = parseAlarmTime(effect.ownerWords, now, zone, time.state === 'read' ? time.spec : undefined);
           if (interpreted.status === 'ready') { at = interpreted.fireAtUtc; rule = interpreted.series ?? rule; }
         }
-        if (rule) { try { at = seriesNextFireAt(rule, now); } catch { return taskFailed('Invalid recurrence. Nothing changed.'); } }
+        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return taskFailed('Invalid recurrence. Nothing changed.'); } }
         if (at !== undefined) at = Math.max(at, now + 60_000);
         const label = typeof args.text === 'string' ? args.text.trim() : undefined;
         if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
-        if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined && !rule) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
         let id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
         const result = commitAlarmEffect(store, effect.identity, tx => {
           if (action === 'create') {
@@ -583,7 +586,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') tx.run("UPDATE alarm_series SET state='cancelled' WHERE id=?", [series.id]);
               else if (series) materialiseSeriesOccurrence(tx, id, now);
             }
-            else tx.run("UPDATE alarms SET label=?,fire_at_utc=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), id]);
+            else {
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (rule) {
+                if (series) tx.run('UPDATE alarm_series SET kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
+                else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
+              } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
+              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? String(row.tz), id]);
+            }
           }
           return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString(), localTime: alarmReadBack(at, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone).spoken }) }), id), references: [{ id }] };
         });

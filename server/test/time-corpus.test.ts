@@ -52,7 +52,7 @@ test('C-TIME corpus: all owner interpretations and task ISO commits', async t =>
     assert.equal(committed.state, 'pending');
     assert.equal(Number(committed.fire_at_utc), parsed.fireAtUtc);
     assert.equal(committed.tz, parsed.tz);
-    assert.equal(committed.label, row.expects.label ?? text);
+    assert.equal(committed.label, row.expects.label || text);
   });
 });
 

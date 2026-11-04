@@ -19,6 +19,7 @@ const string: Schema = { type: 'string', minLength: 1 };
 const optionalString: Schema = { type: ['string', 'null'] };
 const strings: Schema = { type: 'array', items: string };
 const object = (properties: Record<string, Schema>): Schema => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+const alarmRecurrence: Schema = { type: ['object', 'null'], properties: { kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'] }, weekdays: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } }, hour: { type: 'integer', minimum: 0, maximum: 23 }, minute: { type: 'integer', minimum: 0, maximum: 59 }, tz: string }, required: ['kind', 'weekdays', 'hour', 'minute', 'tz'], additionalProperties: false };
 /** Optional fields remain required and nullable at the provider boundary. */
 export function strictSchema(schema: Schema): Schema {
   const result: Schema = { ...schema };
@@ -65,10 +66,10 @@ const definitions: Definition[] = [
   { name: 'create_event', description: 'Create a calendar event.', fields: { title: string, start: string, end: string, calendar_id: optionalString }, effect: 'external', outside: false },
   { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect: 'destructive', outside: false },
   // Distinct schemas avoid action-dependent optional fields and model guessing.
-  { name: 'alarm_create', description: 'Create a local alarm.', fields: { text: string, at: string, recurrence: { type: ['object', 'null'], properties: { kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'] }, weekdays: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } }, hour: { type: 'integer', minimum: 0, maximum: 23 }, minute: { type: 'integer', minimum: 0, maximum: 59 }, tz: string }, required: ['kind', 'weekdays', 'hour', 'minute', 'tz'], additionalProperties: false } }, effect: 'local', outside: false },
+  { name: 'alarm_create', description: 'Create a local alarm.', fields: { text: string, at: string, recurrence: alarmRecurrence }, effect: 'local', outside: false },
   { name: 'alarm_list', description: 'List local alarms.', fields: {}, outside: false },
   { name: 'alarm_cancel', description: 'Cancel a local alarm.', fields: { id: string, scope: { type: ['string', 'null'], enum: ['occurrence', 'series', null] } }, effect: 'local', outside: false },
-  { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString }, effect: 'local', outside: false },
+  { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString, recurrence: alarmRecurrence }, effect: 'local', outside: false },
   { name: OPEN_SCHEMA.name, description: OPEN_SCHEMA.description, fields: OPEN_SCHEMA.parameters.properties, effect: 'local', outside: false },
   { name: FIND_FILE_SCHEMA.name, description: FIND_FILE_SCHEMA.description, fields: FIND_FILE_SCHEMA.parameters.properties, outside: false },
 ];

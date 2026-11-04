@@ -69,30 +69,6 @@ function chatRead(result: MattermostResult): MattermostChatRead {
 }
 
 /** The research path bound to the real reader, the way the tools owner dispatches each sub-call. */
-function researchDeps(f: Awaited<ReturnType<typeof setup>>, planned: IntentSubCall[] = []): ResearchDeps {
-  const run = async (reader: MattermostReader, call: IntentSubCall): Promise<MattermostResult | undefined> => {
-    const args = call.args as Record<string, unknown>;
-    if (call.name === INTERNAL.chatRead) return reader.chat(args as never);
-    if (call.name === INTERNAL.chatSearch) return reader.search(args as never);
-    if (call.name === INTERNAL.chatAttention) return reader.attention(args as never);
-    if (call.name === 'mattermost_get_thread') return reader.getThread({ postId: String(args['post_id']) });
-    return undefined;
-  };
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
-    planned.push(call);
-    const result = await run(f.reader, call);
-    if (result === undefined) return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 };
-    if (result.state === 'refused' || result.state === 'unknown') return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: result.reason };
-    const projected = projectMattermostResult(f.adapter, result);
-    const text = projected.ok ? projected.projection.text : '';
-    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
-  }));
-  return { now: () => FIXTURE_NOW, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(), timeZone: 'UTC' };
-}
-
-const searches = (calls: readonly Call[]) => calls.filter(call => call.name === 'mattermost_search').map(call => call.arguments);
-
-// ---- envelope and grants ---------------------------------------------------------------------------------
 
 test('C-CHAT: the read envelope carries the two person reads, never a write, and the composites stand on the base reads', () => {
   const envelope = connectionEnvelope('mattermost', { resource: RESOURCE });
@@ -445,7 +421,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
       allowedClasses: ['ordinary', 'private'], connectionIds: ids,
     };
     store.transaction(tx => owner(composition).snapshotRun(tx, acceptance));
-    return owner(composition).liveDefinitions(runId, () => ({ remembered: false, code: 'owner_transcript_not_final' })).map(tool => tool.name);
+    return composition.owner.taskBindings(ids).flatMap(binding => connectorDescriptor(binding.connector)?.declarations(binding.policy).map(tool => tool.name) ?? []);
   };
   const states = (composition: NonNullable<typeof runtime>): string[] => composition.status().endpoints.map(endpoint => `${endpoint.id}:${endpoint.state}`);
 
@@ -457,7 +433,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   const names = compose(moved, movedIds, 'install-run');
   assert.ok(names.includes('mattermost_chat'), 'the run composes its tools: a second mattermost connection would throw ambiguous_model_tool_name');
   assert.deepEqual(states(moved), ['mattermost-people:connected'], 'a deleted entry is never a connection report');
-  assert.deepEqual(probeUnreachable(moved.status().endpoints as never), [], 'research never calls the chat source unreachable');
+  assert.ok(moved.owner.taskBindings(movedIds).some(binding => binding.connector === 'mattermost'), 'the accepted connection remains available to the task path');
 
   // The other disabled shape the review measured: the old entry kept in the file with enabled false.
   const kept = await start([{ id: 'mattermost', path: '/old', enabled: false }, { id: 'mattermost-people', path: '/people', enabled: true }], { '/people': MATTERMOST_READ_TOOLS });
@@ -465,7 +441,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   assert.deepEqual(keptIds, ['mattermost-people'], 'a disabled entry is a retired connection, whatever the durable row says');
   assert.ok(compose(kept, keptIds, 'disabled-run').includes('mattermost_chat'));
   assert.deepEqual(states(kept), ['mattermost-people:connected'], 'a disabled entry is never reported connecting, so the chat source stays readable');
-  assert.deepEqual(probeUnreachable(kept.status().endpoints as never), []);
+  assert.ok(kept.owner.taskBindings(keptIds).some(binding => binding.connector === 'mattermost'), 'the accepted connection remains available to the task path');
 
   // The reverse edit: the new entry is deleted and the old one restored, and the same run holds it again.
   const back = await start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
@@ -473,7 +449,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   assert.deepEqual(backIds, ['mattermost'], 'a stored row whose id is enabled in the file stays active, and the removed id retires');
   assert.ok(compose(back, backIds, 'rollback-run').includes('mattermost_chat'));
   assert.deepEqual(states(back), ['mattermost:connected']);
-  assert.deepEqual(probeUnreachable(back.status().endpoints as never), []);
+  assert.ok(back.owner.taskBindings(backIds).some(binding => binding.connector === 'mattermost'), 'the accepted connection remains available to the task path');
 
   // The reviewer's traps: a missing catalog says nothing about connections, so it retires nothing, and an
   // entry that exists and is enabled is never retired even when it cannot leave the host.

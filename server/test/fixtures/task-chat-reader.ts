@@ -7,10 +7,10 @@ import { createRegistry } from '../../tasks/tools.js';
 import { FakeAuthority } from '../../tasks/authority.js';
 
 /** Real native reader/projector and SDK port, selected by explicit helper arguments. */
-export function taskChatReader(port: McpPort, registry: McpRegistry, endpoint: ConnectionEndpoint, schemaDigest: string, toolNames: string[], composedGrantedNames = ['mattermost_attention', 'mattermost_chat']) {
+export function taskChatReader(port: McpPort, registry: McpRegistry, endpoint: ConnectionEndpoint, schemaDigest: string, toolNames: string[], grantedNames = toolNames) {
   const policy: ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'synthetic-owner', connectionId: endpoint.id, generation: 1, enabled: true,
-    connector: 'mattermost', endpoint, schemaDigest, toolNames, composedGrantedNames,
+    connector: 'mattermost', endpoint, schemaDigest, toolNames: grantedNames,
     sourcePolicy: { id: 'synthetic-chat', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
     route: { identity: 'voice', allowedClasses: ['private'] },
     bounds: { maxQueryChars: 1000, maxSearchLimit: 50, maxGetIds: 50, maxEntityBytes: 1000000, maxResultBytes: 1000000 },

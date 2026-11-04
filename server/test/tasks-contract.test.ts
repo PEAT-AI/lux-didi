@@ -33,10 +33,20 @@ test('SOURCE DEFECT task declaration: strict provider parameters must require ev
     assert.deepEqual(Object.keys(tool.parameters.properties as object).sort(), [...tool.parameters.required as string[]].sort());
     const visit = (value: unknown): void => {
       if (typeof value === 'number') assert.ok(Number.isInteger(value));
-      if (value && typeof value === 'object') Object.values(value).forEach(visit);
+      if (value && typeof value === 'object') {
+        const schema = value as Record<string, unknown>;
+        if (schema['properties'] && typeof schema['properties'] === 'object') {
+          assert.deepEqual(Object.keys(schema['properties']).sort(), [...schema['required'] as string[]].sort(), `${tool.name}: every nested object property is required`);
+          assert.equal(schema['additionalProperties'], false);
+        }
+        Object.values(value).forEach(visit);
+      }
     };
     visit(tool.parameters);
   }
+  const recurrence = (registry.get('alarm_create')!.parameters.properties as Record<string, { type: unknown }>).recurrence!;
+  assert.ok(Array.isArray(recurrence.type) && recurrence.type.includes('null'), 'strict recurrence remains nullable');
+  assert.ok([...registry.keys()].some(name => name.startsWith('chat_')), 'new Mattermost reads are included in the same strict traversal');
   const search = registry.get('search_mail')!;
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null, extra: true }).ok, false);
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null }).ok, true);

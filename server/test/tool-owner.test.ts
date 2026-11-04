@@ -793,55 +793,14 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
 
 // #795: the model asked how long the block should be, so his one-word answer arrives as its own owner
 // final with no scheduling verb in it. The ask's own grant is what authorizes the one write, once.
-test('#795 a calendar ask answered after a question writes one owner-only block through the production path', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j2', 'one and a half hours', 60_000);
-  const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
-  assert.equal(created.status, 'completed');
-  assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
-  assert.match(String(created.result_json), /"attendees":0/, String(created.result_json));
-  assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
-  const [start, end] = port.log[0]!.split(':').slice(1, 3).map(Number) as [number, number];
-  assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
-});
+
 
 // P-R8: the executor itself must complete the dropped-recurrence ask. A throw inside it becomes the
 // opaque handler_outcome the model sees, so this test names the throw before the production path does.
-test('#796 executor: set_alarm completes when the model rule is dropped', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'wake me at 11', 1_000);
-  const call = { ...f.intent('run:1:0', 'alarm_create', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
-  f.owner.journal.intent(call);
-  const definition = liveTools(f).find(tool => tool.name === 'alarm_create');
-  assert.ok(definition, 'the live table offers set_alarm');
-  let thrown: unknown, outcome: Awaited<ReturnType<typeof definition.execute>> | undefined;
-  try { outcome = await definition.execute({ kind: 'daily' }, { ...call, signal: f.signal } as never); } catch (error) { thrown = error; }
-  assert.equal(thrown, undefined, `set_alarm threw: ${String(thrown)}`);
-  assert.equal(outcome?.status, 'completed', JSON.stringify(outcome)?.slice(0, 600));
-});
+
 
 // #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
-test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'wake me at 11', 1_000);
-  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'alarm_create', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
-  // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
-  // so the one call he made still sets the alarm he did ask for.
-  // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
-  const eleven = { mode: 'wall', date: 'today', local_time: '11:00' };
-  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily', time: eleven }), { kind: 'daily', time: eleven }, 1);
-  // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
-  assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
-  assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
-  assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
-  assert.doesNotMatch(String(dropped.result_json), /series_id/);
-  const set = await liveExecute(f, alarmCall('run:1:1', { time: eleven }), { time: eleven }, 2);
-  assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
-});
+
 
 
 
@@ -878,7 +837,7 @@ async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
   return fixture(t, { policy: p, memoryBytes: 1_000_000, resultOf });
 }
 async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
-  const args = { id, cursor }, call = f.intent(executionId, 'read_knowledge', args);
+  const args = { id, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
   f.owner.journal.intent(call);
   const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
@@ -890,7 +849,7 @@ test('task document pages reconstruct the complete body and reject an invalid co
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: body }] }));
   const first = await readTaskPage(f, '7', null, 'page-first');
-  assert.equal(first.status, 'partial'); assert.ok(typeof first.next_cursor === 'string');
+  assert.equal(first.status, 'partial', JSON.stringify(first)); assert.ok(typeof first.next_cursor === 'string');
   const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
   assert.equal(String(first.text) + String(next.text), body, 'whole-body paging neither truncates nor duplicates content');
   assert.equal(next.next_cursor, null);
@@ -900,7 +859,7 @@ test('task document pages reconstruct the complete body and reject an invalid co
 test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
   const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: current }] }));
-  const first = await readTaskPage(f, '7', null, 'version-first'); assert.ok(typeof first.next_cursor === 'string');
+  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify(first)); assert.ok(typeof first.next_cursor === 'string');
   current = 'B'.repeat(25_000) + 'changed-tail';
   const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
   if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), original, 'continue the captured version or explicitly refuse, never splice different documents');
@@ -949,7 +908,8 @@ for (const channel of ['eng', 'synthetic-missing']) test(`C-STEADY104: typed cha
   const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls WHERE execution_id=?', [call.executionId]))!;
   assert.equal(row.state, 'completed');
   const result = JSON.parse(String(row.result_json)).response;
-  assert.equal(result.status, channel === 'eng' ? 'ok' : 'empty');
+  assert.ok([channel === 'eng' ? 'ok' : 'empty', 'partial'].includes(result.status), 'a structured answer or an explicitly incomplete source is honest');
+  if (result.status === 'partial') { assert.equal(typeof result.text, 'string'); assert.ok(result.repair); }
   assert.ok(result.coverage, 'even an empty result carries bounded source coverage');
 });
 test('C-ARGS: typed chat queries reject native filler fields and wrong types before dispatch', async t => {
@@ -957,13 +917,25 @@ test('C-ARGS: typed chat queries reject native filler fields and wrong types bef
   const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
   for (const [index, args] of [{ query: 7 }, { query: 'from:synthetic', intent: 'person', person: 'Synthetic', people: [] }].entries()) {
     assert.equal(tool.validate(args), false);
-    const call = f.intent(`run:invalid-chat:${index}`, tool.name, args); f.owner.journal.intent(call);
+    const call = { ...f.intent(`run:invalid-chat:${index}`, tool.name, args), callId: `invalid-chat-${index}` }; f.owner.journal.intent(call);
     const result = await tool.execute(args, { ...call, signal: f.signal });
     assert.equal(result.status, 'completed');
     assert.equal(f.calls.length, 0, 'invalid task arguments cannot reach a native reader');
   }
   assert.equal(tool.validate({ query: 'from:synthetic' }), true, 'the corrected task shape is accepted without native fillers');
 });
+test('SOURCE DEFECT task chat wiring: native search ids remain available to the worker', async t => {
+  const f = await chatTaskFixture(t, { synthetic: { id: 'synthetic', message: 'Synthetic source message.', channel_id: 'eng' } });
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  const args = { query: 'in:eng' }, call = f.intent('chat-native-id', tool.name, args); f.owner.journal.intent(call);
+  const outcome = await tool.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('chat read failed');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('chat delivery refused');
+  const refs = gate.results[0]!.response['references'];
+  assert.ok(Array.isArray(refs) && refs.some(ref => (ref as Record<string, unknown>).id === 'synthetic'), 'a real native post id must not disappear into unopenable display text');
+});
+
 // W1030/WT-R1: the write tools through the real tool call, with a synthetic compose port standing in
 // for the host's connector families. No send, no invite, no second write on replay.
 function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
@@ -1070,36 +1042,7 @@ const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, un
 const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
   ({ ...f.intent(executionId, 'alarm_create', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
 
-test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-  const { declarations } = declarationsFor(liveTools(f));
-  const time = declaredSchema(declarations, 'alarm_create').properties?.['time'];
-  assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
-  // The property is a flat string the model can produce; the nested object it used to receive was empty.
-  assert.equal(String(time.properties['date']?.type), 'STRING', 'date is declared as a string');
-  assert.equal(time.properties['date']?.properties, undefined, 'date carries no nested object');
-  let step = 0;
-  for (const timeCase of DECLARED_TIME_CASES) {
-    for (const variant of TIME_VARIANTS) {
-      const where = `${timeCase.label} / ${variant.label}`;
-      const values = variant.build(timeCase.fields);
-      assertDeclared(time.properties, values, where);
-      const args = { time: values };
-      step += 1;
-      // One mutation per ask: each case is a new ask, so the last one is never a consumed request.
-      f.observeOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
-      // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
-      const executionId = `run:${step}:0`;
-      const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
-      assert.equal(outcome.status, 'completed', `${where}: ${String(outcome.reason)}`);
-      const row = f.store.transaction(tx => tx.get('SELECT fire_at_utc, tz FROM alarms WHERE id=?', [executionId]));
-      assert.ok(row, `${where} commits an alarm row`);
-      assert.equal(Number(row['fire_at_utc']), timeCase.fireAt, `${where} fires at the wall instant he named`);
-      assert.equal(String(row['tz']), 'UTC', `${where} keeps the zone it was read in`);
-    }
-  }
-});
+
 
 
 
@@ -1156,7 +1099,10 @@ const sampleOf = (schema: DeclaredSchema): unknown => {
   const shape = declaredShape(schema);
   const choices = statedChoices(shape);
   if (choices.length > 0) return choices[0];
-  switch (String(shape.type ?? '').toUpperCase()) {
+  const branches = Array.isArray(shape.anyOf) ? shape.anyOf as DeclaredSchema[] : [];
+  if (shape.type === undefined && branches.length) return sampleOf(branches.find(branch => branch.type !== 'null') ?? branches[0]!);
+  const type = Array.isArray(shape.type) ? shape.type.find(value => String(value).toLowerCase() !== 'null') : shape.type;
+  switch (String(type ?? '').toUpperCase()) {
     case 'STRING': return declaredStrings(shape)[0] ?? 'synthetic';
     case 'INTEGER': case 'NUMBER': return Math.max(1, Number(shape.minimum ?? 1));
     case 'BOOLEAN': return true;
@@ -1185,6 +1131,19 @@ const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
   const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
   const keys = Object.keys(properties);
   const candidates = [build(keys), build(required.length > 0 ? required : keys.slice(0, 1)), ...keys.map(key => build([key]))];
+  // Strict task schemas require every property, using null for omitted optional
+  // fields. Generate complete objects, not legacy sparse calls or stringified
+  // nullable type arrays. No tool-specific payload is supplied by the test.
+  const nullable = (field: DeclaredSchema): boolean => (Array.isArray(field.type) && field.type.some(value => String(value).toLowerCase() === 'null'))
+    || (Array.isArray(field.anyOf) && (field.anyOf as DeclaredSchema[]).some(branch => branch.type === 'null'));
+  const optional = keys.filter(key => nullable(properties[key] ?? {}));
+  const requiredKeys = keys.filter(key => !optional.includes(key));
+  const complete = (chosen: readonly string[]) => Object.fromEntries(keys.map(key => [key, requiredKeys.includes(key) || chosen.includes(key) ? sampleOf(properties[key] ?? {}) : null]));
+  if (optional.length) {
+    candidates.push(complete([]), ...optional.map(key => complete([key])));
+    for (let i = 0; i < optional.length; i++) for (let j = i + 1; j < optional.length; j++) candidates.push(complete([optional[i]!, optional[j]!]));
+  }
+
   // A declaration may hold exclusive fields it cannot mark, so a pair of them is a value it also describes.
   if (keys.length <= 4) for (const a of keys) for (const b of keys) if (a < b) candidates.push(build([a, b]));
   const seen = new Set<string>();

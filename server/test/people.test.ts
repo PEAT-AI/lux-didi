@@ -6,10 +6,9 @@ import { documentResult } from '../tasks/results.js';
 // strictly, rendered into one instructions section and resolved by one host-owned pure function.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   PEOPLE_CHAR_LIMIT, loadPeople, parsePeople, renderPeople, resolveSpoken, splitSpoken, installPeople,
   peopleSnapshot, peopleSection, lookupPeople, personByEmail, ambiguityQuestion, PEOPLE_LOOKUP_DECLARATION,

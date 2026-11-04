@@ -129,7 +129,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const cached = reads.get(key);
       if (cached) { options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
       else {
-        let work = pending.get(key);
+        let work = pending!.get(key);
         if (!work) { work = execute(); pending!.set(key, work); void work.finally(() => { pending!.delete(key); }); }
         result = await work;
         if (result.status !== 'failed' && !findings.includes(result)) findings.push(result);

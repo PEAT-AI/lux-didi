@@ -664,13 +664,16 @@ test('durable diagnostics rotate privately and persist only safe structured even
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('host diagnostics admit the release 3c metadata-only events and strip free text', () => {
+test('host diagnostics admit task metadata, reject retired research runs and strip free text', () => {
   const researchId = '3f2a9c1e-0b7d-4a2f-9c3e-1d2b3a4c5d6e';
   const run = { event: 'research_run', researchId, questionClass: 'quick_fact', rounds: 2, perRound: [{ candidates: [{ kind: 'calendar_window', pUseful: 0.6 }], chosen: ['calendar_window'] }], stopReason: 'answered', status: 'answered', ops: 3, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 12 }], elapsedMs: 120, deadAirMs: 5, selectorMs: 20, fallbackUsed: false, replyBytes: 340, driver: 'selector', unchecked: ['mail'], canContinue: true, findingChars: [12] };
-  assert.deepEqual(safeEvent(run), run);
-  // #260: the three drivers are admitted as an enum; the run line keeps the field it was given.
+  assert.equal(safeEvent(run), undefined);
+  const delivery = { event: 'task_delivery', taskId: 'synthetic_task', revision: 1, state: 'sent' };
+  assert.deepEqual(safeEvent(delivery), delivery);
+  assert.equal(safeEvent({ ...delivery, text: 'owner secret' }), undefined);
+  // The retired research_run event is refused regardless of its former driver.
   for (const driver of ['selector', 'fallback', 'single-source-hint']) {
-    assert.deepEqual(safeEvent({ ...run, driver }), { ...run, driver });
+    assert.equal(safeEvent({ ...run, driver }), undefined);
   }
   assert.deepEqual(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), { event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 });
   assert.deepEqual(safeEvent({ event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 }), { event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 });
@@ -1782,7 +1785,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
         assert.equal(Boolean(read), recoveredAt !== Infinity, 'the frozen canonical read capability follows recovered native publication');
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string' });
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string', minLength: 1 });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));

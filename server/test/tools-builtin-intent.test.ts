@@ -306,7 +306,7 @@ for (const provider of ['gemini', 'openai'] as const) test(`voice ${provider} de
 // C-DIAG109 review F1: the read-back clock and the minutes away are the execution clock's, never the ask
 // stamp's. The owner asks at 12:00, the tool runs at 12:03, and his words still resolve the alarm at 12:05,
 // so the receipt must say 12:03 and 2 minutes, and the confirmation repeats no computed figure.
-test('SOURCE DEFECT C-DIAG109: the alarm read-back uses the execution clock', async t => {
+test('SOURCE DEFECT C-DIAG109: delayed tasks preserve the ask-time target and read back from execution time', async t => {
   const askAt = Date.parse('2026-03-05T11:00:00Z');
   let now = askAt;
   const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');

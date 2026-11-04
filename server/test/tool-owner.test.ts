@@ -536,7 +536,7 @@ test('restoration rereads durable revoke after discovery await; synchronous guar
   assert.equal((await owner.restoreConnection('lux', () => { f.owner.applyConnection(policy({ generation: 4, enabled: false })); })).state, 'refused');
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
 });
-test('restore then revoke and restart never lose revocation; old snapshot/result stays gated', async t => {
+test('SOURCE DEFECT task read delivery: restore then revoke and restart keep old results gated', async t => {
   const f = await fixture(t); const owner = standingOwner(f.owner); f.owner.journal.intent(f.intent()); const result = await f.execute();
   assert.equal(result.status, 'completed'); if (result.status !== 'completed') return;
   assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
@@ -623,7 +623,7 @@ test('SOURCE DEFECT task failure code: a thrown MCP transport failure is logged 
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
-test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
+test('SOURCE DEFECT task failure code: an oversize unknown result stays invalid_result, never generic transport', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });

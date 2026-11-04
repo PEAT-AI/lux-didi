@@ -62,7 +62,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const findings: ToolResult[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
   const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
-  const partialText = (): string => findings.map(item => item.text).filter(Boolean).join('\n');
+  const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join('\n')).filter(Boolean).join('\n');
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join('\n'), findings, receipts });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
   async function compose(): Promise<WorkerResult> {

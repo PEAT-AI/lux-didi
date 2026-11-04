@@ -44,7 +44,7 @@ export class TaskDelivery implements Delivery {
   }
   socket(_generation: number, ready = true): void {
     this.#binding = null; this.#ready = ready; this.#quiet = true;
-    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; pending.started = false; pending.blocked = false; }
+    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = pending.blocked ? 1 : 0; pending.started = false; pending.blocked = false; }
     this.#drain();
   }
   ready(): void { this.#ready = true; this.#resume(); }

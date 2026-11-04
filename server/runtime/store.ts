@@ -201,6 +201,15 @@ export class Store {
       [attemptId, identity.task_id, identity.task_revision, identity.connection_generation, state, now]); });
   }
   /** Sole durable writer for permission commits; argument-bearing identity strings are hashed at entry. */
+  /** The alarm mutation and successful replay receipt share the same SQLite commit. */
+  commitAlarmEffect<T>(identity: string, mutate: (tx: Transaction) => T): T {
+    return this.transaction(tx => {
+      const value = mutate(tx);
+      tx.run("INSERT INTO task_effect_journal(identity_hash,status,value,updated_at) VALUES (?,'succeeded',?,?) ON CONFLICT(identity_hash) DO UPDATE SET status=excluded.status,value=excluded.value,updated_at=excluded.updated_at",
+        [createHash('sha256').update(identity).digest('hex'), JSON.stringify(value), Date.now()]);
+      return value;
+    });
+  }
   taskEffectJournal(contentAllowed: () => boolean): import('../tasks/authority.js').AuthorityPorts['journal'] {
     const key = (identity: string): string => createHash('sha256').update(identity).digest('hex');
     const redacted = { status: 'ok', text: '', references: [], next_cursor: null, coverage: 'Previously committed; content not retained.', repair: null };

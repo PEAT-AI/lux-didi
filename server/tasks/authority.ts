@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+/** Trusted execution metadata, installed only after authority admission. */
+export const authorizedTaskEffect = new AsyncLocalStorage<{ identity: string; ownerWords: string }>();
 import type { ToolResult } from './results.js';
 export interface Identity { task_id: string; task_revision: number; operation_id: string; connection_generation: number }
 export type Effect = 'none' | 'local' | 'external' | 'destructive';
@@ -233,7 +236,8 @@ export function createTaskAuthority(authority: Authority, context: TaskAuthority
     });
     if (!decision.allow) return failed(decision.repair);
     const late = stopped(); if (late) return late;
-    const committed = await authority.commit(`${task.id}:${tool.name}:${canonical(args)}`, execute);
+    const identity = `${task.id}:${tool.name}:${canonical(args)}`;
+    const committed = await authority.commit(identity, () => authorizedTaskEffect.run({ identity, ownerWords: task.ownerWords }, execute));
     if (!committed.allow) return failed(committed.repair);
     const result = committed.value as ToolResult;
     return { ...result, receipt: { operation_id: request.operation_id, state: result.receipt?.state ?? (result.status === 'failed' ? 'failed' : 'committed') } };

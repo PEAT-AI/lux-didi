@@ -1,3 +1,4 @@
+import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
 import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
@@ -559,7 +560,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
         if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
         const id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
-        const result = store.transaction(tx => {
+        const effect = authorizedTaskEffect.getStore();
+        if (!effect) return taskFailed('Alarm authority context is unavailable. Nothing changed.');
+        const result = store.commitAlarmEffect(effect.identity, tx => {
           if (action === 'create') {
             if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
@@ -577,7 +580,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           }
           return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString() }) }), id), references: [{ id }] };
         });
-        if (result.status === 'ok') options.alarms.recheck();
+        if (result.status === 'ok') {
+          try { options.alarms.recheck(); } catch {
+            // The durable scheduler rows survive notification failure and restart. Retry once.
+            try { options.alarms.recheck(); } catch { /* Scheduler recovery reads committed rows. */ }
+          }
+        }
         return result;
       };
       const executors: ExistingExecutors = {

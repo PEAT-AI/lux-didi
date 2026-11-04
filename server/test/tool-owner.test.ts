@@ -845,9 +845,11 @@ async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
   assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
   return gate.results[0]!.response;
 }
-test('task document pages reconstruct the complete body and reject an invalid continuation', async t => {
+test('SOURCE DEFECT task document wiring: valid source pages reconstruct the complete body and reject invalid cursors', async t => {
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: body }] }));
+  const source = await f.reader.get({ ids: [7], include_links: false }, f.signal);
+  assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
   const first = await readTaskPage(f, '7', null, 'page-first');
   assert.equal(first.status, 'partial', JSON.stringify(first)); assert.ok(typeof first.next_cursor === 'string');
   const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
@@ -1009,6 +1011,7 @@ type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSche
  * the model as that prose. Reading it back is what a model does with the same text.
  */
 const declaredShape = (schema: DeclaredSchema): DeclaredSchema => {
+  if (schema.properties !== undefined) return schema; // The actual strict object, not its historical description, owns required/null fields.
   const description = typeof schema.description === 'string' ? schema.description : '';
   const at = description.lastIndexOf('Original schema: ');
   if (at < 0) return schema;

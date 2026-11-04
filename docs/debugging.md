@@ -79,7 +79,7 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 | `nativeFirstAudible` | the turn's first audibility receipt from the native player, from the trace store |
 | `firstSoundProvider` | `providerFirstSound - ownerFinal`: the wait the owner sat through before her voice existed. A first sound, not an answer |
 | `firstSoundNative` | `nativeFirstSound - ownerFinal`: the wait until her first sound reached his speaker. A first sound, not an answer |
-| `answerComplete` | the drain of the turn's last playback segment minus `ownerFinal`: the wait until the answer had finished playing. `missing` unless the store holds that drain |
+| `answerComplete` | the last drain among the turn's own playback segments minus `ownerFinal`: the wait until the answer had finished playing. Only when every segment of the turn drained: a segment still playing, interrupted or absent leaves it `missing`, because `trace_turn.playback_drained_at` is the earliest drain and cannot stand for completion |
 | `segments` | how many playback segments the store joined to this turn. A `0` beside `no_native_receipt` says the app's receipt never joined the turn, which is a different fact from a receipt the app never sent |
 | `flags` | the inverted pairs of the row, e.g. `final_after_provider_audio`: the end receipt is stamped before the final it is measured from. The measurement is then `missing`, never a clamped zero |
 | `missing` | why a measurement is absent (`no_owner_final`, `no_provider_audio`, `no_native_receipt`) |

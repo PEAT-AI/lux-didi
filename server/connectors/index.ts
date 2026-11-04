@@ -473,22 +473,12 @@ const CHAT_GUIDANCE = 'Omit keys you do not use: send only the keys this intent 
   + ' A thread read then takes intent and either post_id from an earlier result or query plus person or channel, one of the two. Never send people or channel on a person read. Send query only to filter by a topic'
   + ' the owner named in this ask, never a recency word and never a leftover from an earlier ask. Send order oldest only when the owner asks for the'
   + ' conversation in order. Never send an empty string: leave the key out instead.';
-export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly ConnectorComposedTool[]>> = {
-  mattermost: [{
-    name: MATTERMOST_ATTENTION_TOOL,
-    description: 'What needs a reply from the owner, newest first: mentions, direct and group messages, and threads the owner posted in or was mentioned in where the newest post is not theirs. Each item carries channel, author, ISO time, permalink and one line. Use it for "do I need to reply", "anything new for me", "what did I miss".',
-    parameters: {
+export const MATTERMOST_ATTENTION_PARAMETERS = {
       required: [],
       properties: { days: { type: 'integer', minimum: 1, maximum: 30, description: 'Window in days; 7 by default.' }, limit: { type: 'integer', minimum: 1, maximum: 20 } },
-    },
-    requires: MATTERMOST_TOOLS,
-    validate: args => attentionArgs(args),
-  }, {
-    // C-CHAT: one read per ask for a person, the overview with a person, a channel or a group chat. It stands
-    // on the base reads only; the person reads a newer child adds are used when granted and named when not.
-    name: MATTERMOST_CHAT_TOOL,
-    description: 'Read the team chat for one person, one channel or one group chat: what a person wrote the owner (person, sides theirs or both), everything the owner and a person exchanged across their direct messages, shared group chats and channels (overview), the newest posts of a named channel (channel), or a group chat by its members (group). Names are matched strictly; an ambiguous name returns a question naming the candidates, never a guess. Newest first, with the archive\'s own match count; send order oldest to walk the conversation from its first post and page with offset, and intent thread with the post_id of an earlier result to read one whole thread in time order.',
-    parameters: {
+    };
+
+export const MATTERMOST_CHAT_PARAMETERS = {
       required: ['intent'],
       properties: {
         intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group', 'thread', 'topics'], description: 'topics lists the threads of one conversation with their counts and dates; thread then reads one of them whole by its root id. Two steps: topics, then thread.' },
@@ -504,7 +494,21 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
         offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset },
         limit: { type: 'integer', minimum: 1, maximum: 50 },
       },
-    },
+    };
+
+export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly ConnectorComposedTool[]>> = {
+  mattermost: [{
+    name: MATTERMOST_ATTENTION_TOOL,
+    description: 'What needs a reply from the owner, newest first: mentions, direct and group messages, and threads the owner posted in or was mentioned in where the newest post is not theirs. Each item carries channel, author, ISO time, permalink and one line. Use it for "do I need to reply", "anything new for me", "what did I miss".',
+    parameters: MATTERMOST_ATTENTION_PARAMETERS,
+    requires: MATTERMOST_TOOLS,
+    validate: args => attentionArgs(args),
+  }, {
+    // C-CHAT: one read per ask for a person, the overview with a person, a channel or a group chat. It stands
+    // on the base reads only; the person reads a newer child adds are used when granted and named when not.
+    name: MATTERMOST_CHAT_TOOL,
+    description: 'Read the team chat for one person, one channel or one group chat: what a person wrote the owner (person, sides theirs or both), everything the owner and a person exchanged across their direct messages, shared group chats and channels (overview), the newest posts of a named channel (channel), or a group chat by its members (group). Names are matched strictly; an ambiguous name returns a question naming the candidates, never a guess. Newest first, with the archive\'s own match count; send order oldest to walk the conversation from its first post and page with offset, and intent thread with the post_id of an earlier result to read one whole thread in time order.',
+    parameters: MATTERMOST_CHAT_PARAMETERS,
     requires: MATTERMOST_TOOLS,
     guidance: CHAT_GUIDANCE,
     rejection: args => chatRejection(args as Record<string, unknown>),

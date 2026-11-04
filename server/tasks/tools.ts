@@ -1,4 +1,4 @@
-import { connectorDescriptor } from '../connectors/index.js';
+import { MATTERMOST_ATTENTION_PARAMETERS, MATTERMOST_CHAT_PARAMETERS } from '../connectors/index.js';
 import { redactTaskResult } from './results.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
@@ -50,12 +50,11 @@ export function validateArguments(tool: TaskTool, value: unknown): { ok: true; a
 }
 export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 // Reuse native field bounds and nullable normal form, but keep each capability's schema distinct.
-const nativeChatFields = (name: string) => strictSchema(connectorDescriptor('mattermost')!.declarations().find(tool => tool.name === name)!.parameters).properties as Record<string, Schema>;
-const chatFields = nativeChatFields('mattermost_chat');
+const chatFields = strictSchema({ type: 'object', ...MATTERMOST_CHAT_PARAMETERS }).properties as Record<string, Schema>;
 const chatPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit', 'order'].map(key => [key, chatFields[key]!]));
 const topicPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit'].map(key => [key, chatFields[key]!]));
 const definitions: Definition[] = [
-  { outside: true, name: 'chat_attention', description: 'Read what is waiting for the owner: mentions, direct/group messages and open threads awaiting a reply, newest first within the requested days.', fields: nativeChatFields('mattermost_attention') },
+  { outside: true, name: 'chat_attention', description: 'Read what is waiting for the owner: mentions, direct/group messages and open threads awaiting a reply, newest first within the requested days.', fields: strictSchema({ type: 'object', ...MATTERMOST_ATTENTION_PARAMETERS }).properties as Record<string, Schema> },
   { outside: true, name: 'chat_person', description: 'Read a named person or username and their direct conversation. Choose both sides or only their messages, with explicit dates and paging.', fields: { person: string, sides: chatFields.sides!, ...chatPage } },
   { outside: true, name: 'chat_channel', description: 'Read a named channel chronologically, with explicit dates and paging. This is not a relevance search.', fields: { channel: string, ...chatPage } },
   { outside: true, name: 'chat_group', description: 'Read the group conversation containing the named people, with explicit dates and paging.', fields: { people: { ...chatFields.people!, type: 'array' }, ...chatPage } },

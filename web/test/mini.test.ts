@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
   installMiniVisuals, isMiniRoute, miniAriaLabel, miniMarkup,
-  miniModeButtonMarkup, miniState, pillMuted, pillState, startMiniOrbVisuals, visualState,
+  miniModeButtonMarkup, miniState, pillMuted, pillState, startMiniOrbVisuals, visualState, IDLE_FRAME_MS,
   type MiniState, type PillVisualHost,
 } from '../src/mini.ts';
 import { ORB_VISUALS, TRANSITION_MS, DEBOUNCE_MS, type OrbVisual } from '../src/orb-states.ts';
@@ -360,7 +360,6 @@ test('the presence row says she is muted and purple, which outlives the session 
 // #865: the pill used to hand the surface sixty identical style writes and one renderer
 // refresh a second while nothing had changed. The loop now reads the state on every display
 // frame and writes the visual only when it moved, plus one heartbeat per idle budget window.
-const IDLE_FRAME_MS = 250;
 
 function startLoop(state: MiniState, reducedMotion = false) {
   const fake = fakePill(state);
@@ -405,6 +404,9 @@ function startLoop(state: MiniState, reducedMotion = false) {
 }
 
 test('#865: an idle pill paints on its frame budget, not on every display frame', () => {
+  // The budget the pill promises, pinned here so a raised constant cannot quietly pass: the test
+  // below measures the loop against this same number, not against a copy of it.
+  assert.equal(IDLE_FRAME_MS, 250, 'the idle budget is a quarter second, four writes a second');
   const loop = startLoop('idle');
   try {
     loop.tick();

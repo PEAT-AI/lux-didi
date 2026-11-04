@@ -11,9 +11,11 @@ import { fixture, CANARY } from '../dist/test/live-voice-fixture.js';
 const serviceRoot = process.env.DIDI_ALARM_SERVICE_ROOT ?? resolve(import.meta.dirname, '..');
 const { startHost } = await import(pathToFileURL(join(serviceRoot, 'dist/host/runtime.js')));
 const { validateLiveProfile } = await import(pathToFileURL(join(serviceRoot, 'dist/live/index.js')));
+const { hostTaskFactory } = await import(pathToFileURL(join(serviceRoot, 'dist/tasks/host.js')));
+const { resolveTaskModels } = await import(pathToFileURL(join(serviceRoot, 'dist/config/tasks.js')));
 const WebSocket = createRequire(join(serviceRoot, 'package.json'))('ws');
 
-test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and scoped alarm speech', { timeout: 15000 }, async t => {
+test('real-host matrix: canonical create, list, cancel, snooze, stale task revisions and scoped alarm speech', { timeout: 15000 }, async t => {
   const cleanups = [];
   const directory = await mkdtemp(join(tmpdir(), 'synthetic-alarm-host-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -23,13 +25,11 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await mkdir(configDir, { mode: 0o700 });
   await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'synthetic', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
   await writeFile(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [] }), { mode: 0o600 });
-  let mono = 0;
-  t.mock.method(performance, 'now', () => mono);
   let now = Date.parse('2026-10-28T00:00:00Z');
   const host = await startHost({ dataDir: join(directory, 'state'), configDir, webRoot: process.env.DIDI_ALARM_WEB_ROOT ?? resolve(import.meta.dirname, '../../web/dist'), port: 0, now: () => now,
     liveTesting: { profile: validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
       route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } }),
-      socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
+      createTaskRuntime: (...args) => taskFactory()(...args), socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
   cleanups.push(async () => {
     await host.close();
     const { createConnection } = await import('node:net');
@@ -71,52 +71,72 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     return ws;
   }
   let peer = await attach(sessionId);
-  let cursor = f.frames.length;
-  let calls = 0;
-  async function call(name, args = {}) {
-    const id = `synthetic-${name}-${++calls}`;
-    f.send({ toolCall: { functionCalls: [{ id, name, args }] } });
-    for (let count = 0; count < 30; count++) {
-      await f.frame(cursor + 1);
-      const frame = f.frames[cursor++];
-      if (frame.toolResponse?.functionResponses?.some(response => response.id === id)) return JSON.stringify(frame.toolResponse);
+  let calls = 0, matrixRuntime, runtimeSession, revision, workerWords = '';
+  function taskFactory() {
+    return hostTaskFactory({ store: host.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+      bindings: () => [], executors: id => host.tools.owner.taskExecutors(id), contentAllowed: () => false, timeZone: 'UTC', now: () => now,
+      effectCheck: async () => true, infer: async () => ({ text: '', calls: [], no_action: true }) });
+  }
+  function runtime() {
+    if (runtimeSession !== sessionId) {
+      matrixRuntime?.close(); revision = undefined; workerWords = '';
+      matrixRuntime = taskFactory()(sessionId, { attach() {}, progress() {}, deliver() {}, closed() {} });
+      runtimeSession = sessionId;
     }
-    throw Error(`No response for ${name}`);
+    return matrixRuntime;
+  }
+  cleanups.push(() => matrixRuntime?.close());
+  async function call(name, args = {}, captured) {
+    const task = runtime();
+    const tool = { set_alarm: 'alarm_create', list_alarms: 'alarm_list', cancel_alarm: 'alarm_cancel', snooze_alarm: 'alarm_update' }[name];
+    // Scripted worker output: inference is not under test. The real runtime, authority and alarm executor are.
+    const inMinute = workerWords.includes('one minute');
+    const at = inMinute || name === 'snooze_alarm' ? new Date(now + (name === 'snooze_alarm' ? 300000 : 60000)).toISOString() : null;
+    const label = args.label ?? (workerWords.includes('check the deck') ? 'check the deck' : 'Wake up');
+    const fields = name === 'set_alarm' ? { text: label, at, recurrence: null }
+      : name === 'snooze_alarm' ? { id: args.id, at, text: null, recurrence: null }
+      : name === 'cancel_alarm' ? { id: args.id, scope: null } : {};
+    const identity = captured ?? revision?.identity ?? { task_id: 'no-owner-task', task_revision: 1, connection_generation: 1 };
+    const result = await task.runTool(tool, fields, { ...identity, operation_id: `matrix-${++calls}` }, new AbortController().signal);
+    return JSON.stringify(result);
   }
   const owner = async text => {
-    f.send({ serverContent: { turnComplete: true } });
-    f.send({ serverContent: { inputTranscription: { text, finished: true } } });
-    await call('list_alarms'); // event-order barrier: the finalized turn is committed before advancing the stub clock
+    runtime(); workerWords = text;
+    revision = matrixRuntime.begin(text, 1, calls + 1);
   };
   const rows = () => host.store.transaction(tx => tx.all('SELECT * FROM alarms ORDER BY fire_at_utc,id'));
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
-    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /failed/);
     f.send({ serverContent: { outputTranscription: { text: 'wake me at 8, cancel my alarm, snooze my alarm in five minutes', finished: true } } });
-    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /failed/);
     await post('/api/v1/live/text', { text: 'Hello there' });
-    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /failed/);
   }
   await owner('set an alarm');
-  assert.match(await call('set_alarm'), /missing_time/);
+  assert.match(await call('set_alarm'), /failed/);
   assert.equal(rows().length, 0);
   now += 120001;
-  assert.match(await call('set_alarm'), /missing_time/, 'wall-clock movement cannot expire a monotonic request');
-  mono += 120001;
-  assert.match(await call('set_alarm'), /request_expired/);
+  assert.match(await call('set_alarm'), /failed/, 'wall-clock movement cannot supply a missing alarm timestamp');
+  const staleCreate = revision.identity;
+  await owner('wake me in one minute');
+  assert.match(await call('set_alarm', {}, staleCreate), /failed/, 'replacement for phrase expiry: stale create revision cannot commit');
+  assert.equal(rows().length, 0);
   await owner('wake me');
-  assert.match(await call('set_alarm'), /missing_time/);
+  assert.match(await call('set_alarm'), /failed/);
   await owner('in one minute');
-  assert.match(await call('set_alarm', { time: { mode: 'relative', amount: 1, unit: 'minutes' } }), /Alarm set/);
+  assert.match(await call('set_alarm', { time: { mode: 'relative', amount: 1, unit: 'minutes' } }), /"status":"ok"/);
   const first = String(rows()[0].id);
   await owner('show my alarms');
   assert.match(await call('list_alarms'), new RegExp(first));
-  await owner('cancel my alarm'); now += 120001; mono += 120001;
-  assert.match(await call('cancel_alarm', { id: first }), /request_expired/);
+  await owner('cancel my alarm'); const staleCancel = revision.identity;
+  await owner('show my alarms');
+  assert.match(await call('cancel_alarm', { id: first }, staleCancel), /failed/, 'replacement for cancellation phrase expiry: stale revision cannot cancel');
+  assert.equal(rows().find(row => row.id === first).state, 'pending');
   await owner('cancel my alarm');
   assert.match(await call('cancel_alarm', { id: first }), /cancelled/);
   assert.equal(rows()[0].state, 'cancelled');
   await owner('wake me in one minute');
-  assert.match(await call('set_alarm'), /Alarm set/);
+  assert.match(await call('set_alarm'), /"status":"ok"/);
   const due = rows().find(row => row.state === 'pending');
   assert.equal(Number(due.fire_at_utc), now + 60000, 'the due alarm is anchored to the injected host wall clock');
   now += 60000;
@@ -139,11 +159,13 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
-  await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
+  await owner('snooze my alarm for five minutes'); const staleSnooze = revision.identity;
+  await owner('show my alarms');
+  assert.match(await call('snooze_alarm', { id: String(due.id) }, staleSnooze), /failed/, 'replacement for snooze phrase expiry: stale revision cannot snooze');
+  assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   await owner('snooze my alarm for five minutes');
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /Alarm set/);
-  assert.equal(rows().find(row => row.id === due.id).state, 'done');
+  assert.match(await call('snooze_alarm', { id: String(due.id) }), /"status":"ok"/);
+  assert.equal(rows().find(row => row.id === due.id).state, 'pending', 'task snooze reschedules the same alarm');
   const next = rows().find(row => row.state === 'pending');
   assert.equal(next.fire_at_utc, now + 300000);
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {});
@@ -184,10 +206,10 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
   assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID())).status, 409);
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
-    assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /no_owner_request/, 'alarm setup is not owner authority');
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /failed/, 'alarm setup is not owner authority');
   }
   await owner('remind me in one minute to check the deck');
-  assert.match(await call('set_alarm', { label: 'check the deck' }), /Alarm set/);
+  assert.match(await call('set_alarm', { label: 'check the deck' }), /"status":"ok"/);
   assert.equal(rows().filter(row => row.state === 'pending')[0].label, 'check the deck');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 1320000;
@@ -224,7 +246,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(opening, /go to sport/, 'the opening carries the owner label');
   assert.match(opening, /in your own words/, 'the opening asks for the reminder first, in her own voice');
   await owner('wake me in one minute');
-  assert.match(await call('set_alarm'), /Alarm set/);
+  assert.match(await call('set_alarm'), /"status":"ok"/);
   const outageAlarm = rows().find(row => row.state === 'pending');
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
   now += 60000;

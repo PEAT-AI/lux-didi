@@ -138,7 +138,7 @@ export function resolveRecipient(words: string, candidates: readonly RecipientCa
 /** #107: the same week in the other language he speaks, index for index. */
 const WEEKDAY_WORDS = ['sunday|sonntag', 'monday|montag', 'tuesday|dienstag', 'wednesday|mittwoch', 'thursday|donnerstag', 'friday|freitag', 'saturday|samstag'] as const;
 const NUMBERS: Readonly<Record<string, number>> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, twenty: 20, thirty: 30, forty: 40, fifty: 50 };
-const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)(\s+and\s+a?\s*half)?\s*(hours?|hrs?|h|minutes?|mins?|m|stunden?|std|minuten?)\b/gi;
+const DURATION = /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half\s+an?)(\s+and\s+a?\s*half)?\s*(hours?|hrs?|h|minutes?|mins?|m|stunden?|std|minuten?)\b/i;
 
 export type EventWindow =
   | { status: 'ready'; startUtc: number; endUtc: number; timeZone: string; names: string[] }
@@ -156,7 +156,9 @@ function zonedInstant(year: number, month: number, day: number, hour: number, mi
   return guess - (Date.UTC(y!, mo! - 1, d!, h!, mi!, 0) - guess);
 }
 
-function minutesOf(match: RegExpExecArray): number {
+function durationMinutes(words: string): number {
+  const match = DURATION.exec(words);
+  if (!match) return 60;
   const unit = match[3]!.toLowerCase();
   const raw = match[1]!.toLowerCase().replace(/\s+/g, ' ');
   const base = raw === 'half an' || raw.startsWith('half') ? 0.5 : NUMBERS[raw] ?? Number(raw);
@@ -165,19 +167,6 @@ function minutesOf(match: RegExpExecArray): number {
   if (!Number.isFinite(amount) || amount <= 0) return 60;
   const minutes = unit.startsWith('h') ? amount * 60 : amount;
   return Math.min(Math.max(Math.round(minutes), 5), 720);
-}
-
-/**
- * #807: the last length word he said, so "one hour" then "make it two hours" keeps two hours. The
- * first match was kept before, which made a correction lose to the length he had already given.
- */
-function durationsIn(words: string): RegExpExecArray[] {
-  return [...words.matchAll(DURATION)];
-}
-
-function durationMinutes(words: string): number {
-  const match = durationsIn(words).at(-1);
-  return match === undefined ? 60 : minutesOf(match);
 }
 
 /** A bare spoken hour for a named day: "9" is nine in the morning unless he says pm. */
@@ -232,12 +221,11 @@ export function englishDayWords(words: string): string {
  * The event window the host trusts: a named weekday settles the date locally, anything else rides
  * the alarm parser's normalisation, and the model's own epoch is never used.
  */
-export function eventWindow(words: string, now: number, timeZone: string, ownerName?: string, modelTime?: TimeSpec, modelDuration?: number): EventWindow {
-  // #807: every length word leaves the sentence, so a corrected "two hours" is never read as a clock,
-  // and the length is the last one he gave, or the typed one standing as given.
-  const cleaned = words.replace(DURATION, ' ').replace(/\s+/g, ' ').trim();
+export function eventWindow(words: string, now: number, timeZone: string, ownerName?: string, modelTime?: TimeSpec): EventWindow {
+  const match = DURATION.exec(words);
+  const cleaned = (match ? `${words.slice(0, match.index)} ${words.slice(match.index + match[0].length)}` : words).trim();
   const names = namedOthers(undefined, ownerName);
-  const duration = (modelDuration ?? durationMinutes(words)) * 60000;
+  const duration = durationMinutes(words) * 60000;
   const weekday = WEEKDAY_WORDS.findIndex(day => new RegExp(`\\b(?:${day})\\b`, 'i').test(cleaned));
   if (weekday >= 0) {
     const time = hourMinute(cleaned);
@@ -402,7 +390,7 @@ export async function runCompose(port: ComposeDispatch, name: ComposeName, args:
   const input = args as unknown as CreateEventArgs;
   // C-ALARM: the model's flat day is read as the internal spec here, the same boundary as the alarms.
   const time = readTimeSpec(input.time);
-  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName, time.state === 'read' ? time.spec : undefined, input.duration_minutes);
+  const window = eventWindow(context.words, context.now, context.timeZone, context.ownerName, time.state === 'read' ? time.spec : undefined);
   if (window.status !== 'ready') return { state: 'failed', reason: window.reason };
   const description = window.names.length > 0 ? `${input.summary}. Owner-only block; ${window.names.join(', ')} is named here and was not invited.` : `${input.summary}. Owner-only block; no invitations were sent.`;
   return await port.createEvent({ summary: input.summary, startUtc: window.startUtc, endUtc: window.endUtc, timeZone: window.timeZone, description, clientRequestId: context.clientRequestId });

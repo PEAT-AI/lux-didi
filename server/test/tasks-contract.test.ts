@@ -372,14 +372,16 @@ test('revision joins a still-running read without aborting it', async () => {
   const registry = createRegistry({ authority: new FakeAuthority(), execute: async (_name, _args, signal) => {
     executions++; signal.addEventListener('abort', () => { readAborted = true; }); started.resolve(); return response.promise;
   } });
-  const firstAbort = new AbortController();
+  const { TaskController, FakeDelivery } = await import('../tasks/controller.js');
+  const controller = new TaskController(new FakeDelivery());
+  const old = controller.finalize('synthetic first fragment', 1);
   const clock = new TaskTestClock();
   const makeInfer = (): import('../tasks/worker.js').Infer => { let hop = 0; return async () => ++hop === 1 ? { text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] } : { text: 'Local evidence', calls: [] }; };
   const common = { registry, reads, clock, input: 'synthetic' };
-  const first = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, signal: firstAbort.signal, infer: makeInfer() });
+  const first = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, signal: old.signal, infer: makeInfer() });
   await started.promise;
-  firstAbort.abort();
-  const second = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 2, connection_generation: 1 }, signal: new AbortController().signal, infer: makeInfer() });
+  const next = controller.finalize('synthetic continuation', 1);
+  const second = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 2, connection_generation: 1 }, signal: next.signal, infer: makeInfer() });
   response.resolve(documentResult('Synthetic finding', 'memory:1'));
   assert.equal((await first).status, 'cancelled');
   const answer = await second;

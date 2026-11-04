@@ -5,6 +5,7 @@ import { failed, readerFailure, type ToolResult } from './results.js';
 import { validateArguments, type TaskTool } from './tools.js';
 import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
+export const REVISION_ABORT = Symbol('task-revision');
 export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
@@ -85,9 +86,12 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const local = new AbortController();
     let rejectTimeout!: (reason: Error) => void;
     const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
-    const clear = clock.timer(() => { local.abort(); rejectTimeout(new Error('Read deadline')); if (current()) expire(); }, CONNECTOR_DEADLINE_MS);
+    const stopRead = (): void => { if (options.signal.reason !== REVISION_ABORT) { local.abort(); rejectTimeout(new Error('Task stopped')); } };
+    options.signal.addEventListener('abort', stopRead, { once: true });
+    if (options.signal.aborted) stopRead();
+    const clear = clock.timer(() => { local.abort(); rejectTimeout(new Error('Read deadline')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - start)));
     try { return await Promise.race([body(local.signal), timeout]); }
-    finally { clear(); }
+    finally { clear(); options.signal.removeEventListener('abort', stopRead); }
   }
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
@@ -120,7 +124,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
         : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch {
-        result = tool.effect === 'none' ? readerFailure(tool.name, 'timeout') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
+        result = tool.effect === 'none' ? readerFailure(tool.name, options.signal.aborted && options.signal.reason !== REVISION_ABORT ? 'cancelled' : 'timeout') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
       if (result.receipt) receipts.push(result);

@@ -72,13 +72,13 @@ test('connector expiry stops subsequent admissions and preserves verified reads'
     entered.resolve(); return new Promise(() => {});
   } });
   const result = runWorker({ registry, identity, input: 'fixture', signal: new AbortController().signal, clock,
-    infer: async () => { inference++; return { text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'fast', cursor: null } }, { id: '2', name: 'read_mail', args: { id: 'slow', cursor: null } }] }; } });
+    infer: async request => { if (++inference > 1) { assert.equal(request.tools.length, 0); return { text: 'verified fast; slow read did not finish', calls: [] }; } return { text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'fast', cursor: null } }, { id: '2', name: 'read_mail', args: { id: 'slow', cursor: null } }] }; } });
   await entered.promise;
   // Flush the already-completed read, not a real timer.
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   clock.advance(12000);
   const final = await result;
-  assert.equal(final.status, 'incomplete'); assert.match(final.text, /verified fast/); assert.equal(inference, 1);
+  assert.equal(final.status, 'incomplete'); assert.match(final.text, /verified fast/); assert.equal(inference, 2);
 });
 test('committed receipts survive correction; old worker cannot admit a write', async () => {
   const controller = new TaskController(new FakeDelivery());

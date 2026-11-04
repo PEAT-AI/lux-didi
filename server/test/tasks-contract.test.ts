@@ -417,3 +417,57 @@ test('deadline composes completed evidence without tools and gives composition 2
   assert.equal(answer.text, 'Synthetic local finding. Web did not finish.');
   assert.equal(answer.findings.length, 1);
 });
+
+
+test('reader failures carry actionable closed categories without exception text', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const events: unknown[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe) events.push(safe); } });
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'mongoose:knowledge', credentialRef: null },
+    toolNames: ['read'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  let throws = false;
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async () => {
+    if (throws) throw new Error('SECRET_SENTINEL_763');
+    return { state: 'refused', reason: 'not_found' } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  try {
+    const execute = connectorExecutor([{ connector: 'mongoose', policy, reader }]);
+    const missing = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
+    assert.equal(Reflect.get(missing, 'failure_category'), 'not_found');
+    assert.match(missing.repair!, /search_company/);
+    assert.match(missing.repair!, /ref.*verbatim/i);
+    throws = true;
+    const secret = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
+    assert.equal(Reflect.get(secret, 'failure_category'), 'upstream_error');
+    assert.ok(events.some(event => Reflect.get(event as object, 'category') === 'not_found'));
+    assert.doesNotMatch(JSON.stringify([missing, secret, events]), /SECRET_SENTINEL_763/);
+  } finally { detach(); }
+});
+
+test('tool execution telemetry is closed and includes duration and cache joins', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const clock = new TaskTestClock();
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe?.event === 'task_tool') events.push(safe); } });
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => { clock.advance(7); return documentResult('PRIVATE_RESULT', 'local'); } });
+  let hop = 0;
+  try {
+    await runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'PRIVATE_WORDS', signal: new AbortController().signal,
+      infer: async () => ++hop === 1 ? { text: '', calls: ['a', 'b'].map(id => ({ id, name: 'search_memory', args: { query: 'PRIVATE_QUERY' } })) } : { text: 'done', calls: [] } });
+    assert.equal(events.length, 2);
+    assert.equal(events[0]?.tool, 'search_memory');
+    assert.equal(events[0]?.durationMs, 7);
+    assert.ok(events.some(event => event.cache === 'join'));
+    assert.doesNotMatch(JSON.stringify(events), /PRIVATE_/);
+    assert.equal(safeEvent({ ...events[0], args: { secret: 'PRIVATE_QUERY' } }), undefined);
+  } finally { detach(); }
+});

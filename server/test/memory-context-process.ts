@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -29,7 +30,7 @@ export function openMemoryFixture(dir: string, model: ModelPort, overrides: Part
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domainSchema, ...migrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'principal-a', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
-  const config: ChatConfig = { store, domain, model,
+  const config: ChatConfig = { createTaskRuntime: syntheticTaskFactory(store, overrides.tools), store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true,
       allows: classes => classes.every(c => ROUTE_CLASSES.includes(c)),
       endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'synthetic-key',

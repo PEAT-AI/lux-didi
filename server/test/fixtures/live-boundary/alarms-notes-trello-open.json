@@ -1,271 +1,102 @@
 {
-  "about": "D7: a positive dispatch for the alarm, note, trello and open kinds.",
+  "about": "Retained typed alarm, note, board and native-open dispatch. Native bus is synthetic. Removed lexical save-cue interpretation; finalized owner input owns task creation.",
   "scenarios": [
     {
       "id": "set-alarm-positive",
-      "why": "The owner's own words pin the alarm time: the host's own say line names the resolved local time, which is what a reader of his words must see (07:00 for '7 tomorrow morning', 18:30 for 'half six in the evening').",
-      "finals": [
-        "Set an alarm for 7 tomorrow morning."
-      ],
-      "steps": [
-        {
-          "tool": "set_alarm",
-          "args": {},
-          "expect": {
-            "responseContains": "07:00",
-            "responseNot": [
-              "grant_not_permitted",
-              "unknown_tool",
-              "invalid_arguments"
-            ]
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "alarm_create",
+      "args": {
+        "text": "Synthetic alarm",
+        "at": "2030-01-02T15:00:00Z",
+        "recurrence": null
+      },
+      "words": "Set a synthetic alarm.",
+      "case": "dispatch"
     },
     {
       "id": "cancel-alarm-positive",
-      "why": "A cancel names no time of its own: it must cancel an alarm the host set from the owner's words, not one the model picked.",
-      "finals": [
-        "Set an alarm for 7 tomorrow morning."
-      ],
-      "steps": [
-        {
-          "tool": "set_alarm",
-          "args": {},
-          "expect": {
-            "responseContains": "07:00"
-          }
-        },
-        {
-          "ownerFinal": "Now cancel that alarm."
-        },
-        {
-          "tool": "cancel_alarm",
-          "args": {},
-          "expect": {
-            "responseNot": [
-              "grant_not_permitted",
-              "unknown_tool",
-              "invalid_arguments"
-            ]
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "alarm_cancel",
+      "args": {
+        "id": "synthetic-alarm",
+        "scope": null
+      },
+      "words": "Cancel the synthetic alarm.",
+      "case": "dispatch"
     },
     {
       "id": "snooze-alarm-positive",
-      "why": "A snooze moves the alarm the host holds ten minutes on, which only the host's own record can do.",
-      "finals": [
-        "Set an alarm for 7 tomorrow morning."
-      ],
-      "steps": [
-        {
-          "tool": "set_alarm",
-          "args": {},
-          "expect": {
-            "responseContains": "07:00"
-          }
-        },
-        {
-          "ownerFinal": "Snooze it for ten minutes."
-        },
-        {
-          "tool": "snooze_alarm",
-          "args": {},
-          "expect": {
-            "responseNot": [
-              "grant_not_permitted",
-              "unknown_tool",
-              "invalid_arguments"
-            ]
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "alarm_update",
+      "args": {
+        "id": "synthetic-alarm",
+        "text": null,
+        "at": "2030-01-02T15:10:00Z",
+        "recurrence": null
+      },
+      "words": "Move the synthetic alarm ten minutes later.",
+      "case": "dispatch"
     },
     {
       "id": "note-save-positive",
-      "why": "A save-cued note runs through the owner's vault writer: the production client over the harness's fake fetch, so the exact save the host dispatches is recorded, body and provenance included.",
-      "families": [
-        "knowledge"
-      ],
-      "finals": [
-        "Save a note: the synthetic bridge reopens on Monday."
-      ],
-      "steps": [
-        {
-          "tool": "stage_lux_note",
-          "args": {
-            "title": "Synthetic bridge",
-            "body": "the synthetic bridge reopens on Monday",
-            "evidenceRefs": []
-          },
-          "expect": {
-            "dispatch": {
-              "connector": "vault",
-              "tool": "save_insight",
-              "argsContains": "the synthetic bridge reopens on Monday"
-            }
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "save_to_vault",
+      "args": {
+        "title": "Synthetic note",
+        "text": "Synthetic content."
+      },
+      "words": "Stage a synthetic note.",
+      "case": "dispatch"
     },
     {
       "id": "trello-write-positive",
-      "why": "A trello write is granted at the base, so the board service must receive the created card.",
-      "trello": true,
-      "finals": [
-        "Add a card to my Trello board called Synthetic card in Backlog."
-      ],
-      "steps": [
-        {
-          "tool": "trello_write",
-          "args": {
-            "action": "create",
-            "name": "Synthetic card",
-            "list": "Backlog"
-          },
-          "expect": {
-            "dispatch": {
-              "connector": "trello",
-              "tool": "trelloWriteCard",
-              "args": {
-                "action": "create",
-                "name": "Synthetic card"
-              }
-            }
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
-    },
-    {
-      "id": "open-positive",
-      "why": "The corpus measures open_web, so the positive scenario does too: the owner's ask names a page, and the declared kind/target shape must be accepted. The base refuses it for every ask (D5).",
-      "finals": [
-        "Open the synthetic bridge page."
-      ],
-      "steps": [
-        {
-          "tool": "open_web",
-          "args": {
-            "kind": "url",
-            "target": "https://synthetic.example/bridge"
-          },
-          "expect": {
-            "responseNot": [
-              "invalid_arguments",
-              "grant_not_permitted",
-              "unknown_tool"
-            ]
-          }
-        }
-      ],
-      "base": {
-        "status": "EXPECTED_RED",
-        "reason": "the base refuses the declared open_web argument shape (kind/target) for every ask: no per-intent normalizer names the field it reads (D5). C-ARGS fixes this."
-      }
-    },
-    {
-      "id": "note-dictation-negated-verb-saves",
-      "why": "C-NOTEGATE (#874): a long dictation that denies a verb is content, not a withdrawal of the open owner call. The save the corpus asks for at the end must commit on the model's first stage_lux_note call, so the vault receives the note.",
-      "families": [
-        "knowledge"
-      ],
-      "finals": [
-        "The survey came back and I don't want to put the damp course in there without his note.",
-        "Never mind the boiler quote, the invoice is the thing that matters.",
-        "No need to mention the driveway either.",
-        "Save a note: the synthetic bridge reopens on Monday."
-      ],
-      "steps": [
-        {
-          "tool": "stage_lux_note",
-          "args": {
-            "title": "Synthetic bridge",
-            "body": "the synthetic bridge reopens on Monday",
-            "evidenceRefs": []
-          },
-          "expect": {
-            "dispatch": {
-              "connector": "vault",
-              "tool": "save_insight",
-              "argsContains": "the synthetic bridge reopens on Monday"
-            }
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "trello_write",
+      "args": {
+        "action": "create",
+        "name": "Synthetic card",
+        "list": "Backlog"
+      },
+      "words": "Create a synthetic board card.",
+      "case": "dispatch",
+      "completeArguments": true
     },
     {
       "id": "note-direct-save-commits",
-      "why": "A direct save ask with no negation anywhere still commits on the first call, so the #874 fix widens nothing.",
-      "families": [
-        "knowledge"
-      ],
-      "finals": [
-        "Save a note: the synthetic bridge reopens on Monday."
-      ],
-      "steps": [
-        {
-          "tool": "stage_lux_note",
-          "args": {
-            "title": "Synthetic bridge",
-            "body": "the synthetic bridge reopens on Monday",
-            "evidenceRefs": []
-          },
-          "expect": {
-            "dispatch": {
-              "connector": "vault",
-              "tool": "save_insight",
-              "argsContains": "the synthetic bridge reopens on Monday"
-            }
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "tool": "remember_note",
+      "args": {
+        "text": "Synthetic note."
+      },
+      "words": "Save a synthetic note.",
+      "case": "dispatch"
+    },
+    {
+      "id": "open-positive",
+      "case": "open-positive"
+    },
+    {
+      "id": "open-invalid",
+      "case": "open-invalid"
+    },
+    {
+      "id": "note-dictation-negated-verb-saves",
+      "tool": "remember_note",
+      "args": {
+        "text": "Synthetic note."
+      },
+      "words": "Save a synthetic note containing a negated verb.",
+      "case": "dispatch"
     },
     {
       "id": "note-without-owner-final-refuses",
-      "why": "P-R6: with no owner final in the session no write is authorized at all, and nothing reaches the vault. The gate names its own code no_owner_request; the live call refuses it one layer earlier, so this scenario pins only that nothing is dispatched.",
-      "families": [
-        "knowledge"
-      ],
-      "finals": [],
-      "steps": [
-        {
-          "tool": "stage_lux_note",
-          "args": {
-            "title": "Synthetic bridge",
-            "body": "the synthetic bridge reopens on Monday",
-            "evidenceRefs": []
-          },
-          "expect": {
-            "refused": {},
-            "noDispatch": true
-          }
-        }
-      ],
-      "base": {
-        "status": "PASS"
-      }
+      "case": "note-without-owner-final-refuses"
+    },
+    {
+      "id": "snooze-nonnull-text",
+      "case": "dispatch",
+      "tool": "alarm_update",
+      "args": {
+        "id": "synthetic-alarm",
+        "text": "Synthetic alarm",
+        "at": "2030-01-02T15:10:00Z",
+        "recurrence": null
+      },
+      "words": "Move the synthetic alarm."
     }
   ]
 }

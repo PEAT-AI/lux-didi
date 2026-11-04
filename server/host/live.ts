@@ -1,3 +1,7 @@
+import { VaultWriter } from '../tools/vault-write.js';
+import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { loadTaskModels } from '../config/tasks.js';
 import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from './provider-binding.js';
 import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
@@ -6,7 +10,6 @@ import { entryAndParentOrdinary } from '../domain/labels.js';
 import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
-import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { credentialsFor, loadProviderConfig, seedScope, slotKeyPresent } from '../config/index.js';
 import { loadLiveConfig, saveLiveSelection, currentLivePlaybackRate, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
@@ -25,7 +28,8 @@ const maxIncomingBytes = 64 * 1024;
  * Trusted in-process seam only: never accepted by CLI/HTTP/env. `profile` lets auth/wire tests drive a
  * validated LiveProfile while LIVE-GATEWAY-R1 blocks the config file from producing one itself.
  */
-export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
+export interface LiveTesting {
+  createTaskRuntime?: import('../tasks/host.js').HostTaskFactory; credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
@@ -188,8 +192,6 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
       sessionMs: boundProfile.limits.sessionMs, closeMs: boundProfile.limits.closeMs,
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
-    // S4b: only the delegated backend executes the lookups; a direct-tool provider has no backend to instruct.
-    ...(boundProfile.provider === 'openai' ? { backendProcedure: NAYA_BACKEND_PROCEDURE } : {}),
     });
     const initial = create(); voice = { capabilities: initial.capabilities, open: (request, control) => create().open(request, control) };
   } catch (error) {
@@ -198,7 +200,15 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
-  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { researchWeb } : {}), ...(now ? { now } : {}) });
+  const vault = new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) });
+  const createTaskRuntime = testing?.createTaskRuntime ?? hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
+    credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
+    executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
+    ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
+    contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
+  });
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

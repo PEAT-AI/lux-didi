@@ -1,8 +1,9 @@
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
@@ -242,7 +243,7 @@ test('connectionIds is empty while a connector is verifying', async t => {
 
 test('a Live acceptance snapshot taken while verifying never gains the connector', async t => {
   const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
-  const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+  
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
@@ -252,26 +253,27 @@ test('a Live acceptance snapshot taken while verifying never gains the connector
     allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
   };
   store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
-  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), false);
   fake.releaseProof(0, OWNER);
   await started;
   // The recorded acceptance snapshot is immutable: the same session still has no connector tool.
-  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), false);
   // A session accepted after readiness does carry the connector tools.
   store.transaction(tx => mcp.owner.snapshotRun(tx, { ...acceptance, runId: 'live-ready', connectionIds: [...mcp.connectionIds()] }));
-  assert.equal(mcp.owner.liveDefinitions('live-ready', remember).some(tool => tool.name.startsWith('gmail')), true);
+  assert.equal(mcp.owner.taskBindings([...mcp.connectionIds()]).some(binding => binding.connector === 'google'), true);
 });
 
 test('a slow identity proof inside the endpoint call deadline still publishes the connector', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   // F9: the proof is one read call, so it is bounded by the endpoint's own call deadline, not a shorter
   // fixed bound. A healthy connector whose first identity call is slow under host load must be proven,
   // never wrongly marked unproven and fail-closed. The fake answers at 4.2 s, past the old 4 s bound.
   const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
-  const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+  
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
-  await new Promise<void>(resolve => setTimeout(resolve, 4_200));
+  t.mock.timers.tick(4_200);
   fake.releaseProof(0, OWNER);
   await started;
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
@@ -281,7 +283,7 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
     allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
   };
   store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
-  assert.equal(mcp.owner.liveDefinitions('live-slow-proof', remember).some(tool => tool.name.startsWith('gmail')), true);
+  assert.equal(mcp.owner.taskBindings(acceptance.connectionIds).some(binding => binding.connector === 'google'), true);
 });
 
 test('a refresh suspends the ready grant before the replacement publishes and refuses old calls', async t => {
@@ -594,8 +596,13 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
 // fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval. The
 // synthetic child is the Mattermost reader the owner actually runs, never a real account or service.
 
-const PEOPLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mattermost-people-child.mjs');
-const ECHO_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+// The isolated task producer emits test/; the full staged producer emits server/test/.
+function fixtureFile(name: string): string {
+  const adjacent = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name);
+  return existsSync(adjacent) ? adjacent : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', name);
+}
+const PEOPLE_CHILD = fixtureFile('stdio-mattermost-people-child.mjs');
+const ECHO_CHILD = fixtureFile('stdio-mcp-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   let store = new Store(join(dir, 'data'), toolsMigrations);
@@ -645,7 +652,10 @@ function movedChild(dir: string): string {
   copyFileSync(PEOPLE_CHILD, rebuiltChild);
   // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
   // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(PEOPLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const modules = createRequire(import.meta.url).resolve.paths('@modelcontextprotocol/server')?.find(path => existsSync(join(path, '@modelcontextprotocol', 'server')));
+  assert.ok(modules, 'the relocated fixture requires the installed MCP SDK');
+  symlinkSync(modules, join(dir, 'node_modules'), 'dir');
+
   return rebuiltChild;
 }
 
@@ -734,7 +744,7 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
 
 // W1030: the Mattermost draft family is recorded beside the read family and never inside it.
 test('W1030: the recorded Mattermost draft family matches the allowed draft names and no read map carries them', () => {
-  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
+  const recording = JSON.parse(readFileSync(fixtureFile('mattermost-draft-tools-list.json'), 'utf8')) as { tools: { name: string; inputSchema: { properties: Record<string, unknown> } }[] };
   assert.deepEqual(recording.tools.map(tool => tool.name), [...MATTERMOST_DRAFT_TOOLS]);
   for (const name of MATTERMOST_DRAFT_TOOLS) {
     assert.equal((MATTERMOST_READ_TOOLS as readonly string[]).includes(name), false, `${name} is never a read tool`);
@@ -774,8 +784,8 @@ async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: s
 // W1030/WT-R7: the recorded write families travel real discovery and the connector's preflight, and a
 // missing probe name is red there rather than at the first draft he asks for.
 test('W1030: each recorded write family discovers, preflights and probes with google_identity only', async t => {
-  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-tools-list.json'), 'utf8'));
-  const writeChild = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-write-child.mjs');
+  const recording = JSON.parse(readFileSync(fixtureFile('google-tools-list.json'), 'utf8'));
+  const writeChild = fixtureFile('google-write-child.mjs');
   for (const [family, didiFamily] of [['gmail_draft', 'compose'], ['calendar_write', 'calendar_write']] as const) {
     const { dir, pidFile } = scratch();
     t.after(() => rmSync(dir, { recursive: true, force: true }));

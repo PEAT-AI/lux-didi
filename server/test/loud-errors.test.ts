@@ -1,3 +1,4 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
 // W14: a connector failure is loud. LOGS.md L-01, L-02 and L-08.
 //
 // L-01: a Drive read that the helper refused with a classified error reached the model as
@@ -27,14 +28,12 @@ import { noteGmailAccount } from '../tools/open-handles.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
-import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog, type SourceKind } from '../tools/research.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, type GoogleStatus } from '../tools/google.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { classifyIdentity, proveIdentity, type IdentityProof } from '../connectors/identity.js';
 import { classifiedFailureEvent } from '../tools/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,62 +54,6 @@ function driveConsentLine(): string {
   const entry = GOOGLE_ERROR_TABLE['scope_missing'];
   assert.ok(entry, 'the helper contract carries scope_missing');
   return googleOwnerLine(entry, 'drive', driveEndpoint());
-}
-
-function subResult(call: IntentSubCall, text: string, ok = true, classified?: string): IntentSubResult {
-  // LOGS.md L-01: the tool layer marks the projection it builds for a classified connector failure with
-  // that failure's own code, and the fixture carries the same mark the real producer sets.
-  return { key: call.key, name: call.name, ok, text, originalCharacters: text.length, omittedCharacters: 0,
-    ...(classified === undefined ? {} : { classified }) } as IntentSubResult;
-}
-
-function harness(configured: readonly SourceKind[], answer: (call: IntentSubCall) => IntentSubResult): { deps: ResearchDeps; calls: IntentSubCall[]; sources: ResearchSourceLog[] } {
-  const calls: IntentSubCall[] = [];
-  const sources: ResearchSourceLog[] = [];
-  const deps: ResearchDeps = {
-    now: () => Date.parse('2026-10-19T12:00:00Z'), timeZone: 'UTC', configured,
-    execute: async subs => { calls.push(...subs); return subs.map(answer); },
-    emit: () => {}, log: () => {}, logRouted: () => {}, logSource: event => sources.push(event), logSubcall: () => {},
-    ledger: new ResearchLedger(),
-  };
-  return { deps, calls, sources };
-}
-
-/** The families a research lookup can name, one per shaped source path. */
-const FAMILIES: readonly { source: SourceKind; question: string; query: string }[] = [
-  { source: 'drive', question: 'find the harbour review deck', query: 'harbour review' },
-  { source: 'mail', question: 'find the harbour review mail', query: 'harbour review' },
-  // A calendar lookup resolves its window first, so it asks with one.
-  { source: 'calendar', question: 'what is on my calendar this week', query: 'this week' },
-  { source: 'chat', question: 'find the harbour review thread', query: 'harbour review' },
-  { source: 'knowledge', question: 'find the harbour review note', query: 'harbour review' },
-];
-
-/** The calendar scope read answers with the one synthetic calendar; every other sub answers with `text`. */
-function answerFor(text: string, classified?: string): (call: IntentSubCall) => IntentSubResult {
-  return call => subResult(call, call.name === 'calendar_list_calendars' ? '- Main [primary]' : text, true, classified);
-}
-
-for (const family of FAMILIES) {
-  test(`L-01 ${family.source}: a classified connector error is a failed source, never an empty search`, async () => {
-    const line = driveConsentLine();
-    const h = harness([family.source], answerFor(line, 'scope_missing'));
-    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: family.query }] }, new AbortController().signal);
-    const receipt = h.sources.find(entry => entry.source === family.source);
-    assert.ok(receipt, 'the source settled with a receipt');
-    assert.equal(receipt.outcome, 'failed', `a classified error is a failed ${family.source} read, not ${receipt.outcome}`);
-    const text = JSON.stringify(reply);
-    assert.ok(text.includes(line), `the reply carries the owner action verbatim for ${family.source}: ${text}`);
-  });
-
-  test(`L-01 ${family.source}: a real empty read still reads as empty`, async () => {
-    const h = harness([family.source], answerFor(''));
-    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: family.query }] }, new AbortController().signal);
-    const receipt = h.sources.find(entry => entry.source === family.source);
-    assert.ok(receipt, 'the source settled with a receipt');
-    assert.equal(receipt.outcome, 'empty', `a read that returned nothing is empty, not ${receipt.outcome}`);
-    assert.equal(JSON.stringify(reply).includes('authorize --family'), false, 'no owner action is invented for an empty read');
-  });
 }
 
 test('L-01: the classified owner line names the helper command, the fixture account and the token path, as a one-time step', () => {
@@ -194,17 +137,18 @@ test('L-08: one classified connector failure reaches the host log sink and the h
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');
-  const args = [child, 'code:scope_missing', join(home, 'child.pid')];
+  const args = [child, 'first-mail:credential-refresh-failed', join(home, 'child.pid')];
   const store = new Store(join(home, 'data'), toolsMigrations);
   const registry = new McpRegistry();
   const env = { HOME: join(home, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
   // The synthetic child answers every tool call with one published helper code; scope_missing is the
   // Drive family's own consent refusal. No account, network or credential file is touched.
-  registry.register({ id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture' } as unknown as EndpointConfig);
+  registry.register({ id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'owner@example.invalid', resource: 'google-fixture' } as unknown as EndpointConfig);
   registry.enable('gmail'); registry.allowEgress('gmail');
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
   const seen: unknown[] = [];
   const detach = attachHostLogSink({ event: raw => { seen.push(raw); } });
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   try {
     const discovery = await adapter.discover('gmail');
     assert.equal(discovery.state, 'discovered');
@@ -214,7 +158,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port: adapter, lookupAuthority: async () => live });
     const policy: ConnectionPolicy = {
       schemaVersion: 1, ownerId: store.assistantId, connectionId: 'gmail', generation: 1, enabled: true, connector: 'google',
-      endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture', credentialRef: null },
+      endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'owner@example.invalid', resource: 'google-fixture', credentialRef: null },
       toolNames: names, schemaDigest: discovery.schemaDigest,
       sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
       route: { identity: 'voice', allowedClasses: ['private'] },
@@ -225,23 +169,33 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     // discovery of the same catalog restores the digest the applied policy names.
     const again = await adapter.discover('gmail');
     assert.equal(again.state, 'discovered');
-    registry.approve({ endpointId: 'gmail', schemaDigest: policy.schemaDigest, generation: 1, account: 'local', resource: 'google-fixture', toolNames: names, effect: 'read' });
+    registry.approve({ endpointId: 'gmail', schemaDigest: policy.schemaDigest, generation: 1, account: 'owner@example.invalid', resource: 'google-fixture', toolNames: names, effect: 'read' });
     const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-    const callArgs = {};
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
+    task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
+    const definition = task.tools.find(candidate => candidate.name === 'search_mail');
+    assert.ok(definition);
+    const callArgs = { query: 'synthetic', cursor: null };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition.accountId, resourceId: definition.resourceId };
     assert.equal(owner.journal.intent(intent), 'fresh');
-    const definition = owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
     assert.ok(definition?.execute);
     const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
-    assert.equal(outcome.status, 'completed', 'a classified failure is still a completed call (its text is the reason)');
+    assert.equal(outcome.status, 'completed', 'the model tool transport completes even when the contained read fails');
+    assert.equal(task.results[0]?.status, 'failed', 'the actual canonical read is failed, never an empty success');
+    const nextIntent = { ...intent, executionId: 'run:1:1', callId: 'success-call' };
+    assert.equal(owner.journal.intent(nextIntent), 'fresh');
+    await definition.execute!(callArgs, { ...nextIntent, signal: new AbortController().signal });
+    assert.equal(task.results[1]?.status, 'partial', 'the later real mail page is retained, not poisoned by the transient failure');
+    assert.ok(task.results[1]?.text);
+    assert.equal(task.results[1]?.next_cursor, null, JSON.stringify(task.results[1]));
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
-    assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
-    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'scope_missing' });
+    assert.equal(rows.length, 1, `exactly one native failure row reaches the host log: ${JSON.stringify(task.results).slice(0, 1200)}`);
+    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'credential-refresh-failed' });
     assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
     assert.equal(safeEvent({ ...(rows[0] as Record<string, unknown>), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');
   } finally {
+    task?.close();
     detach();
     await adapter.close();
     store.close();
@@ -249,36 +203,3 @@ test('L-08: one classified connector failure reaches the host log sink and the h
   }
 });
 
-for (const source of ['mail', 'calendar'] as const) {
-  for (const recovers of [true, false]) {
-    test(`C-RESIDUE ${source}: classified helper failure ${recovers ? 'retries to results' : 'twice is spoken failure, never empty'}`, async () => {
-      let attempts = 0;
-      const failure = `I couldn't read your ${source} just now. Please try again.`;
-      const success = source === 'mail' ? '- Synthetic archived mail [id residue-mail]' : '- Synthetic calendar appointment';
-      const h = harness([source], call => {
-        if (call.name === 'calendar_list_calendars') return subResult(call, '- Main [primary]');
-        attempts += 1;
-        return recovers && attempts > 1 ? subResult(call, success) : subResult(call, failure, true, 'provider_failure');
-      });
-      const reply = await runResearch(h.deps, {
-        action: 'start', question: source === 'mail' ? 'did Willow email me this week' : 'what is on my calendar this week',
-        topic: 'synthetic residue', lookups: [{ source, query: source === 'mail' ? 'Willow' : 'this week' }],
-      }, new AbortController().signal);
-      assert.equal(attempts, 2, 'one in-deadline retry');
-      const reads = h.calls.filter(call => call.name !== 'calendar_list_calendars');
-      assert.deepEqual(reads[1]?.args, reads[0]?.args, 'the failed page is retried, not a broader empty search');
-      const text = JSON.stringify(reply);
-      const receipt = h.sources.find(entry => entry.source === source);
-      assert.ok(receipt);
-      if (recovers) {
-        assert.ok(text.includes(success.slice(2)), text);
-        assert.notEqual(receipt.outcome, 'failed');
-        assert.ok(!text.includes(failure), text);
-      } else {
-        assert.equal(receipt.outcome, 'failed');
-        assert.ok(text.includes(failure), text);
-        assert.doesNotMatch(text, /empty_after_retry|found nothing|0 of 0/u);
-      }
-    });
-  }
-}

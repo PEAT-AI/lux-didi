@@ -162,6 +162,12 @@ export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: s
   const used = ['action', ...shape.required, ...shape.optional];
   const kept = normalizeTrelloArguments(args, ['action', ...shape.required], used, TRELLO_WRITE_PARAMETERS.properties);
   const normalized = Object.keys(args).filter(key => TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) && !Object.hasOwn(kept, key));
+  // Trello mentions notify people. Drop member assignment even when supplied as an unknown field.
+  for (const key of ['idMembers', 'idMember', 'members', 'member', 'memberIds']) delete kept[key];
+  for (const key of ['name', 'description', 'text', 'item', 'checklist']) {
+    const value = kept[key];
+    if (typeof value === 'string') kept[key] = value.replace(/@[\p{L}\p{N}_-]+/gu, '').replace(/\s{2,}/gu, ' ').trim();
+  }
   return { args: kept, normalized };
 }
 
@@ -702,13 +708,18 @@ export class TrelloBoard {
    * write in one session answers from its first receipt; the server is called once and never again.
    */
   async write(runId: string, args: Args, ownerWords: string, signal?: AbortSignal): Promise<JsonObject> {
+    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), `write.${String(args.action)}`, 'admit');
+    return this.writeTask(runId, args, signal);
+  }
+
+  /** Called only by the host task executor after Authority admission. */
+  async writeTask(runId: string, args: Args, signal?: AbortSignal): Promise<JsonObject> {
     // C-FILLER: the unused properties the voice model sent as a filler value are absent before anything runs.
     const { args: clean, normalized } = normalizeTrelloWrite(args);
     const action = String(clean.action) as TrelloWriteAction;
     const tool = `write.${action}`;
     if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
     if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
-    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit', normalized);
     const session = this.#session(runId);
     let plan: WritePlan;
     let snapshot: Snapshot;

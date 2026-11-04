@@ -27,9 +27,11 @@ Read these types rather than maintaining a second event union or SQL schema here
 
 Accepted context freezes selected memory, owner profile and authority inputs for that run. Dispatch must revalidate current authority before disclosure; a frozen acceptance is not permission to use a revoked source. [Selected memory](selected-memory.md) owns selection and deletion; [owner profile](owner-profile.md) owns authored-character snapshots.
 
-Text can use approved read tools through the host's `ChatToolsComposition`. That type shares the host's tool-composition boundary rather than creating a second MCP client. The shipped train also handles composed reads at the tool door; old statements that this integration belongs only to a future owner are no longer a valid description of the merged source.
+Text conversation can use approved source tools through the host's `ChatToolsComposition`. That type shares the host's tool-composition boundary rather than creating a second MCP client. The host validates each read and projects its result before disclosure.
 
-Tool results are evidence, not authority or proof of an effect. Text dispatch uses the model adapter's journal and result gate; [model-adapter.md](model-adapter.md) owns that contract and [tool-owner.md](tool-owner.md) owns the tool surface.
+Tool results are evidence, not authority or proof of an effect. Text dispatch uses task definitions and task authority alongside the model adapter's journal and result gate; [model-adapter.md](model-adapter.md) owns that contract and [tool-owner.md](tool-owner.md) owns the tool surface.
+
+The host composes the same task registry and authority for text through `server/tasks/chat.ts`. Text conversation keeps its configured model adapter and consent boundary; the call helper's inference model is configured separately in `server/tasks/model.ts`. See [model-adapter.md](model-adapter.md).
 
 ## Steps, partial answers and recovery
 

@@ -36,12 +36,12 @@ cp "$root/server/host/events.ts" "$out/source/host/"
 # W15: tools, connectors and the live persona resolve people through the host snapshot, so the
 # harness compiles that module and its import closure too.
 cp "$root"/server/people/*.ts "$out/source/people/"
-cp "$root"/server/prompt/{types,backend-procedure,live-persona}.ts "$out/source/prompt/"
+cp "$root"/server/prompt/{types,live-persona}.ts "$out/source/prompt/"
 cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
 cp "$root/server/http/routes.ts" "$out/source/http/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/host/oauth-client.ts" "$out/source/host/"
-cp "$root/server/test/google-connector.test.ts" "$root/server/test/calendar-read-contract.test.ts" "$root/server/test/research-calendar.test.ts" "$root/server/test/google-calendar-depth.test.ts" "$out/source/test/"
+cp "$root/server/test/google-connector.test.ts" "$root/server/test/calendar-read-contract.test.ts"  "$root/server/test/google-calendar-depth.test.ts" "$out/source/test/"
 # W14: the loud-error suite runs in this same harness, so a classified failure can never go quiet again.
 cp "$root/server/test/loud-errors.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
@@ -52,6 +52,13 @@ printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 inputs=()
 while IFS= read -r -d '' f; do inputs+=("$f"); done < <(find "$out/source" -name '*.ts' -print0)
+# Stage the complete production import closure, as the whole-server build does.
+find "$root/server" -mindepth 1 -maxdepth 1 -type d \
+  ! -name node_modules ! -name dist ! -name test \
+  -exec cp -R {} "$out/source/" \;
+mkdir -p "$out/source/test/fixtures"
+cp "$root"/server/test/{synthetic-task,canonical-task-fixture}.ts "$out/source/test/"
+cp "$root/server/test/fixtures/task-chat-reader.ts" "$out/source/test/fixtures/"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${inputs[@]}"
@@ -59,4 +66,4 @@ mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/google-tools-list.json" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/dist/test/fixtures/"
-node_test_files --test-timeout=15000 "$out/dist/test/google-connector.test.js" "$out/dist/test/calendar-read-contract.test.js" "$out/dist/test/research-calendar.test.js" "$out/dist/test/google-calendar-depth.test.js" "$out/dist/test/loud-errors.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/google-connector.test.js" "$out/dist/test/calendar-read-contract.test.js"  "$out/dist/test/google-calendar-depth.test.js" "$out/dist/test/loud-errors.test.js"

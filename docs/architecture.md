@@ -34,9 +34,9 @@ Keep lifecycle policy in the owning layer. A web rendering workaround cannot fix
 
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` defines the published connector surface. Connection configuration and approvals are distinct from whether a service happens to be reachable. Read [connectors.md](connectors.md) for the available sources and [mcp-configuration.md](mcp-configuration.md) for their setup.
 
-The host's tool layer, `server/tools/`, validates requests and projects results before returning evidence to a model. Research, opening a result in Chrome, Trello reads and note creation are tool capabilities, not permission for arbitrary remote writes. See [tool-owner.md](tool-owner.md).
+The helper in `server/tasks/` receives finalized owner input and uses the typed registry in `server/tasks/tools.ts`. The voice model talks and delivers the helper's result; it does not choose or run source tools. The host executes those tools, retains task revisions and operation receipts, and rejects stale delivery. A correction revises the work rather than starting a competing answer.
 
-Composed Lux notes are an explicit gated write flow. `liveDefinitions` in `server/tools/index.ts` advertises the staging tool only when `composedNotes` is enabled; staging is not saving. The owner must confirm the host's readback. See [privacy-and-authority.md](privacy-and-authority.md) before changing any write path.
+Permission belongs in `server/tasks/authority.ts`. Direct asks run without another permission question. After outside text, an isolated check sees only owner words and the effect kind. Calendar deletion alone needs a later confirmation. No tool sends a message or invites anyone. See [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md).
 
 ## Where to investigate
 
@@ -50,3 +50,29 @@ Composed Lux notes are an explicit gated write flow. `liveDefinitions` in `serve
 | Package or release | [releases.md](releases.md) |
 
 This page describes the merged release. Future work belongs in [roadmap.md](roadmap.md), not in the runtime contract. Historical designs remain under [history/](history/README.md).
+
+## Host-owned task core (10.10, not connected to live sessions yet)
+
+`server/tasks/` owns typed tool results, the configurable text worker loop and revision lifecycle.
+`runtime.ts` composes `Store`, the pure controller and the delivery interface; no live adapter calls it yet.
+The model port supports OpenAI Responses and Gemini generateContent over host-resolved credential references.
+Each role has one provider, model id and effort configuration; the measured default is one named constant in
+`tasks/model.ts`. Provider continuation retains reasoning and thought signatures. No provider call runs in the task suites.
+
+Finalized owner words start or revise work without a language classifier. Revision cancellation stops new admissions
+and aborts inference. Read results are canonically deduplicated within a revision and retained across its corrections;
+effect receipts are not a read cache. A stale revision or connection generation cannot deliver.
+Connector, inference and revision deadlines are 12, 12 and 36 seconds. There is no call or hop cap.
+The model decides queries. Mail and chat windows are query operators; calendar has typed start and end.
+
+`results.ts` separates empty, no_match, partial and failed from successful results. Ranked knowledge and company
+candidates are labelled exact or neighbour by normalized full-title equality with the query. No-match opens nothing.
+Opened documents carry up to 24,000 characters per result and an explicit character cursor; search items stay concise.
+`clean.ts` contains shared structural mail cleaning. `tools/live-shape.ts` retains its legacy voice limits,
+calendar and attendee formatting, search projections, omission annotations and source compatibility exports until C-VOICE.
+
+Task migrations belong to `runtime/task-schema.ts` and are applied by `Store` only. Owner words, arguments,
+results and final answers use the host content-capture gate; metadata and delivery attempts remain recorded.
+Content is pruned at 30 days, metadata at 90, matching trace retention. Pending operations become unknown at restart.
+Closed-field `task_lifecycle` events never include queries or bodies. Delivery completion here means acceptance by
+an injected delivery interface, not proof of spoken audio. The live-call integration owns actual transport acknowledgement.

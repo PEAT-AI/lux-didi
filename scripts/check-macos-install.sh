@@ -153,6 +153,37 @@ if [ "${1:-}" = "--leased-run" ]; then
       [ "$result" -ne 0 ] || result=$joined
       [ "$result" -ne 0 ] || result=1
     fi
+    if [ "$result" -ne 0 ]; then
+      python3 - "$proof" <<'PROOF_DIAGNOSTICS' || true
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+print('MACOS-INSTALL: retained proof diagnostics root=' + str(root), file=sys.stderr)
+reports = sorted(root.glob('held-cases/*/report.json')) + sorted(root.glob('run-*.json'))
+for report in reports:
+    if not report.resolve().is_relative_to(root):
+        continue
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, ValueError):
+        continue
+    if not data.get('error'):
+        continue
+    safe = {key: data.get(key) for key in ('phase', 'error', 'observations', 'native', 'serviceStop')}
+    print('PROOF-REPORT ' + str(report.relative_to(root)) + ' ' + json.dumps(safe, sort_keys=True), file=sys.stderr)
+    diagnostic = report.with_suffix(report.suffix + '.diagnostics.json')
+    if diagnostic.is_file() and diagnostic.resolve().is_relative_to(root):
+        print('PROOF-WK ' + json.dumps(json.loads(diagnostic.read_text()).get('wkDiagnostics', {}), sort_keys=True), file=sys.stderr)
+    log = report.parent / 'state' / 'logs' / 'host.log'
+    if log.is_file() and log.resolve().is_relative_to(root):
+        for line in log.read_text().splitlines()[-8:]:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            safe = {key: event[key] for key in ('event', 'reason', 'code', 'phase', 'status', 'connector', 'tool') if key in event}
+            print('PROOF-HOST ' + json.dumps(safe, sort_keys=True), file=sys.stderr)
+PROOF_DIAGNOSTICS
+    fi
     exit "$result"
   }
   trap cleanup_active_observation EXIT INT TERM

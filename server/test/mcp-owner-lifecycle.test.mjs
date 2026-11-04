@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../dist/runtime/store.js';
+import { canonicalTaskFixture } from '../dist/test/canonical-task-fixture.js';
+import { TASK_ACCOUNT, TASK_RESOURCE } from '../dist/tasks/tools.js';
 import { createToolsOwner, toolsMigrations } from '../dist/tools/index.js';
 import { attachHostLogSink } from '../dist/tools/host-events.js';
 import { safeEvent } from '../dist/host/log.js';
@@ -29,6 +31,7 @@ test(failure === 'success' ? '40 settled owner projections release a one-entry s
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(failure === 'oversize' ? { maxBytes: 1 } : { maxEntries: 1 }), budgets: { timeoutMs: 4000 } });
   const seen = [];
   const detach = attachHostLogSink({ event: raw => { seen.push(raw); } });
+  let task;
   try {
     const discovery = await adapter.discover('gmail');
     assert.equal(discovery.state, 'discovered');
@@ -58,15 +61,21 @@ test(failure === 'success' ? '40 settled owner projections release a one-entry s
     const acceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-    const callArgs = {};
-    const definition = owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    task = canonicalTaskFixture(store, owner, 'run', 'Read synthetic mail', ['gmail']);
+    const callArgs = { query: 'synthetic', cursor: null };
+    const definition = task.tools.find(candidate => candidate.name === 'search_mail');
     assert.ok(definition?.execute);
     for (let index = 0; index < (failure === 'success' ? 40 : 1); index++) {
-      const intent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: `run:1:${index}`, toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: `call-${index}`, accountId: 'local', resourceId: 'google-fixture' };
+      const intent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: `run:1:${index}`, toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(callArgs)), callId: `call-${index}`, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE };
       assert.equal(owner.journal.intent(intent), 'fresh');
       const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
       if (failure === 'success') assert.equal(outcome.status, 'completed');
-      else assert.deepEqual(outcome, { status: 'failed', code: `result_store_${failure}` });
+      else {
+        assert.equal(outcome.status, 'completed');
+        const terminal = JSON.parse(String(store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId])).result_json));
+        assert.equal(terminal.response.status, 'failed');
+        assert.equal(terminal.response.reason, `result_store_${failure}`);
+      }
     }
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && raw.event === 'tool_classified_failure');
     if (failure === 'success') assert.deepEqual(rows, []);
@@ -77,6 +86,7 @@ test(failure === 'success' ? '40 settled owner projections release a one-entry s
       assert.equal(safeEvent({ ...rows[0], args: { q: 'synthetic' } }), undefined);
     }
   } finally {
+    task?.close();
     detach();
     await adapter.close();
     store.close();

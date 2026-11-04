@@ -26,17 +26,21 @@ cd server
 group_build() {
   node test/vanilla-tree.integration.mjs || return 1
   npm run build || return 1
-  if git cat-file -e c77491b713808192e6314babd8b0bdbb3154cbdf^{commit} 2>/dev/null; then
-  node test/direct102-red-base.integration.mjs || return 1
-  else
-  printf '%s\n' 'DIRECT102_BASE_HISTORY_UNAVAILABLE: current behavior tests remain mandatory below' || return 1
-  fi
+  mkdir -p dist/scripts || return 1
+  cp "$root/scripts/eval-worker-replay.mjs" dist/scripts/ || return 1
+  node node_modules/typescript/bin/tsc --ignoreConfig --types node --typeRoots node_modules/@types \
+    --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
+    --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --esModuleInterop \
+    --rootDir . --outDir dist test/task-call.test.ts test/task-delivery.test.ts \
+    test/tasks-lifecycle.test.ts test/task-authority.test.ts || return 1
+  # Historical direct-save comparison used the deleted voice-tool carrier. Current helper receipts run below.
+
 }
 
 # Alarm cases are imported by the registry-wide intent suite, so release CI executes both.
 # Public tool guidance is also composed by text, memory and summary surfaces.
 group_guidance() {
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js dist/test/research-calendar.test.js || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js  || return 1
   node_test_files --test-reporter=tap --test-timeout=30000 dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
   node test/prompt-content.integration.mjs || return 1
 }
@@ -44,8 +48,7 @@ group_guidance() {
 # admission block reach the trace as `refused` and `blocked`, so it runs here against the build it just made.
 # Contract regressions run first so a red boundary fails before the broader live replay.
 group_boundary() {
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js dist/test/tools-builtin-intent.test.js dist/test/research-calendar.test.js || return 1
-  node test/research-refusal.integration.mjs || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js dist/test/tools-builtin-intent.test.js  || return 1
 }
 
 # The new owner suite, the live summary suite (#363), the trace store suite, the warm-context pre-assembly
@@ -53,14 +56,15 @@ group_boundary() {
 # voice fault-replay scenarios (release gate F1): the real adapter and the real host, driven over a virtual clock.
 # #1021: the connector fields her project hint travels in, refused and accepted by the connector itself.
 group_knowledge() {
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/research-knowledge.test.js dist/test/knowledge-connector.test.js dist/test/research-depth.test.js dist/test/context-hygiene.test.js | tee "$work/knowledge.log" || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/task-call.test.js dist/test/task-delivery.test.js dist/test/tasks-lifecycle.test.js dist/test/task-authority.test.js || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000  dist/test/knowledge-connector.test.js  dist/test/context-hygiene.test.js | tee "$work/knowledge.log" || return 1
   grep -Eq '^# fail 0$' "$work/knowledge.log" || { echo 'Selected knowledge suites failed' >&2; return 1; }
 }
 
 # The conversation continuity suite (#1021) pins mute, unmute and seeding; the resumption and watchdog suites
 # ride along because the seed and the provider lifetime are what they assert.
 group_live() {
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-continuity.test.js dist/test/live-dead-air.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/heard-silence.test.js dist/test/live-mute.test.js dist/test/live-recovery.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/stop-phrase.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/people.test.js dist/test/trace.test.js dist/test/store-retention.test.js dist/test/timeline.test.js dist/test/research-patience-replay.test.js dist/test/lux-save-natural.test.js dist/test/voice-replay.test.js dist/test/live-rebuild-sweep.test.js dist/test/research-web.test.js dist/test/research-continuation.test.js dist/test/partial-research-turn-contract-replay.test.js dist/test/continuity-replay.test.js | tee "$work/test.log" || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-continuity.test.js dist/test/live-dead-air.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/heard-silence.test.js dist/test/live-mute.test.js dist/test/live-recovery.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/stop-phrase.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js  dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/people.test.js dist/test/trace.test.js dist/test/store-retention.test.js dist/test/timeline.test.js  dist/test/lux-save-natural.test.js dist/test/voice-replay.test.js dist/test/live-rebuild-sweep.test.js    dist/test/continuity-replay.test.js | tee "$work/test.log" || return 1
   grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; return 1; }
   grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; return 1; }
 }

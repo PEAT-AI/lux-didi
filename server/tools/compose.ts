@@ -3,7 +3,6 @@ import type { TimeSpec } from './time-check.js';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { ComposeDispatch, ComposeOutcome } from './types.js';
 import { googleConsentLine } from './google.js';
-import { tierOf } from './tiers.js';
 import { peopleLookupResult } from '../people/index.js';
 
 /**
@@ -52,7 +51,7 @@ export function composeGrantKinds(words: string): readonly ComposeGrantKind[] {
   // C-PERMTIER: the free writes no longer read his words at all; only the guarded delete keeps a gate,
   // and it stays on its own created-or-named selector.
   const asked = ownerAsk(words);
-  const kinds = writeIntent(asked).filter(kind => tierOf(kind) === 'guarded');
+  const kinds = writeIntent(asked);
   if (kinds.length === 0 || INJECTION.test(words) || REPORT.test(asked)) return [];
   return asked.split(/[.!?;,]/).some(clause => NEGATION.test(clause) && writeIntent(clause).length > 0) ? [] : kinds;
 }

@@ -1,3 +1,6 @@
+import { liveTaskFixture } from './live-task-fixture.js';
+import { deferred, fixtureUntil } from './live-voice-fixture.js';
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -8,7 +11,7 @@ import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, lateCommentarySilence, lateHoldMs,
-  liveMigrations, MAX_IN_FLIGHT_RESPONSE_AGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+  liveMigrations, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -76,7 +79,7 @@ async function openCall(t: TestContext): Promise<DeadAir> {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: fake.port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `dead-air-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
@@ -88,39 +91,21 @@ async function openCall(t: TestContext): Promise<DeadAir> {
   };
 }
 
-test('C-DEADAIR: a response that ends after text and no audio hands the result over at once', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('What did we decide about the bridge?'));
-  await live.emit(toolCall('d1'));
-  assert.equal(live.fake.toolResponses.length, 1, 'the lookup answered before the wait starts');
-  // The 07:02:59Z shape: the provider writes the answer as text and never makes a sound.
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  await live.emit(portEvent({ type: 'modelText', text: 'The bridge reopens on Monday.', thought: false }));
-  assert.equal(live.fake.texts.length, live.sentTexts, 'nothing is injected while the response is still open');
-  await live.emit(portEvent({ type: 'turnComplete' }));
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result goes out the moment the silent response ends');
-  assert.equal(rungReceipts(live).length, 0, 'no ladder wait was needed');
-  await live.advance(1_000);
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the ladder does not deliver the same result again behind it');
+test('task dead-air: a finished result appends without provider inference or a tool batch', async t => {
+let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+assert.equal(answer.text, 'The synthetic task answer.'); assert.equal(f.voice.taskAnswers.length, 1); assert.equal(calls, 1);
+assert.equal(f.voice.texts.length, 0); assert.equal(f.voice.toolResponses.length, 0, 'no legacy function-output continuation');
 });
 
-test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buys only the short grace', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
-  await live.emit(toolCall('d2'));
-  // A response the provider announced and never made audible, with no text at all: the ladder owns this one.
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
-  assert.equal(rungReceipts(live).length, 0, 'the rung is not early');
-  for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
-  const rungs = rungReceipts(live);
-  assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
-  assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
-  // C-REBUILD B (council 2026-11-01): a response in flight owns the wire, so this rung no longer hands the result
-  // over. It waits for that response's own terminal, which is the ruling's continuation path for it.
-  assert.equal(live.fake.texts.length, live.sentTexts, 'the held result is not written into a response in flight');
-  await live.emit(portEvent({ type: 'turnComplete' }));
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and the response end delivers it exactly once');
+test('task dead-air: pending work stays quiet through the native 8 second watchdog boundary', async t => {
+const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+t.mock.timers.tick(8_000); await f.flush();
+assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.texts.length, 0);
+release.resolve(); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {
@@ -132,43 +117,29 @@ test('C-DEADAIR: a response the owner can hear clears the debt, so the rung neve
   assert.equal(live.fake.texts.length, live.sentTexts, 'an audible answer is the answer, and nothing is injected behind it');
 });
 
-test('C-DEADAIR: the provider latency is recorded apart from the wait, owner final to response to first audio', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('What did we decide about the bridge?'));
-  await live.emit(toolCall('d4'));
-  await live.advance(1_000);
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  await live.emit(audible());
-  const record = live.receipts.find(entry => entry.event === 'live_response_latency');
-  assert.ok(record !== undefined, 'the first audible answer records the provider latency');
-  assert.equal(typeof record['msSinceOwnerFinal'], 'number');
-  assert.equal(record['msSinceResponseCreated'], undefined, 'response age is not provider latency');
-  assert.equal(typeof record['msSinceToolOutput'], 'number');
-  assert.ok(Number(record['msSinceOwnerFinal']) >= 1_000, 'the wait is measured from the owner final words');
+test('task lifecycle: elapsed worker time is durable metadata, not provider response inference', async t => {
+const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+const task = f.store.transaction(tx => tx.get('SELECT created_at FROM tasks'));
+t.mock.timers.tick(500); release.resolve(); await f.answer();
+const finished = f.store.transaction(tx => tx.get('SELECT updated_at,status FROM tasks'));
+assert.ok(Number(finished?.updated_at) >= Number(task?.created_at) + 500); assert.equal(calls, 1);
+assert.equal(f.voice.taskAnswers.length, 1);
 });
 
 // C-REBUILD8 (review BL1): the debt ladder owns the same speaking hold the sliding watchdog keeps. On 2026-10-28
 // the N12 nudge came from this path, not from the watchdog: `live_debt phase=rung reason=dead_air` then
 // `live_dead_air_nudge elapsedMs=8000` with no `live_watchdog phase=nudged` anywhere near it, and the rebuild
 // followed one RESPONSE_WATCHDOG_RECOVERY_MS later. A sentence still being spoken holds both back.
-test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner sentence', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
-  await live.emit(toolCall('d5'));
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  // The settled read owes an answer, so the ladder is armed and the hold below is what keeps it quiet.
-  assert.equal(live.receipts.filter(record => record.event === 'live_debt' && record['phase'] === 'start').length, 1,
-    'the settled read armed the ladder');
-  for (let second = 0; second < 15; second += 1) {
-    await live.emit(portEvent({ type: 'inputTranscription', text: `and then number ${second}`, finished: false }));
-    await live.advance(1_000);
-  }
-  assert.equal(rungReceipts(live).length, 0, 'his unfinalized sentence owns the debt silence, so no dead-air nudge fires');
-  assert.equal(live.fake.sessionsOpened, 1, 'and the ladder rebuilds nothing inside his words');
-  // Held, not dead: from his final fragment the ladder judges the silence as it always did.
-  await live.emit(ownerFinal('book a table for four'));
-  for (let spent = 0; spent < AUDIBLE_DEBT_RUNG_MS + 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
-  assert.equal(rungReceipts(live).length, 1, 'the rung is judged from his final fragment, not before it');
+test('task dead-air: owner words hold a result until the finalized correction', async t => {
+const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.voice.emit({ type: 'inputTranscription', text: 'A synthetic correction is beginning', finished: false }); await f.flush();
+release.resolve(); await f.flush(); t.mock.timers.tick(8_000); await f.flush();
+assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.texts.length, 0);
+f.finalize('Use the completed synthetic correction.'); await f.answer(); assert.equal(f.voice.taskAnswers.length, 1);
 });
 
 // C-REBUILD (council verdict, standard round 2026-11-01, PERF.md finding 2): 7 of 19 owner rebuilds tore down a
@@ -186,44 +157,22 @@ const heldRebuilds = (live: DeadAir): Record<string, unknown>[] =>
 const removedRebuilds = (live: DeadAir): Record<string, unknown>[] =>
   live.receipts.filter(record => record.event === 'live_rebuild_removed');
 
-test('C-REBUILD A: a held rebuild waits for the response in flight to reach its ceiling', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
-  await live.emit(toolCall('d1'));
-  // The answer is announced as the rung lands, so the rebuild step finds it seven seconds old: the age the
-  // 09:31:32Z rebuild in 47bf2e88 tore down.
-  await drive(live, () => rungReceipts(live).length > 0, 20_000);
-  assert.equal(rungReceipts(live).length, 1, 'the rung landed, so the rebuild step is armed behind it');
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  const created = live.scheduler.now;
-  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
-  assert.equal(live.fake.sessionsOpened, 2, 'the wedged response is still rebuilt: the ceiling does not remove one');
-  const ageAtRebuild = live.scheduler.now - created;
-  assert.ok(ageAtRebuild >= MAX_IN_FLIGHT_RESPONSE_AGE_MS,
-    `the rebuilt response was ${ageAtRebuild} ms old, and the ceiling is ${MAX_IN_FLIGHT_RESPONSE_AGE_MS}`);
-  const held = heldRebuilds(live);
-  assert.ok(held.length >= 1, 'the hold is a named receipt, not an absence');
-  assert.equal(held[0]!.reason, 'response_in_flight');
-  assert.equal(held[0]!.heldCount, 1);
+test('task dead-air: the completed result waits for audio output to become quiet', async t => {
+const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.voice.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24000, audible: true }); await f.flush();
+release.resolve(); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0, 'a task answer waits for voice output to be quiet');
+f.voice.emit({ type: 'turnComplete' }); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
 });
 
-test('C-REBUILD A: a response that finishes inside the hold is never rebuilt', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('What did we decide about the bridge?'));
-  await live.emit(toolCall('d2'));
-  await drive(live, () => rungReceipts(live).length > 0, 20_000);
-  assert.equal(rungReceipts(live).length, 1, 'the rung landed, so the rebuild step is armed behind it');
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  const textsAtResponse = live.fake.texts.length;
-  // The ladder reaches its rebuild step and holds: that receipt is the proof the decision was made.
-  await drive(live, () => heldRebuilds(live).length > 0, 40_000);
-  assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder held rather than tore the answer down');
-  assert.equal(live.fake.sessionsOpened, 1, 'nothing rebuilds under a response that is still open');
-  await live.emit(audible());
-  await live.emit(portEvent({ type: 'turnComplete' }));
-  await drive(live, () => false, 30_000);
-  assert.equal(live.fake.sessionsOpened, 1, 'and the held timer never fires after the answer was heard');
-  assert.equal(live.fake.texts.length, textsAtResponse, 'nothing is injected while or after the answer is spoken');
+test('task dead-air: a heard answer cancels timeout before the held result replays', async t => {
+let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+t.mock.timers.tick(14_999); f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); await f.flush();
+t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.sessionsOpened, 1); assert.equal(calls, 1);
 });
 
 test('C-REBUILD B: the unspoken result never goes into a response that is in flight', async t => {
@@ -266,12 +215,15 @@ test('C-REBUILD C: an owner turn with no tool work and no response is never rebu
   assert.equal(removed[0]!.removedCount, 1);
 });
 
-test('C-REBUILD C: a mute after tool work still rebuilds, exactly as before', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('Look up when the synthetic bridge reopens'));
-  await live.emit(toolCall('d4'));
-  await drive(live, () => live.fake.sessionsOpened > 1, 60_000);
-  assert.equal(live.fake.sessionsOpened, 2, 'a tool turn that is owed an answer still recovers it');
+test('task dead-air: microphone mute does not disable unheard-result recovery', async t => {
+let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+f.attachment.setInputMuted(true); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+t.mock.timers.tick(15_000); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
+assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
+t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'muted unspoken-result reconnect');
+assert.match(f.voice.requests[1]!.system.text, /The synthetic task answer/); assert.equal(calls, 1);
 });
 
 // C-REBUILD (B-R7): the contract's invariant replays. One owed turn has one continuation owner: note delivery,
@@ -344,24 +296,15 @@ test('C-REBUILD invariant: a stale timer after the answer was heard does nothing
   assert.equal(live.fake.texts.length, textsAtAnswer, 'and nothing is injected after the answer was heard');
 });
 
-test('C-REBUILD invariant: owner speech during a deferral leaves one answer', async t => {
-  const live = await openCall(t);
-  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
-  await live.emit(toolCall('c5'));
-  // The deferral is the hold A keeps for a response in flight, so the response is announced young: after the rung,
-  // so the rebuild step finds it inside its ceiling. A response announced at the start is already past that ceiling
-  // by the step, and nothing is held, which is what this replay measured before it was corrected.
-  await drive(live, () => rungReceipts(live).length > 0, 20_000);
-  await live.emit(portEvent({ type: 'modelTurnStarted' }));
-  await drive(live, () => heldRebuilds(live).length > 0, 20_000);
-  assert.equal(heldRebuilds(live).length >= 1, true, 'the ladder reached its rebuild step and held for the response');
-  await live.emit(ownerFinal('and the other bridge too'));
-  await live.emit(audible());
-  await live.emit(portEvent({ type: 'turnComplete' }));
-  await drive(live, () => false, 4_000);
-  assert.equal(live.fake.sessionsOpened <= 2, true,
-    `his words inside the deferral add no rebuild of their own; rebuilds=${JSON.stringify(live.receipts.filter(record => record.event === 'live_rebuild'))} held=${JSON.stringify(heldRebuilds(live))}`);
-  assert.equal(answeredOnce(live), true, 'and the deferred turn still keeps one continuation owner');
+test('task barge-in: partial correction blocks stale delivery and finalized words get one answer', async t => {
+const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.voice.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24000, audible: true });
+f.voice.emit({ type: 'interrupted' }); f.voice.emit({ type: 'inputTranscription', text: 'Wait for the synthetic correction', finished: false });
+await f.flush(); release.resolve(); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0);
+f.bind('corrected-binding'); f.finalize('Use the final synthetic correction.');
+assert.equal((await f.answer()).delegationId, 'corrected-binding'); assert.equal(f.voice.taskAnswers.length, 1);
 });
 
 test('C-REBUILD invariant: a session replacement during a deferral carries one line, never two', async t => {

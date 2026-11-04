@@ -1,18 +1,16 @@
-import { toolOutcomeOf } from '../../live/tool-outcome.js';
+
 import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { JsonObject } from '../model/types.js';
-import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
+import type { DataClass, LiveSocketFactory, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
 import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
-import type { LiveTracePort, TraceDetailMap } from '../../trace/record.js';
-import type { ResponseStatus, ResponseTerminalReason, TraceEventKind } from '../../trace/kinds.js';
-import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
+import type { LiveTracePort } from '../../trace/record.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -30,13 +28,6 @@ import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
  *   end event (guides/live-migration, "Track audio generation and response completion").
  */
 const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
-/** Delegation backend pinned by the docs ("Start with gpt-6-luna", guides/live-delegation). */
-export const OPENAI_DELEGATION_MODEL = 'gpt-6-luna';
-/** Delegation probe 2026-10-18 (delegation-probe-1018.md): both fields are accepted by delegation.responses on
- *  gpt-live-1, and the final answer arrives 1.6 to 2.3 s sooner per tool turn than the default. `effort: none` is
- *  unreliable and `parallel_tool_calls: false` is the slowest, so the pair below is the pinned shape. */
-const DELEGATION_PARALLEL_TOOL_CALLS = true;
-const DELEGATION_REASONING_EFFORT = 'low';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
 /** The documented form of a prompt-designed custom voice (`POST /v1/audio/voices`, type prompt):
@@ -57,12 +48,8 @@ export const OPENAI_BACKEND_BREVITY = 'Telegraphic facts, at most about 120 word
 /** C-POSTTOOL switch b: a tighter brevity line for the same backend, so the response the voice model has to
  *  read is shorter. It changes the line only; no output token cap is set. */
 export const OPENAI_BACKEND_BREVITY_TIGHT = 'Telegraphic facts, at most about 60 words; the voice model elaborates.';
-/** The documented 500 token ceiling on a progress or thinking append, kept as a character bound. */
-const APPEND_CHAR_LIMIT = 2_000;
 /** S4a-R2 (d): the ledger keeps this many command ids, oldest dropped first. */
 const COMMAND_LEDGER_LIMIT = 64;
-/** Verbosity of the backend's own prose. Documented low setting, so the second leg stops writing essays. */
-const DELEGATION_TEXT_VERBOSITY = 'low';
 export function openAiBackendInstructions(procedure?: string, tight = false): string {
   const brevity = tight ? OPENAI_BACKEND_BREVITY_TIGHT : OPENAI_BACKEND_BREVITY;
   const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${brevity}`;
@@ -172,18 +159,6 @@ const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   ...liveVoiceTimerDefaults,
 });
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
-
-/** O1b-A: the provider's own terminal status, mapped onto the trace store's closed sets, never passed through. */
-const TERMINAL_STATUS: Readonly<Record<string, ResponseStatus>> = {
-  completed: 'completed', failed: 'failed', cancelled: 'cancelled', incomplete: 'interrupted', in_progress: 'streaming', queued: 'pending',
-};
-function terminalReasonOf(status: string | undefined): ResponseTerminalReason {
-  if (status === 'failed') return 'failed';
-  if (status === 'cancelled') return 'cancelled';
-  // The provider stopped it short of its end: the response is over, but not because it finished speaking.
-  if (status === 'incomplete') return 'superseded';
-  return 'completed';
-}
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 type ObjectValue = Record<string, unknown>;
 /** One event body: the union member without its sequence, so `emit` keeps each variant's own fields. */
@@ -255,47 +230,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/**
- * The provider's own word for why a backend response ended (S5): its error code when it sent one, else its
- * status. Bounded to the shape a metadata-only receipt may carry, so a provider string is never a free field.
- */
-function failureCode(status: string, error: unknown): string {
-  const code = object(error) && typeof error.code === 'string' && error.code.length ? error.code : undefined;
-  const word = code ?? status;
-  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(word) ? word : 'failed';
-}
-
 interface Settings {
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
-  clock: LiveVoiceClock | undefined; backendProcedure: string | undefined;
+  clock: LiveVoiceClock | undefined;
   firstResponseAudio: boolean; backendBrevityTight: boolean;
   /** O1b-A: the host's receipt door for this session and connection epoch. Absent, this adapter records nothing. */
   trace: LiveTracePort | undefined;
 }
-
-/** 3r D4: a delegation whose calls are all answered and whose outputs are upstream, but which has produced no
- *  delegated response within this window, is stalled. Detection only: the receipt names it, and the host's
- *  recovery is the one rescue, so this timer never sends a command of its own. */
-const DELEGATION_STALL_MS = 5_000;
 /** 3r F: what a provider error has to name before it counts as a speech cut, and the one rejection that means a
  *  response is still active (which is the retry the continuation gate is allowed). */
 const SPEECH_CUT_ERROR = /moderation|content_filter|interrupt|barge|response_cancel|cancel/i;
-const ACTIVE_RESPONSE_ERROR = /active[ _]response|response[ _](?:already[ _])?(?:active|in[ _]progress)|already[ _](?:active|in[ _]progress)/i;
-
-interface Delegation {
-  readonly id: string;
-  readonly openedAt: number;
-  /** Response ids this delegation has created, oldest first, so a continuation chain stays readable. */
-  readonly responses: string[];
-  /** Calls delegated under it that still owe their one terminal output. */
-  readonly awaiting: Set<string>;
-  /** When the last owed output went upstream and the stall timer armed from there. */
-  outputsAt: number | undefined;
-  stallTimer: unknown;
-  stalled: boolean;
-}
 
 export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private readonly settings: Settings;
@@ -323,7 +269,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       modelId: options.modelId, voice, keyReference: options.keyReference,
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits), socketFactory,
-      clock: options.clock, backendProcedure: options.backendProcedure,
+      clock: options.clock,
       firstResponseAudio: options.firstResponseAudio === true, backendBrevityTight: options.backendBrevityTight === true,
       trace: undefined,
     });
@@ -370,13 +316,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, instructions: openAiBackendInstructions(settings.backendProcedure, settings.backendBrevityTight),
-          text: { verbosity: DELEGATION_TEXT_VERBOSITY }, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
-          parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT },
-          // C-POSTTOOL switch a: the delegation names audio output, so the delegated response speaks instead of
-          // writing text. It cannot ride on `response.create`: the recorded 10.5.1 refusal names an extra create
-          // field as unknown_parameter param=response, and the wire fixture pins creates to type and event_id.
-          ...(settings.firstResponseAudio ? { audio: { output: { voice: voicePayload(settings.voice) } } } : {}) } },
+        delegation: { type: 'client' },
       },
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
@@ -441,6 +381,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
 }
 
 class Session implements LiveVoiceSession {
+  private latestDelegationId: string | undefined;
+  private readonly commentaryCommands = new Map<string, string>();
   private readonly readiness = deferred<void>();
   private readonly completion = deferred<LiveVoiceOutcome>();
   readonly ready = this.readiness.promise;
@@ -500,7 +442,6 @@ class Session implements LiveVoiceSession {
   private handshakeStart = 0;
   private upstreamStallQueued = false;
   private sequence = 0;
-  private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
   private queueBytes = 0;
   private waiter: ((result: IteratorResult<LiveVoiceEvent>) => void) | undefined;
@@ -511,9 +452,6 @@ class Session implements LiveVoiceSession {
   private cleaned = false;
   private creatingSocket = false;
   private readonly upsampler = new Pcm16Upsampler();
-  private pendingCalls: LiveToolCall[] = [];
-  /** Answers already received for the pending calls of the current delegated turn, by call id. */
-  private readonly answeredCalls = new Map<string, JsonObject>();
   /** Generation counter: bumped by every interruption and every new backend response. */
   private generation = 0;
   /** The generation the owner cut off; its remaining audio deltas are dropped until a new response starts. */
@@ -533,101 +471,11 @@ class Session implements LiveVoiceSession {
   private playbackUntil = 0;
   private lastForwardedAt = 0;
   private audioSinceCompletion = false;
-  /** Text terminal completion is safe only when this session has no microphone stream. */
-  private inputAudioSeen = false;
-  private typedTurn = false;
-  private readonly typedFinals: string[] = [];
-  private typedFlushQueued = false;
   private idleQuiet: unknown;
-  /** True between a delegated `response.created` and its `response.done`. */
-  private delegatedOutstanding = false;
-  /** Response ids already opened and already ended: a repeated lifecycle event is the same response, not a new one. */
-  private readonly openedResponses = new Set<string>();
-  private readonly endedResponses = new Set<string>();
   /** The response this turn is answering, for the receipts that name it (S5). */
   private currentResponse: string | undefined;
-  /** Calls whose `function_call_output` is already on the wire: no call is ever answered twice (3r B). */
-  private readonly outputSent = new Set<string>();
-  /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
-   *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
-  private continuationOwed = false;
-  /** C-POSTTOOL switch a as the session is running it: off from the start unless the provider config asks for
-   *  it, and off for the rest of the session once the provider refuses the field. */
-  private firstResponseAudio: boolean;
-  /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
-  private continuationsSent = 0;
-  /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
-  private continuationCalls = 0;
-  /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
-  private batchAnswers = 0;
-  private answerNow = false;
-  private lastToolOutputAt: number | undefined;
-  private researchCalls = 0;
-  private researchAdmissions = new Set<string>();
-  private toolRounds = 0;
-  private silentRescueUsed = false;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
-  private noItemTimer: unknown;
-
-  /** LAT-1022: every response, the first one included, reports its first output-item envelope and its first
-   *  audible PCM against the `response.create` that asked for it, so a first response is decomposed the way a
-   *  continuation already was. An audio-first response delivers the PCM before the item envelope, so both
-   *  instants are written as measured and neither is clamped: the pair is a real ordering, never an assertion. */
-  private firstResponseTiming: { kind: 'first' | 'continuation'; createdAt: number; responseKey?: string; firstItemAt: number | null; firstAudioAt: number | null } | undefined;
-  /** LAT-1022: outputs written and not yet acknowledged, so the wait between the write and the provider taking
-   *  it is measured instead of inferred from the next response. Keyed by the call the output answers. */
-  private readonly outputAckPending = new Map<string, number>();
-
-  private clearNoItemTimer(): void {
-    if (this.noItemTimer !== undefined) this.clock.clearTimer(this.noItemTimer);
-    this.noItemTimer = undefined;
-  }
-
-  private logContinuationTiming(): void {
-    const timing = this.continuationTiming;
-    if (!timing) return;
-    hostLogEvent({ event: 'live_continuation_timing', ...timing,
-      class: timing.toolCall ? 'd-chain' : timing.nudged ? 'b' : timing.firstAudioAt !== null ? 'c' : 'b-second' });
-  }
-
-  /** LAT-1022: open the decomposition for the response this `response.create` asks for, closing the last one. */
-  private openResponseTiming(): void {
-    this.logResponseFirstAudio();
-    this.firstResponseTiming = { kind: this.continuationsSent === 0 ? 'first' : 'continuation', createdAt: this.clock.now(), firstItemAt: null, firstAudioAt: null };
-  }
-
-  /** LAT-1022: the first of a kind only, so a later item or frame never moves the segment it measured. */
-  private noteResponseTiming(field: 'firstItemAt' | 'firstAudioAt'): void {
-    const timing = this.firstResponseTiming;
-    if (timing && timing[field] === null) timing[field] = this.clock.now();
-  }
-
-  /** LAT-1022: one line per response that produced audio, written when it ends: response key, the item and
-   *  audio instants, and whether this was the turn's first response or a continuation. Nothing else. */
-  private logResponseFirstAudio(): void {
-    const timing = this.firstResponseTiming;
-    this.firstResponseTiming = undefined;
-    if (!timing || timing.firstAudioAt === null) return;
-    const responseKey = timing.responseKey ?? (this.currentResponse === undefined ? undefined : this.responseKeyOf(this.currentResponse));
-    if (responseKey === undefined) return;
-    hostLogEvent({ event: 'response_first_audio', responseKey, createdAt: timing.createdAt,
-      ...(timing.firstItemAt === null ? {} : { firstItemAt: timing.firstItemAt }), firstAudioAt: timing.firstAudioAt, kind: timing.kind });
-  }
-
-  private lastAnswerNow = false;
-  /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
-  private lastContinuationCalls = 0;
-  /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
-  private continuationRejected = false;
-  private continuationRetries = 0;
-  /** The outcome of the last tool answer, returned again for a duplicate completion the adapter ignores. */
-  private continuationOutcome: LiveToolSendOutcome = 'failed';
-  /** Which delegation carried a call id, so an output can be attributed to it (3r D4). */
-  private readonly callDelegation = new Map<string, string>();
-  /** Open delegations from `session.delegation.created`, by provider delegation id (3r D4). */
-  private readonly delegations = new Map<string, Delegation>();
   private commandSequence = 0;
-  private validationRefused = false;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
   /** Audible silence of the current speaking stretch: its timer and whether its receipt was already sent. */
@@ -642,14 +490,6 @@ class Session implements LiveVoiceSession {
   private heldAudibleBytes = 0;
   private headStartTimer: unknown;
   private readonly clock: LiveVoiceClock;
-  /** O1b-A: the host-minted key of each provider response, so a receipt joins a response to its calls. */
-  private readonly responseKeys = new Map<string, string>();
-  /** C-REBUILD: the responses this session created and has not terminated yet, so a teardown settles each one. */
-  private readonly openResponses = new Set<string>();
-  private responseKeySeq = 0;
-  private readonly observedResponses = new Set<string>();
-  /** O1b-A: when each call was delegated and by which response, for the executed/written receipts' ms. */
-  private readonly callOrigins = new Map<string, { at: number; responseKey?: string }>();
   private readonly diagnostic = {
     audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0,
@@ -667,10 +507,9 @@ class Session implements LiveVoiceSession {
 
   constructor(private readonly settings: Settings, private readonly start: string,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
-    private readonly answerOnReady = false, private readonly openerOnReady = false) {
+    _answerOnReady = false, _openerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
-    this.firstResponseAudio = settings.firstResponseAudio;
     let consumed = false;
     this.events = { [Symbol.asyncIterator]: () => {
       if (consumed) fail('invalid_request');
@@ -717,7 +556,7 @@ class Session implements LiveVoiceSession {
     catch { if (this.checkpoint()) this.finish('credential_unavailable'); return; }
     if (!this.checkpoint()) return;
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) { this.finish('credential_unavailable'); return; }
-    this.secret = key;
+
     step('credential_resolved');
     this.handshake = this.timer(this.settings.limits.handshakeMs, 'handshake_timeout');
     try {
@@ -868,13 +707,13 @@ class Session implements LiveVoiceSession {
       case 'session.output_audio.delta': return this.outputAudio(message);
       case 'session.input_transcript.delta': return this.inputTranscript(message);
       case 'session.output_transcript.delta': return this.outputTranscript(message);
-      case 'response.event': return this.delegated(message);
+
       // 3r D4: the provider opening a delegation. Unread until now, so it landed in the unknown-frame counter.
       case 'session.delegation.created': return this.delegationCreated(message);
       // #438: the provider acknowledges an append in the past tense; an unknown frame is a fact of its own and
       // these are known, so they are classified instead of counted as one.
-      case 'session.thinking.appended': return this.appendAcknowledged('thinking');
-      case 'session.commentary.appended': return this.appendAcknowledged('commentary');
+
+      case 'session.commentary.appended': return this.appendAcknowledged('commentary', message);
       case 'session.usage.updated': return this.touch();
       case 'session.closed': return this.sessionClosed(message);
       case 'error': return this.providerError(message);
@@ -895,9 +734,6 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
-    if (this.answerOnReady || this.openerOnReady) this.openResponseTiming();
-    if (this.answerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
-    else if (this.openerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
 
   private audioDelta(message: ObjectValue): Uint8Array | undefined {
@@ -952,11 +788,8 @@ class Session implements LiveVoiceSession {
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
-      this.noteResponseTiming('firstAudioAt');
       if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
         this.continuationTiming.firstAudioAt = this.clock.now();
-        this.clearNoItemTimer();
-        this.logContinuationTiming();
       }
       this.audioSinceCompletion = true;
       this.silenceSent = false;
@@ -1030,12 +863,6 @@ class Session implements LiveVoiceSession {
   private noteInput(): void {
     // Reset on the first real owner fragment, not its quiet tail: a fast provider may start before that tail.
     if (this.episodeQuiet === undefined) {
-      this.toolRounds = 0;
-      this.researchCalls = 0;
-      this.lastAnswerNow = false;
-      this.researchAdmissions.clear();
-      this.silentRescueUsed = false;
-      this.clearNoItemTimer();
       this.continuationTiming = undefined;
     }
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
@@ -1129,7 +956,7 @@ class Session implements LiveVoiceSession {
   private settleTurn(): void {
     if (this.terminal) return;
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
-    if (this.holding || this.delegatedOutstanding || this.pendingCalls.length > 0 || !this.audioSinceCompletion) return;
+    if (this.holding || !this.audioSinceCompletion) return;
     const now = this.clock.now();
     const wait = Math.max(TURN_IDLE_QUIET_MS - (now - this.lastForwardedAt), Math.ceil(this.playbackUntil - now), 0);
     if (wait <= 0) { this.completeTurn(); return; }
@@ -1137,7 +964,6 @@ class Session implements LiveVoiceSession {
   }
 
   private completeTurn(): void {
-    this.typedTurn = false;
     const idleMs = Math.max(0, Math.round(this.clock.now() - this.lastForwardedAt));
     this.audioSinceCompletion = false;
     this.stretchOpen = false;
@@ -1172,379 +998,36 @@ class Session implements LiveVoiceSession {
     this.touch();
   }
 
-  /** A `response.event` envelope forwards one Responses backend event (`event` carries the nested type). */
-  private delegated(message: ObjectValue): void {
-    const event = message.event;
-    if (!object(event) || typeof event.type !== 'string') fail('protocol_error');
-    if (event.type.startsWith('response.output_item.')) this.noteResponseTiming('firstItemAt');
-    if (event.type.startsWith('response.output_item.') && this.continuationTiming) {
-      this.continuationTiming.firstItemAt ??= this.clock.now();
-      if (object(event.item) && event.item.type === 'function_call') this.continuationTiming.toolCall = true;
-      this.clearNoItemTimer();
-    }
-    switch (event.type) {
-      case 'response.created': {
-        const responseId = object(event.response) && typeof event.response.id === 'string' && event.response.id.length ? event.response.id : undefined;
-        if (responseId !== undefined) this.currentResponse = responseId;
-        // A repeated `response.created` is the same response: it changes no generation and no completion account.
-        if (responseId !== undefined && this.openedResponses.has(responseId)) { this.touch(); return; }
-        if (responseId !== undefined) this.openedResponses.add(responseId);
-        // O1b-A: the response's own receipt, minted before any output can name it.
-        // LAT-1022: a response the host never asked for has no `response.create` of its own, so its decomposition
-        // opens here instead: the provider's own start is that response's beginning.
-        if (this.firstResponseTiming === undefined) this.openResponseTiming();
-        // LAT-1022: the provider opening the response that carries these outputs IS the acknowledgement of them,
-        // so every output written for this continuation gets its own segment, one call and one count.
-        for (const [callKey, writtenAt] of this.outputAckPending) {
-          hostLogEvent({ event: 'provider_output_ack', callKey, ms: Math.max(0, this.clock.now() - writtenAt) });
-        }
-        this.outputAckPending.clear();
-        if (this.firstResponseTiming !== undefined && this.firstResponseTiming.responseKey === undefined) {
-          this.firstResponseTiming.responseKey = this.responseKeyOf(responseId);
-        }
-        this.openResponses.add(this.responseKeyOf(responseId));
-        this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
-          createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
-        });
-        this.clearInputEpisode();
-        this.endTurnTranscripts('app_model_start');
-        this.delegatedOutstanding = true;
-        const timing = this.continuationTiming;
-        if (timing && timing.createdAt === null) {
-          timing.createdAt = this.clock.now();
-          this.clearNoItemTimer();
-          this.noItemTimer = this.clock.setTimer(5_000, () => {
-            this.noItemTimer = undefined;
-            if (this.terminal || this.continuationTiming !== timing || !this.delegatedOutstanding || timing.firstItemAt !== null || timing.firstAudioAt !== null) return;
-            timing.nudged = true;
-            this.emit({ type: 'interactionStatus', value: 'post_tool_no_output' });
-            this.logContinuationTiming();
-          });
-        }
-        this.generation += 1;
-        // 3r D10: the completion account belongs to the response that is answering now, so the audible line of the
-        // pre-tool turn can never complete this one before it has spoken.
-        this.audioSinceCompletion = false;
-        this.responseCreated(event, message);
-        this.emit({ type: 'modelTurnStarted', ...this.providerIds() });
-        this.touch();
-        return;
-      }
-      case 'response.output_item.done': return this.outputItem(event, message);
-      case 'response.done':
-      case 'response.completed':
-      // 3r E (ruling S1-R1): a response that ends any other way is terminal too. Failed, incomplete and cancelled
-      // are the provider's own words for "this response is over and no more of it will come".
-      case 'response.failed':
-      case 'response.incomplete':
-      case 'response.cancelled': {
-        // LAT-1022: the response's own item-and-audio decomposition travels with its end, so both instants are
-        // the ones it really had and one line per response is written however it ended.
-        this.logResponseFirstAudio();
-        const response = object(event.response) ? event.response : undefined;
-        const responseId = typeof response?.id === 'string' && response.id.length ? response.id : undefined;
-        // A duplicated or out-of-order terminal event is the same end: it neither closes an obligation twice nor
-        // moves the presentation (S5).
-        if (responseId !== undefined) {
-          // A repeat of the same end closes nothing twice and moves no presentation, but an owed continuation
-          // still gets its one chance through the gate (3r A retry, 3r E resume): the gate refuses a partial batch.
-          if (this.endedResponses.has(responseId)) { this.resumeContinuation(); this.touch(); return; }
-          this.endedResponses.add(responseId);
-        }
-        const usage = response?.usage;
-        if (object(usage) && typeof usage.total_tokens === 'number' && Number.isFinite(usage.total_tokens) && usage.total_tokens >= 0) {
-          this.emit({ type: 'contextUsage', totalTokens: usage.total_tokens,
-            ...(typeof usage.input_tokens === 'number' ? { promptTokens: usage.input_tokens } : {}),
-            ...(typeof usage.output_tokens === 'number' ? { responseTokens: usage.output_tokens } : {}) });
-        }
-        // S5: a backend response that ends failed, incomplete or errored still ends the response, so a batch it
-        // answered is flushed and an owed continuation is resumed (3r E). A failure that leaves nothing to say is
-        // the turn's failure: one typed disposition with the provider's own code, never a silent stall.
-        const status = typeof response?.status === 'string' ? response.status : event.type.replace('response.', '');
-        if (status !== 'completed' && status !== 'done') {
-          const createsBefore = this.continuationsSent;
-          this.endResponse(message);
-          if (this.continuationsSent === createsBefore) this.emit({ type: 'turnFailed', code: failureCode(status, response?.error) });
-          this.touch();
-          return;
-        }
-        this.endResponse(message, true);
-        this.touch();
-        return;
-      }
-      default: this.touch(); return;
-    }
-  }
-
-  /**
-   * 3r E (ruling S1-R1): one place where a delegated response stops being active, however it stopped. It clears the
-   * outstanding flag so the turn can still complete, closes the delegation, and lets an owed continuation through the
-   * gate, so a result deferred behind this response is never left unresumable.
-   */
-  private endResponse(message: ObjectValue | undefined, completed = false): void {
-    this.clearNoItemTimer();
-    const timing = this.continuationTiming;
-    // A short answer may finish upstream before its head-start buffer reaches playback.
-    // Keep its receipt until emitOutput observes the first audible frame.
-    if (this.heldAudibleBytes === 0) {
-      this.logContinuationTiming();
-      this.continuationTiming = undefined;
-    }
-    this.delegatedOutstanding = false;
-    if (!this.typedTurn && completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
-      this.silentRescueUsed = true;
-      // F4: the silent rescue asks for one more response, never a tool lock. On 10-30 this flag became
-      // `lastAnswerNow` and the corrected retry after an invalid_arguments refusal was refused as
-      // `research_cap_reached`; the real research cap below keeps that code for itself.
-      this.continuationOwed = true;
-    }
-    // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here
-    // too, with the provider's own status and the reason this adapter read from it.
-    const responseKey = this.currentResponseKey;
-    if (responseKey !== undefined) {
-      this.openResponses.delete(responseKey);
-      const status = typeof message?.['status'] === 'string' ? message['status'] : undefined;
-      this.receipt('response.terminal', { responseKey }, {
-        terminalAt: this.clock.now(), status: TERMINAL_STATUS[status ?? ''] ?? 'completed', terminalReason: terminalReasonOf(status),
-      });
-    }
-    if (message) this.responseDone(message);
-    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
-    // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
-    if (completed && this.typedTurn && !this.inputAudioSeen && !this.audioSinceCompletion && !this.holding && this.pendingCalls.length === 0 && !this.continuationOwed) {
-      this.typedTurn = false;
-      this.completeTurn();
-    } else this.settleTurn();
-    this.writeAnswered();
-    this.resumeContinuation();
-  }
-
   private endTurnTranscripts(finalOrigin: 'app_quiet' | 'app_model_start' = 'app_quiet'): void {
     if (!this.userTranscriptOpen) return;
     this.userTranscriptOpen = false;
     this.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin });
   }
-
-  /** A delegated function call: `{call_id, name, arguments}` on the nested output item. */
-  private outputItem(event: ObjectValue, message: ObjectValue): void {
-    // O1b-A: the first output of a response is the receipt that the provider really is answering. One per
-    // response, before the type check, so a spoken answer and a delegated one are both observed.
-    const responseKey = this.currentResponseKey;
-    if (responseKey !== undefined && !this.observedResponses.has(responseKey)) {
-      this.observedResponses.add(responseKey);
-      this.receipt('response.observed', { responseKey }, {
-        observedAt: this.clock.now(), ...(this.currentResponse === undefined ? {} : { providerResponseId: this.currentResponse }),
-      });
-    }
-    const item = event.item;
-    if (!object(item)) fail('protocol_error');
-    if (typeof item.id === 'string' && PROVIDER_ID.test(item.id)) this.lastItemId = item.id;
-    if (item.type !== 'function_call') { this.touch(); return; }
-    let args: JsonObject;
-    try { const parsed: unknown = JSON.parse(typeof item.arguments === 'string' && item.arguments.length ? item.arguments : '{}'); args = object(parsed) ? parsed : {}; }
-    catch { fail('protocol_error'); }
-    const call: LiveToolCall = { id: this.text(item.call_id), name: this.text(item.name), args };
-    // 3r A: a repeated call event is the same call, not a second one, and it is answered once.
-    if (this.outputSent.has(call.id) || this.pendingCalls.some(pending => pending.id === call.id)) { this.touch(); return; }
-    this.pendingCalls = [...this.pendingCalls, call];
-    this.noteCallDelegation(call.id, message);
-    // O1b-A: the call's own receipt, with the provider call id and the size of its arguments, never their text.
-    this.callOrigins.set(call.id, { at: this.clock.now(), ...(responseKey === undefined ? {} : { responseKey }) });
-    this.receipt('call.intent', this.callIds(call.id), {
-      name: call.name, argsChars: typeof item.arguments === 'string' ? item.arguments.length : 0,
-      intentAt: this.clock.now(), providerCallId: call.id,
-    });
-    // SI-R3: admission is per owner question, including parallel calls in one provider response. F4: only the
-    // research cap refuses a call, and it refuses research alone, so a non-research tool is never answered with
-    // `research_cap_reached` and a corrected retry is always admitted.
-    if (call.name === 'research') {
-      if (this.lastAnswerNow || this.researchCalls >= 6) {
-        this.answerNow = true;
-        this.sendToolResponse({ responses: [{ id: call.id, name: call.name, response: {
-          status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question; answer now from the results already available. Do not call more tools.',
-        } }] });
-        this.touch();
-        return;
-      }
-      if (call.name === 'research') this.researchCalls += 1;
-      this.researchAdmissions.add(call.id);
-    }
-    this.emit({ type: 'toolCall', calls: [call] });
-    this.touch();
-  }
-
-  /** Attribute a call to the delegation whose envelope carried it, and let that delegation's chain see it (D4). */
-  private noteCallDelegation(callId: string, message: ObjectValue): void {
-    const delegationId = typeof message.delegation_id === 'string' && message.delegation_id.length ? message.delegation_id : undefined;
-    if (delegationId === undefined) return;
-    this.callDelegation.set(callId, delegationId);
-    this.delegations.get(delegationId)?.awaiting.add(callId);
-  }
-
-  /** `session.delegation.created`: one back-end delegation, its first response id and its stream offset (3r D4). */
   private delegationCreated(message: ObjectValue): void {
-    const inner = object(message.delegation) ? message.delegation : message;
-    const id = typeof inner.id === 'string' && inner.id.length ? inner.id : undefined;
-    if (id === undefined) { this.touch(); return; }
-    // A repeated `session.delegation.created` is the same delegation, not a protocol fault (S5): rebuilding a
-    // healthy session over a duplicated frame is what turned one duplicate into a lost call.
-    if (this.delegations.has(id)) { this.touch(); return; }
-    const offsetMs = typeof inner.offset_ms === 'number' && Number.isFinite(inner.offset_ms) && inner.offset_ms >= 0 ? Math.round(inner.offset_ms) : 0;
-    // S1-R1: the frame names the response this delegation opens with, so the chain starts here and not at the first
-    // nested `response.created`.
-    const responseId = typeof inner.response_id === 'string' && inner.response_id.length ? inner.response_id : undefined;
-    this.delegations.set(id, { id, openedAt: this.clock.now(), responses: responseId ? [responseId] : [], awaiting: new Set(), outputsAt: undefined, stallTimer: undefined, stalled: false });
-    hostLogEvent({ event: 'delegation_open', ms: offsetMs });
-    // O1b-A (D12-1): one receipt per delegated response, so a delegation is never only an end-of-session count.
-    // The key is minted here and reused by that response's own `response.created`, so the two rows join.
-    if (responseId !== undefined) {
-      this.receipt('delegation.created', { responseKey: this.responseKeyOf(responseId) }, {
-        createdAt: this.clock.now(), providerResponseId: responseId, callCount: 0,
-      });
-    }
-    this.touch();
+    const delegation = object(message.delegation) ? message.delegation : message;
+    if (typeof delegation.id !== 'string' || !delegation.id.length) { this.touch(); return; }
+    this.latestDelegationId = delegation.id;
+    this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
   }
-
-  /** A delegated `response.created`: it names the response this delegation's chain continues with (D4, D10). */
-  private responseCreated(event: ObjectValue, message: ObjectValue): void {
-    const delegation = this.delegationOf(message);
-    if (!delegation) return;
-    const response = object(event.response) && typeof event.response.id === 'string' && event.response.id.length ? event.response.id : undefined;
-    if (response !== undefined && !delegation.responses.includes(response)) delegation.responses.push(response);
-    // The continuation this delegation was waiting for has arrived, so its stall window is over.
-    this.clearStall(delegation);
-  }
-
-  /** A delegated terminal `response.done`: a delegation with no call still owing an output is closed (3r D4). */
-  private responseDone(message: ObjectValue): void {
-    const delegation = this.delegationOf(message);
-    if (!delegation || delegation.awaiting.size) return;
-    this.clearStall(delegation);
-    this.delegations.delete(delegation.id);
-    hostLogEvent({ event: 'delegation_closed', ms: Math.round(this.clock.now() - delegation.openedAt), responses: delegation.responses.length });
-  }
-
-  private delegationOf(message: ObjectValue): Delegation | undefined {
-    return typeof message.delegation_id === 'string' ? this.delegations.get(message.delegation_id) : undefined;
-  }
-
-  private clearStall(delegation: Delegation): void {
-    if (delegation.stallTimer !== undefined) { this.clock.clearTimer(delegation.stallTimer); delegation.stallTimer = undefined; }
-  }
-
-  /** Every call of a delegation now owes nothing, so its window to produce a response starts here (3r D4). */
-  private noteDelegationOutputs(callIds: readonly string[]): void {
-    const now = this.clock.now();
-    for (const callId of callIds) {
-      const key = this.callDelegation.get(callId);
-      const delegation = key === undefined ? undefined : this.delegations.get(key);
-      if (!delegation) continue;
-      delegation.awaiting.delete(callId);
-      if (delegation.awaiting.size) continue;
-      delegation.outputsAt = now;
-      if (delegation.stalled) continue;
-      this.clearStall(delegation);
-      delegation.stallTimer = this.clock.setTimer(DELEGATION_STALL_MS, () => { delegation.stallTimer = undefined; this.delegationStalled(delegation); });
-    }
-  }
-
-  /** Detection only (ruling 3r-C): the receipt names the stall and the host's recovery is the only rescue. */
-  private delegationStalled(delegation: Delegation): void {
-    if (this.terminal || delegation.stalled || this.delegations.get(delegation.id) !== delegation) return;
-    delegation.stalled = true;
-    hostLogEvent({ event: 'gptlive_delegation_stalled', ms: delegation.outputsAt === undefined ? DELEGATION_STALL_MS : Math.round(this.clock.now() - delegation.outputsAt) });
-  }
-
-  private text(value: unknown): string {
-    if (typeof value !== 'string' || !value.length || (this.secret && value.includes(this.secret))) fail('protocol_error');
-    return value;
-  }
-
   private providerError(message: ObjectValue): void {
-    // Errors can cut assistant audio without ending the session (docs, "Handle moderation"); the
-    // session's end arrives as session.closed, so this only stops the current generation.
     const error = object(message.error) ? message.error : {};
     const type = typeof error.type === 'string' ? error.type : 'unknown';
-    const errorCode = typeof error.code === 'string' && error.code.length ? error.code : 'none';
-    const param = typeof error.param === 'string' && error.param.length ? error.param : 'none';
+    const errorCode = typeof error.code === 'string' ? error.code : 'none';
+    const param = typeof error.param === 'string' ? error.param : 'none';
     hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param });
-    // C-POSTTOOL switch a: a provider that names the delegated audio output as unsupported is the one answer
-    // that decides the switch for this session. The refusal is logged once and the switch goes off, so no later
-    // request in this session repeats the field; the probe reports the refusal and the master decides.
-    if (this.firstResponseAudio && /audio|modalities/i.test(param === 'none' ? `${type} ${errorCode}` : param)) {
-      this.firstResponseAudio = false;
-      hostLogEvent({ event: 'first_response_audio_unsupported', type, code: errorCode, param });
+    const commandId = typeof error.client_event_id === 'string' ? error.client_event_id : undefined;
+    if (commandId && this.commentaryCommands.has(commandId)) {
+      this.commentaryCommands.delete(commandId); this.emit({ type: 'commentaryRejected', commandId });
+      hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: 'cmt' }); this.touch(); return;
     }
-    // S4a-R2 (c): the disposition comes from the code or type map, and the client event id is read from the
-    // ledger only to name which command it was.
     const disposition = dispositionOf(type, errorCode);
-    const clientEventId = typeof error.client_event_id === 'string' && error.client_event_id.length ? error.client_event_id : undefined;
-    const command = clientEventId === undefined ? undefined : this.commands.get(clientEventId);
-    // 3r F: a rejection that only says a response is already active is the one retry the continuation gate allows
-    // (3r A). It is read before the disposition, because its own type is `invalid_request_error`, which the map
-    // would otherwise take for a rejected command.
-    const retry = ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`);
-    if (disposition === 'command_rejected' && !retry) {
-      // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
-      hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
-      // #677: a continuation refused because a call still owes its output is still owed: the next output write or
-      // terminal event sends it, so the turn is answered instead of falling to the dead-air rebuild.
-      if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
-      else if (command?.kind === 'cont') {
-        if (this.continuationRetries < 1) this.continueTurn(0, 1);
-        else this.failContinuation();
-      }
-      this.touch();
-      return;
-    }
-    if (disposition === 'validation_failed') {
-      // The backend refused the delegation config itself: one loud receipt naming the field, and the live session
-      // keeps running, because the voice path is unaffected by a refused backend setting.
-      if (!this.validationRefused) { this.validationRefused = true; hostLogEvent({ event: 'responses_validation_failed', param }); }
-      this.touch();
-      return;
-    }
-    if (disposition === 'unknown') {
-      // S4a-R2 (c): an unclassified provider error is a diagnostic trap, never an interruption and never a retry.
-      hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
-      this.failOpenResponse();
-      this.endResponse(undefined);
-      this.touch();
-      return;
-    }
-    // 3r F: an error is not a speech cut unless what it names says so. A rejection that only says a response is
-    // already active is the one retry the continuation gate allows (3r A).
-    if (ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`)) {
-      if (this.continuationRetries >= 1) { this.failContinuation(); this.touch(); return; }
-      this.continuationOwed = true;
-      this.continuationRejected = true;
-      // The retry answers the same batch the rejected create answered (S1-R1).
-      this.continuationCalls = Math.max(this.continuationCalls, this.lastContinuationCalls);
-      this.touch();
-      return;
-    }
-    if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) && this.generation !== this.muted) {
-      this.clearInputEpisode();
-      this.generation += 1;
-      this.muted = this.generation;
-      // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
-      this.playbackUntil = this.clock.now();
-      this.discardHeadStart();
-      this.audioSinceCompletion = false;
+    if (disposition === 'command_rejected') { hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: 'other' }); this.touch(); return; }
+    if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(type + ' ' + errorCode)) && this.generation !== this.muted) {
+      this.clearInputEpisode(); this.generation += 1; this.muted = this.generation;
+      this.playbackUntil = this.clock.now(); this.discardHeadStart(); this.audioSinceCompletion = false;
       this.emit({ type: 'interrupted' });
-    }
-    // 3r E (ruling S1-R1): an error ends the response that earned it, whether or not it cut the audio (3r F decides
-    // the cut), so the wait for its next frame does not outlive it and an owed continuation is resumed.
-    this.failOpenResponse();
-    this.endResponse(undefined);
+    } else hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
     this.touch();
-  }
-
-  /** #538: a generic provider error on an open response is a typed failed turn, so the voice can name what happened
-   *  instead of waiting out the host watchdog in silence. */
-  private failOpenResponse(): void {
-    if (this.currentResponse === undefined) return;
-    this.emit({ type: 'turnFailed', code: 'provider_error' });
   }
 
   private sessionClosed(message: ObjectValue): void {
@@ -1611,156 +1094,7 @@ class Session implements LiveVoiceSession {
       return false;
     }
   }
-
-  /**
-   * The host answers each delegated call on its own, so an answer is recorded and the turn continues only once
-   * every call of the delegated response has one: `function_call_output` per call_id, then one `response.create`.
-   * The return says what reached the backend: a socket write is not provider acceptance (3r amendment A).
-   */
-  sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome {
-    // A retired session takes no answer: its calls are gone and their outputs never enter a later one (3r B).
-    if (this.draining || this.terminal) return 'failed';
-    if (!this.isReady) fail('not_ready');
-    if (!object(input) || !Array.isArray(input.responses) || !input.responses.length
-      || new Set(input.responses.map(response => (object(response) ? response.id : undefined))).size !== input.responses.length
-      || input.responses.some(response => !object(response) || !object(response.response) || typeof response.id !== 'string')) fail('invalid_request');
-    // A call id this turn never delegated, or one whose output is already on the wire, is not a new answer: the
-    // first is a protocol fault, the second a duplicate completion the adapter ignores (3r A, B).
-    const fresh = input.responses.filter(response => !this.outputSent.has(response.id));
-    if (fresh.some(response => !this.pendingCalls.some(call => call.id === response.id && call.name === response.name))) fail('protocol_error');
-    for (const { name, response } of fresh) {
-      if (name === 'research' && response['status'] === 'blocked'
-        && ['turn_spent', 'answer_already_given', 'no_turn_since_result'].includes(String(response['reason']))) this.answerNow = true;
-    }
-    for (const { id, response } of fresh) {
-      if (this.answeredCalls.has(id)) fail('protocol_error');
-      // Structural refusals never ran research. Release their admission slot without changing trace truth.
-      if (response['state'] === 'refused' && this.researchAdmissions.delete(id)) this.researchCalls -= 1;
-      this.answeredCalls.set(id, response);
-    }
-    if (!fresh.length) return this.continuationOutcome;
-    return this.writeAnswered();
-  }
-
-  /**
-   * The delegation guide's order (S5): each answered call's output is written the moment it is ready, and exactly
-   * one `response.create` follows once every call of the backend response has its output. A create never answers a
-   * partial batch, because a call emitted after it would have no continuation left to carry it.
-   */
-  private writeAnswered(): LiveToolSendOutcome {
-    if (!this.pendingCalls.length) return this.continuationOutcome;
-    const written: string[] = [];
-    for (const call of this.pendingCalls) {
-      if (!this.answeredCalls.has(call.id)) continue;
-      const response = this.answeredCalls.get(call.id)!;
-      // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
-      // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
-      const outputId = `tool_out_${call.id}`;
-      this.recordCommand(outputId, 'tool_out');
-      // O1b-A: the result the host produced is executed and prepared here, before the wire sees it.
-      const preparedAt = this.clock.now();
-      if (response['reason'] !== 'research_cap_reached') this.receipt('call.executed', this.callIds(call.id), { executedAt: preparedAt });
-      this.receipt('call.output_prepared', this.callIds(call.id), { outputPreparedAt: preparedAt });
-      if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
-        this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
-        this.receipt('call.output_written', this.callIds(call.id), {
-          outputWrittenAt: this.clock.now(), ...toolOutcomeOf(response), delivered: false, ms: this.clock.now() - (this.callOrigins.get(call.id)?.at ?? this.clock.now()),
-          resultChars: JSON.stringify(response).length,
-        });
-        return this.continuationOutcome = 'failed';
-      }
-      const writtenAt = this.clock.now();
-      this.lastToolOutputAt = writtenAt;
-      this.receipt('call.output_written', this.callIds(call.id), {
-        // C-RESEARCH-CONTRACT T-04: a refused argument shape and an admission block are their own outcomes, so a
-        // blocked call is never read back as one that answered.
-        outputWrittenAt: writtenAt, ...toolOutcomeOf(response), delivered: true, ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
-        resultChars: JSON.stringify(response).length,
-      });
-      written.push(call.id);
-      this.outputSent.add(call.id);
-      this.outputAckPending.set(call.id, writtenAt);
-    }
-    this.pendingCalls = this.pendingCalls.filter(call => !written.includes(call.id));
-    for (const id of written) this.answeredCalls.delete(id);
-    if (written.length) this.noteDelegationOutputs(written);
-    // A call of this backend response still has no answer: its output is owed, so no continuation yet.
-    // The one continuation answers every output of this backend response, however many rounds delivered them,
-    // so the receipt's count is the batch, not the last chunk (S1-R1).
-    this.batchAnswers += written.length;
-    if (this.pendingCalls.length > 0) {
-      this.deferralReceipt();
-      // O1b-A: a response.create skipped because another call of this batch still owes its output is a decision
-      // with a reason, recorded once per answer batch rather than left as an absence (D12-2).
-      this.continuationReceipt('deferred', 'awaiting_calls');
-      return this.continuationOutcome = 'deferred';
-    }
-    return this.continueTurn(this.batchAnswers, 0);
-  }
-
-  /** The one gate a continuation passes (3r A): it is owed, and only a terminal event or a rejection resumes it. */
-  private continueTurn(calls: number, attempt: 0 | 1): LiveToolSendOutcome {
-    // S1-R1: the answered batch a continuation carries survives the wait, so the receipt of a resumed or retried
-    // create still says how large the batch it answers was, instead of a bare zero.
-    this.continuationCalls = Math.max(this.continuationCalls, calls);
-    if (this.delegatedOutstanding || this.pendingCalls.length > 0) {
-      // The originating response is still emitting calls, or a call of this batch has no output yet, so a create
-      // now would answer a partial batch: defer to the emitted output of the last open call (S5).
-      this.continuationOwed = true;
-      this.deferralReceipt();
-      // O1b-A: the skip is a decision with a reason, not silence. An answer batch that still owes another call's
-      // output is already recorded where it defers (writeAnswered), so this names the other wait: the response is
-      // still emitting calls, or this connection is retired and can never send the create (epoch_stale).
-      if (this.draining) this.continuationReceipt('deferred', 'draining');
-      else if (this.terminal !== undefined) this.continuationReceipt('deferred', 'epoch_stale');
-      else if (this.delegatedOutstanding) this.continuationReceipt('deferred', 'awaiting_calls');
-      return this.continuationOutcome = 'deferred';
-    }
-    // Tool outputs are already written and no response is active at this boundary.
-    if (!this.writeTypedFinals()) return this.continuationOutcome = 'failed';
-    const round = this.toolRounds + (!attempt && (calls > 0 || this.continuationCalls > 0) ? 1 : 0);
-    const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3 || this.researchCalls >= 6;
-    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
-      this.continuationOwed = true;
-      this.continuationReceipt('failed');
-      return this.continuationOutcome = 'failed';
-    }
-    this.toolRounds = round;
-    this.openResponseTiming();
-    const now = this.clock.now();
-    this.continuationTiming = { toolOutputAt: this.lastToolOutputAt ?? now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };
-    this.lastAnswerNow = answerNow;
-    this.answerNow = false;
-    this.continuationReceipt('sent');
-    this.continuationOwed = false;
-    this.continuationRejected = false;
-    this.batchAnswers = 0;
-    this.continuationsSent += 1;
-    if (attempt) this.continuationRetries += 1;
-    const answered = this.continuationCalls;
-    this.continuationCalls = 0;
-    this.lastContinuationCalls = answered;
-    hostLogEvent({ event: 'gptlive_tool_output', calls: answered, responseCreate: attempt ? 'retried' : 'sent', ...this.providerIds() });
-    return this.continuationOutcome = 'sent';
-  }
-
-  /** Resume a deferred continuation after the terminal event the gate was waiting for. Idempotent by `owed`. */
-  private resumeContinuation(): void {
-    if (!this.continuationOwed) return;    if (!this.continuationRejected) { this.continueTurn(0, 0); return; }
-    this.continuationRejected = false;
-    // Exactly one retry: exhausted rejection is a typed failure, never an abandoned owed continuation.
-    if (this.continuationRetries >= 1) { this.failContinuation(); return; }
-    this.continueTurn(0, 1);
-  }
-
-  /** A rejected create never became a response, but the host still owes the owner a spoken failure. */
-  private failContinuation(): void {
-    this.continuationOwed = false;
-    this.continuationRejected = false;
-    this.continuationOutcome = 'failed';
-    this.emit({ type: 'turnFailed', code: 'provider_error' });
-    this.endResponse(undefined);
-  }
+  sendToolResponse(_input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { return 'failed'; }
 
   /** One client command id, so a provider error frame can be tied to the command that earned it (3r F, S4a-R4).
    *  The prefix names the command family: a rejected `tool_out_` answer is not the same event as a rejected
@@ -1770,56 +1104,6 @@ class Session implements LiveVoiceSession {
     const id = `${kind}_${this.commandSequence}`;
     this.recordCommand(id, kind);
     return id;
-  }
-
-  /**
-   * O1b-A: one receipt into the host's trace store. The port binds the session, the connection epoch and the open
-   * turn, so this adapter names only its own response and call keys and never a session it was not handed.
-   */
-  private receipt<K extends TraceEventKind>(kind: K, ids: { responseKey?: string; callKey?: string }, detail: TraceDetailMap[K]): void {
-    this.settings.trace?.receipt(kind, ids, detail);
-  }
-
-  /** The host key of a provider response, minted once per provider id so every receipt of it joins. */
-  private responseKeyOf(providerId: string | undefined): string {
-    if (providerId === undefined) return `r${this.responseKeySeq += 1}`;
-    const known = this.responseKeys.get(providerId);
-    if (known !== undefined) return known;
-    const minted = `r${this.responseKeySeq += 1}`;
-    this.responseKeys.set(providerId, minted);
-    return minted;
-  }
-
-  /** The key of the response answering now: a receipt about it can only name it when the provider named itself. */
-  private get currentResponseKey(): string | undefined {
-    return this.currentResponse === undefined ? undefined : this.responseKeys.get(this.currentResponse);
-  }
-
-  /** O1b-A: the continuation owner's decision, written once per attempt against the response it answers. */
-  private continuationReceipt(outcome: ContinuationOutcome, skipReason?: SkipReason): void {
-    const responseKey = this.currentResponseKey;
-    if (responseKey === undefined) return;
-    this.receipt('continuation.decided', { responseKey }, {
-      decidedAt: this.clock.now(), outcome, ...(skipReason === undefined ? {} : { skipReason }),
-    });
-  }
-
-  /** O1b-A: a call's own key, its time and the response that emitted it, so its later receipts join both. */
-  private callIds(callKey: string): { callKey: string; responseKey?: string } {
-    const origin = this.callOrigins.get(callKey)?.responseKey;
-    return { callKey, ...(origin === undefined ? {} : { responseKey: origin }) };
-  }
-
-  /**
-   * S5 receipt, metadata only: a continuation is owed but cannot go yet, so name the response it answers and how
-   * many call outputs it still waits for. Never a call id, never an argument.
-   */
-  private deferralReceipt(): void {
-    const awaiting = this.pendingCalls.filter(call => !this.answeredCalls.has(call.id)).length;
-    // #451 H3: "deferred" names a wait, so a gate held by `delegatedOutstanding` with no unanswered call
-    // has nothing to await and says nothing here. The continuation decision receipt already names that skip.
-    if (awaiting === 0) return;
-    hostLogEvent({ event: 'continuation_deferred', responseKey: this.currentResponse ?? 'none', awaiting });
   }
 
   /** S4a-R2 (d): a small ledger of what was sent and when, so a correlation is read from the wire and never
@@ -1832,23 +1116,6 @@ class Session implements LiveVoiceSession {
     }
   }
 
-  /** A session that ends owes no call an answer and no delegation a stall receipt (3r B). */
-  private retireCalls(): void {
-    for (const delegation of this.delegations.values()) this.clearStall(delegation);
-    this.delegations.clear();
-    this.callDelegation.clear();
-    this.pendingCalls = [];
-    this.answeredCalls.clear();
-    this.outputSent.clear();
-    this.openedResponses.clear();
-    this.endedResponses.clear();
-    this.continuationOwed = false;
-    this.batchAnswers = 0;
-    this.continuationCalls = 0;
-    this.lastContinuationCalls = 0;
-    this.delegatedOutstanding = false;
-  }
-
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
     if (this.draining) {
       if (object(input) && input.pcm instanceof Uint8Array && input.pcm.byteLength > 0) { this.diagnostic.drainingDropCalls++; this.diagnostic.drainingDropBytes += input.pcm.byteLength; }
@@ -1858,7 +1125,6 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.settings.allowed.includes(input.dataClass)) fail('route_denied');
-    this.inputAudioSeen = true;
     this.diagnostic.audioCalls += 1; this.diagnostic.audioBytes += input.pcm.byteLength;
     const pcm = this.upsampler.process(input.pcm);
     if (!pcm.byteLength) return;
@@ -2038,93 +1304,24 @@ class Session implements LiveVoiceSession {
     }
     this.connectionWeakAt = now;
   }
-
-  sendText(input: { text: string }): void {
-    if (this.draining) return;
-    if (!this.checkpoint()) fail(this.terminal!.code);
-    if (!this.isReady) fail('not_ready');
-    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
-    this.typedTurn = true;
-    this.typedFinals.push(input.text);
-    if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
-      this.continuationOwed = true;
-      this.continuationReceipt('deferred', 'awaiting_calls');
-      return;
-    }
-    // A synchronous burst of final transcripts is one ask, not several competing responses.
-    if (this.typedFlushQueued) return;
-    this.typedFlushQueued = true;
-    queueMicrotask(() => {
-      this.typedFlushQueued = false;
-      if (this.terminal || this.draining || !this.typedFinals.length) return;
-      if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
-        this.continuationOwed = true;
-        return;
-      }
-      if (!this.writeTypedFinals()) return;
-      if (this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
-        // Reserve the response before response.created arrives, closing the typed-input race.
-        this.delegatedOutstanding = true;
-        this.openResponseTiming();
-      }
-    });
-  }
-
-  private writeTypedFinals(): boolean {
-    if (!this.typedFinals.length) return true;
-    const text = this.typedFinals.join('\n');
-    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } }))) return false;
-    this.typedFinals.length = 0;
-    return true;
-  }
-
-  /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
-   *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
-   *  tokens. C-REBUILD8: the provider requires `delegation_id` on the append and refuses one without it by name
-   *  (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10), so the
-   *  frame carries the delegation in flight; with no delegation open nothing is sent at all. */
+  sendText(_input: { text: string }): void { fail('invalid_request'); }
   sendCommentary(input: { text: string }): boolean {
-    // Progress is optional. The provider rejects a delegation that still owes a function output,
-    // and that rejection can silence its voice path. Never risk a lookup's answer for a progress line.
-    if (this.pendingCalls.length > 0) return false;
-    return this.append('session.commentary.append', 'cmt', input);
+    return this.latestDelegationId !== undefined && this.sendTaskAnswer({ ...input, delegationId: this.latestDelegationId }) !== undefined;
   }
-
-  /** C-REBUILD8: the delegation a progress line belongs to: the open one still waiting on a call, else the most
-   *  recently opened one. A session that opened no delegation returns undefined, and the line is never sent. */
-  private delegationInFlight(): string | undefined {
-    let latest: string | undefined;
-    let awaiting: string | undefined;
-    for (const delegation of this.delegations.values()) {
-      latest = delegation.id;
-      if (delegation.awaiting.size > 0 && awaiting === undefined) awaiting = delegation.id;
+  sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
+    if (this.draining || this.terminal || !this.isReady || input.delegationId !== this.latestDelegationId) return undefined;
+    if (!input.text.length || input.text.length > 450) return undefined;
+    const commandId = this.commandId('cmt');
+    if (!this.write(JSON.stringify({ type: 'session.commentary.append', event_id: commandId, delegation_id: input.delegationId, content: input.text }))) return undefined;
+    this.commentaryCommands.set(commandId, input.delegationId);
+    return commandId;
+  }
+  private appendAcknowledged(_kind: 'thinking' | 'commentary', message: ObjectValue): void {
+    const commandId = typeof message.client_event_id === 'string' ? message.client_event_id : this.commentaryCommands.keys().next().value;
+    if (commandId && this.commentaryCommands.has(commandId)) {
+      this.commentaryCommands.delete(commandId); this.emit({ type: 'commentaryAccepted', commandId });
     }
-    return awaiting ?? latest;
-  }
-
-  private append(type: 'session.commentary.append', kind: 'cmt', input: { text: string }): boolean {
-    if (this.draining) return false;
-    if (!this.checkpoint()) fail(this.terminal!.code);
-    if (!this.isReady) fail('not_ready');
-    // C-REBUILD8: with no delegation open the provider requires a parameter the host cannot supply, so the line
-    // is skipped and logged as a closed skip instead of being written and refused.
-    const delegationId = this.delegationInFlight();
-    if (delegationId === undefined) {
-      // C-REBUILD8: the closed skip the host log schema already has for a progress line that stayed silent
-      // (W4: `delegationKey` plus a reason from its closed set). No delegation asked, so the key says none.
-      hostLogEvent({ event: 'commentary_skipped', delegationKey: 'none', reason: 'no_delegation' });
-      return false;
-    }
-    // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
-    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) { fail('invalid_request'); return false; }
-    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text, delegation_id: delegationId }))) { fail(this.terminal!.code); return false; }
-    return true;
-  }
-
-  /** #438: the provider acknowledges an append in the past tense. Both shapes are known frames, not unknowns. */
-  private appendAcknowledged(kind: 'thinking' | 'commentary'): void {
-    hostLogEvent({ event: 'gptlive_append_ack', kind });
-    this.touch();
+    hostLogEvent({ event: 'gptlive_append_ack', kind: 'commentary' }); this.touch();
   }
 
   endAudioStream(): void {
@@ -2134,31 +1331,12 @@ class Session implements LiveVoiceSession {
 
   close(): void { if (this.checkpoint()) this.finish('closed'); }
 
-  /** C-REBUILD: every response this session created and never terminated, closed with the one status the store
-   *  keeps for it. A rebuild can leave more than one open: the delegated response was replaced by its continuation
-   *  and neither ever saw a `response.done`. */
-  private settleSuperseded(): void {
-    this.delegatedOutstanding = false;
-    const open = [...this.openResponses];
-    this.openResponses.clear();
-    for (const responseKey of open) {
-      this.receipt('response.terminal', { responseKey }, {
-        terminalAt: this.clock.now(), status: 'superseded', terminalReason: 'superseded',
-      });
-    }
-  }
-
   private finish(code: LiveVoiceErrorCode, upstream?: LiveVoiceUpstreamDrop) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
-    this.clearNoItemTimer();
     this.discardHeadStart();
-    // C-REBUILD: a teardown under a response the provider announced and never terminated is the one case the wire
-    // never settles. The response is settled here as superseded, so a rebuild, a drop or an ended call leaves no
-    // response pending in the store for the life of the call (t59 and t64 in 47bf2e88 still listed theirs).
-    this.settleSuperseded();
     // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
@@ -2167,10 +1345,8 @@ class Session implements LiveVoiceSession {
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
     // A closed session has no speaking stretch: no silence check is still owed to the turn it was in.
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
-    this.retireCalls();
     this.reportUnknownFrames();
-    this.secret = '';
+
     this.readiness.reject(new LiveVoiceError(code));
     this.emit({ type: 'outcome', outcome: this.terminal });
     if (!this.creatingSocket) this.shutdownSocket();

@@ -1,3 +1,4 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import { connectorDescriptor } from '../connectors/index.js';
 import { HOST_EVIDENCE } from '../tools/types.js';
 import { projectGoogleResult } from '../tools/google.js';
@@ -22,11 +23,9 @@ import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope 
 import { composeMcpRuntime } from '../host/mcp.js';
 import { composeResult, notAuthorizedFor } from '../tools/compose.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
-import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
+import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, GOOGLE_DEFAULTS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleConsentLine, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
-import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
-import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -104,7 +103,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const list = completed(await gmail.gmailList({}));
     payloadPorts.set(list, adapter);
     const listEnvelope = envelopeOf(list);
-    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
+    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GOOGLE_DEFAULTS.mailListResults);
     const listProjection = renderGoogleTool('gmail_search_messages', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> to read/);
@@ -121,9 +120,10 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     payloadPorts.set(read, adapter);
     const readEnvelope = envelopeOf(read);
     const readProjection = renderGoogleTool('gmail_read_message', (readEnvelope['data'] as Record<string, unknown>));
-    assert.equal(readProjection.partial, true);
+    assert.equal(readProjection.partial, false);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
-    assert.match(readProjection.text, /body truncated|\[omitted: \d+ received characters of body omitted from this display/);
+    assert.ok(readProjection.text.includes('b'.repeat(20000)), 'every received body character remains available');
+    assert.doesNotMatch(readProjection.text, /\[omitted:/);
 
     const events = completed(await calendar.gcalList({ calendarId: 'primary' }));
     payloadPorts.set(events, adapter);
@@ -180,13 +180,12 @@ test('a default gmail_search_messages asks the child for the batched digest cap 
     payloadPorts.set(list, adapter);
     const envelope = envelopeOf(list);
     // The helper now reads the listed messages' metadata in one batched call, so the request is no
-    // longer paced by sequential round trips and the digest cap is ten.
-    assert.equal(GMAIL_LIST_MESSAGES, 10);
-    assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
+    // longer paced by sequential round trips; this default batch retains every returned message.
+    assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GOOGLE_DEFAULTS.mailListResults);
     const data = envelope['data'] as Record<string, unknown>;
-    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one batched fetch returns every listed message');
+    assert.equal((data['messages'] as unknown[]).length, GOOGLE_DEFAULTS.mailListResults, 'one batched fetch returns every listed message');
     const projection = renderGoogleTool('gmail_search_messages', data);
-    assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GMAIL_LIST_MESSAGES);
+    assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GOOGLE_DEFAULTS.mailListResults);
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -386,7 +385,7 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
   }
 });
 
-test('the owner composes the google tool table and a Live-shaped gmail_search_messages call reaches the fixture and returns projected Markdown', async () => {
+test('the canonical search_mail reaches the approved Google fixture and returns structured evidence', async () => {
   noteGmailAccount(undefined);
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
   const { dir: childDir, pidFile } = scratch();
@@ -422,24 +421,23 @@ test('the owner composes the google tool table and a Live-shaped gmail_search_me
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definitions = owner.definitions('run');
-    // gmail_read_message carries a remote body, so the owner also admits the local body continuation the run may use.
-    assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS, 'read_received_body'].sort());
-    assert.equal(definitions.some(definition => definition.name === 'gmail_send'), false);
-
-    const callArgs = {};
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
-    assert.equal(owner.journal.intent(intent), 'fresh');
-    const definition = definitions.find(candidate => candidate.name === 'gmail_search_messages');
-    assert(definition?.execute);
-    const outcome = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
-    assert.equal(outcome.status, 'completed');
-    const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
-    const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.equal(stored.response['tool'], 'gmail_search_messages');
-    assert.match(String(stored.response['text']), /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024/);
-    assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
-    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
+    const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic Google mail', ['gmail']);
+    try {
+      assert.ok(task.tools.some(tool => tool.name === 'search_mail'));
+      assert.equal(task.tools.some(tool => tool.name === 'gmail_search_messages'), false, 'native names are not a second model catalog');
+      assert.equal(task.tools.some(tool => tool.name === 'gmail_send'), false);
+      const definition = task.tools.find(tool => tool.name === 'search_mail')!;
+      const callArgs = { query: 'synthetic', cursor: null };
+      const intent = { runId: live!.runId, actorId: live!.actorId, authorityEpoch: live!.authorityEpoch, revision: live!.revision, executionId: 'run:1:0', callId: 'synthetic-call', toolName: 'search_mail',
+        accountId: definition.accountId, resourceId: definition.resourceId, argumentsHash: sha256(JSON.stringify(callArgs)) };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const outcome = await definition.execute(callArgs, { ...intent, signal: new AbortController().signal });
+      assert.equal(outcome.status, 'completed');
+      const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
+      const response = JSON.parse(String(row?.result_json)).response;
+      assert.match(JSON.stringify(response), /Synthetic subject line/, JSON.stringify(task.results));
+      assert.equal(response.status, 'partial', 'verified native Markdown is not invented ranked ids');
+    } finally { task.close(); }
   } finally {
     await adapter.close();
     store.close();
@@ -449,6 +447,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_search_me
 });
 
 test('a credential-failing call flips the calendar endpoint to configured/auth-needed and a later success clears it', async () => {
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
   const { dir: childDir, pidFile } = scratch();
   const configDir = join(dir, 'provider-config');
@@ -456,7 +455,8 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
   const command = process.execPath;
-  const args = [child, 'flaky', pidFile];
+  // A canonical calendar read covers every visible calendar. Keep this credential lifecycle fixture to one source, so a sibling success cannot repair the failure inside the same call.
+  const args = [child, 'flaky', pidFile, 'single-calendar'];
   const entry = { id: 'calendar', transport: 'stdio', command, args, env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
   let live: LiveAuthority | null = null;
@@ -481,15 +481,15 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === 'calendar_list_events');
+    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source', ['calendar'])).tools.find(candidate => candidate.name === 'calendar_events');
     assert(definition?.execute);
-    const callArgs = { calendarId: 'primary' };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'calendar_list_events', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    const callArgs = { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'calendar_events', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition!.accountId, resourceId: definition!.resourceId };
     assert.equal(runtime.owner.journal.intent(intent), 'fresh');
     const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
-    assert.equal(flipped?.state, 'configured');
+    assert.equal(flipped?.state, 'configured', JSON.stringify({ results: task?.results, calls: readFileSync(`${pidFile}.calls`, 'utf8') }));
     assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar to sign in again');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
@@ -503,6 +503,7 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     assert.equal(cleared?.state, 'connected');
     assert.equal(cleared?.error, undefined);
   } finally {
+    task?.close();
     await runtime.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -551,11 +552,6 @@ async function stdioMailRuntime(mode: string): Promise<{ runtime: Awaited<Return
   return { runtime, store, close };
 }
 
-/** The sources the research layer names as unreachable, read off the live endpoint report. */
-function unreachableIn(runtime: Awaited<ReturnType<typeof composeMcpRuntime>>): readonly { source: string; reason: string }[] {
-  return configuredSourcesForEndpoints(runtime.status().endpoints as unknown as readonly ConfiguredEndpointStatus[], [...GOOGLE_TOOLS]);
-}
-
 /** The line one dispatched call spoke, as the stored tool result carries it. */
 function spokenLine(store: Store, executionId: string): string {
   const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [executionId]));
@@ -565,23 +561,19 @@ function spokenLine(store: Store, executionId: string): string {
 // #636: the seven question-only mail asks of one pass. A helper failure is a per-call failure, so the
 // endpoint stays connected and the asks after it are read instead of being refused at 0 ms.
 test('#636: a transient helper failure on one mail ask never becomes the reason for the asks after it', async () => {
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const h = await stdioMailRuntime('first-mail:credential-refresh-failed');
   try {
     const asks = ['invoice from dana', 'lease renewal', 'standup notes', 'offsite venue', 'flat inspection', 'travel booking', 'contract draft'];
-    const definition = h.runtime.owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source', ['gmail'])).tools.find(candidate => candidate.name === 'search_mail');
     assert(definition?.execute);
     const ownerLine = googleOwnerLine(googleErrorEntry('credential-refresh-failed')!, 'gmail');
     const served: string[] = [];
     const rows: string[] = [];
     for (const [n, q] of asks.entries()) {
-      const refused = unreachableIn(h.runtime).filter(entry => entry.source === 'mail');
-      if (refused.length > 0) {
-        served.push(`unavailable:${refused[0]!.reason}`);
-        rows.push(`ask ${n + 1} "${q}": refused without a read, named reason ${refused[0]!.reason} -> ${plainReason(refused[0]!.reason)}`);
-        continue;
-      }
-      const args0 = { q, maxResults: 10 };
-      const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: `run:1:${n}`, toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(args0)), callId: `call-${n}`, accountId: ACCOUNT, resourceId: RESOURCE };
+      assert.equal(h.runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail')?.state, 'connected', 'a transient helper failure does not revoke the native source');
+      const args0 = { query: q, cursor: null };
+      const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: `run:1:${n}`, toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(args0)), callId: `call-${n}`, accountId: definition!.accountId, resourceId: definition!.resourceId };
       assert.equal(h.runtime.owner.journal.intent(intent), 'fresh');
       const outcome = await definition!.execute!(args0, { ...intent, signal: new AbortController().signal });
       assert.equal(outcome.status, 'completed');
@@ -592,6 +584,7 @@ test('#636: a transient helper failure on one mail ask never becomes the reason 
     assert.deepEqual(served, [ownerLine, 'read', 'read', 'read', 'read', 'read', 'read'], `the pass, ask by ask:\n${rows.join('\n')}`);
     assert.equal(h.runtime.status().endpoints[0]!.state, 'connected', 'one failed read never marks the mail endpoint dead');
   } finally {
+    task?.close();
     await h.close();
   }
 });
@@ -599,22 +592,22 @@ test('#636: a transient helper failure on one mail ask never becomes the reason 
 // #636: a pinned credential is the one status that stops the reads, and the reason the research layer
 // names is a closed code spoken in words, never the report's state word.
 test('#636: a dead credential names mail in words the owner can act on, never with the state word', async () => {
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const h = await stdioMailRuntime('code:credential-missing');
   try {
-    const definition = h.runtime.owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    const definition = (task = canonicalTaskFixture(h.store, h.runtime.owner, 'run', 'Read the synthetic Google source', ['gmail'])).tools.find(candidate => candidate.name === 'search_mail');
     assert(definition?.execute);
-    const deadArgs = { q: 'invoice', maxResults: 10 };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(deadArgs)), callId: 'call-0', accountId: ACCOUNT, resourceId: RESOURCE };
+    const deadArgs = { query: 'invoice', cursor: null };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(deadArgs)), callId: 'call-0', accountId: definition!.accountId, resourceId: definition!.resourceId };
     assert.equal(h.runtime.owner.journal.intent(intent), 'fresh');
     await definition!.execute!(deadArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(spokenLine(h.store, intent.executionId), googleOwnerLine(googleErrorEntry('credential-missing')!, 'gmail'), 'the failing read speaks the helper\'s own line');
     const endpoint = h.runtime.status().endpoints[0]!;
     assert.equal(endpoint.state, 'configured', 'a pinned refusal is the one status that stops the reads');
-    const named = unreachableIn(h.runtime);
-    assert.deepEqual(named, [{ source: 'mail', reason: 'not_signed_in' }], 'the named reason is a closed code, never the state word');
-    assert.equal(plainReason(named[0]!.reason), 'not signed in', 'and it is spoken in the owner\'s words');
-    assert.equal(JSON.stringify(named).includes('configured'), false, 'the state word never reaches the reply');
+    assert.match(String(endpoint.error), /auth needed: run lux-google-mcp authorize --family gmail/);
+    assert.equal(spokenLine(h.store, intent.executionId).includes('configured'), false, 'endpoint bookkeeping state is not presented as the cause');
   } finally {
+    task?.close();
     await h.close();
   }
 });
@@ -1071,7 +1064,6 @@ test('C-OPEN 2: a Drive endpoint connects with only the Drive pair and its sourc
     const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'drive');
     assert.equal(report?.state, 'connected');
     assert.equal(report?.warning, undefined);
-    assert.deepEqual(configuredSourcesForEndpoints([{ id: 'drive', connector: 'google', state: 'error', reasonCode: 'credential_missing' }]), [{ source: 'drive', reason: 'credential_missing' }]);
   } finally {
     await runtime.close();
     store.close();
@@ -1108,11 +1100,13 @@ test('calendar bounds an oversized page and retains the named-event search', asy
   assert.equal(fake.listArgs.length, 1);
   assert.equal(fake.listArgs[0]?.['maxResults'], 50);
   assert.equal(fake.listArgs[0]?.['q'], 'Synthetic wedding');
+  assert.equal(fake.listArgs[0]?.['timeMin'], '2026-09-29T00:00:00Z');
+  assert.equal(fake.listArgs[0]?.['timeMax'], '2027-04-29T00:00:00Z');
 });
 
 for (const family of ['calendar', 'gmail', 'drive'] as const) for (const mode of ['auth-data', 'auth-consent'] as const) {
-  const tool = family === 'calendar' ? 'calendar_list_events' : family === 'gmail' ? 'gmail_search_messages' : 'drive_search_files';
 test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction`, async () => {
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
   const { dir: childDir, pidFile } = scratch();
   const configDir = join(dir, 'provider-config');
@@ -1145,21 +1139,22 @@ test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === tool);
+    const definition = (task = canonicalTaskFixture(store, runtime.owner, 'run', 'Read the synthetic Google source', [family])).tools.find(candidate => candidate.name === (family === 'calendar' ? 'calendar_events' : family === 'gmail' ? 'search_mail' : 'search_drive'));
     assert(definition?.execute);
-    const callArgs = family === 'drive' ? { query: 'synthetic' } : family === 'gmail' ? { q: 'synthetic' } : { calendarId: 'primary' };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: tool, argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    const callArgs = family === 'drive' ? { query: 'synthetic' } : family === 'gmail' ? { query: 'synthetic', cursor: null } : { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: definition!.name, argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition!.accountId, resourceId: definition!.resourceId };
     assert.equal(runtime.owner.journal.intent(intent), 'fresh');
     const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === family);
-    assert.equal(flipped?.state, 'configured');
+    assert.equal(flipped?.state, 'configured', JSON.stringify(task?.results));
     assert.equal(flipped?.error, `auth needed: run lux-google-mcp authorize --family ${family} to sign in again`);
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.match(String(stored.response['text']), new RegExp(`auth needed: run lux-google-mcp authorize --family ${family}`));
 
   } finally {
+    task?.close();
     await runtime.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });

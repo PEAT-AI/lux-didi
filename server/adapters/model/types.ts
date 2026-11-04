@@ -87,7 +87,8 @@ export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { sta
 export interface ToolCallJournal {
   intent(call: ToolCallIntent, validatedArguments?: unknown): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;
-  fail(call: ToolCallIntent, status: 'failed' | 'unknown', reason: string): ToolResultRef;
+  /** hostRepair, when present, is a host-classified repair, never raw external text. */
+  fail(call: ToolCallIntent, status: 'failed' | 'unknown', reason: string, hostRepair?: string): ToolResultRef;
 }
 export interface ToolResultBinding {
   executionId: string; name: string; callId?: string;

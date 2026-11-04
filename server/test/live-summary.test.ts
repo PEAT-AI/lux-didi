@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 // W-LSUM: the browser-safe Live summary for the page. The operator-only status route refuses a
 // cookie principal (403); this sibling route answers the cookie principal (and the operator) with a
 // closed whitelist and nothing else.
@@ -483,7 +484,7 @@ test('C-START10: an eight-second startup summary does not delay provider open pa
     keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/live-start10-test', dataClasses: ['ordinary', 'private'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
   let elapsed = 0;
-  const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW + elapsed, timeZone: 'UTC' });
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW + elapsed, timeZone: 'UTC' });
   try {
     seedConversation(h.store, 's-eight-second-start');
     let entered!: () => void;
@@ -746,7 +747,7 @@ test('the real start puts the armed alarm into the accepted instruction', async 
   const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/memorytruth-start', voice: 'ExplicitVoice',
     keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/memorytruth-start', dataClasses: ['ordinary', 'private'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
-  const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW, timeZone: 'UTC' });
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW, timeZone: 'UTC' });
   try {
     insertAlarm(h.store, '4f2c9a1b77aa', SUMMARY_NOW + 3_600_000, 'wake up for the standup');
     const ctx = { clientId: 'synthetic', auditId: 'memorytruth-start', authorityEpoch: h.store.authorityEpoch };

@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -27,7 +28,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
   const session = f.createSession('Memory');
   const entry = f.append(session.id, note);
   const keep = f.append(session.id, 'synthetic surviving note');
-  const live = createLiveSessionOwner({ store: f.store, profile, voice: { capabilities: adapter.capabilities, open: (request, control) => {
+  const live = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(f.store), store: f.store, profile, voice: { capabilities: adapter.capabilities, open: (request, control) => {
     liveRequests.push(structuredClone(request)); return adapter.open(request, control);
   } }, memorySource: () => [{ id: entry.id, text: note, dataClass: 'ordinary' }, { id: keep.id, text: keep.text, dataClass: 'ordinary' }] });
   live.recover();

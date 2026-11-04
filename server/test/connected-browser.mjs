@@ -121,7 +121,10 @@ try {
     assert.deepEqual(entries.map(e => e.role), ['user', 'assistant']);
     assert.equal(await page.locator('#connected-draft').inputValue(), '');
     const wire = JSON.parse((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim());
-    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100); assert.equal(wire.body.tools, undefined);
+    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100);
+    const declared = wire.body.tools.flatMap(group => group.functionDeclarations ?? []).map(tool => tool.name);
+    assert.ok(declared.includes('trello_read'), 'the chat helper declares its canonical task tools');
+    for (const retired of ['research', 'open_web', 'set_alarm']) assert.ok(!declared.includes(retired), `retired voice tool ${retired} must not return`);
     await page.locator('#connected-draft').fill('Make that earlier next step concrete, without adding the local archive.'); await page.locator('#connected-send').click();
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     const wires = (await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));

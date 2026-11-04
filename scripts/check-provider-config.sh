@@ -38,6 +38,13 @@ cp "$root"/server/domain/*.ts "$out/source/domain/"
 ln -s "$deps" "$out/node_modules"
 cp "$root/server/test/provider-config.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
+# Stage the complete production import closure, as the whole-server build does.
+find "$root/server" -mindepth 1 -maxdepth 1 -type d \
+  ! -name node_modules ! -name dist ! -name test \
+  -exec cp -R {} "$out/source/" \;
+mkdir -p "$out/source/test/fixtures"
+cp "$root"/server/test/{synthetic-task,canonical-task-fixture}.ts "$out/source/test/"
+cp "$root/server/test/fixtures/task-chat-reader.ts" "$out/source/test/fixtures/"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
   --noUnusedLocals --noUnusedParameters --skipLibCheck \

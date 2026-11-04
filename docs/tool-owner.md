@@ -8,72 +8,36 @@ Host tools connect a model's request to validated local or remote work. They do 
 
 The owner supplies the model loop's journal and result gate. Intent precedes dispatch; accepted results have canonical references rather than arbitrary handler objects. Revocation and class/route policy are rechecked before results are released. Unknown effects must remain unknown, not be automatically retried or reported as saved because a model said so. See [model-adapter.md](model-adapter.md).
 
-## Research and coverage
+## Helper work and source evidence
 
-`server/tools/research.ts` owns source routing, bounded reads, coverage and follow-up state. `ResearchLedger`, `ResearchScheduler` and `ResearchAdmission` separate retained results, scheduling and owner-turn permission. A finalized owner turn admits bounded research; a model's desire to continue does not grant another turn.
-
-A coverage statement must distinguish unavailable sources from completed empty reads, and partial work from complete coverage. Found matches, examined records and represented findings are not interchangeable counts. A deadline cannot be disguised as "nothing matched". [Live call](live-call.md) owns dead-air behavior around those operations.
-
-Registry connectors and their projections are described in [connectors.md](connectors.md). Keep exact schemas, source budgets and query operators in the implementation, not a second prose table here.
-
-The reply budget is a tier, not one number: 12,000 chars for a plain ask, 16,000 for an analytical one (a named person or a document, a comparison, team implications, a synthesis across sources) and 20,000 when the owner asks to go deep. The tier is read off the owner's question before the run reads anything, a later question may raise it, and nothing lowers it. The allocator shares the budget as before, with two changes: a source is only trimmed while it still holds more than `sourceFloorChars` (about 1,000) of evidence, so one line never counts as shown, and memory the ask did not refer to gets no allocation at all when the ask names a person or a document, not merely the last word in a squeeze. A hit two reads both returned is shown once.
-
-Beside the per source counts the header closes with `<label> full` or `<label> excerpt` for each source it read, so an excerpt is never called full, and `entities N of M covered` with `missing: <names>` for the people and documents the owner named, read off the question itself rather than a model call.
-
-Knowledge reads in two stages. The search answers with summaries; when the ask names a person or a document, or asks for depth, the host then makes one batched `get_insight` read of at most three hits, the ones naming an asked entity first, inside the round already dispatched and under its own 1,500 ms bound. Each fetched body replaces the summary of the hit it came from, keyed by that hit's id, so the reply shows the entry and not its abstract. A plain search spends no second call.
+The voice has no source tools. The host-owned text helper uses the typed task
+registry to read sources and perform authorized actions. The host runs tools
+and keeps the record; it does not infer intent from model prose. The helper
+reports only evidence actually returned and keeps missing results distinct
+from incomplete reads. The voice speaks the result without exposing helper
+or delegation machinery to the owner.
 
 ## Opening things
 
-`open_source`, `open_home`, `open_file`, `open_app` and `open_web` share the per-ToolsOwner `ownerRequests` state with the four alarm tools and `stage_lux_note`. Only finalized microphone words create a request. A request expires after 120 seconds on a monotonic clock. Partial input waits for its final event; a model preamble or provider delay is not a new permission window and does not revoke a valid ask. An independent owner ask supersedes the old request. A short fragment joins only a pending host clarification and never extends the original age.
+The helper uses the canonical `open` schema (`kind` and `target`) and `find_file` from the shared task registry. Task Authority admits an opening effect before the accepted native opener resolves and dispatches its exact destination. Finalized owner words belong to the task revision; partial speech holds delivery rather than minting an independent phrase-based permission grant. These tools only open destinations; they do not type, click, send or edit.
 
 A direct ask executes now, without confirmation.
 
-### The tier table (C-PERMTIER, 10.7.2)
+### Task effect authority (10.10)
 
-`server/tools/tiers.ts` is the one closed table. `free` is `set_alarm`, `cancel_alarm`,
-`snooze_alarm`, `list_alarms`, `create_event`, `draft_email`, `draft_chat`, `remember_note`,
-`stage_lux_note`, `save_to_vault`, `trello_write` and every `open_*` tool; everything else is
-`guarded`, so a send tool added later is guarded without any code here. A free tool executes on the
-model's call while the owner's live call is open: no cue regex, no verb and noun set, no negation scan
-and no later final takes an earned grant back. `delete_event` stays guarded on its created-or-named
-selector, and it is the one kind that still reads a negated clause. A refusal always names its cause,
-which the model may repeat.
+Task effects are declared in `server/tasks/tools.ts` and admitted by `server/tasks/authority.ts`, not a free/guarded keyword tier. A write after outside text goes through the isolated effect check with the latest finalized owner words and the immediately preceding task owner words as earlier context when present. Ordinary effect-check failure follows the accepted fail-open tradeoff. `delete_event` is different: it stages one exact event id per call and requires a later finalized owner turn and a successful closed confirmation check. A failed check never deletes, a replacement stage cannot inherit confirmation, and a successful confirmation consumes its stage once.
 
-The free tier reads no clause of his speech (C-NOTEGATE, #874). A dictation that says "I don't want to
-put the survey in there" is content about the survey, not a withdrawal of the open owner call, so the
-save it ends with still commits on the first call. Only `delete_event` keeps a negation reading, beside
-its created-or-named selector.
+Task Authority tracks outside-text exposure per task revision, not a session-wide owner/exposure-position fence. A clean owner ask can execute its declared local effects without phrase matching. After outside content reaches the helper, ordinary writes are evaluated by the isolated effect check described above; another finalized owner turn is not a mechanical fence reset. Calendar deletion retains its stricter staged confirmation path.
 
-The one guard left on the free tier is the injection fence. The host keeps one monotonic order per
-session for the owner's finalized words and for third-party text. Mail bodies, chat messages, web
-pages and research results advance the exposure position immediately before the model sees them;
-reading his own calendar, alarms, notes, vault and Trello does not. A free write executes only when
-the latest owner final is newer than the latest exposure; otherwise it is refused `external_text_only`
-with the fact of what happened and what clears it: "Outside text arrived after your last words, so
-that write was refused. It clears when you next speak." No refusal invites him to repeat a phrase or
-to say a magic sentence, and none asks for a fresh authorization.
+Open destinations are validated by scheme, network and provenance policy. After outside reads, the destination must be an unchanged eligible link from the disclosed results and still pass the ordinary effect check. A clean owner ask does not need prior result-link provenance. There are no one-use phrase grants by destination kind or retired research-run source handles. Operation identity and durable receipts govern retries; repeating a model sentence does not establish that an effect committed.
 
-The gate's answer is one `gate_decision` host log line (C-NOTEGATE, #828): the tool, the decision, the
-closed code, the two fence positions and whether any owner final existed, never a word of his.
+Alarm parsing and recurrence checks remain mechanical tool concerns after authority admission. A pending occurrence can be updated in place; moving an occurrence that has rung creates a fresh occurrence atomically with its receipt, preserving series linkage. The returned occurrence ID is used for later operations.
 
-Model turns, assistant speech, tool results and retries never advance the owner position, and a
-refused write is never auto-flushed by a later final: it needs a fresh model call.
-
-Accepted limitation: an unrelated owner final after an external read can still let a reversible
-low-harm write through. That is the price of not asking him to repeat himself, and it is bounded by
-the tier: nothing here sends to another person and nothing here deletes irreversibly.
-
-An alarm's time comes from his words when they carry one, and otherwise from the model's own time
-argument, which is a deterministic parse and never a refusal for lack of an owner phrase. A
-recurrence the model adds without his words for it is dropped and said in the resulting sentence. A compound ask grants each named kind once. Dispatch reserves an open grant before awaiting the native ack; a same-target retry returns the cached receipt, including an uncertain native outcome, without another effect. A different target after use returns `grant_spent`. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are structured host refusals, not instructions to use another device or repeat a complete ask.
-
-A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
-
-`Sources/LuxDidi/NativeActions.swift` still owns native destination enforcement and browser fallback. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
+`Sources/LuxDidi/NativeActions.swift` owns mechanical native opening and system default-browser behavior, not destination policy. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
 
 ## Local memory and Lux notes
 
-`stage_lux_note` saves a direct finalized owner write request immediately through the canonical host tool path and the already-authorized remote writer. There is no yes/readback/settle commit path. The host validates the bounded candidate body before adding a small provenance line with the host request id and successful-read source counts. An external-content marker conservatively covers reused source context from the same session. Counts are request-local, host-recorded after actual successful reads, and cannot create write permission.
+`save_to_vault` sends the exact Task Authority-approved payload through `VaultWriter.saveTask` and the configured Lux write transport. It returns the real connector receipt; an unknown acknowledgement is not committed as success. The misleading local `stage_lux_note` tool is removed. `remember_note` remains a private local Domain memory note and must never be described as a remote Lux save.
 
 Authorization and local state are committed before the remote writer runs outside the database transaction. A successful receipt contains the saved title/id; failure or an unknown write outcome never claims a saved note. Same-candidate retries reuse the receipt and cannot write twice. A quoted note, a source instruction or a vague comment cannot create a grant. A genuinely missing field returns a named clarification; it does not ask for a second complete confirmation. Historical nonterminal confirmation rows are cancelled by migration rather than resumed as executable requests. Existing local-memory formats remain separate from Lux knowledge writes.
 
@@ -127,10 +91,97 @@ Alarms ring only on an awake Mac and cannot wake a sleeping or closed-lid machin
 
 The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` through the same live registry composition as its other owner-facing tools. Both Gemini setup and OpenAI responses delegation receive these declarations. Alarms ring only on an awake Mac; finalized owner speech authorizes mutations and the host parses the time.
 
-`LIVE_NOT_MODEL_FACING` in `server/tools/declarations.ts` is the single explicit exception list for registered internal reads, with a reason per name. Research owns those reads. Release 10 removes `remember_note` and `save_to_vault` from the live registry; `stage_lux_note` is the live vault-write path. The catalog guard in `server/test/tools-builtin-intent.test.ts`, run by `scripts/check-tool-owner.sh`, compares real host registrations with both adapters' first fake-provider wire frames. New registered owner tools must reach that wire catalog or have an explicit exception.
+The shared task registry is the model-facing read/write catalog. Chat derives its declarations through `declarationsFor`; the worker uses the same definitions, Authority, provenance and receipts. The live voice surface exposes client delegation or the single Gemini `delegate(request)` function, not internal reads or writes. The retired live exception list and research catalog no longer choose which tools a voice model may call.
 
 ## Registered calendar schema and safe rejection evidence
 
-Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
+The helper's `calendar_events` tool takes typed `start` and `end` bounds. The connector maps those bounds to Google's `timeMin` and `timeMax`; it does not construct a second query vocabulary from an orchestration engine's schema guesses. Tool arguments must satisfy the registered task-tool schema before execution. Diagnostic logging is a redacted projection, not input validation or proof of a live provider's rejection cause.
 
 Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
+
+## Task worker boundary (10.10)
+
+The host-owned helper uses the typed `server/tasks/` registry. Structural argument validation
+uses the repository MCP SDK schema validator; nullable optional fields are removed before connector execution.
+Configured company resources compile into `query_company(resource, filters)` from `CONNECTOR_DESCRIPTORS`.
+Read results declare whether they count as outside text. The host tracks that fact between inference turns;
+model output never changes authority. Every effect passes exactly one injected `Authority.authorize` port.
+C-AUTH supplies production admission and commit journaling. `FakeAuthority` is for synthetic tests only.
+
+`open(kind, target)` shares one simple schema. Alarm create, list, cancel and update remain distinct:
+their required fields differ and a combined action schema would add unused optional fields. Trello reuses
+its existing read and write parameters and validators. Local executors, memory, people and web tools are
+injected as bound existing executors by the eventual host composition, never discovered from model text.
+No automatic retry of an unacknowledged write is safe. Such an outcome remains unknown until reconciled.
+
+Follow-ups outside this registry: calendar event updates, invitation responses, sending email or chat,
+Drive writes, connector configuration and connector administrative capabilities. They are not silently
+translated into another action. Unconfigured tools return actionable repair text, not an opaque batch error.
+
+The offline task check is `bash scripts/check-tasks.sh`. It includes contract, lifecycle and synthetic Store
+integration suites, the retained live-shape regression suite and the check-map selftest. Synthetic replay
+fixtures in `scripts/eval-worker-replay.mjs` reuse the probe's Gmail data and search semantics; they do not
+prove that a real model chooses the right calls or behaves correctly. Real model replay and installation
+remain separate acceptance work, never an implicit effect of this check.
+
+Gmail search accepts a required nullable `cursor`: use null for the first page, then pass the returned
+`next_cursor` with the same query. The host prunes null and maps a real cursor to Google `pageToken`;
+page tokens participate in read-cache identity. Other source search and merged multi-calendar results
+that cannot consume an upstream cursor stay partial, expose no `next_cursor`, and explicitly state
+that paging is not exposed rather than instructing an impossible continuation.
+## Task permission integration (10.10)
+
+The new authority module returns `allow`, or a closed refusal code with repair text.
+The controller owns argument validation, exposure declarations on every read tool,
+finalized owner turns, effect classification and stable journal action identity.
+`configuredEffectCheck` adapts the configured model client to the isolated boolean
+check. It must receive the same configured model port used by the task core, with
+its fastest current model selected for this role. No model identifier belongs in
+a tool or an authority test.
+
+The web search port accepts host-owned exposure state. Clean tasks are untouched.
+After exposure, split on whitespace and remove each whole token containing a
+scheme separator (`://`), `www.` or `site:`, in any case or punctuation. There is
+no owner-word comparison or exemption. Ordinary exposed questions still pass;
+private pasted-passage protections remain.
+
+Calendar creation constructs a closed dispatch object with no attendees and no
+update fields, even if surplus input has such fields. Trello write shapes do not
+offer member assignment, and normalization drops supplied member fields and strips
+mentions from text. Atlassian documents that mentions notify users in
+[commenting on cards](https://support.atlassian.com/trello/docs/commenting-on-cards/).
+Trello watchers can also receive service-generated activity notifications; stripping
+mentions is not a promise that shared-board activity is silent.
+
+`assertRegistryExposure(registry)` validates declared exposure for every read entry
+(`effect: null`). C-VOICE calls it on the actual registry once that registry exists.
+`Authority.authorize` accepts host-owned `webTarget`, `toolResultURLs` and
+`canonicalURLs` for web opens. Clean spoken tasks may open any public HTTPS URL
+without credentials or private addresses. After exposure, both the owner effect
+check and byte-exact result/canonical provenance apply. Worker arguments must never
+be used as provenance. The legacy open implementation and fixtures stay at base
+behavior. C-VOICE owns removal of the vault speech grammar with its caller bridge.
+## 10.10 task worker opening
+
+The worker surface is `open(kind, target)`, with `web`, `app`, `file` and `source` kinds. Its schema and executor are `OPEN_SCHEMA` and `executeOpen` in `server/tools/open.ts`. C-CORE registers those instead of the legacy live open family. Web targets accept HTTP(S) URLs or named sites; installed app names and readable paths are not allowlisted. URL credentials are refused; missing native targets are `not_found`. Only a native `opened` receipt means opened. No typing, clicking, sending or editing is added. The host task authority layer owns outside-text policy.
+
+C-CORE also registers `FIND_FILE_SCHEMA` and `findFile` from `server/tools/find-file.ts`. Spotlight receives literal argv predicates, never shell interpolation. Results contain paths, names, modified dates and `outsideText` provenance, capped at 20 and sorted newest first. Content-only matches are outside text; name matches are not. `empty` and `unavailable` are separate outcomes. There is no `find_app`: installed applications resolve by name in the native opener.
+
+### Call-scoped deletion confirmation (VOICE-R3)
+
+`Authority` owns one exact staged event id per call. A later delete attempt for that
+id in a later finalized owner turn runs the isolated `confirm_delete_event` check
+using only that turn's owner words. Failure is closed and retryable; unrelated speech
+never confirms. A different id stages afresh, even if a different task is active.
+The runtime includes the stage in verified worker status and clears it at call end.
+Ordinary effect checks always receive available immediately preceding owner task
+words as earlier context; no host short-follow-up classification is used.
+
+### Voice and helper instruction ownership (10.10)
+
+The voice model has no source tools. A host-owned text helper reads sources and
+performs authorized actions with typed tools; the voice receives its results.
+The shipped public helper policy lives in `server/tasks/instructions.ts` and is
+limited to 3,000 characters. The composed owner presentation style follows it
+at runtime when present. Owner lore is not added by the instruction builder.
+The offline synthetic replay reads this shipped policy, not a separate copy.

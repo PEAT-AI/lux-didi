@@ -9,6 +9,7 @@ import { Store } from '../runtime/store.js';
 import { digestRead } from '../host/runtime.js';
 import type { GcalListInput, GoogleResult } from '../connectors/google.js';
 import { traceMigrations } from '../trace/schema.js';
+import { taskMigrations } from '../runtime/task-schema.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { OutboxEvent } from '../runtime/outbox.js';
 import type { Transaction } from '../contracts/storage.js';
@@ -106,12 +107,12 @@ test('host startup surfaces the typed credential admission failure and leaves no
     assert.notEqual(host.status, 0);
     assert.match(host.stderr, /CREDENTIAL_ADMISSION_FAILED/);
     const db = new DatabaseSync(join(dir, 'state.sqlite'));
-    // The pre-created Store already committed the always-applied trace owner; the refused
+    // The pre-created Store already committed the always-applied trace and task owners; the refused
     // admission must still leave zero rows for every migration set the host itself applied.
     try {
       const applied = db.prepare('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner')
         .all().map(row => [String(row['owner']), Number(row['version'])]);
-      assert.deepEqual(applied, [['trace', Math.max(...traceMigrations.map(migration => migration.version))]], 'the host committed no migration set, only the always-applied trace owner');
+      assert.deepEqual(applied, [['tasks', Math.max(...taskMigrations.map(migration => migration.version))], ['trace', Math.max(...traceMigrations.map(migration => migration.version))]], 'the host committed no migration set, only the always-applied trace and task owners');
     }
     finally { db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(web, { recursive: true, force: true }); }

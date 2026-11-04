@@ -37,3 +37,7 @@ For an explicit continuation, the host carries selected provider contents togeth
 `ChatService` in `server/chat/index.ts` is the text-conversation integration owner. Durable records, consent and production effects belong to the host, not this adapter; see [text-chat.md](text-chat.md) and [tool-owner.md](tool-owner.md).
 
 `bash scripts/check-model.sh` is the focused offline adapter check. Consult [checks.md](checks.md) for routing before running it. Synthetic HTTP and stream fixtures prove contract handling, not model availability to a real key. This documentation change does not claim a live provider request or a fresh model-check run.
+
+## Call helper model
+
+Live calls use `server/tasks/model.ts` for helper inference and isolated permission checks. Text conversation keeps this page's streaming adapter and uses the task registry and permission boundary through `server/tasks/chat.ts`; it does not create a second tool authority. The helper role defaults to OpenAI `gpt-6.1-terra` at `low` effort and supports a configured Gemini model through the same role interface. `server/tasks/worker.ts` validates typed calls and the task runtime owns cancellation and revision identity. Model selection never grants tool authority or turns an unconfirmed operation into success.

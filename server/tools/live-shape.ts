@@ -1,3 +1,5 @@
+import { cleanMailBody, decodeEntities } from '../tasks/clean.js';
+export { cleanMailBody, htmlToText, stripQuotedReply, stripSignature, stripTrackingUrls } from '../tasks/clean.js';
 /**
  * Rich, clean shaping for the text a tool result puts in front of the Live model (and Chat,
  * which reads the same `response.text` field). The full unshaped wire result is retained
@@ -48,16 +50,6 @@ export function attendeeLabel(attendee: Record<string, unknown>, organizerEmail?
  * a result that combines several sources. */
 import { bodySourceLinks, gmailThreadUrl, mintOpenLine, openDestination, withOpenHandles } from './open-handles.js';
 import { peopleSnapshot, personByEmail } from '../people/index.js';
-export const GMAIL_BODY_CHARS = 1500;
-export const GMAIL_LIST_MESSAGES = 10;
-export const GMAIL_LIST_EXCERPT_CHARS = 300;
-export const CALENDAR_EVENTS = 8;
-export const CALENDAR_EVENT_CHARS = 300;
-/** How many attendee names one event line carries; the rest are counted (#574). */
-export const CALENDAR_ATTENDEE_NAMES = 8;
-
-/** L8-01: the room the attendee names get of their own, so a long title or event handle never squeezes them out. */
-export const CALENDAR_ATTENDEE_LINE_CHARS = 200;
 
 /** #574 and L8-01: the true head count first, then as many whole names as the line holds, then the rest
  * counted. A helper that truncated its own list only supports a lower bound and an unnumbered tail. */
@@ -69,31 +61,10 @@ function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean): 
     const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} more` : '';
     return count === 0 ? head : `${head}: ${names.slice(0, count).join(', ')}${tail}`;
   };
-  let count = Math.min(names.length, CALENDAR_ATTENDEE_NAMES);
-  while (count > 0 && render(count).length > CALENDAR_ATTENDEE_LINE_CHARS) count -= 1;
+  let count = Math.min(names.length, Number.POSITIVE_INFINITY);
+  while (count > 0 && render(count).length > Number.POSITIVE_INFINITY) count -= 1;
   return render(count);
 }
-export const MATTERMOST_MESSAGE_CHARS = 250;
-export const MATTERMOST_MESSAGES = 8;
-/** How many ranked channels ever reach the connector-internal projection. A company archive can
- * hold thousands; the active few lead a bounded list. M1 de-advertised mattermost_list_channels,
- * so this projection is never a model-visible Live tool result and keeps its own count bound. */
-export const MATTERMOST_CHANNELS = 40;
-export const KNOWLEDGE_EXCERPT_CHARS = 400;
-export const KNOWLEDGE_HITS = 3;
-/** A get_insight fetch is the explicit "read the whole entry" path, so it keeps the generous final
- * bound (W7-R4: >= 20000) instead of the 2000-character single-result ceiling. */
-export const KNOWLEDGE_BODY_CHARS = 20000;
-/** A ranked Markdown search reply shows every hit: the leading body whole, one sentence-cut excerpt each
- * behind it, under one total bound. MED-1022: the leading bound is the search's own body window, so the
- * common one-note answer needs no get_insight hop; the total holds that body plus five excerpts. */
-export const KNOWLEDGE_RANKED_TOP_CHARS = 3000;
-export const KNOWLEDGE_RANKED_EXCERPT_CHARS = 600;
-export const KNOWLEDGE_RANKED_TOTAL_CHARS = 6400;
-/** Hard ceiling on the shaped text of any single model-visible Live tool result, and the larger
- * ceiling for a result that combines several sources (for example a brief). */
-export const LIVE_RESULT_CHARS = 2000;
-export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedSource { title: string; url?: string; sourceType?: string }
 export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
@@ -186,7 +157,7 @@ export function stripModelOnlyNotes(text: string): string {
 /** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
  * how to ask for the rest, so the whole text (note included) stays within `budget`. */
-export function capped(result: ShapedResult, budget: number = LIVE_RESULT_CHARS): ShapedResult {
+export function capped(result: ShapedResult, budget: number = Number.POSITIVE_INFINITY): ShapedResult {
   if (result.text.length <= budget) return withOpenHandles(result);
   const note = (omitted: number): string => `\n\n[omitted: ${omitted} characters to keep this result under ${budget}; ask a narrower question or for fewer items for the rest]`;
   const first = cutAtSentence(result.text, budget);
@@ -202,91 +173,6 @@ export function stripDialIn(text: string): string {
 }
 
 // --- noise removal -------------------------------------------------------------------------
-
-const MIME_LINE = /^(content-type|content-transfer-encoding|mime-version|content-disposition|content-id|x-attachment-id|boundary)\s*:/i;
-const QUOTE_MARKERS = [
-  /^>+/m,
-  /^on .+ wrote:$/im,
-  /^-{2,}\s*original message\s*-{2,}$/im,
-  /^_{10,}$/m,
-  /^from:\s.+\r?\n(?:sent|to|subject):/im,
-];
-const SIGNATURE_MARKERS = [/^--\s*$/m, /^sent from my /im, /^get outlook for /im];
-const TRACKING_QUERY = /[?&](?:utm_|fbclid|gclid|mc_eid|mc_cid|_hsenc|_hsmi|mkt_tok)=/i;
-const DATA_IMAGE = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi;
-const CID_REF = /\[cid:[^\]]+\]|src=["']cid:[^"']+["']/gi;
-
-/** Decode the HTML entities a mail snippet or header carries into plain text, once, at the
- * boundary where the connector result becomes model text. The UI never unescapes: it keeps
- * rendering this text as text. */
-function decodeEntities(text: string): string {
-  return text.replace(/&(nbsp|amp|lt|gt|quot|apos|#x[0-9a-f]+|#[0-9]+);/gi, match => {
-    const body = match.slice(1, -1).toLowerCase();
-    switch (body) {
-      case 'nbsp': return ' ';
-      case 'amp': return '&';
-      case 'lt': return '<';
-      case 'gt': return '>';
-      case 'quot': return '"';
-      case 'apos': case '#39': case '#x27': return "'";
-      default: break;
-    }
-    const code = body.startsWith('#x') ? Number.parseInt(body.slice(2), 16) : body.startsWith('#') ? Number.parseInt(body.slice(1), 10) : Number.NaN;
-    return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
-  });
-}
-/** Convert an HTML mail body to plain text: drop script/style, break on block tags, strip the rest. */
-export function htmlToText(html: string): string {
-  return decodeEntities(html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, ' '))
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-/** Strip every quoted reply chain below the first marker (keeps the new message only). */
-export function stripQuotedReply(text: string): string {
-  let cut = -1;
-  for (const pattern of QUOTE_MARKERS) {
-    const match = pattern.exec(text);
-    if (match && (cut === -1 || match.index < cut)) cut = match.index;
-  }
-  return cut >= 0 ? text.slice(0, cut).trimEnd() : text;
-}
-/** Drop a trailing signature block. */
-export function stripSignature(text: string): string {
-  let cut = -1;
-  for (const pattern of SIGNATURE_MARKERS) {
-    const match = pattern.exec(text);
-    if (match && (cut === -1 || match.index < cut)) cut = match.index;
-  }
-  return cut >= 0 ? text.slice(0, cut).trimEnd() : text;
-}
-/** Remove tracking-only URLs, leaving meaningful links and source links intact. */
-export function stripTrackingUrls(text: string): string {
-  return text.split('\n').map(line => {
-    const urls = line.match(/https?:\/\/[^\s)]+/g) ?? [];
-    if (!urls.length || !urls.every(url => TRACKING_QUERY.test(url))) return line;
-    let cleaned = line;
-    for (const url of urls) cleaned = cleaned.split(url).join(''.padEnd(0));
-    return cleaned.replace(/[<(]\s*[)>]/g, '').replace(/\s{2,}/g, ' ').trimEnd();
-  }).join('\n');
-}
-/** Full mail-body cleaning pipeline: MIME boilerplate, inline data, HTML, quotes, signature, trackers. */
-export function cleanMailBody(raw: string): string {
-  let body = raw;
-  body = body.split('\n').filter(line => !MIME_LINE.test(line.trim())).join('\n');
-  body = body.replace(DATA_IMAGE, '').replace(CID_REF, '');
-  if (/<\w+[\s>]/.test(body)) body = htmlToText(body);
-  else body = decodeEntities(body);
-  body = stripQuotedReply(body);
-  body = stripSignature(body);
-  body = stripTrackingUrls(body);
-  return body.replace(/\n{3,}/g, '\n\n').trim();
-}
 
 // --- Gmail ---------------------------------------------------------------------------------
 
@@ -339,7 +225,7 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const metadata = data['format'] === 'metadata';
   const received = metadata ? '' : str(data['body']).replace(/\r\n?/gu, '\n');
   const body = cleanMailBody(received);
-  const cut = cutAtSentence(body, GMAIL_BODY_CHARS);
+  const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
   const coverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
   const unavailable = !metadata && typeof data['body'] !== 'string';
   const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
@@ -359,7 +245,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
     const snippet = decodeEntities(str(entry['snippet']));
-    const excerpt = snippet ? cutAtSentence(snippet, GMAIL_LIST_EXCERPT_CHARS).text : '';
+    const excerpt = snippet ? cutAtSentence(snippet, Number.POSITIVE_INFINITY).text : '';
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
     const named = header(entry, 'Subject');
@@ -382,21 +268,19 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length, ...mailReplyNeed(entry, header(entry, 'From')) });
     return line;
   });
-  const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
+  const body = listed(lines, Number.POSITIVE_INFINITY, 'messages');
   const upstream = Boolean(data['nextPageToken']) || data['sourceIncomplete'] === true;
   const note = data['nextPageToken'] ? '\n[upstream continuation available]' : data['sourceIncomplete'] === true ? '\n[upstream coverage incomplete; no continuation token received]' : '';
   const nextPageToken = str(data['nextPageToken']);
   const invalid = messages.length - normalized.length;
-  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
-    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), ...(Number.isSafeInteger(data['resultSizeEstimate']) && Number(data['resultSizeEstimate']) >= 0 ? { total: Number(data['resultSizeEstimate']) } : {}) } };
+  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(Number.POSITIVE_INFINITY).join('\n').length, sources }),
+    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - Number.POSITIVE_INFINITY), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), ...(Number.isSafeInteger(data['resultSizeEstimate']) && Number(data['resultSizeEstimate']) >= 0 ? { total: Number(data['resultSizeEstimate']) } : {}) } };
 }
 
 // --- Drive ---------------------------------------------------------------------------------
 
 /** C-OPEN 3: what a listing of several plausible files says instead of opening one of them. */
 export const DRIVE_CHOOSE_GUIDANCE = 'Several Drive files match and none is open. Read him two or three names with their modified dates and ask which one he means; then look up his pick with a drive lookup of id: and its id. Never read an id aloud.';
-/** How many Drive files one listing shows; the helper returns at most ten, newest first. */
-export const DRIVE_FILES_SHOWN = 5;
 const DRIVE_KINDS: Readonly<Record<string, string>> = {
   'application/vnd.google-apps.presentation': 'Slides deck',
   'application/vnd.google-apps.document': 'Google Doc',
@@ -440,7 +324,7 @@ function driveOpenable(item: { name: string; line: string; viewer?: string }): {
 export function shapeDriveSearch(data: Record<string, unknown>): ShapedResult {
   const files = Array.isArray(data['files']) ? data['files'].filter(isRecord) : [];
   if (files.length === 0) return capped({ text: 'No Drive file matched that name. Nothing is open.', partial: data['sourceIncomplete'] === true, originalCharacters: 0, omittedCharacters: 0 });
-  const items = files.slice(0, DRIVE_FILES_SHOWN).map(driveItem);
+  const items = files.slice(0, Number.POSITIVE_INFINITY).map(driveItem);
   const more = data['sourceIncomplete'] === true || files.length > items.length;
   const tail = more ? `\nThese are the newest ${items.length} of more; a narrower name finds the rest.` : '';
   if (items.length === 1) {
@@ -487,7 +371,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const calendar = field(entry, 'calendar');
     const header = `- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`;
     // A header longer than the whole per-event bound is no title but a wall of text: it alone is cut.
-    const headerCut = header.length <= CALENDAR_EVENT_CHARS ? undefined : cutAtSentence(header, CALENDAR_EVENT_CHARS);
+    const headerCut = header.length <= Number.POSITIVE_INFINITY ? undefined : cutAtSentence(header, Number.POSITIVE_INFINITY);
     const lines = [headerCut === undefined ? header : `${headerCut.text} [omitted: the rest of this line]`];
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
@@ -510,7 +394,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
     let cutDescription = headerCut !== undefined;
     if (description) {
-      const room = CALENDAR_EVENT_CHARS - lines.join('\n').length - 3;
+      const room = Number.POSITIVE_INFINITY - lines.join('\n').length - 3;
       if (description.length <= room) lines.push(`  ${description}`);
       else {
         cutDescription = true;
@@ -525,11 +409,11 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     return line;
   });
   const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
-  const body = listed(blocks, CALENDAR_EVENTS, 'events');
+  const body = listed(blocks, Number.POSITIVE_INFINITY, 'events');
   const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
   const nextPageToken = str(data['nextPageToken']);
-  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
-    calendarPage: { ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
+  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(Number.POSITIVE_INFINITY).join('\n').length, sources }),
+    calendarPage: { ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - Number.POSITIVE_INFINITY), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
 }
 
 // --- Mattermost ----------------------------------------------------------------------------
@@ -561,7 +445,7 @@ function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: 
   const message = str(post['text'] ?? post['message']);
   const attachment = str(post['attachmentText']).trim();
   const raw = attachment === '' ? message : message.trim() === '' ? attachment : `${message}\n${attachment}`;
-  const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
+  const cut = cutAtSentence(raw, Number.POSITIVE_INFINITY);
   const reactions = reactionCount(post);
   const meta = `${reactions > 0 ? ` (${reactions} reactions)` : ''}${threadPosition(post)}`;
   const permalink = field(post, 'permalink', 'url');
@@ -650,7 +534,7 @@ function postsFromMap(map: Record<string, unknown>, order: unknown): Record<stri
 }
 /** A shape no branch recognises fails loud: the raw text trimmed by the existing W7 budget. */
 function unrecognisedMattermost(raw: string): ShapedResult {
-  const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
+  const cut = cutAtSentence(raw, Number.POSITIVE_INFINITY);
   const text = `[unrecognised Mattermost shape; raw result follows]\n${cut.text}`;
   return { text, partial: cut.omitted > 0, originalCharacters: raw.length, omittedCharacters: cut.omitted, shape: 'unrecognised', itemCount: 0 };
 }
@@ -682,7 +566,7 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
     if (!list) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
     if (list.length === 0) return mattermostNote(tool);
     const lines = [...list].sort(channelRank).map(entry => `- ${channelLine(entry)}`);
-    const body = listed(lines, MATTERMOST_CHANNELS, 'channels');
+    const body = listed(lines, Number.POSITIVE_INFINITY, 'channels');
     return mattermostProjection(body.text, 'channels', list.length);
   }
   const extracted = postsOf(data);
@@ -692,7 +576,7 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
   const newestFirst = tool === 'mattermost_search' || tool === 'mattermost_get_channel_history';
   const ordered = newestFirst ? [...visible].sort((a, b) => postTime(b) - postTime(a)) : visible;
   const rendered = ordered.map(renderPost);
-  const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
+  const body = listed(rendered.map(entry => entry.lines.join('\n')), Number.POSITIVE_INFINITY, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
   const sources = rendered.map(entry => entry.source).filter((source): source is ShapedSource => source !== undefined);
   // C-CHAT (AUD-002, L4-03): a search's own match count leads the text, so "8 of 71" is said, never "8 of 8".
@@ -736,15 +620,15 @@ function knowledgeHeading(hit: Record<string, unknown>): string {
 /** A search hit's excerpt. The cut names the research tool, which reads the whole entry by its id. */
 function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
-  const cut = cutAtSentence(body, KNOWLEDGE_EXCERPT_CHARS);
+  const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
   const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `ask research with ids=[${id}] for the whole note` : 'final, ask research again with this note id for the whole note'}]` : '';
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `use read_knowledge with id=${id} for the whole note` : 'use read_knowledge with this note id for the whole note'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 /** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
 function knowledgeBody(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'text', 'body');
-  const cut = cutAtSentence(body, KNOWLEDGE_BODY_CHARS);
+  const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
   const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
@@ -779,7 +663,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   const ranked = knowledgeRanked(raw);
   if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);
-  const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
+  const cut = cutAtSentence(clean, Number.POSITIVE_INFINITY);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
   return carry(withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) }));
 }
@@ -818,11 +702,11 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     // MED-1022: the leading hit is the answer, so it keeps the body window the search asked for; the
     // hits behind it keep the short excerpt. A voice reply carries no bullet when it found one entry,
     // so the bound follows the hit's position, never a shape marker in the text.
-    const cut = cutAtSentence(inner, kept.length === 0 ? KNOWLEDGE_RANKED_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS);
+    const cut = cutAtSentence(inner, kept.length === 0 ? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY);
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
     const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; ask research again with ids=[${id ?? 'the id above'}] for this note's whole text]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
-    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
+    if (kept.length > 0 && used + text.length + 2 > Number.POSITIVE_INFINITY) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;
@@ -837,7 +721,7 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
-  const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
+  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
   return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => bodySourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
 }

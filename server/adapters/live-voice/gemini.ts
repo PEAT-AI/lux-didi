@@ -34,7 +34,6 @@ const QUEUE_LOG_BYTES = 64 * 1024;
 const QUEUE_LOG_INTERVAL_MS = 1_000;
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
 // so a memory save never interrupts the turn; every read tool stays BLOCKING.
-const MEMORY_TOOL = 'remember_note';
 const live38Pattern = /gemini-3\.8[^/]*live/;
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: 400,
@@ -175,11 +174,10 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
     // The port carries the original JSON schemas; this adapter owns its own wire dialect.
-    const declarations = request.tools?.map(declaration => ({
-      ...declaration, parameters: geminiDialect(declaration.parameters),
-      ...(this.capabilities.supportsToolScheduling
-        ? { behavior: declaration.name === MEMORY_TOOL ? 'NON_BLOCKING' : 'BLOCKING' } : {}),
-    }));
+    const declarations = [{ name: 'delegate', description: 'Attach to the host task for this owner request and return its spoken answer.',
+      parameters: geminiDialect({ type: 'object', properties: { request: { type: 'string' } }, required: ['request'] }),
+      ...(this.capabilities.supportsToolScheduling ? { behavior: 'BLOCKING' } : {}),
+    }];
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
@@ -237,9 +235,6 @@ class Session implements LiveVoiceSession {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private cleaned = false;
   private pendingCalls: LiveToolCall[] = [];
-  private researchCalls = 0;
-  private researchAdmissions = new Set<string>();
-  private researchAwaitingInput = false;
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
   private initialTurnComplete = false;
@@ -422,29 +417,12 @@ class Session implements LiveVoiceSession {
         if (!this.isReady || this.pendingCalls.length || !object(message.toolCall) || !Array.isArray(message.toolCall.functionCalls) || !message.toolCall.functionCalls.length || message.toolCall.functionCalls.length > 16) fail('protocol_error');
         const calls = message.toolCall.functionCalls;
         if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
-        const admitted: LiveToolCall[] = [];
-        const refused: LiveToolResponse[] = [];
-        for (const call of structuredClone(calls) as LiveToolCall[]) {
-          if (call.name === 'research' && this.researchCalls >= 6) {
-            this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
-            refused.push({ id: call.id, name: call.name, response: {
-              status: 'refused', reason: 'research_cap_reached', message: 'research cap reached for this question',
-            } });
-          } else {
-            if (call.name === 'research') { this.researchCalls += 1; this.researchAdmissions.add(call.id); }
-            admitted.push(call);
-          }
-        }
-        this.researchAwaitingInput = true;
-        this.pendingCalls = admitted;
-        if (refused.length) {
-          const delivered = this.write(JSON.stringify({ toolResponse: { functionResponses: refused } }));
-          for (const call of refused) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
-          if (!delivered) return;
-        }
+        if (calls.some(call => call.name !== 'delegate' || typeof (call.args as ObjectValue).request !== 'string'
+          || !(call.args as ObjectValue).request || Object.keys(call.args as ObjectValue).join(',') !== 'request')) fail('protocol_error');
+        this.pendingCalls = structuredClone(calls) as LiveToolCall[];
         for (const call of this.pendingCalls) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
         this.emit({ type: 'modelTurnStarted' });
-        if (admitted.length) this.emit({ type: 'toolCall', calls: structuredClone(admitted) });
+        if (this.pendingCalls.length) this.emit({ type: 'toolCall', calls: structuredClone(this.pendingCalls) });
       }
       if ('toolCallCancellation' in message) {
         if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
@@ -466,9 +444,6 @@ class Session implements LiveVoiceSession {
         const activity = message.voiceActivity;
         if (!object(activity)) fail('protocol_error');
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') {
-          this.researchCalls = 0;
-          this.researchAdmissions.clear();
-          this.researchAwaitingInput = false;
           events.push({ type: 'waitingForInput', value: true });
         }
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
@@ -569,11 +544,6 @@ class Session implements LiveVoiceSession {
         // text-less outputTranscription together. Skipping the empty transcription keeps the audio.
         if ('text' in transcription || transcription.finished === true) {
           const text = 'text' in transcription ? this.text(transcription.text) : '';
-          if (type === 'inputTranscription' && text.trim().length && this.researchAwaitingInput) {
-            this.researchCalls = 0;
-            this.researchAdmissions.clear();
-            this.researchAwaitingInput = false;
-          }
           if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
           events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
         }
@@ -661,9 +631,7 @@ class Session implements LiveVoiceSession {
       new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
     // 3.8 Live only: a per-tool scheduling hint keeps a memory save from interrupting the turn; other
     // models keep the exact response object. The host remains the sole executor either way.
-    const responses = this.capabilities.supportsToolScheduling
-      ? input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response }))
-      : input.responses;
+    const responses = input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     const preparedAt = Date.now();
     for (const call of input.responses) {
@@ -673,9 +641,6 @@ class Session implements LiveVoiceSession {
     const delivered = this.write(frame);
     for (const call of input.responses) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
     if (!delivered) return 'failed';
-    for (const { id, response } of input.responses) {
-      if (response['state'] === 'refused' && this.researchAdmissions.delete(id)) this.researchCalls -= 1;
-    }
     this.pendingCalls = [];
     return 'sent';
   }

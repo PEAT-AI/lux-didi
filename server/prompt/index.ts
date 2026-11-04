@@ -1,4 +1,4 @@
-import { EVIDENCE_SOURCES_GUIDE } from './backend-procedure.js';
+import { EVIDENCE_SOURCES_GUIDE } from './source-guidance.js';
 import { createHash } from 'node:crypto';
 import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters/model/types.js';
 import { PromptCompileError, type OwnerProfileSnapshot, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';

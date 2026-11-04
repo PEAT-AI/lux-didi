@@ -15,7 +15,8 @@ const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
 
 export async function runTools(options: LoopOptions): Promise<LoopResult> {
   if (!Number.isSafeInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 32) throw Error('invalid_step_limit');
-  if (options.registry.length > 32 || new Set(options.registry.map(t => t.name)).size !== options.registry.length ||
+  // The host-owned canonical catalog includes distinct read schemas; keep it bounded without dropping capabilities.
+  if (options.registry.length > 128 || new Set(options.registry.map(t => t.name)).size !== options.registry.length ||
     options.registry.some(t => !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(t.name))) throw Error('invalid_tool_registry');
   // Snapshot inputs. Neither model parts nor tool output are authority.
   const host = structuredClone(options.host);

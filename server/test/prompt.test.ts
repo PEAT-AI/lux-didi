@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_VOICE_TOOLS, NAYA_BACKEND_PROCEDURE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -330,71 +330,64 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 
 // N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
-test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
-  const { NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  // W5-R1: #453 folded the cut-short rule into one enumeration of outcome types. Timeout sits beside no
-  // match in that one sentence, so an empty read and a cut read stay apart without a second rule.
-  const outcomes = 'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.';
-  assert.ok(NAYA_VOICE_TOOLS.includes(outcomes), 'a cut read is named separately from a no match in one sentence');
-  assert.ok(NAYA_VOICE_TOOLS.indexOf('timeout') > NAYA_VOICE_TOOLS.indexOf('no match'), 'the cut read is stated after the no match, so neither is read as the other');
-  assert.ok(NAYA_TOOLS.includes(outcomes), 'the direct-tool conduct keeps the same distinction');
+test('compiled voice instructions carry the work policy instead of lookup announcements', async () => {
+  const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: [] }).text;
+  assert.equal(instruction.split(NAYA_WORK_DELIVERY).length - 1, 1);
+  assert.doesNotMatch(instruction, /Only the host bridges lookups|after announcing a check|# Research procedure/);
 });
 
-test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  // VOICE-R1: waiting behaviour is one persona rule, and no section tells the model to speak before every lookup.
-  assert.equal(NAYA_VOICE_TOOLS.includes("Silence while you look something up is fine."), false, 'C-LIVE: silence while looking is no longer licensed');
-  assert.ok(NAYA_VOICE_TOOLS.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
-  // C-OPENER 10.9: the field calls said a waiting phrase with no call behind them, once after a direct ask.
-  // The licence to announce a wait is gone; the rule names the two situations instead of a line to say.
-  assert.equal(NAYA_VOICE_TOOLS.includes('need a moment'), false, 'no text invites a wait with no call behind it');
-  assert.ok(NAYA_VOICE_TOOLS.includes('A wait belongs only to a response that really makes a call'), 'a wait is tied to a response that makes the call');
-  assert.ok(NAYA_VOICE_TOOLS.includes('a direct ask gets the call, not an announcement of it'), 'a direct ask gets the call, not an announcement');
-  for (const banned of ['never go silent', 'say one short line', 'Nothing has been sent or booked', 'Before an actual lookup']) {
-    assert.equal((NAYA_LIVE_BASE + NAYA_VOICE_TOOLS + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
+test('public voice and worker policies contain judgments, not lines to recite', async () => {
+  const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
+  const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), 'cfc4f1706de32f5cd2f993df78781469ccd3f26b5ca80a6d096408458c6c2350', 'Architect-authored voice text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '016aaf730e5a47748127cd7e6d230442421eca2575542aba29f616b301a2a344', 'Architect-authored worker text stays exact');
+  assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
+  for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
+    assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
+    assert.doesNotMatch(text, /["“][^"”]+["”]/);
   }
-  // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
-  assert.ok(instruction.includes('Answer from these instructions without a lookup when they already answer it.'), 'the no-lookup answer rule sits beside the cue');
-  assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
-  // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
-  for (const moved of ['put independent source lookups in one research plan so the host can run them concurrently', 'consuming retained local remainder before another source read']) {
-    assert.equal(instruction.includes(moved), false, `the voice prompt carries no moved procedure sentence: ${moved}`);
-    assert.ok(NAYA_BACKEND_PROCEDURE.includes(moved), `the backend procedure carries it: ${moved}`);
-  }
-  // PV1-R3 and 3p: the retired cue rules are absent from the whole composed instruction, not just from the base.
-  for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
-    assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
-  }
-  assert.equal((NAYA_VOICE_TOOLS + instruction).split('never use a stock waiting line').length - 1, 1, 'the waiting rule is stated once');
-  assert.ok(NAYA_VOICE_TOOLS.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
+  assert.doesNotMatch(NAYA_WORK_DELIVERY, /\b[a-z]+_[a-z_]+\b/);
+  assert.match(NAYA_WORK_DELIVERY, /MUST be handed off in the same turn/);
+  assert.match(WORKER_INSTRUCTIONS, /speech recognition/i);
+  assert.equal(workerInstructions(), WORKER_INSTRUCTIONS);
 });
 
-// --- W5: the four audit rules reach the Gemini voice instruction too, and nothing they replaced returns --
-test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
-  for (const rule of [
-    'Open a fresh call on one current specific, never a generic ready-to-help line',
-    'after announcing a check, say what it found before the turn ends',
-    'offer it in one short plain statement, not a question and not a stock line',
-    'name any failed source in one clause',
-  ]) assert.equal(instruction.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
-  for (const gone of [
-    'Vary how you start replies; never open two replies in a row with the same word.',
-    'Never hand ordinary continuation back to the owner as a permission question',
-  ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
-  assert.equal(instruction.split('Only the host bridges lookups.').length - 1, 1, 'the silence rule is still stated once');
-});
-
-test('#665: the research procedure answers with what it has instead of chasing a page-limit note', () => {
-  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
-  const rule = 'A page limit or more-available note is not a gap to chase; answer with what you have.';
-  assert.equal(NAYA_BACKEND_PROCEDURE.split(rule).length - 1, 1, 'the procedure states the page-limit rule once');
-  assert.equal(instruction.split(rule).length - 1, 1, 'and the compiled instruction carries it once');
-});
-
-test('direct102 public procedure acts on direct asks and states the enforced one-operation budget', () => {
-  assert.match(NAYA_VOICE_TOOLS, /direct asks without asking permission/i);
-  assert.match(NAYA_VOICE_TOOLS, /never send him to his own device/i);
-  assert.doesNotMatch(NAYA_VOICE_TOOLS, /two research operations|retain confirmation/i);
-  assert.match(NAYA_BACKEND_PROCEDURE, /One owner turn allows one research operation/);
-});
+for (const provider of ['openai', 'gemini'] as const) {
+  test(`${provider} accepts the composed work policy with no tools on its fake wire`, async t => {
+    const { FakeSocket, FakeClock, options } = await import('./openai-live-voice-fixture.js');
+    const { OpenAiLiveVoiceAdapter, GeminiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
+    const { NAYA_WORK_DELIVERY, composeLiveSessionInstruction } = await import('../prompt/live-persona.js');
+    const clock = new FakeClock();
+    let sent!: () => void;
+    const firstFrame = new Promise<void>(resolve => { sent = resolve; });
+    class CaptureSocket extends FakeSocket {
+      override send(frame: string, callback?: (error?: Error) => void) { super.send(frame, callback); sent(); }
+    }
+    const socket = new CaptureSocket();
+    const adapterOptions = options({ clock, socketFactory: () => {
+      queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+      return socket as unknown as import('ws').default;
+    } });
+    const adapter = provider === 'openai' ? new OpenAiLiveVoiceAdapter(adapterOptions)
+      : new GeminiLiveVoiceAdapter({ ...adapterOptions, modelId: 'models/synthetic-live', voice: 'SyntheticVoice',
+        route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic-live', dataClasses: ['ordinary'] } });
+    const base = composeLiveInstruction({ base: NAYA_LIVE_BASE });
+    const accepted = composeLiveSessionInstruction({ text: base.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+    const session = adapter.open({ system: { text: accepted.text, dataClass: 'ordinary' }, dataClasses: ['ordinary'], tools: [], opening: 'user_first' },
+      { signal: new AbortController().signal, deadlineMs: Date.now() + 60_000 });
+    t.after(() => session.close());
+    await Promise.race([firstFrame, session.ready.then(() => { assert.ok(socket.sent.length > 0); })]);
+    const frame = JSON.parse(socket.sent[0]!) as {
+      session?: { instructions: string };
+      setup?: { systemInstruction: { parts: { text: string }[] } };
+    };
+    socket.deliver(provider === 'openai' ? { type: 'session.started', session: { id: 'synthetic-session' } } : { setupComplete: {} });
+    await session.ready;
+    const instruction = provider === 'openai' ? frame.session!.instructions : frame.setup!.systemInstruction.parts[0]!.text;
+    assert.equal(instruction.split(NAYA_WORK_DELIVERY).length - 1, 1);
+    assert.doesNotMatch(instruction, /# Research procedure/);
+    assert.ok(instruction.includes('MUST be handed off in the same turn'));
+  });
+}

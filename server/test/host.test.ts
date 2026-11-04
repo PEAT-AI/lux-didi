@@ -1,3 +1,5 @@
+import { canonicalTaskFixture } from './canonical-task-fixture.js';
+import { syntheticTaskFactory } from './synthetic-task.js';
 import { discoveryExceptionClass } from '../adapters/mcp/adapter.js';
 import { WebSocket } from 'ws';
 import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
@@ -662,15 +664,18 @@ test('durable diagnostics rotate privately and persist only safe structured even
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('host diagnostics admit the release 3c metadata-only events and strip free text', () => {
+test('host diagnostics admit task metadata, reject retired research runs and strip free text', () => {
   const researchId = '3f2a9c1e-0b7d-4a2f-9c3e-1d2b3a4c5d6e';
   const run = { event: 'research_run', researchId, questionClass: 'quick_fact', rounds: 2, perRound: [{ candidates: [{ kind: 'calendar_window', pUseful: 0.6 }], chosen: ['calendar_window'] }], stopReason: 'answered', status: 'answered', ops: 3, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 12 }], elapsedMs: 120, deadAirMs: 5, selectorMs: 20, fallbackUsed: false, replyBytes: 340, driver: 'selector', unchecked: ['mail'], canContinue: true, findingChars: [12] };
-  assert.deepEqual(safeEvent(run), run);
-  // #260: the three drivers are admitted as an enum; the run line keeps the field it was given.
+  assert.equal(safeEvent(run), undefined);
+  const delivery = { event: 'task_delivery', taskId: 'synthetic_task', revision: 1, state: 'sent' };
+  assert.deepEqual(safeEvent(delivery), delivery);
+  assert.equal(safeEvent({ ...delivery, text: 'owner secret' }), undefined);
+  // The retired research_run event is refused regardless of its former driver.
   for (const driver of ['selector', 'fallback', 'single-source-hint']) {
-    assert.deepEqual(safeEvent({ ...run, driver }), { ...run, driver });
+    assert.equal(safeEvent({ ...run, driver }), undefined);
   }
-  assert.deepEqual(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), { event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 });
+  assert.equal(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), undefined);
   assert.deepEqual(safeEvent({ event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 }), { event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 });
   assert.deepEqual(safeEvent({ event: 'live_dead_air', deadAirMs: 1500 }), { event: 'live_dead_air', deadAirMs: 1500 });
   assert.deepEqual(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false }), { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false });
@@ -682,7 +687,7 @@ test('host diagnostics admit the release 3c metadata-only events and strip free 
   assert.equal(safeEvent({ ...run, driver: 'single_source_hint' }), undefined);
   const withoutDriver: Record<string, unknown> = { ...run };
   delete withoutDriver.driver;
-  assert.deepEqual(safeEvent(withoutDriver), withoutDriver);
+  assert.equal(safeEvent(withoutDriver), undefined);
   assert.equal(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: [], elapsedMs: 9, summary: 'owner secret' }), undefined);
   assert.equal(safeEvent({ event: 'live_dead_air', deadAirMs: 1500, text: 'owner secret' }), undefined);
   assert.equal(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30, args: 'owner secret' }], toolResponseWhileGenerating: false }), undefined);
@@ -1679,7 +1684,7 @@ test(`host launch-to-open recovery=${recoveredAt} admission=${admission}, accept
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
     const endpoints = () => [{ id: 'fixture', connector: 'lux-knowledge',
       state: now >= recoveredAt ? 'connected' : 'error', retrying: now < recoveredAt }];
-    owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+    owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
       now: () => now, timeZone: 'UTC', tools: { owner: runtime.owner, connectionIds: () => [], status: () => ({ endpoints: endpoints() }) } });
     // Before this change the host invoked create directly, without this barrier.
     if (admission) await waitForStartupConnectors({ startedAt: 0, now: () => now, endpoints, pause: async ms => { now += ms; } });
@@ -1775,15 +1780,17 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       const { data: session } = await response.json();
       const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
       assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
-      const tools = host.tools.owner.definitions(session.liveSessionId);
-      assert.ok(tools.some(tool => tool.name === 'search_knowledge'));
-      const read = tools.find(tool => tool.name === 'get_insight');
-      assert.equal(Boolean(read), recoveredAt !== Infinity, 'session receives the recovered endpoint declaration');
-      if (read) {
-        const properties = read.parameters['properties'] as Record<string, { type: string; items: { type: string } }>;
-        assert.equal(properties['ids']?.type, 'array');
-        assert.equal(properties['ids']?.items.type, 'integer');
-      }
+      const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', recoveredAt === Infinity ? ['fixture-search'] : ['fixture-search', 'fixture-read']);
+      try {
+        assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
+        const read = task.tools.find(tool => tool.name === 'read_knowledge');
+        assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
+        if (recoveredAt === Infinity) {
+          const unavailable = await task.runtime.runTool('read_knowledge', { id: '1', cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
+        }
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string', minLength: 1 });
+      } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       const incomplete = events.filter(event => event.event === 'live_tools_incomplete');

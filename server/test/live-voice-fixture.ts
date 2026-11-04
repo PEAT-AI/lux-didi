@@ -75,7 +75,7 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
     async frame(n: number): Promise<void> {
       if (frames.length >= n) return;
-      await new Promise<void>(resolve => waiters.set(n, resolve));
+      await fixtureUntil(() => frames.length >= n, `provider frame ${n}; received ${frames.length}`);
     },
     send(value: unknown) { peer!.send(JSON.stringify(value), { binary: frameMode === 'binary' }); },
     sendRaw(value: string | Buffer) { peer!.send(value, { binary: frameMode === 'binary' }); },
@@ -115,4 +115,19 @@ export function speechActivityFrames(send: (value: unknown) => void) {
   send({ serverContent: {} });
   send({ serverContent: { modelTurn: { parts: [] } }, voiceActivity: { type: 'ACTIVITY_END' } });
   send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+}
+
+/** Drain local synthetic work without spending a real provider timeout on a missing event. */
+export async function fixtureUntil(condition: () => boolean, label: string): Promise<void> {
+  for (let turn = 0; turn < 1000; turn++) {
+    if (condition()) return;
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  if (!condition()) throw new Error(`Synthetic fixture did not produce ${label}`);
+}
+export async function fixtureSettled<T>(promise: Promise<T>, label: string): Promise<T> {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  await fixtureUntil(() => settled, label);
+  return promise;
 }

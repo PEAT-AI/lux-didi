@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../dist/runtime/store.js';
+import { canonicalTaskFixture } from '../dist/test/canonical-task-fixture.js';
+import { TASK_ACCOUNT, TASK_RESOURCE } from '../dist/tasks/tools.js';
 import { createToolsOwner, toolsMigrations } from '../dist/tools/index.js';
 import { sha256 } from '../dist/tools/canonical.js';
 import { createMcpAdapter } from '../dist/adapters/mcp/adapter.js';
@@ -49,22 +51,29 @@ async function harness() {
       registry.approve({ endpointId: policy.connectionId, schemaDigest: policy.schemaDigest, generation: 1, account: 'local', resource: policy.connectionId, toolNames: policy.toolNames, effect: 'read' });
     }
     let execution = 0;
+    const tasks = [];
     function run(runId) {
       const acceptance = { ownerId: store.assistantId, actorId: 'actor', runId, authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: endpoints.map(entry => entry.id) };
       const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
       authorities.set(runId, { ...acceptance, acceptedRunHash: accepted.sha256 });
-      return async (toolName, args) => {
+      const task = canonicalTaskFixture(store, owner, runId, 'Read synthetic configured sources', policies.map(policy => policy.connectionId));
+      tasks.push(task);
+      return async (nativeName, nativeArgs) => {
+        const toolName = nativeName === 'mattermost_chat' ? `chat_${nativeArgs.intent}` : ({ mattermost_attention: 'chat_attention', calendar_list_events: 'calendar_events', drive_search_files: 'search_drive', gmail_search_messages: 'search_mail' }[nativeName] ?? nativeName);
+        const definition = task.tools.find(tool => tool.name === toolName);
+        assert.ok(definition?.execute, toolName);
+        const values = { ...nativeArgs, query: nativeArgs.query ?? 'synthetic', start: nativeArgs.timeMin, end: nativeArgs.timeMax };
+        const args = Object.fromEntries(Object.keys(definition.parameters.properties).map(key => [key, values[key] ?? null]));
         const id = execution++;
-        const intent = { runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: `${runId}:1:${id}`, toolName, argumentsHash: sha256(JSON.stringify(args)), callId: `call-${id}`, accountId: 'local', resourceId: toolName.startsWith('mattermost') ? 'chat' : toolName === 'search_knowledge' ? 'knowledge' : 'google' };
+        const intent = { runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: `${runId}:1:${id}`, toolName, argumentsHash: sha256(JSON.stringify(args)), callId: `call-${id}`, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE };
         assert.equal(owner.journal.intent(intent), 'fresh');
-        const definition = owner.definitions(runId).find(tool => tool.name === toolName);
-        assert.ok(definition?.execute, `missing ${toolName}`);
         const result = await definition.execute(args, { ...intent, signal: new AbortController().signal });
         assert.equal(result.status, 'completed', `${toolName}: ${JSON.stringify(result)}`);
+        assert.equal(store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [intent.executionId])).state, 'completed', 'the canonical read actually succeeded');
         return result;
       };
     }
-    return { adapter, memory, run, get puts() { return puts; }, get now() { return clock; }, advance() { clock += 1000; }, intercept(fn) { intercept = fn; }, async close() { await adapter.close(); store.close(); rmSync(home, { recursive: true, force: true }); } };
+    return { adapter, memory, run, get puts() { return puts; }, get now() { return clock; }, advance() { clock += 1000; }, intercept(fn) { intercept = fn; }, async close() { for (const task of tasks) task.close(); await adapter.close(); store.close(); rmSync(home, { recursive: true, force: true }); } };
   } catch (error) { await adapter.close(); store.close(); rmSync(home, { recursive: true, force: true }); throw error; }
 }
 

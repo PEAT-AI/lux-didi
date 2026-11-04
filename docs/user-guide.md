@@ -70,7 +70,7 @@ chmod 600 "$HOME/.config/lux-didi/live.json" "$HOME/.config/lux-didi/openai-prim
   --config-dir "$HOME/.config/lux-didi"
 ```
 
-The selector validates paths, not the API key's remote validity. Restart the app deliberately after editing files. Text chat uses a separately configured Gemini text profile/key; selecting OpenAI voice does not configure text chat. [Provider configuration](provider-configuration.md) covers the operator CLI, Gemini setup, binding changes and other supported voice choices.
+The selector validates paths, not the API key's remote validity. Restart the app deliberately after editing files. The helper uses its own model roles, defaulting to OpenAI, so configure the matching protected key even if voice uses another provider. [Provider configuration](provider-configuration.md#helper-and-permission-check-models) explains `tasks.json`. Text chat uses a separately configured Gemini text profile/key; selecting OpenAI voice does not configure text chat. [Provider configuration](provider-configuration.md) covers the operator CLI, Gemini setup, binding changes and other supported voice choices.
 
 ## 3. Make the first call
 
@@ -78,13 +78,13 @@ Open Lux Didi from Finder. An interactive launch attempts one call automatically
 
 Try a non-sensitive greeting. Confirm that you hear Naya, can mute/resume and can stop the call. This verifies more than a locally accepted profile: it exercises the provider and your actual microphone/playback path. Use Stop or say **"Naya, stop listening"** when finished.
 
-Login and installer relaunches do not automatically connect. In those cases, tap the orb to start. **Getting started** in the menu shows permission and connection next steps. Microphone permission and **Input Monitoring** for Right Command are different macOS grants.
+Login and installer relaunches do not automatically connect. In those cases, use bare Right Command, the status menu, the Dock menu or the window pill to start. **Getting started** in the menu shows permission and connection next steps. Microphone permission and **Input Monitoring** for Right Command are different macOS grants.
 
 ## Everyday controls
 
 | Action | Control |
 | --- | --- |
-| Start, mute, resume | Tap the orb or bare Right Command |
+| Start, mute, resume | Bare Right Command, status menu, Dock menu or window pill |
 | End the call | Stop, or "Naya, stop listening" |
 | Open the full window | **Open Naya app** in the menu; Control Option Shift Space |
 | Show/hide the orb | Control Option Space |
@@ -92,7 +92,7 @@ Login and installer relaunches do not automatically connect. In those cases, tap
 | Configure the single key | **Right Command tap** in the menu; allow Input Monitoring if requested |
 | Inspect settings or safe support state | Settings / **Copy diagnostics** |
 
-Only a bare Right Command tap counts; holding it or using a normal Command chord must not steal other apps' shortcuts. Muting Naya does not change system input/output or another application's audio. Closing the full window does not end the call. [Mac experience](mac-experience.md) explains the native ownership.
+Clicking the orb does not start or stop a call. Only a bare Right Command tap counts; holding it or using a normal Command chord must not steal other apps' shortcuts. Muting Naya does not change system input/output or another application's audio. Closing the full window does not end the call. [Mac experience](mac-experience.md) explains the native ownership.
 
 <a id="connector-setup"></a>
 
@@ -138,9 +138,9 @@ Lux Knowledge uses its configured endpoint/account credentials and read approval
 - **Text:** once the Gemini text profile is configured, start a connected conversation in the full window, review the provider disclosure and send. Partial text is provisional; check the saved final outcome before retrying a failed turn.
 - **Local memory:** say "Naya, remember that ..." and inspect Memory. A local note is not a remote source edit. **Save note** in the native draft saves locally; **Send to Naya** starts conversation work.
 - **Dictated Lux note:** explicitly ask to save the dictated note. Success is a write receipt, not a model's intention.
-- **Composed Lux note:** this optional flow defaults **off** (`features.composedNotes` in `live.json`). If explicitly enabled, ask Naya to compose a note, listen to the host readback and confirm it. Staging is not saving. It creates a note, not arbitrary edits/deletes in Lux Knowledge.
+- **Prepare or save a note:** ask naturally. The helper can stage a local note or save through the configured vault writer. A local staging result is not a remote save; only the write receipt proves a vault save.
 
-The notes exporter is a separate feature from composed notes and local prompt selection; `features.notesExport` has its own switch. Review [selected-memory.md](selected-memory.md) and [tool-owner.md](tool-owner.md) before changing export policy.
+Local memories are not automatically exported when a call closes. Ask explicitly when you want a vault save. Review [selected-memory.md](selected-memory.md) for what is included in later conversation context.
 
 ## Deletion, privacy and failures
 

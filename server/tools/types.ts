@@ -1,7 +1,5 @@
 import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
-import type { RememberNotePort } from './remember.js';
-import type { VaultDispatchPort } from './vault-write.js';
 import type { JsonObject as JsonValue } from '../adapters/model/types.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -9,7 +7,7 @@ import type { HistorySourceRef } from '../domain/history-reader.js';
 import type { ResultScope } from '../adapters/mcp/port.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
-import type { DataClass, HostContext, JsonObject, ToolResultBinding, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolResultBinding, ToolCallIntent, ToolCallJournal, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 
 export interface HttpConnectionEndpoint { id: string; url: string; account: string; resource: string; credentialRef: string | null }
 /** Explicit operator-approved local executable binding; credentialRef is strictly null. */
@@ -41,7 +39,7 @@ export const HOST_EVIDENCE: unique symbol = Symbol('host-evidence');
 export type HostEvidenceRef = { kind: 'remote-page'; parent: RemoteResultLineage } | { kind: 'local-history'; sources: HistorySourceRef[] }
   | { kind: 'remote-body'; source: ResultScope; entitySha256: string; bodySha256: string; expiresAt: number; tool: string; body: string;
       upstreamComplete: boolean | 'unknown'; upstreamOmitted: boolean | 'unknown' };
-export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; [HOST_EVIDENCE]?: HostEvidenceRef }
+export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; sourcePolicyRefs?: readonly { connectionId: string; sha256: string }[]; [HOST_EVIDENCE]?: HostEvidenceRef }
 export type EvidenceConsumption = { state: 'allowed'; evidence: HostEvidenceRef } | { state: 'refused'; reason: string };
 export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
@@ -76,7 +74,7 @@ export interface ToolsOwnerOptions {
   alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   /** The zone the host resolves wall times in; the process zone when unset. */
   timezone?: string;
-  log?: (event: ToolFailureEvent) => void;
+  log?: (event: ToolFailureEvent | { event: 'tool_redaction'; tool: string; count: number }) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
@@ -134,7 +132,10 @@ export interface OwnerRequestPort {
 }
 
 export interface ToolsOwner {
-  readonly ownerRequests: OwnerRequestPort;
+  taskIntent(context: import('../adapters/model/types.js').ExecutionContext, name: string, args: JsonObject): ToolCallIntent;
+  taskExecutors(sessionId: string): import('../tasks/connectors.js').ExistingExecutors;
+  closeTaskCall(sessionId: string): void;
+  taskBindings(connectionIds: readonly string[]): import('../tasks/connectors.js').BoundConnector[];
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;
@@ -148,8 +149,7 @@ export interface ToolsOwner {
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
-  definitions(runId: string): ToolDefinition[];
-  liveDefinitions(runId: string, rememberNote: RememberNotePort, vaultDispatch?: VaultDispatchPort, stageNote?: StageNotePort, composedNotes?: boolean): ToolDefinition[];
-  liveRememberApproved(): boolean;
-  complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
+  taskVisible(runId: string, name: string): boolean;
+  runTask<T>(call: ToolCallIntent, args: JsonObject, body: () => T): T;
+  complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly import('../adapters/mcp/port.js').SourceDispatchRef[], sourcePolicyRefs?: ModelSnapshot['sourcePolicyRefs']): ToolResultRef;
 }

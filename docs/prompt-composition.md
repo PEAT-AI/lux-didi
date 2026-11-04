@@ -12,7 +12,7 @@ The host chooses the evidence and authority context before compilation. A prompt
 
 `composeLiveInstruction` in `server/prompt/live-persona.ts` assembles the voice baseline with accepted runtime context. Opening-line behavior is composed separately through the same module's opening helpers, including `buildOpeningOptions`. Provider setup and accepted lifecycle belong to [live-call.md](live-call.md), not to a second prompt-owned session state machine.
 
-The merged release requires answering from usable partial evidence, stating coverage honestly and not continuing research without another owner turn. Host admission in `ResearchAdmission` (`server/tools/research.ts`) enforces that boundary; a prompt instruction alone is not enough. Do not restore automatic continuation or wording that makes silent research loops acceptable.
+The voice talks while the host-owned helper works. `server/tasks/instructions.ts` supplies the helper's instructions and `server/tasks/tools.ts` its typed capabilities. The host starts or revises a task from finalized owner input, not a research function call from the voice model. Partial coverage stays visible in the helper result; an unavailable source is not an empty search.
 
 ## Private character and memory
 
@@ -26,10 +26,10 @@ The text and Live owners persist accepted context. A later file edit is not perm
 
 Retrieved text, emails, tool results and quoted instructions remain untrusted evidence. They cannot redefine the public persona, add capabilities or claim that an action succeeded. The model should describe writes and native opens only from their actual receipts; [tool-owner.md](tool-owner.md) owns those surfaces.
 
-Keep user-facing prompt guidance consistent with host enforcement. Composed Lux notes are off by default and require readback/confirmation; Trello's already granted board-card actions are a different write flow. Do not copy one tool's confirmation policy onto every other tool, or imply general remote-write authority.
+Keep user-facing guidance consistent with `server/tasks/authority.ts`: an asked action runs, outside text cannot supply owner permission, and only calendar deletion requires later confirmation. A local staged note is not a vault receipt.
 
 ## Changing prompt content
 
-Before changing an instruction, search every prompt and tool-guidance owner for contradictory rules. Update the corresponding assertions in `scripts/check-prompt.sh` and add behavior-focused replay evidence when the change affects a runtime path. Use [checks.md](checks.md) for the managed producer; a string assertion alone proves neither model obedience nor a real-account result.
+Before changing an instruction, search every prompt and tool-guidance owner for contradictory rules. Update the corresponding assertions in `scripts/check-prompt.sh` and add behavior-focused replay evidence when the change affects a runtime path. Use [checks.md](checks.md) for the appropriate check script; a string assertion alone proves neither model obedience nor a real-account result.
 
 Never publish private owner lore, standing memory or transcript examples as a public prompt fixture. Use synthetic content and inspect the full composed instruction only in an authorized local context. Safe diagnostics should retain versions and coverage, not export private system text.

@@ -1,3 +1,5 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { connectorExecutor } from '../tasks/connectors.js';
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
@@ -10,7 +12,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { claimsWithoutCall, liveMigrations, validateLiveProfile } from '../live/index.js';
@@ -19,299 +21,235 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
+import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, ownerWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions, validateOpenWeb, openTarget } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
-import type { ToolCallIntent } from '../adapters/model/types.js';
-import { LIVE_NOT_MODEL_FACING, runToolCalls } from '../tools/declarations.js';
-import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
+import { createRegistry } from '../tasks/tools.js';
+import { documentResult } from '../tasks/results.js';
+import { parseAlarmTime, readTimeSpec, alarmReadBack } from '../tools/alarm.js';
+import { alarmHarness } from './alarm-atomic.test.js';
+import { Authority, FakeAuthority, type JournalRecord } from '../tasks/authority.js';
 import { CONNECTOR_COMPOSED_TOOLS } from '../connectors/index.js';
 import { argumentViolations, argumentViolationsOf } from '../tools/declarations.js';
 import { normalizeArguments, type ToolDeclaration } from '../tools/normalize.js';
 import { claimsEmptyResult } from '../live/index.js';
 
-test('A2: each live builtin executes against its exact stored intent', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-builtin-intent-'));
-  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-
-  const f = await fixture(t);
-  const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
-  t.after(() => port.close());
-  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  let alarmNow = Date.now();
-  const owner = createToolsOwner({ alarms: { now: () => alarmNow, recheck() {}, health: () => ({ degraded: false, reasons: [] }) }, grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
-  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
-    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
-  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', `canary:${randomUUID()}`, context);
-  const attachment = service.attach(session.liveSessionId, context);
-  await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
-  const signal = new AbortController().signal;
-  const authority = await lookup!(session.liveSessionId, signal);
-  assert.ok(authority);
-  // No OS opener or native timeout: the receipt port is the unit-test boundary.
+// Task workers own the catalog and effect journal. Voice exposes only delegate;
+// liveDefinitions and per-builtin ToolCallIntent records no longer exist.
+test('A2: task builtins reject undeclared arguments before any effect', async t => {
+  const h = alarmHarness(t);
   let dispatched = 0;
   t.mock.method(nativeActions, 'dispatch', async () => { dispatched++; return 'opened' as const; });
-  noteOwnerWords(session.liveSessionId, 'open plantix dot net and my gmail and Synthetic');
-  const argumentsByName: Record<string, Record<string, unknown>> = {
-    research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember_note: { text: 'Synthetic fact', kind: 'fact' },
-    // history-chat-tool.integration.mjs and vault-write.test.ts synthetic arguments.
-    conversation_history: { query: 'Mira violet flags' }, save_to_vault: { content: 'the boat survey is on Tuesday' },
-    stage_lux_note: { title: 'T', body: 'B', evidenceRefs: ['journal:1'] },
-    people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },
-    open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
-    open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
-    set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
-    // W1030: the write tools, with the closed shapes their declarations accept.
-    draft_email: { to: 'Priya', subject: 'synthetic', body: 'synthetic' }, draft_chat: { person: 'Sam', message: 'synthetic' },
-    create_event: { summary: 'synthetic block' }, delete_event: { event_id: 'synthetic-event' },
-  };
-  const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
-  for (const enabled of [undefined, true, false]) {
-    const surface = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), enabled);
-    assert.equal(surface.some(tool => tool.name === 'stage_lux_note'), enabled !== false, 'an explicit owner feature disable remains authoritative');
+  for (const tool of h.tools.values()) {
+    const result = await h.call(tool.name, { synthetic_undeclared: true }, 'synthetic owner task');
+    assert.equal(result.status, 'failed', tool.name);
+    assert.match(result.repair ?? '', /declared fields/);
   }
-  assert.ok(live.some(tool => tool.name === 'stage_lux_note'), 'stage owns its own registry intent name');
-  assert.equal(live.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false, 'retired write tools are not catalog capabilities');
-  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(live.some(tool => tool.name === name), `registered ${name}`);
-  for (const definition of live) {
-
-    const args = argumentsByName[definition.name];
-    assert.ok(args, `valid fixture required for ${definition.name}`);
-    assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);
-    const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
-      executionId: randomUUID(), callId: randomUUID(), toolName: definition.name,
-      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-      accountId: definition.accountId, resourceId: definition.resourceId };
-    // Research is a live-loop protocol declaration, not a durable builtin executor.
-    // Its placeholder intentionally has no tool intent identity and is intercepted by Live.
-    if (definition.name === 'research') {
-      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'failed');
-      continue;
-    }
-    // journal.intent invokes callDTO, the same canonicalization used by the gateway.
-    assert.doesNotThrow(() => assert.equal(owner.journal.intent(intent), 'fresh'), `${definition.name} stores its intent`);
-    await assert.doesNotReject(async () => {
-      const outcome = await definition.execute(args, { ...intent, signal });
-      assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
-    }, `${definition.name} must accept its stored intent`);
-  }
-  await t.test('C-SAFETY: canary one-second alarm is clamped to at least sixty seconds', async () => {
-    // C-TIME: the model states a span; the host adds it to its own clock, and the canary floor holds.
-    const args = { time: { mode: 'relative', amount: 1, unit: 'minutes' } };
-    owner.ownerRequests.answered!(session.liveSessionId);
-    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm', alarmNow);
-    const definition = live.find(tool => tool.name === 'set_alarm')!;
-    const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: 'set_alarm',
-      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
-    owner.journal.intent(intent);
-    {
-      const before = alarmNow;
-      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'completed');
-      const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
-      assert.ok(Number(alarm?.fire_at_utc) >= before + 60000, 'canary cleanup gets a full minute before due time');
-    }
-  });
-  // Every open name exercises the real registry executor, not an alias of open_web.
-  beginHandleSession(session.liveSessionId);
-  t.after(() => endHandleSession(session.liveSessionId));
-  const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/abc123', sourceType: 'gmail' })!;
-  exposeHandles(line);
-  const handle = line.match(/L[0-9]+/)![0];
-  const openCases = [
-    { name: 'open_source', args: { handle }, ask: 'open this email in my browser' },
-    { name: 'open_home', args: { app: 'gmail' }, ask: 'open my gmail' },
-    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open the local file ~/synthetic' },
-    { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
-    { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
-  ];
-  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask', 'cue-free ask'] as const) {
-    await t.test(`${entry.name}: ${mode}`, async () => {
-      owner.ownerRequests.answered?.(session.liveSessionId);
-      noteModelOutput(session.liveSessionId);
-      if (mode !== 'no ask') {
-        noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
-        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());
-      }
-      const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
-      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
-        executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
-        argumentsHash: createHash('sha256').update(JSON.stringify(entry.args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
-      assert.equal(owner.journal.intent(intent), 'fresh');
-      const before = dispatched;
-      // Finalized microphone authority is explicit; a tool call cannot wait out an absent request.
-      if (mode === 'split ask') {
-        const words = entry.ask;
-        noteOwnerWords(session.liveSessionId, words);
-        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
-      }
-      const pending = definition.execute(entry.args, { ...intent, signal });
-      const outcome = await pending;
-      assert.equal(outcome.status, 'completed');
-      assert.equal(dispatched - before, mode === 'no ask' ? 0 : 1, `${entry.name} ${mode} reaches native only with owner intent`);
-    });
-  }
-  const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
-  const web = definitions.find(definition => definition.name === 'open_web')!;
-  // A5: three owner asks share one unfinished answer, but not an open receipt.
-  owner.ownerRequests.answered!(session.liveSessionId);
-  const urls: unknown[] = [];
-  t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return 'opened' as const; });
-  const cases = [
-    { kind: 'site', target: 'plantix dot net', words: ['but can you open', 'plantix dot net in my browser'], url: 'https://plantix.net/' },
-    { kind: 'maps', target: 'Odemira', words: ['open the map of Odemira'], url: 'https://www.google.com/maps/search/?api=1&query=Odemira' },
-    { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip+irrigation' },
-  ];
-  let openStep = 100;
-  for (const entry of cases) {
-    for (const words of entry.words) { noteOwnerWords(session.liveSessionId, words); owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now()); }
-    const args = { kind: entry.kind, target: entry.target };
-    const execute = async () => {
-      const batch = await runToolCalls(owner, [{ id: randomUUID(), name: 'open_web', args }], {
-        registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
-        authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 },
-        step: openStep++, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
-      });
-      assert.equal(batch.error, undefined);
-      return batch.accepted.map(entry => entry.response);
-    };
-    const first = await execute();
-    assert.equal(JSON.stringify(first).includes('"code":"opened"'), true, `${entry.kind}: ${JSON.stringify(first)}`);
-    assert.equal(urls.at(-1), entry.url, entry.kind);
-    assert.deepEqual(await execute(), first, 'same target returns its own receipt');
-  }
-  assert.deepEqual(urls, cases.map(entry => entry.url), 'one native action per distinct target');
-  const events: unknown[] = [];
-  const detach = attachHostLogSink({ event: event => events.push(event) });
-  t.after(detach);
-  const batch = await runToolCalls(owner, [{ id: 'synthetic-mismatch', name: 'open_web', args: { kind: 'site', target: 'plantix dot net' } }], {
-    registry: [{ ...web, execute: (args, ctx) => web.execute({ ...args, target: 'different' }, ctx) }],
-    host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] }, authority: { isCurrent: async () => true },
-    control: { signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0,
-    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
-  });
-  assert.equal(batch.error, undefined);
-  const response = JSON.stringify(batch.accepted);
-  assert.match(response, /executor_intent_mismatch/);
-  assert.match(response, /"say"/);
-  assert.match(response, /nothing is open/);
-  assert.ok(events.some(event => { const row = event as Record<string, unknown>; return row.event === 'tool_handler_error' && row.reason === 'executor_intent_mismatch'; }));
-
-  // F6a: a site the resolver could not find is the site-not-found payload, never an authorization refusal.
-  const notFoundEvents: Record<string, unknown>[] = [];
-  const detachNotFound = attachHostLogSink({ event: event => notFoundEvents.push(event as Record<string, unknown>) });
-  t.after(detachNotFound);
-  noteOwnerWords(session.liveSessionId, 'open zzsyntheticnotasite');
-  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open zzsyntheticnotasite', Date.now());
-  const notFound = await runToolCalls(owner, [{ id: 'synthetic-not-found', name: 'open_web', args: { kind: 'site', target: 'zzsyntheticnotasite' } }], {
-    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
-    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 200, contentIndex: 0,
-    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
-  } as never);
-  const notFoundText = JSON.stringify(notFound.accepted);
-  assert.match(notFoundText, /"not_found"/, 'the resolver answer is reported as itself');
-  assert.doesNotMatch(notFoundText, /target_not_authorized/, 'a missing site is never relabelled as an unauthorized target');
-  assert.match(notFoundText, /could not find that site/u, 'she is told what to say: the site was not found');
-  assert.ok(notFoundEvents.some(event => event['event'] === 'open_resolve' && event['target'] === 'web' && event['outcome'] === 'not_found' && typeof event['ms'] === 'number'),
-    'the resolver outcome and duration are logged');
-
-  const beforeNoBrowser = notFoundEvents.length;
-  // F6b: a link that needs a Chrome that is not running is a closed refusal with the line she says, and the
-  // host never gets a launch order for it.
-  noteOwnerWords(session.liveSessionId, 'open example.invalid in my browser');
-  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'open example.invalid in my browser', Date.now());
-  t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
-  const noBrowser = await runToolCalls(owner, [{ id: 'synthetic-no-browser', name: 'open_web', args: { kind: 'site', target: 'example.invalid' } }], {
-    registry: [web], host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] },
-    authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: 201, contentIndex: 0,
-    seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
-  } as never);
-  const noBrowserText = JSON.stringify(noBrowser.accepted);
-  assert.match(noBrowserText, /browser_not_running/);
-  assert.match(noBrowserText, /Chrome is not open, could you open it for me\?/u);
-  assert.doesNotMatch(noBrowserText, /opening example\.invalid/u, 'nothing opened, so nothing is announced as opening');
-  // F13: an open that never reached the native side is a host refusal, not a native action line.
-  const nativeLines = notFoundEvents.slice(0, beforeNoBrowser).filter(event => event['event'] === 'native_action');
-  assert.deepEqual(nativeLines, [], 'a request that never reached the native side writes no native_action line');
-  assert.ok(notFoundEvents.some(event => event['event'] === 'open_audit' && event['refusalCode'] === 'not_found'), 'the host refusal is the audit line');
-
-  // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
-  const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-    id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
-    call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
-  }[];
-  const oldTZ = process.env.TZ;
-  process.env.TZ = 'UTC';
-  t.after(() => { if (oldTZ === undefined) delete process.env.TZ; else process.env.TZ = oldTZ; });
-  for (const row of corpus.filter(row => row.call.tool === 'set_alarm' || row.call.tool.startsWith('open_'))) {
-    await t.test(`wire corpus ${row.id}`, async () => {
-      owner.ownerRequests.release(session.liveSessionId);
-      alarmNow = row.now ?? Date.UTC(2026, 9, 30, 6);
-      for (const [i, words] of row.finals.entries()) {
-        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, alarmNow + (row.finalOffsetsMs?.[i] ?? 0));
-        if (row.clarifyAfter?.includes(i)) {
-          owner.ownerRequests.clarify(session.liveSessionId, 'set_alarm', 'missing_time');
-          owner.ownerRequests.answered?.(session.liveSessionId);
-        }
-      }
-      alarmNow += row.toolDelayMs ?? 0;
-      t.mock.method(nativeActions, 'dispatch', async (_run: string, _action: string, target: string) => { urls.push(target); return row.nativeCode ?? 'opened'; });
-      const { tool, fire_at_utc: modelEpoch, ...raw } = row.call as Record<string, unknown> & { tool: string; fire_at_utc?: number | null };
-      const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
-      if (tool === 'open_source') args.handle = handle;
-      if (tool === 'set_alarm') {
-        // C-TIME T-R1: the model states the wall clock and the zone he named. The row's own instant, or
-        // its recorded model epoch when that row is a model-disagreement case, is translated, never
-        // passed as a UTC epoch, and no expected instant changes.
-        const epoch = modelEpoch ?? row.fire_at_utc ?? undefined;
-        const zone = /singapore|sgt/i.test(row.finals.join(' ')) ? 'Asia/Singapore' : 'UTC';
-        if (epoch !== undefined) {
-          const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(epoch);
-          const get = (type: string) => parts.find(part => part.type === type)?.value ?? '';
-          // C-ALARM: the model states the day as the flat string the declaration offers.
-          args.time = { mode: 'wall', date: `${get('year')}-${get('month')}-${get('day')}`, local_time: `${get('hour')}:${get('minute')}`, timezone: zone };
-        }
-      }
-      const definition = definitions.find(entry => entry.name === tool)!;
-      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: tool,
-        argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-        accountId: definition.accountId, resourceId: definition.resourceId };
-      assert.equal(owner.journal.intent(intent), 'fresh');
-      const before = urls.length;
-      const outcome = await definition.execute(args, { ...intent, signal });
-      assert.equal(outcome.status, 'completed');
-      if (outcome.status !== 'completed') return;
-      const gate = await owner.resultGate.authorize({ ...authority, grants: [] }, [{ executionId: intent.executionId,
-        name: tool, callId: intent.callId!, contentIndex: 0, partIndex: 0, result: outcome.result }], ['ordinary'], signal);
-      assert.equal(gate.state, 'allowed');
-      if (gate.state !== 'allowed') return;
-      const result = gate.results[0]!.response;
-      // C-PERMTIER (P-R1): the corpus expectation is the row's own outcome. A free write no longer needs an
-      // alarm cue in his words, so the retired no_owner_request rows now execute.
-      if (row.expectedSay !== undefined) assert.equal(result.say, row.expectedSay, `${row.id}: exact spoken failure receipt`);
-      const expected = row.code === 'ready' ? 'set' : row.code === 'allowed' ? 'opened' : row.code;
-      assert.equal(result.code ?? result.reason ?? result.status, expected, JSON.stringify(result));
-      if (expected === 'set') {
-        const stored = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [intent.executionId]));
-        assert.equal(stored?.fire_at_utc, row.fire_at_utc);
-        assert.equal(result.fire_at_utc, row.fire_at_utc);
-        assert.match(String(result.say), /Alarm set for/);
-      } else if (expected === 'opened') {
-        assert.equal(urls.length - before, 1);
-      } else {
-        assert.equal(urls.length - before, row.nativeCode ? 1 : 0);
-        assert.equal(typeof result.say, 'string', 'HON-2: the real refusal carries one spoken failure line');
-        assert.doesNotMatch(String(result.say), /I'll try|sure|\n/i);
-      }
-    });
-  }
-
+  assert.equal(dispatched, 0);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
 });
 
+test('A2: current builtin declarations dispatch exact arguments through the task port', async () => {
+  const authority = new FakeAuthority();
+  const dispatched: { name: string; args: Record<string, unknown> }[] = [];
+  const tools = createRegistry({ authority, execute: async (name, args) => {
+    dispatched.push({ name, args }); return documentResult('synthetic receipt', 'synthetic');
+  } });
+  const fixtures: Record<string, Record<string, unknown>> = {
+    search_mail: { query: 'synthetic', cursor: null }, search_chat: { query: 'synthetic' },
+    search_knowledge: { query: 'synthetic' }, search_company: { query: 'synthetic' }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
+    read_mail: { id: 'synthetic-mail', cursor: null }, read_knowledge: { id: 'synthetic-knowledge', cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
+    read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
+    calendar_events: { start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z' }, people_lookup: { query: 'Synthetic' },
+    remember_note: { text: 'synthetic fact' }, save_to_vault: { title: 'synthetic title', text: 'synthetic note' },
+    draft_email: { to: ['synthetic@example.invalid'], subject: 'synthetic', body: 'synthetic draft' },
+    draft_chat: { target: '#synthetic', text: 'synthetic draft' },
+    create_event: { title: 'synthetic event', start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z', calendar_id: null },
+    delete_event: { id: 'synthetic-event' },
+  };
+  const identity = { task_id: 'synthetic-builtin-task', task_revision: 1, operation_id: 'synthetic-operation', connection_generation: 1 };
+  for (const [name, args] of Object.entries(fixtures)) {
+    const tool = tools.get(name); assert.ok(tool, name);
+    const result = await tool.run(args, identity, new AbortController().signal);
+    assert.equal(result.status, 'ok', `${name}: ${result.repair}`);
+    assert.deepEqual(dispatched.at(-1), { name, args: Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null)) });
+    if (tool.effect !== 'none') {
+      const request = authority.requests.at(-1); assert.ok(request);
+      assert.equal(request.tool, name); assert.deepEqual(request.args, args);
+      assert.equal(request.task_id, identity.task_id); assert.equal(request.task_revision, identity.task_revision);
+    }
+  }
+  // Renamed tool spellings are deliberately absent, not silently routed to aliases.
+  for (const retired of ['research', 'stage_lux_note', 'open_web', 'set_alarm', 'snooze_alarm']) assert.equal(tools.has(retired), false, retired);
+});
+
+test('A2: current task identity and exact alarm arguments own the durable intent', async t => {
+  const h = alarmHarness(t);
+  const at = new Date(Date.now() + 60_000).toISOString();
+  const first = await h.call('alarm_create', { text: 'synthetic first', at }, 'set an alarm in one minute');
+  assert.equal(first.status, 'ok');
+  const same = await h.call('alarm_create', { text: 'synthetic first', at }, 'set an alarm in one minute');
+  assert.deepEqual(same.references, first.references);
+  const other = await h.call('alarm_create', { text: 'synthetic second', at }, 'also a second alarm');
+  assert.notDeepEqual(other.references, first.references, 'changed arguments are a distinct operation, not a replay');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 2);
+  const tool = h.tools.get('alarm_create'); assert.ok(tool);
+  const refused = await tool.run({ text: 'synthetic stale', at }, { task_id: h.task.id, task_revision: 0, operation_id: 'synthetic-stale', connection_generation: 1 }, new AbortController().signal);
+  assert.equal(refused.status, 'failed');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 2);
+  const stopped = new AbortController(); stopped.abort();
+  assert.equal((await tool.run({ text: 'synthetic cancelled', at }, { task_id: h.task.id, task_revision: 1, operation_id: 'synthetic-cancelled', connection_generation: 1 }, stopped.signal)).status, 'failed');
+});
+
+test('A2: unified task open routes each kind and replays only the exact target', async t => {
+  const h = alarmHarness(t);
+  const actions: { action: string; target: string }[] = [];
+  t.mock.method(nativeActions, 'dispatch', async (_id: string, action: string, target: string) => { actions.push({ action, target }); return 'opened' as const; });
+  beginHandleSession(h.task.id); t.after(() => endHandleSession(h.task.id));
+  const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/synthetic', sourceType: 'gmail' });
+  assert.ok(line); exposeHandles(line);
+  const handle = line.match(/L[0-9]+/)![0];
+  const cases = [
+    { kind: 'web', target: 'https://example.invalid/', action: 'open_url' },
+    { kind: 'app', target: 'Synthetic', action: 'open_app' },
+    { kind: 'file', target: '/tmp/synthetic-document.txt', action: 'open_file' },
+    { kind: 'source', target: handle, action: 'open_url' },
+  ];
+  for (const row of cases) {
+    const args = { kind: row.kind, target: row.target };
+    const first = await h.call('open', args, 'open the synthetic item');
+    assert.equal(first.status, 'ok', `${row.kind}: ${first.repair}`);
+    assert.equal(actions.at(-1)?.action, row.action);
+    const count = actions.length;
+    assert.equal((await h.call('open', args, 'open the synthetic item')).status, 'ok');
+    assert.equal(actions.length, count, 'a replay never dispatches a second native action');
+  }
+  const before = actions.length;
+  assert.equal((await h.call('open', { kind: 'source', target: 'L999999' }, 'open the source')).status, 'failed');
+  assert.equal((await h.call('open', { kind: 'web', target: 'file:///synthetic' }, 'open the site')).status, 'failed');
+  assert.equal(actions.length, before, 'host refusals never reach native');
+});
+
+test('A2: native failure is a closed task failure and never announced as opened', async t => {
+  const h = alarmHarness(t);
+  t.mock.method(nativeActions, 'dispatch', async () => 'browser_not_running' as const);
+  const result = await h.call('open', { kind: 'web', target: 'https://example.invalid/' }, 'open the synthetic site');
+  assert.equal(result.status, 'failed');
+  assert.match(result.repair ?? '', /browser_not_running/);
+  assert.doesNotMatch(result.text, /Opened\./);
+});
+
+interface OwnerCorpusRow {
+  id: string; finals: string[]; expectedSay?: string; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
+  call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
+}
+const ownerCorpus: OwnerCorpusRow[] = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8'));
+
+// Scripted helper proposals, independent from each row's expected durable timestamp.
+// These are model inputs, not an assertion that a deterministic parser infers every spoken form.
+const corpusAlarmProposals: Readonly<Record<string, string>> = {
+  'AL-1': '2026-10-30T23:40:00Z',
+  'AL-3': '2026-10-30T03:10:00Z',
+  'AL-4': '2026-10-30T17:10:00Z',
+  'AL-3-part-0': '2026-10-30T03:10:00Z',
+  'AL-3-part-1': '2026-10-30T03:10:00Z',
+  'AL-3-part-2': '2026-10-30T03:10:00Z',
+  'alarm-model-fallback': '2026-10-30T06:10:00Z',
+  'alarm-owner-conflict': '2026-10-30T06:10:00Z',
+};
+
+test('A2 owner corpus: alarm interpretation and real task persistence', async t => {
+  for (const row of ownerCorpus.filter(row => row.call.tool === 'set_alarm')) await t.test(row.id, async rowT => {
+    const now = row.now ?? Date.UTC(2026, 9, 30, 6);
+    const words = row.finals.join(' ');
+    const h = alarmHarness(rowT, () => {}, () => now + (row.toolDelayMs ?? 0), 'UTC');
+    if (row.code === 'no_owner_request') {
+      const tool = h.tools.get('alarm_create'); assert.ok(tool);
+      assert.equal((await tool.run({ text: 'synthetic missing task', at: new Date(now + 60_000).toISOString() }, { task_id: 'synthetic-absent-task', task_revision: 1, operation_id: row.id, connection_generation: 1 }, new AbortController().signal)).status, 'failed');
+      return;
+    }
+    const proposedAt = corpusAlarmProposals[row.id];
+    const proposalZone = row.id === 'AL-3' || row.id.startsWith('AL-3-part-') ? 'Asia/Singapore' : 'UTC';
+    const proposalClock = proposedAt === undefined ? undefined : alarmReadBack(Date.parse(proposedAt), proposalZone);
+    const proposal = proposalClock === undefined ? undefined : readTimeSpec({ mode: 'wall', date: proposalClock.date, local_time: proposalClock.localTime, timezone: proposalZone });
+    if (proposal) assert.equal(proposal.state, 'read', 'the helper proposed a valid typed time');
+    const parsed = parseAlarmTime(words, now + (row.finalOffsetsMs?.at(-1) ?? 0), 'UTC', proposal?.state === 'read' ? proposal.spec : undefined);
+    if (row.code !== 'ready') {
+      assert.equal(parsed.status, 'clarify');
+      assert.equal(parsed.status === 'clarify' ? parsed.reason : undefined, row.code);
+      assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'unresolved time never arms a guessed alarm');
+      return;
+    }
+    assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
+    if (parsed.status !== 'ready') throw new Error('Expected a resolved owner corpus time');
+    assert.equal(parsed.fireAtUtc, row.fire_at_utc);
+    const args = { text: 'synthetic corpus reminder', at: proposedAt ?? new Date(parsed.fireAtUtc).toISOString(), recurrence: null };
+    let result;
+    if (row.id === 'turn-time-not-dispatch-time') {
+      const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'UTC',
+        execute: connectorExecutor([], h.owner.taskExecutors('synthetic-corpus-task')),
+        authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+      const revision = runtime.begin(words, 1);
+      try { result = await runtime.runTool('alarm_create', args, { ...revision.identity, operation_id: 'synthetic-alarm-create' }, revision.signal); }
+      finally { runtime.close(); }
+    } else result = await h.call('alarm_create', args, words);
+    assert.equal(result.status, 'ok', result.repair ?? result.text);
+    assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), row.fire_at_utc);
+  });
+});
+
+test('alarm helper proposals cannot override a clear owner time or manufacture an unresolved time', async t => {
+  const now = Date.UTC(2030, 0, 1);
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const result = await h.call('alarm_create', { text: 'Synthetic clear owner time', at: new Date(now + 60 * 60_000).toISOString() }, 'Set an alarm in five minutes');
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), now + 5 * 60_000, 'clear owner words beat the conflicting helper proposal');
+  const unresolved = 'Set an alarm at 7:45 and at 8:45';
+  assert.equal(parseAlarmTime(unresolved, now, 'UTC').status, 'clarify', 'conflicting words without a valid proposal do not settle one time');
+  const invalid = await h.call('alarm_create', { text: 'Synthetic unresolved time', at: 'not a valid proposal' }, unresolved);
+  assert.equal(invalid.status, 'failed');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, 'the unresolved negative case commits nothing');
+});
+
+test('A2 owner corpus: named opens use the unified task operation and native receipts', async t => {
+  for (const row of ownerCorpus.filter(row => row.call.tool.startsWith('open_'))) await t.test(row.id, async rowT => {
+    const h = alarmHarness(rowT);
+    let dispatched = 0;
+    rowT.mock.method(nativeActions, 'dispatch', async () => { dispatched++; return row.nativeCode === 'native_timeout' ? 'native_timeout' as const : row.nativeCode ? 'failed' as const : 'opened' as const; });
+    beginHandleSession(h.task.id); rowT.after(() => endHandleSession(h.task.id));
+    const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/synthetic', sourceType: 'gmail' });
+    assert.ok(line); exposeHandles(line);
+    const { tool, ...args } = row.call;
+    let kind: string, target: string;
+    if (tool === 'open_web') {
+      assert.ok(validateOpenWeb(args));
+      const resolved = await resolveWebOpen(args, row.finals.join(' '), new AbortController().signal);
+      if (!('target' in resolved)) {
+        // A forbidden scheme is a host refusal, never a native action. The old
+        // target_not_authorized label is replaced by the closed task failure.
+        assert.equal(row.code, 'target_not_authorized'); assert.equal(dispatched, 0); return;
+      }
+      kind = 'web'; target = resolved.target.target;
+    } else if (tool === 'open_source') { kind = 'source'; target = line.match(/L[0-9]+/)![0]; }
+    else if (tool === 'open_app') { kind = 'app'; assert.equal(typeof args.name, 'string'); target = String(args.name); }
+    else if (tool === 'open_file') { kind = 'file'; assert.equal(typeof args.path, 'string'); target = String(args.path); }
+    else {
+      assert.equal(tool, 'open_home');
+      const resolved = openTarget('open_home', { app: String(args.app) });
+      assert.ok('target' in resolved); kind = 'web'; target = resolved.target.target;
+    }
+    const result = await h.call('open', { kind, target }, row.finals.join(' '));
+    const expected = row.nativeCode || row.code === 'target_not_authorized' ? 'failed' : 'ok';
+    assert.equal(result.status, expected, result.repair ?? result.text);
+    assert.equal(dispatched, 1);
+    if (result.status === 'failed') {
+      assert.ok(result.repair); assert.doesNotMatch(result.text, /Opened\./);
+    }
+  });
+});
 
 test('A3: partial owner transcription accumulates without borrowing tool text', async () => {
   const runId = randomUUID();
@@ -373,7 +311,7 @@ test('C-OPEN11: the shared acquisition merges two finalized owner turns', async 
 });
 
 // C-ALARMFIX: compare the real host catalog with the provider's first wire frame.
-for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog reaches ${provider} wire declarations`, async t => {
+for (const provider of ['gemini', 'openai'] as const) test(`voice ${provider} declares only the host delegation boundary`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-catalog-'));
   const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   const f = await fixture(t);
@@ -390,127 +328,60 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   const session = service.create('ordinary', randomUUID(), context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1);
-  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { responses: { tools?: { name: string }[] } } } };
-  const declarations = provider === 'gemini' ? frame.setup!.tools!.flatMap(group => group.functionDeclarations) : frame.session!.delegation.responses.tools!;
-  const names = declarations.map(tool => tool.name);
-  for (const tool of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
-    if (!Object.hasOwn(LIVE_NOT_MODEL_FACING, tool.name)) assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
-  }
-  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
-  assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
+  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { type: string; responses?: unknown }; tools?: unknown } };
+  if (provider === 'gemini') assert.deepEqual(frame.setup!.tools!.flatMap(group => group.functionDeclarations).map(tool => tool.name), ['delegate']);
+  else { assert.equal(frame.session!.delegation.type, 'client'); assert.equal(frame.session!.delegation.responses, undefined); assert.equal(frame.session!.tools, undefined); }
   f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started', session: { id: 'synthetic-catalog' } });
   await attachment.ready;
-  if (provider === 'gemini') {
-    // The fake provider selects only an advertised tool; the host receives real wire events,
-    // parses the owner's words, journals the call and commits the alarm in a synthetic store.
-    await f.frame(2); // startup nudge
-    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true } } });
-    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
-    await f.frame(3);
-    const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };
-    assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
-    assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
-    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
-    // C-DIAG109: the read-back the model is handed carries the host's clock and minutes away as fields, so
-    // she reads a figure instead of counting from the clock the call opened on, and no line is scripted.
-    const delivered = response.toolResponse.functionResponses[0]!.response;
-    const result = (typeof delivered === 'string' ? JSON.parse(delivered) : delivered) as
-      { status: string; now_local_time: string; minutes_away: number; say: string };
-    assert.equal(result.status, 'set', JSON.stringify(result));
-    assert.match(result.now_local_time, /^\d{2}:\d{2}$/u, JSON.stringify(result));
-    assert.ok(Number.isSafeInteger(result.minutes_away) && result.minutes_away > 0, JSON.stringify(result));
-    assert.doesNotMatch(result.say, /minutes/u, `the confirmation states no computed minutes: ${result.say}`);
-  }
 });
 
 // C-DIAG109 review F1: the read-back clock and the minutes away are the execution clock's, never the ask
 // stamp's. The owner asks at 12:00, the tool runs at 12:03, and his words still resolve the alarm at 12:05,
 // so the receipt must say 12:03 and 2 minutes, and the confirmation repeats no computed figure.
-test('C-DIAG109: the set-alarm read-back is the execution clock, not the ask stamp', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-alarm-readback-'));
-  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-  const f = await fixture(t);
-  const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
-  t.after(() => port.close());
-  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+test('SOURCE DEFECT C-DIAG109: delayed tasks preserve the ask-time target and read back from execution time', async t => {
   const askAt = Date.parse('2026-03-05T11:00:00Z');
-  const owner = createToolsOwner({ alarms: { now: () => askAt + 3 * 60_000, recheck() {}, health: () => ({ degraded: false, reasons: [] }) },
-    timezone: 'Europe/Berlin', grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
-    lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
-    route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
-  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
-    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
-  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', `readback:${randomUUID()}`, context);
-  const attachment = service.attach(session.liveSessionId, context);
-  await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
-  const signal = new AbortController().signal;
-  const authority = await lookup!(session.liveSessionId, signal);
-  assert.ok(authority);
-  owner.observeAlarmOwner(session.liveSessionId, randomUUID(), 'set an alarm in five minutes', askAt);
-  const tool = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' })).find(entry => entry.name === 'set_alarm');
-  assert.ok(tool, 'set_alarm is declared to the live model');
-  const args = {};
-  const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch,
-    revision: authority.revision, executionId: randomUUID(), toolName: tool.name,
-    argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-    accountId: tool.accountId, resourceId: tool.resourceId };
-  owner.journal.intent(intent);
-  const outcome = await tool.execute(args, { ...intent, signal });
-  assert.equal(outcome.status, 'completed', JSON.stringify(outcome));
-  const stored = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
-  const reply = (JSON.parse(String(stored?.result_json ?? '{}')) as { response?: Record<string, unknown> }).response ?? {};
-  assert.equal(reply.status, 'set', JSON.stringify(reply));
-  assert.equal(reply.fire_at_utc, askAt + 5 * 60_000, 'the ask-time reading still resolves the alarm');
-  assert.equal(reply.now_local_time, '12:03', `the read-back clock is the execution clock: ${JSON.stringify(reply)}`);
-  assert.equal(reply.minutes_away, 2, `the distance is counted from now: ${JSON.stringify(reply)}`);
-  assert.doesNotMatch(String(reply.say), /minutes/u, `the confirmation states no computed minutes: ${String(reply.say)}`);
+  let now = askAt;
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'Europe/Berlin',
+    execute: connectorExecutor([], h.owner.taskExecutors('synthetic-readback-task')),
+    authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+  const revision = runtime.begin('wake me in five minutes', 1);
+  assert.equal(revision.askAtUtc, askAt, 'the real task captures ask time before dispatch advances');
+  now += 3 * 60_000;
+  let result;
+  try { result = await runtime.runTool('alarm_create', { text: 'synthetic reminder', at: new Date(askAt + 5 * 60_000).toISOString(), recurrence: null },
+    { ...revision.identity, operation_id: 'synthetic-readback' }, revision.signal); }
+  finally { runtime.close(); }
+  assert.equal(result.status, 'ok');
+  const reply = JSON.parse(result.text);
+  assert.equal(Date.parse(reply.at), askAt + 5 * 60_000);
+  assert.equal(reply.now_local_time, '12:03');
+  assert.equal(reply.minutes_from_now, 2);
+  assert.match(reply.confirmation, /12:05/);
 });
-
-/** #795/#797: settle the host's own async work without a timer, then ask. */
-const settled = async (until: () => boolean): Promise<boolean> => {
-  for (let attempt = 0; attempt < 400 && !until(); attempt++) await new Promise<void>(resolve => setImmediate(resolve));
-  return until();
-};
 
 // #795: the clarify-then-answer shape on the real call path. The model answers his calendar ask with a
 // question, so the live call site hands that answer to the owner request and his one-line reply keeps the
 // write grant. Without the question in that call, the same reply carries nothing (the paired case below).
-test('#795 the live call site keeps a calendar grant across the question the model asked back', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-live-clarify-'));
-  const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-  const f = await fixture(t);
-  const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
-  t.after(() => port.close());
-  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (id, signal) => lookup?.(id, signal) ?? null });
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
-    route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
-  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
-    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
-  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', randomUUID(), context);
-  const attachment = service.attach(session.liveSessionId, context);
-  await f.frame(1);
-  f.send({ setupComplete: {} });
-  await attachment.ready;
-  await f.frame(2);
-  const granted = () => owner.ownerRequests.authorize(session.liveSessionId, 'create_event', 'cardio').code;
-  f.send({ serverContent: { inputTranscription: { text: 'put cardio in my calendar at 11', finished: true } } });
-  assert.ok(await settled(() => granted() === 'allowed'), `the ask grants before any question: ${granted()}`);
-  f.send({ serverContent: { outputTranscription: { text: 'How long should the block be?', finished: true }, generationComplete: true, turnComplete: true } });
-  // C-PERMTIER (P-R1): the model's question no longer withdraws his ask, so the grant never lapses after it.
-  assert.equal(granted(), 'allowed');
-  f.send({ serverContent: { inputTranscription: { text: 'one and a half hours', finished: true } } });
-  const joined = await settled(() => owner.ownerRequests.audit(session.liveSessionId, 'create_event').ownerFinals === 2);
-  const allowed = await settled(() => granted() === 'allowed');
-  assert.ok(allowed, `his answer keeps the calendar grant: ${granted()}`);
-  assert.ok(joined, 'one ask, answered after a question');
+test('#795 task authority keeps finalized ask context across a clarification', async () => {
+  const seen: unknown[] = [];
+  const journal = new Map<string, JournalRecord>();
+  const authority = new Authority({ journal: { get: async id => journal.get(id), put: async (id, row) => { journal.set(id, row); } },
+    checkEffect: async input => { seen.push(input); return input.precedingOwnerWords === 'put a block on my calendar'; }, log() {} });
+  authority.expose('synthetic-calendar-task', 'web');
+  const request = { effect: 'create_event' as const, arguments: {}, validate: () => true,
+    task: { id: 'synthetic-calendar-task', revision: 2, ownerWords: 'tomorrow at noon', precedingOwnerWords: 'put a block on my calendar' } };
+  assert.deepEqual(await authority.authorize(request), { allow: true });
+  assert.deepEqual(seen, [{ effect: 'create_event', ownerWords: 'tomorrow at noon', precedingOwnerWords: 'put a block on my calendar' }]);
+  const unrelated = await authority.authorize({ ...request, task: { id: 'synthetic-unrelated-task', revision: 1, ownerWords: 'tomorrow at noon' } });
+  // Free unexposed writes do not require an intent classifier. The paired exposed
+  // case is the boundary that must refuse borrowing another task's ask.
+  assert.deepEqual(unrelated, { allow: true });
+  authority.expose('synthetic-unrelated-task', 'web');
+  const refused = await authority.authorize({ ...request, task: { id: 'synthetic-unrelated-task', revision: 2, ownerWords: 'tomorrow at noon' } });
+  assert.equal(refused.allow, false);
 });
 
 // #797: the retry claim is only checkable after a refused write, and a call that did happen silences it.
@@ -600,4 +471,26 @@ test('the normalizer drops only the absent value research.ts calls a filler', ()
   assert.deepEqual(own.dropped, [], 'and nothing is dropped without a rule of the tool to say so');
   // The one tool that calls an undeclared key unknown has it dropped, and the count is on the closed event.
   assert.deepEqual(normalizeArguments(declaration, { intent: 'overview', query: 'synthetic', wider: 'x' }).dropped, ['wider:undeclared']);
+});
+
+test('C-FREEDOM: her own sentence never clears the open she was asked for', () => {
+  // C-OPEN built the window as "the turns since the model last spoke", so her own answer to him threw
+  // the ask away and a later open needed him to repeat it. The session keeps the ask instead.
+  const run = 'freedom-open-window';
+  noteOwnerWords(run, 'open my inbox in the browser');
+  noteModelOutput(run);
+  assert.equal(ownerWords(run), 'open my inbox in the browser', 'her sentence leaves the ask in place');
+  noteOwnerWords(run, 'and the second folder too');
+  noteModelOutput(run);
+  assert.match(ownerWords(run), /open my inbox in the browser/, 'a session long ask still opens');
+});
+
+// The canary floor is a retained safety requirement, not a retired wire detail.
+test('SOURCE DEFECT C-SAFETY: a one-second alarm cannot bypass the sixty-second canary floor', async t => {
+  const now = Date.parse('2030-01-02T00:00:00Z');
+  const h = alarmHarness(t, () => {}, () => now);
+  await h.call('alarm_create', { text: 'synthetic canary', at: new Date(now + 1_000).toISOString() }, 'wake me in one second');
+  const alarm = h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms'));
+  assert.ok(alarm, 'the canary remains an alarm creation, not a silently dropped request');
+  assert.ok(Number(alarm.fire_at_utc) >= now + 60_000, 'the owner must not get an alarm less than sixty seconds after the canary ask');
 });

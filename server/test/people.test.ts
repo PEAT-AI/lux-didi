@@ -1,12 +1,14 @@
+import { createRegistry } from '../tasks/tools.js';
+import { FakeAuthority } from '../tasks/authority.js';
+import { documentResult } from '../tasks/results.js';
 // W15: the owner's people roster. Every identity here is synthetic; no real person's name, address or
 // handle appears in this file. The roster file is read beside the active owner profile, validated
 // strictly, rendered into one instructions section and resolved by one host-owned pure function.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   PEOPLE_CHAR_LIMIT, loadPeople, parsePeople, renderPeople, resolveSpoken, splitSpoken, installPeople,
   peopleSnapshot, peopleSection, lookupPeople, personByEmail, ambiguityQuestion, PEOPLE_LOOKUP_DECLARATION,
@@ -16,7 +18,6 @@ import { LIVE_INSTRUCTION_HARD_LIMIT, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiv
 import { alarmSessionInstructions } from '../live/index.js';
 import { validateOwnerProfile } from '../prompt/index.js';
 import { safeEvent } from '../host/log.js';
-import { compileMailQuery } from '../tools/research.js';
 import { attendeeName } from '../tools/live-shape.js';
 import { groupHoldsAll } from '../connectors/mattermost.js';
 
@@ -182,16 +183,6 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
   installPeople(null);
 });
 
-test('people: the mail query carries the resolved address, never the spoken text', () => {
-  install();
-  const query = compileMailQuery('what did Sandy email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z'));
-  assert.ok(query.includes('from:sandeep.example@example.test'), query);
-  assert.ok(query.includes('to:sandeep.example@example.test'), query);
-  installPeople(null);
-  // An unknown spoken name still falls through to the connector's own text path.
-  assert.ok(compileMailQuery('what did Wasim email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z')).includes('from:wasim'));
-});
-
 test('people: a calendar attendee is named from the roster email', () => {
   install();
   assert.equal(attendeeName({ email: 'ravi.example@example.test', displayName: 'ravi.example' }), 'Ravi Example');
@@ -232,13 +223,16 @@ test('people: the three closed events survive the host log allowlist and refuse 
   assert.equal(safeEvent({ event: 'people_trimmed', dropped: 3 }), undefined);
 });
 
-test('people: the live tool registry ships people_lookup as a read tool', () => {
-  // The registration lives in server/tools/index.ts, whose liveDefinitions needs a full run row; the
-  // shipped artifact is read instead, so a definition dropped from the registry or moved off the read
-  // effect turns this test red.
-  const built = readFileSync(fileURLToPath(new URL('../tools/index.js', import.meta.url)), 'utf8');
-  assert.match(built, /\.\.\.PEOPLE_LOOKUP_DECLARATION, effect: 'read'/u);
-  assert.match(built, /peopleLookupResult\(args\)/u);
+test('people: the canonical helper registry executes people_lookup as a local no-effect read', async () => {
+  const calls: unknown[] = [];
+  const tool = createRegistry({ authority: new FakeAuthority(), execute: async (name, args) => {
+    calls.push({ name, args }); return documentResult('Synthetic roster result', 'people');
+  } }).get('people_lookup')!;
+  assert.equal(tool.effect, 'none');
+  assert.equal(tool.outside_text, false);
+  const result = await tool.run({ query: 'Synthetic Person' }, { task_id: 'synthetic-task', task_revision: 1, operation_id: 'lookup', connection_generation: 1 }, new AbortController().signal);
+  assert.equal(result.text, 'Synthetic roster result');
+  assert.deepEqual(calls, [{ name: 'people_lookup', args: { query: 'Synthetic Person' } }]);
 });
 
 test('people: an over-ceiling roster file reports the tier 2 lines it dropped', () => {

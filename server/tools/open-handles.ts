@@ -1,3 +1,4 @@
+import { webDestinationAllowed } from './web-destination.js';
 import { hostLogEvent } from './host-events.js';
 
 /**
@@ -51,7 +52,15 @@ function hostOf(raw: string): string | undefined {
 }
 
 /** https, no userinfo, no explicit port, an exact host and a viewer path shape; never a redirect route. */
+/** Any HTTP(S) destination without credentials can be opened. Classification is not authority. */
 export function openDestination(raw: string): { url: string; kind: OpenKind } | undefined {
+  let url: URL;
+  try { url = new URL(raw); } catch { return undefined; }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !url.hostname) return undefined;
+  return classifiedDestination(raw) ?? { url: url.href, kind: 'web' };
+}
+
+function classifiedDestination(raw: string): { url: string; kind: OpenKind } | undefined {
   let url: URL;
   try { url = new URL(raw); } catch { return undefined; }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '') return undefined;
@@ -174,7 +183,7 @@ function kindTitle(raw: string): string {
 
 /** A structured source is checked at mint time; the handle carries only what the open path may use. */
 function sourceDestination(source: SourceLink): { url: string; kind: OpenKind } | undefined {
-  if (typeof source.url !== 'string') return undefined;
+  if (typeof source.url !== 'string' || !webDestinationAllowed(source.url, true)) return undefined;
   if (source.sourceType === 'mattermost') noteMattermostOrigin(source.url);
   const destination = openDestination(source.url);
   if (!destination || destination.kind === 'home') return undefined;
@@ -214,9 +223,11 @@ export function withOpenHandles<T extends { text: string; sources?: readonly Sou
  */
 export function bodySourceLinks(text: string, sourceType: 'knowledge' = 'knowledge'): SourceLink[] {
   const found: SourceLink[] = [];
-  for (const raw of text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []) {
+  for (const raw of text.match(/https?:\/\/[^\s<>"'`)\]]+/g) ?? []) {
     if (found.length >= OPEN_HANDLE_CAP) break;
-    const destination = openDestination(raw.replace(/[.,;:]+$/, ''));
+    const literal = raw.replace(/[.,;:]+$/, '');
+    if (!webDestinationAllowed(literal, true)) continue;
+    const destination = openDestination(literal);
     if (!destination || destination.kind === 'home') continue;
     if (found.some(link => link.url === destination.url)) continue;
     found.push({ title: kindTitle(destination.url), url: destination.url, sourceType });

@@ -142,12 +142,12 @@ Every host.log line carries the same envelope, so a call can be assembled withou
 | `level` | `debug`, `info`, `warn` or `error`, from the event name, never from the caller |
 | `cause` | `tool`, `provider`, `owner`, `network`, `audio`, `host`, `connector` or `config`, on the lines whose name states a domain |
 
-A `live_rebuild` and a `live_recovery` line read their `cause` off the outcome, never off the event name. `network` needs a transport receipt: an upstream drop, a missing pong, a stall, a socket error. A planned research rebuild is `cause=host`. A model that went quiet, and the recovery that follows it, are `cause=provider`. The `trigger` is a closed set too, and `line_dropped` is no longer a default: a research rebuild is `trigger=research_context`, a silent model is `no_output_after_owner` or `no_output_after_ambient`, a window end is `session_window`, and a reason the host does not recognise is a typed error rather than a guess.
+A `live_rebuild` and a `live_recovery` line read their `cause` off the outcome, never off the event name. `network` needs a transport receipt: an upstream drop, a missing pong, a stall, a socket error. A planned delivery rebuild is `cause=host`. A model that went quiet, and the recovery that follows it, are `cause=provider`. Read the closed trigger actually recorded; do not assign an old lookup-context trigger to a helper delivery reconnect. A reason the host does not recognize stays unknown rather than becoming a guessed network fault.
 
 The silence lines carry no static `cause` at all: `live_heard_silence` and `live_dead_air` name what really owned the silence in their own `silence` field (`tool`, `provider` or `owner`). When a socket closes, its close code and a sanitized reason (no URLs, no tokens) sit on that session's outcome and on the next `live_rebuild` or `live_recovery` line, so "the provider dropped us" is a receipt and not an inference.
 A `live_dead_air` and a `live_rebuild` line also carry `responseCreated` and `msSinceResponseCreated`: whether the provider announced a response for the owner final now in flight, and how long ago it did. `responseCreated=false` is a model that never spoke; `true` with a small age is a response the host saw begin and could not read, which is what separates model silence from a provider stall. The pair is telemetry only: no recovery, reconnect or rebuild rule reads it.
 | `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
-| `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
+| `runId`, `taskId`, `endpointId`, `attempt` | the same joins on chat, helper and connector lines |
 
 A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`, and a `shell_lost` close) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. On a `live_terminal` and a `session_end` the `cause` follows the code in the record: `shell_lost` is the supervised shell disappearing, so `cause=host`; `session_lost` is the app's socket closing with no terminal frame while the host kept running, so `cause=provider`; every end the app asked for stays `cause=owner`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
 
@@ -175,30 +175,23 @@ A tool handler that throws after dispatch is never silent: `tool_handler_error` 
 
 The Live owner records `live_dead_air` evidence separately from the nudge/recovery actions. A busy tool and a silent provider are different failures; keep their attribution rather than labeling every delay a reconnect defect. `live_heard_silence` carries that attribution as `silence` (`tool` while a call is really in flight, `provider` while the model is generating, `owner` otherwise). Trace storage and correlation are owned by `server/trace/schema.ts`, `server/trace/record.ts` and `server/trace/timeline.ts`.
 
-One research call leaves one line per phase with its research id: `research_call_arrived` (start), `research_source` (each source settle, with `ms` and `outcome`), `research_still_searching` (the 10 s line, with `spoken`), `research_first_answer` (`kind` is `early`, `full` or `hard_stop`, with `elapsedMs`) and `research_late_findings` (`delivered` and `reason` when a block was spoken or parked). Read those five before guessing at a slow answer; `research_operation_deadline` says the host had to settle a call itself.
-
-A research call that never read anything leaves one refusal or block line, and the reason is a closed code. `research_refused` names the argument shape that was rejected (`reason` is one of `RESEARCH_REFUSAL_REASONS`, for example `topic_length`, `lookups_count`, `lookup_history` or `entity_rewrite`) and carries the call's shape as `topicChars`, `questionChars`, `queryChars` and the closed `lookupSources`: lengths and names only, never the owner's words or a lookup value. `research_blocked` names the admission rule that applied: `no_owner_turn` (no finalized owner turn yet), `turn_spent` (this turn's one research operation is already spent), `no_turn_since_result` (the result was delivered and the owner has not spoken since) or `answer_already_given` (the model already answered this turn, so a new run would be an orphan). The model is told the same reason verbatim in the blocked reply's `reason` field, with the one-line `directive` for it. In the trace, such a call is `trace_call.outcome` `refused` (bad arguments) or `blocked` (admission), never `completed`, and the timeline counts a blocked call as `call.blocked`.
+For helper work, follow the task id, revision, operation id and delivery generation from `server/tasks/`. A started read, a completed read, a committed effect and a delivered answer are different observations. A busy helper is not a stalled voice provider. Keep closed failure reasons and the returned repair guidance; never infer success from the model's wording.
 
 Old JSONL debug journals can contain private content. Current metadata readers are not permission to upload those directories. Preserve evidence for authorized local inspection; do not delete unknown files or promise forensic erasure.
 
 ## Verification after diagnosis
 
-Reproduce the defect with a targeted synthetic fixture or concrete authorized observation, then fix the owning layer. [Checks](checks.md) names the existing producers; [local development](local-development.md) explains managed routing and browser/compile prerequisites. Real-account probes, audio hardware checks and installed-app lifecycle work require separate authorization and cannot be inferred from an offline green suite.
+Reproduce the defect with a targeted synthetic fixture or concrete authorized observation, then fix the owning layer. [Checks](checks.md) names the existing producers; [local development](local-development.md) explains local commands and browser/compile prerequisites. Real-account probes, audio hardware checks and installed-app lifecycle work require separate authorization and cannot be inferred from an offline green suite.
 
 ## Direct asks, safe receipts and calendar validation
 
-Opens, alarms and Lux notes share one per-ToolsOwner owner-request state, fed only by finalized microphone words. A direct ask survives a model preamble. There is no confirmation or 1500 ms grace path. Partial input waits for a final event, a short clarification cannot extend the original monotonic lifetime, and an independent owner ask supersedes the old verbs.
+`server/tasks/authority.ts` owns direct asks, outside-text exposure, exact open provenance and later calendar-delete confirmation. There is no phrase gate or expiring owner-request verb set in this task path. A pending or unknown operation cannot be retried as a new effect. Inspect the stored operation receipt before claiming an open or save succeeded.
 
-`open_audit`, `alarm_audit` and `lux_note_audit` contain closed request/result/parse codes, counts and age/state flags only. They must not contain owner text, URLs, titles, spoken time expressions or note bodies. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are host decisions. Do not convert them into instructions to repeat a complete ask or use another device. A same-target retry returns the actual cached receipt, not a new native or remote effect. Only `opened` or an actual saved title/id receipt supports a success claim.
+Arguments are checked against each tool's declared schema. A bad shape goes back to the helper with repair guidance, not an invented empty result. Preserve closed validation metadata and never log argument values.
 
-Research constructs calendar arguments from the tool registration's runtime inputSchema properties, including later pagination/deadline arguments. `diagnosticInputFields` is a safe-log projection, not the validator. `tool_arguments_rejected` exposes rejected key names/types and the validator reason `arguments_not_object` or `schema_validation_failed`, never values. No live provider schema was available to this implementation lane; use the next authorized live rejection to identify its cause rather than inferring it from masked historical values. A missing runtime schema is explicitly `calendar_schema_unavailable`.
+### Lookup silence and unfinished chat reads
 
-### Lookup silence and unfinished chat reads (10.4)
-
-OpenAI progress commentary is dropped while a function call awaits its output. A blocked
-research admission (`turn_spent`, `answer_already_given`, or `no_turn_since_result`) still
-returns its tool output, followed by one answer-only continuation with no offered tools.
-It does not start another lookup to fill silence.
+Follow actual task state and delivery receipts. Work may finish while voice is disconnected; a retained result is not proof of spoken playback. An old revision must not become the current answer after a correction.
 
 An ambiguous or missing chat channel is a completed, speakable empty read, not a handler
 failure. A read handler that throws closes its journal row as failed. A completion

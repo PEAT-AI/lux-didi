@@ -1,63 +1,44 @@
-import { createResultScope } from '../adapters/mcp/lifecycle.js';
-import { OwnerRequests, requestRefusal } from './owner-request.js';
+import { checkOwnerTime } from './time-check.js';
+import { commitAlarmEffect } from '../runtime/store.js';
+import { authorizedTaskEffect } from '../tasks/authority.js';
+import { connectorFailures } from '../tasks/results.js';
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
+import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
+import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
+import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
+import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
-
-/** F6a: the resolver's answer and duration, in closed words: a target class, an outcome code and ms. */
-function openResolve(input: { target: 'web' | 'source' | 'file'; outcome: string; ms: number }): void {
-  hostLogEvent({ event: 'open_resolve', target: input.target, outcome: input.outcome, ms: input.ms });
-}
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
-import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
+import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
-import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
+import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, composedGrantedNames, connectorDescriptor, CONNECTOR_COMPOSED_TOOLS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
-import { redactSecretsWithCount } from './redact.js';
 import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
-import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
-import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
+import { HISTORY_IDENTITY,} from './history.js';
+import { type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
-import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
-import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
-import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
+import { REMEMBER_IDENTITY,} from './remember.js';
+import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
+import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
-import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_ARGUMENT_GUIDANCE, ALARM_NAMES, ALARM_IDENTITY, alarmArguments, alarmDistance, alarmReadBack, alarmRejection, alarmSeriesOfOccurrence, alarmSeriesRow, cancelAlarmSeries, carryOccurrenceSeries, insertAlarmSeries, linkAlarmOccurrence, listPendingAlarms, materialiseSeriesOccurrence, parseAlarmTime, parseCancelScope, parseSeriesRule, pendingOccurrenceOf, seriesRuleOf, seriesText, validateAlarmArguments, verifyAlarmRule } from './alarm.js';
-import { COMPOSE_GUIDANCE, COMPOSE_IDENTITY, COMPOSE_NAMES, COMPOSE_TOOLS, clientRequestId, composeResult, composeTarget, createdEventIds, notAuthorizedFor, runCompose } from './compose.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, cancelAlarmSeries, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, ownerAlarmZone, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
+import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
-import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
+import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
-/** One closed stage for a dispatched call's unknown outcome: a stage itself, else the policy reason's closest stage. */
-function dispatchedFailureCode(reason: string): ToolFailureCode {
-  if (isMcpFailureStage(reason)) return reason;
-  return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
-}
-const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
-const TIME_PARAMETER = {
-  type: 'object',
-  description: 'The time he stated in this ask, never an earlier one. Wall: his clock and his day. Relative: a span he said.',
-  properties: {
-    mode: { type: 'string', enum: ['wall', 'relative'], description: 'wall or relative; omit it when the fields make it clear.' },
-    date: { type: 'string', description: 'wall only: today, tomorrow, a weekday name, or YYYY-MM-DD. Omit for today.' },
-    local_time: { type: 'string', description: 'wall only: HH:MM on his clock, 24 hour. Never UTC.' },
-    timezone: { type: 'string', description: 'Only when he named a zone; an IANA name such as Europe/Berlin.' },
-    amount: { type: 'number', description: 'relative only: a positive count. unit: minutes or hours.' },
-    unit: { type: 'string', enum: ['minutes', 'hours'] },
-  },
-  additionalProperties: false,
-} as const;
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
@@ -111,7 +92,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // stands on, so the policy can never widen the envelope one composed name at a time.
   const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
   // W1030: a write family's own names are grantable, but never as reads: they ride beside the family's
-  // read-only consent probe and are never model-facing tool declarations (see liveDefinitions below).
+  // read-only consent probe and are never model-facing tool declarations (separate from the canonical task facade).
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
@@ -187,8 +168,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
-  const ownerRequests = new OwnerRequests(undefined, () => options.alarms?.now() ?? Date.now());
-  const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
+  const { store, registry, port, lookupAuthority, ownerId } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   const historyReader = createHistoryReader();
@@ -219,6 +199,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   };
   // A run freezes admission, not a global conjunction of every connector's policy.
   const currentPolicies = (tx: Transaction, snapshot: RunSnapshot, id: string): boolean => {
+    if (id === TASK_ACCOUNT) return true;
     if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id);
     if (!bound || !snapshot.acceptance.connectionIds.includes(id)) return false;
@@ -227,6 +208,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(set => set.includes(c));
   };
   const currentProjection = (snapshot: RunSnapshot, id: string): boolean => {
+    if (id === TASK_ACCOUNT) return true;
     if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id); if (!bound) return false;
     const p = bound.policy;
@@ -259,6 +241,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   };
   const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+    if (TASK_TOOL_NAMES.has(call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
+      // Native source admission and completion bind the selected source in runTask/evidenceCurrent, not every unrelated connector.
+      return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
     if (call.toolName === RECEIVED_BODY.name && call.accountId === RECEIVED_BODY.accountId && call.resourceId === RECEIVED_BODY.resourceId) {
       const page = pageForCall(call); if (!page || !bodyConsumers.has(call.runId)) throw Error('body_cursor_unavailable');
       const resolve = (tx: Transaction) => target(snapshot, originalCall(tx, call.runId, page.parent), tx);
@@ -344,14 +330,19 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
     }
     if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
-    const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
+    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && TASK_TOOL_NAMES.has(call.toolName);
+    const bound = taskRead
+      ? snapshot.connections.find(item => item.policy.endpoint.id === evidence.source.endpointId && item.policy.endpoint.account === evidence.source.account && item.policy.endpoint.resource === evidence.source.resource)
+      : snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
+    if (taskRead && bound && (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId))) return false;
     if (!bound || evidence.expiresAt <= Date.now() || !/^[a-f0-9]{64}$/.test(evidence.entitySha256) || sha256(evidence.body) !== evidence.bodySha256) return false;
     const p = bound.policy, source = evidence.source;
     const binding = 'transport' in p.endpoint ? bindingDigestOf(p.endpoint) : p.endpoint.url;
-    return evidence.tool === call.toolName && source.toolName === call.toolName && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
+    const nativeTool = taskRead ? nativeTaskReadTool(call.toolName, p.connector) : call.toolName;
+    return evidence.tool === nativeTool && source.toolName === nativeTool && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
       && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
   };
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[], sourcePolicyRefs?: ModelSnapshot['sourcePolicyRefs']): ToolResultRef => {
     const call = callDTO(input);
     if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
     const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
@@ -366,7 +357,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
       if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
       if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
-      const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+      const value = { ...(sourcePolicyRefs ? { sourcePolicyRefs: detached(sourcePolicyRefs) } : {}), response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
       if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
       return persistTerminal(tx, call, 'completed', value);
     };
@@ -402,13 +393,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason, ...refusalCauseOf(reason) }, dataClasses: [] }, true);
       });
     },
-    fail(input, status, reason) {
+    fail(input, status, reason, hostRepair) {
       const call = callDTO(input);
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code, ...refusalCauseOf(code) }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: hostRepair ? { status, reason: code, cause: hostRepair, next: hostRepair, text: hostRepair, repair: hostRepair } : call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code, ...refusalCauseOf(code) }, dataClasses: [] });
       });
     },
   };
@@ -423,7 +414,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, page.parent); } catch { return undefined; }
     }
     if (row.state !== 'refused') { const selected = target(snapshot, call, tx); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return undefined; }
-    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean }; classSet(value.dataClasses);
+    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean; sourceDispatchRefs?: string[] }; classSet(value.dataClasses);
+    if (row.state === 'completed') for (const id of value.sourceDispatchRefs ?? []) {
+      const source = tx.get("SELECT connection_id, policy_sha256 FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed'", [id, ownerId]);
+      if (!source || typeof source.connection_id !== 'string' || snapshot.connections.find(bound => bound.connectionId === source.connection_id)?.sha256 !== source.policy_sha256
+        || !currentPolicies(tx, snapshot, source.connection_id) || !currentProjection(snapshot, source.connection_id)) return undefined;
+    }
+    if (row.state === 'completed') for (const source of value.sourcePolicyRefs ?? []) {
+      const bound = snapshot.connections.find(item => item.connectionId === source.connectionId);
+      if (!bound || bound.sha256 !== source.sha256 || !currentPolicies(tx, snapshot, source.connectionId) || !currentProjection(snapshot, source.connectionId)
+        || value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c))) return undefined;
+    }
     const reference = retained.get(binding.result.id);
     if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return undefined;
     if (reference?.evidence.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, reference.evidence.parent)?.dataClasses.some(c => !value.dataClasses.includes(c))) return undefined;
@@ -516,9 +517,185 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     },
   });
   const owner: ToolsOwner & LiveRunConnections = {
-    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port, ownerRequests,
-    observeAlarmOwner: (session, journalId, words, at) => {
-      ownerRequests.observe(session, journalId, words, at);
+    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
+    taskIntent(context, name, args) {
+      return store.transaction(tx => {
+        const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+        if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+        const call = storedCall(tx, row), { signal: _signal, ...execution } = context;
+        const expected = { ...execution, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+        if (!TASK_TOOL_NAMES.has(name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+        const snapshot = validateCallRun(tx, call); target(snapshot, call, tx);
+        return call as ToolCallIntent;
+      });
+    },
+    taskVisible(runId, name) {
+      if (!isConnectorTaskRead(name)) return true;
+      return store.transaction(tx => {
+        const { snapshot } = readRun(tx, runId);
+        return snapshot.connections.some(bound => {
+          const p = bound.policy, c = p.sourcePolicy.unknownClass;
+          return snapshot.acceptance.connectionIds.includes(bound.connectionId)
+            && (nativeTaskReadTool(name, p.connector) !== undefined || name === 'query_company' && p.connector === 'mongoose')
+            && p.enabled && p.bindingMode === 'connection' && c !== null
+            && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
+        });
+      });
+    },
+    runTask(call, args, body) {
+      const scope = store.transaction(tx => {
+        const snapshot = validateCallRun(tx, call);
+        const bound = snapshot.connections.find(item => {
+          const native = nativeTaskReadTool(call.toolName, item.policy.connector, args);
+          return native !== undefined && snapshot.acceptance.connectionIds.includes(item.connectionId) && nativeTaskReadGranted(item.policy, native);
+        });
+        if (!bound) return undefined;
+        if (!currentPolicies(tx, snapshot, bound.connectionId)) throw Error('task_source_policy_denied');
+        if (!currentProjection(snapshot, bound.connectionId)) throw Error('task_source_projection_changed');
+        return { call, bound, snapshotSha256: sha256(canonicalJSON(snapshot)), allowedClasses: snapshot.acceptance.allowedClasses };
+      });
+      if (scope) { bodyConsumers.add(call.runId); return dispatch.run(scope, body); }
+      return body();
+    },
+    closeTaskCall(sessionId) { options.trello?.end(sessionId); },
+    taskExecutors(sessionId) {
+      const project = (name: string, value: JsonObject) => value.ok === false
+        ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
+      const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
+        const alarmFailed = (message: string, armed = store.transaction(tx => listPendingAlarms(tx))) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(armed)}`);
+        if (!options.alarms || !context.identity) return alarmFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
+        const now = options.alarms.now();
+        const effect = authorizedTaskEffect.getStore();
+        if (!effect) return alarmFailed('Alarm authority context is unavailable. Nothing changed.');
+        let rule = args.recurrence as SeriesRule | null | undefined;
+        let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        const zone = ownerAlarmZone(effect.ownerWords, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+        if (at !== undefined) {
+          const proposed = alarmReadBack(at, zone);
+          const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
+          const interpreted = parseAlarmTime(effect.ownerWords, effect.askAtUtc ?? now, zone, time.state === 'read' ? time.spec : undefined);
+          if (interpreted.status === 'ready' && interpreted.source !== 'model'
+            && (interpreted.fireAtUtc > now || checkOwnerTime(effect.ownerWords).status === 'unique')) {
+            // Combining a day constraint with the proposed clock must not erase its seconds.
+            if (interpreted.source !== 'combined' || Math.floor(at / 60_000) !== Math.floor(interpreted.fireAtUtc / 60_000)) at = interpreted.fireAtUtc;
+            rule = interpreted.series ?? rule;
+          }
+        }
+        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return alarmFailed('Invalid recurrence. Nothing changed.'); } }
+        if (at !== undefined && at <= now) return alarmFailed('The resolved alarm time is in the past. Nothing changed.');
+        if (at !== undefined) at = Math.max(at, now + 60_000);
+        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
+        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return alarmFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined && !rule) return alarmFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        let id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
+        const result = commitAlarmEffect(store, effect.identity, tx => {
+          if (action === 'create') {
+            if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, zone, label!, context.identity!.task_id]);
+            if (rule) linkAlarmOccurrence(tx, id, id);
+          } else {
+            const eligible = "SELECT * FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (?='update' AND state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)";
+            const occurrence = tx.get(eligible, [id, action, now]);
+            if (!occurrence) id = pendingOccurrenceOf(tx, id) ?? id;
+            const row = occurrence ?? tx.get(eligible, [id, action, now]);
+            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.', listPendingAlarms(tx));
+            if (action === 'cancel') {
+              tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') cancelAlarmSeries(tx, series.id);
+              else if (series) materialiseSeriesOccurrence(tx, id, now);
+            }
+            else {
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (rule) {
+                if (series) tx.run('UPDATE alarm_series SET rule_kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
+                else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
+              } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
+              if (at !== undefined && row.state !== 'pending') {
+                const previous = id;
+                const occurrenceSeries = alarmSeriesOfOccurrence(tx, previous);
+                id = `alarm_${createHash('sha256').update(`${context.identity!.task_id}:${context.identity!.operation_id}`).digest('hex')}`;
+                tx.run("UPDATE alarms SET state='done' WHERE id=?", [previous]);
+                tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at, rule?.tz ?? String(row.tz), label ?? String(row.label), context.identity!.task_id]);
+                tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [previous, id]);
+                if (occurrenceSeries) linkAlarmOccurrence(tx, id, occurrenceSeries.id);
+              } else {
+              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? (at === undefined ? String(row.tz) : zone), id]);
+              }
+            }
+          }
+          const readBack = at === undefined ? undefined : alarmReadBack(at, zone);
+          const distance = at === undefined ? undefined : alarmDistance(at, zone, now);
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(readBack && distance ? {
+            at: new Date(at!).toISOString(), localTime: readBack.spoken, now_local_time: distance.nowLocalTime,
+            minutes_from_now: distance.minutesAway, confirmation: `Alarm ${action === 'create' ? 'set' : 'updated'} for ${readBack.spoken}.`,
+          } : {}) }), id), references: [{ id }] };
+        });
+        if (result.status === 'ok') {
+          if (action !== 'cancel') {
+            const alarmId = result.references[0]?.id ?? id;
+            const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [alarmId]));
+            if (alarm) hostLogEvent({ event: 'alarm_set', alarmId, scheduledMs: Number(alarm.fire_at_utc), actualMs: options.alarms.now(), reason: 'owner_request' });
+          }
+          try { options.alarms.recheck(); } catch {
+            // The durable scheduler rows survive notification failure and restart. Retry once.
+            try { options.alarms.recheck(); } catch { /* Scheduler recovery reads committed rows. */ }
+          }
+        }
+        return result;
+      };
+      const executors: ExistingExecutors = {
+        people_lookup: async args => project('people_lookup', peopleLookupResult(args)),
+        alarm_create: async (args, _signal, context) => alarm('create', args, context),
+        alarm_update: async (args, _signal, context) => alarm('update', args, context),
+        alarm_cancel: async (args, _signal, context) => alarm('cancel', args, context),
+        alarm_list: async () => taskDocumentResult(JSON.stringify(store.transaction(tx => listPendingAlarms(tx))), 'local-alarms'),
+        trello_read: async (args, signal) => options.trello ? project('trello_read', await options.trello.read(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
+        trello_write: async (args, signal) => options.trello ? project('trello_write', await options.trello.writeTask(sessionId, args, signal)) : taskFailed('The board connector is not configured.'),
+      };
+      return executors;
+    },
+    taskBindings(connectionIds) {
+      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled));
+      return policies.map(policy => {
+        const descriptor = connectorDescriptor(policy.connector);
+        if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
+        const nativeReader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+        const reader = { ...nativeReader, call: async (...args: Parameters<typeof nativeReader.call>) => {
+          const evidence = await nativeReader.call(...args);
+          if (evidence.state === 'completed' || evidence.state === 'tool-error') {
+            const status = descriptor.status?.(evidence, policy.endpoint);
+            if (status) {
+              const event = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool: args[0], code: status.code });
+              if (event) hostLogEvent(event);
+              if (status.log) options.log?.(status.log);
+            }
+          }
+          if (descriptor.status) {
+            const status = descriptor.status(evidence, policy.endpoint);
+            options.reportToolStatus?.(policy.connectionId, status ?? null);
+            if (status) connectorFailures.set(evidence, { repair: status.reason, code: isToolFailureCode(status.code) ? status.code : 'connector_error' });
+            if (status?.log) options.log?.(status.log);
+          }
+          return evidence;
+        } };
+        return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode) => {
+          if (code === 'result_store_full' || code === 'result_store_oversize' || code === 'result_store_unavailable') {
+            const classified = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool, code });
+            if (classified) hostLogEvent(classified);
+          }
+          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code };
+          if (options.log) options.log(event); else hostLogEvent(event);
+        }, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
+          const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
+          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
+            recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },
+            recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
+        } };
+      });
+    },
+    observeAlarmOwner: (_session, _journalId, words, _at) => {
       if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
     },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
@@ -610,786 +787,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } })
         .filter(id => configured === undefined || configured.includes(id));
     },
-    liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
-    liveDefinitions(runId, rememberNote, vaultDispatch, stageNote, composedNotes) {
-      // The Live model is declared only the one research tool plus remember; the connector reads
-      // stay in the registry so the research fan-out and the session cache keep working, but the Live
-      // session never declares them to the provider. A research tool is answered by a host-side loop
-      // in the Live session, so its own execute is never reached.
-      const ownerTools = owner.definitions(runId);
-      const definitions: ToolDefinition[] = [researchDeclaration(researchSourcesFromToolNames(ownerTools.map(tool => tool.name)))].map(declaration => ({
-        name: declaration.name, description: declaration.description, guidance: declaration.guidance, parameters: declaration.parameters,
-        effect: 'read', accountId: 'gateway:live-voice', resourceId: 'intent', validate: declaration.validate,
-        async execute() { return { status: 'failed' as const, code: 'handler_outcome' as const }; },
-      }));
-      definitions.push(...ownerTools.filter(tool => tool.name !== REMEMBER_IDENTITY.name));
-      definitions.push({ ...REMEMBER_IDENTITY, description: 'Remember a note explicitly requested in the owner’s finalized words.', effect: 'write', parameters: REMEMBER_PARAMETERS, validate: validateRemember,
-        async execute(args, context) {
-          if (context.runId !== runId || !validateRemember(args) || context.signal.aborted) return { status: 'failed' };
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: REMEMBER_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: REMEMBER_IDENTITY.accountId, resourceId: REMEMBER_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const response = rememberNote(tx, runId, args);
-            return complete(call as ToolCallIntent, response, ['ordinary'], tx);
-          });
-          return { status: 'completed', result };
-        },
-      });
-      // W15: people_lookup reads only the host's own roster snapshot; no connector, no network, no write.
-      definitions.push({ ...PEOPLE_LOOKUP_DECLARATION, effect: 'read', accountId: 'gateway:live-voice', resourceId: 'intent', validate: validatePeopleLookup,
-        async execute(args, context) {
-          if (context.runId !== runId || !validatePeopleLookup(args) || context.signal.aborted) return { status: 'failed' };
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: PEOPLE_LOOKUP_DECLARATION.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: 'gateway:live-voice', resourceId: 'intent', ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return complete(call as ToolCallIntent, peopleLookupResult(args), ['ordinary'], tx);
-          });
-          return { status: 'completed', result };
-        },
-      });
-      // Item 1/10: the composed stage is declared to the live model only while the capability switch is
-      // on, and it can never write: the host commits after its own read-back boundary and confirmation.
-      if (composedNotes !== false) definitions.push({ ...STAGE_NOTE_IDENTITY, description: STAGE_NOTE_GUIDANCE, effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
-        async execute(args, context) {
-          if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
-          await ownerRequests.waitForFinal(runId, context.signal);
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          // The booked call this execute may complete, re-read inside whichever transaction uses it.
-          const booked = (tx: Transaction): ToolCallIntent => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
-              executionId: context.executionId, toolName: STAGE_NOTE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-              accountId: STAGE_NOTE_IDENTITY.accountId, resourceId: STAGE_NOTE_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            return call as ToolCallIntent;
-          };
-          try {
-            const preparation = store.transaction(tx => {
-              const call = booked(tx);
-              const snapshot = validateCallRun(tx, call);
-              assertLiveIdentity(tx, call); target(snapshot, call, tx);
-              if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return { staged: stageNote ? stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }) : { saved: false, code: 'not_enabled' } };
-            });
-            const staged = preparation.staged;
-            // Remote writes start only after the synchronous authorization transaction commits.
-            const response = typeof staged === 'function' ? await staged() : staged;
-            const result = store.transaction(tx => complete(booked(tx), response as JsonObject, ['ordinary'], tx));
-            return { status: 'completed', result };
-          } catch {
-            // A stage that throws is a named refusal the model can speak, never an unknown write outcome.
-            const result = store.transaction(tx => complete(booked(tx), { staged: false, code: 'stage_failed', guidance: STAGE_FAILED_GUIDANCE }, ['ordinary'], tx));
-            return { status: 'completed', result };
-          }
-        },
-      });
-      definitions.push({ ...VAULT_WRITE_IDENTITY, description: 'Save the note the owner just dictated to his Lux vault. Call it only after he says the save phrase and then the note.', effect: 'write', parameters: VAULT_WRITE_PARAMETERS, validate: validateVaultSave,
-        async execute(args, context) {
-          if (context.runId !== runId || !validateVaultSave(args) || context.signal.aborted) return { status: 'failed' };
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          const staged = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
-              executionId: context.executionId, toolName: VAULT_WRITE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-              accountId: VAULT_WRITE_IDENTITY.accountId, resourceId: VAULT_WRITE_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return { call: call as ToolCallIntent, claim: claimVaultWrite(tx, { liveSessionId: runId, content: args.content }) };
-          });
-          const receipt: VaultReceipt = staged.claim.state !== 'dispatch' ? staged.claim.receipt : vaultDispatch ? await vaultDispatch(staged.claim) : { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' };
-          // C-LUX-SAVE: a refused attempt is still an attempt, so it gets its one line and the closed code.
-          if (staged.claim.state !== 'dispatch') hostLogEvent(vaultAttemptEvent(receipt, 0));
-          const result = store.transaction(tx => complete(staged.call, vaultReceiptJson(receipt), ['ordinary'], tx));
-          return { status: 'completed', result };
-        },
-      });
-      for (const name of ALARM_NAMES) definitions.push({
-        name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
-        description: `${name}: Call it when he asks. Give the time he said in this ask as the time object; the host converts it in its own zone. Say the read-back as returned. An alarm rings only on an awake Mac.`,
-        parameters: {
-          type: 'object',
-          properties: {
-            ...(name === 'set_alarm' || name === 'snooze_alarm' ? { time: TIME_PARAMETER, label: { type: 'string', description: 'Two to six words for the reminder, taken from his ask. Never the whole sentence. Omit when he named no subject.' } } : {}),
-            ...(name === 'snooze_alarm' || name === 'cancel_alarm' ? { id: { type: 'string', description: 'The alarm id from the last result. Omit when you do not have one.' } } : {}),
-            ...(name === 'set_alarm' ? { kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: 'Only when he said a repeat word of his own: every day, weekdays, every Monday. Omit it for a one-time alarm; the host drops a repeat he did not say.' }, weekdays: { type: 'array', items: { type: 'number' }, description: 'Only with a weekly repeat he said: 0 Sunday to 6 Saturday, verified against his own words. Omit otherwise.' } } : {}),
-          },
-          additionalProperties: false,
-        },
-        validate: validateAlarmArguments,
-        // C-ALARM: a refused time names the rule it breaks, so the model's retry can land.
-        rejection: alarmRejection,
-        guidance: ALARM_ARGUMENT_GUIDANCE,
-        async execute(args, context) {
-          if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
-          await ownerRequests.waitForFinal(runId, context.signal);
-          const input = alarmArguments(args);
-          if (input === undefined) return { status: 'failed' as const };
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          if (name === 'set_alarm') {
-            const recorded = store.transaction(tx => tx.get("SELECT result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=? AND state='completed'", [ownerId, context.runId, context.executionId]));
-            if (recorded) return { status: 'completed' as const, result: { id: String(recorded.result_id), sha256: String(recorded.result_sha256) } };
-          }
-          let consumed: string | undefined;
-          let actionReceipt: JsonObject | undefined;
-          const requestTarget = JSON.stringify(input);
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
-              executionId: context.executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-              ...ALARM_IDENTITY, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            const finish = (response: JsonObject) => {
-              if (response.say === undefined && ['refused', 'clarify', 'failed'].includes(String(response.status))) {
-                response = { ...response, say: requestRefusal(String(response.reason ?? response.code ?? 'alarm_failed')).say };
-              }
-              actionReceipt = response;
-              return complete(call as ToolCallIntent, response, ['ordinary'], tx);
-            };
-            const ask = ownerRequests.authorize(runId, name, requestTarget);
-            hostLogEvent({ event: 'alarm_audit', ...ownerRequests.audit(runId, name), refusalCode: ask.code === 'allowed' ? 'none' : ask.code });
-            if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
-            if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
-            if (name === 'list_alarms') {
-              const result: JsonObject = { alarms: listPendingAlarms(tx).map(entry => ({ id: entry.id, fire_at_utc: entry.fireAtUtc, tz: entry.tz, label: entry.label, state: entry.state,
-                ...(entry.series ? { series: { id: entry.series.id, rule: entry.series.rule, weekdays: entry.series.weekdays, local_time: entry.series.localTime, text: entry.series.text } } : {}) })) };
-              ownerRequests.commit(runId, name, requestTarget, result);
-              return finish(result);
-            }
-            const now = options.alarms?.now() ?? Date.now();
-            if (name === 'cancel_alarm') {
-              const active = listPendingAlarms(tx).filter(entry => entry.state === 'pending' || entry.state === 'ringing');
-              const asked = typeof input.id === 'string' && input.id.length > 0 ? String(input.id) : undefined;
-              const known = asked ? tx.get('SELECT id,state FROM alarms WHERE id=?', [asked]) : undefined;
-              // "Not active" is said only about an id that is truly finished: a wrong or missing id is
-              // not a refusal, it is the owner asking to stop the alarm they have.
-              if (asked && known && !active.some(entry => entry.id === asked) && !alarmSeriesRow(tx, asked)) {
-                return finish({ status: 'refused', reason: 'alarm_not_active' });
-              }
-              // The owner's own words choose one occurrence ("skip this Saturday") or the whole series, so a
-              // series id the model picked never widens an occurrence ask into a series cancel.
-              const series = asked && parseCancelScope(ask.words ?? '') === 'series' ? alarmSeriesRow(tx, asked) ?? alarmSeriesOfOccurrence(tx, asked) : undefined;
-              if (series) {
-                const cancelled = cancelAlarmSeries(tx, series.id);
-                consumed = ask.journalId;
-                return finish({ status: 'cancelled', id: series.id, scope: 'series', cancelled,
-                  say: `Recurring reminder cancelled: ${seriesText(seriesRuleOf(series))}.` });
-              }
-              const armed = (): JsonObject => {
-                const alarms = listPendingAlarms(tx).slice(0, 5).map(entry => {
-                  const read = alarmReadBack(entry.fireAtUtc, entry.tz);
-                  return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
-                });
-                return { alarms, say: alarms.map(alarm => `${alarm.weekday} at ${alarm.local_time}${alarm.label ? `, ${alarm.label}` : ''}`).join('; ') };
-              };
-              // Exactly one alarm is armed: that is the one "cancel the alarm" means.
-              let occurrence = asked ? (alarmSeriesRow(tx, asked) ? pendingOccurrenceOf(tx, asked) : asked) : undefined;
-              if (!occurrence) {
-                if (active.length === 1) occurrence = active[0]!.id;
-                else if (!active.length) return finish({ status: 'clarify', reason: 'no_alarm', say: 'There is no alarm to cancel.' });
-                else {
-                  const list = armed();
-                  return finish({ status: 'clarify', reason: 'several_alarms', ...list, say: `You have ${active.length} alarms: ${list.say}. Which one?` });
-                }
-              }
-              // One occurrence: a series id stands for that series' single pending occurrence.
-              const cancelled = tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [occurrence, now]);
-              if (!cancelled) return finish({ status: 'refused', reason: 'alarm_not_active' });
-              materialiseSeriesOccurrence(tx, occurrence, now);
-              consumed = ask.journalId;
-              const row = tx.get('SELECT fire_at_utc,tz,label FROM alarms WHERE id=?', [occurrence]);
-              const read = row ? alarmReadBack(Number(row.fire_at_utc), String(row.tz)) : undefined;
-              return finish({ status: 'cancelled', id: occurrence, scope: 'occurrence',
-                ...(read ? { local_time: read.localTime, weekday: read.weekday, date: read.date } : {}),
-                say: read ? `Cancelled the ${read.spoken} alarm.` : 'Alarm cancelled.' });
-            }
-            // C-TIME: the host resolves the wall clock. A snooze keeps the zone of the alarm it moves;
-            // every other ask reads the host zone unless the model named one, and the model never does
-            // the UTC arithmetic. The owner's words of this ask may override or complete the model fields.
-            const snoozeRow = name === 'snooze_alarm' && input.id
-              ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id, now])
-              : undefined;
-            if (name === 'snooze_alarm' && !snoozeRow) return finish({ status: 'refused', reason: 'alarm_not_active' });
-            const hostZone = String(options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? (ask.words ?? '').replace(/\bfor\b/i, 'in') : ask.words ?? '',
-              ask.observedAt ?? now, snoozeRow ? String(snoozeRow.tz) : hostZone, input.time);
-            // Five is enough to say what still stands, and it keeps the receipt small.
-            const armed = name === 'set_alarm' ? listPendingAlarms(tx).slice(0, 5).map(entry => {
-              const read = alarmReadBack(entry.fireAtUtc, entry.tz);
-              return { id: entry.id, weekday: read.weekday, local_time: read.localTime, label: entry.label };
-            }) : [];
-            // A clarify still names what is armed, so she can say the old alarm stands.
-            if (parsed.status !== 'ready') {
-              ownerRequests.clarify(runId, name, parsed.reason);
-              return finish({ ...parsed, ...(armed.length ? { armed } : {}) });
-            }
-            if (parsed.corrected) hostLogEvent({ event: 'alarm_time_corrected', corrected: parsed.corrected, source: parsed.source });
-            const label = (input.label ?? '').slice(0, 80);
-            // Recurrence is the owner's authority too: a model-supplied rule must be the one they said.
-            const spec = parseSeriesRule(ask.words ?? '');
-            // C-PERMTIER: a repeat he never asked for is dropped and said in the result, never refused:
-            // the alarm he did ask for is still set.
-            const seriesDropped = name === 'set_alarm' && !verifyAlarmRule(input, spec);
-            // The canary floor belongs to a live session, and the tools schema is also mounted alone (the
-            // eval alarm runner), where no live table exists: ask only when the live schema is present.
-            const canarySession = tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'")
-              ? tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND idempotency_key LIKE 'canary:%'", [runId])
-              : undefined;
-            if (canarySession) parsed.fireAtUtc = Math.max(parsed.fireAtUtc, now + 60000);
-            const alarmTz = parsed.tz;
-            if (name === 'snooze_alarm') tx.run("UPDATE alarms SET state='done' WHERE id=?", [String(input.id)]);
-            const seriesId = name === 'set_alarm' && parsed.series ? randomUUID() : undefined;
-            if (seriesId && parsed.series) insertAlarmSeries(tx, { id: seriesId, rule: parsed.series, label, createdJournalId: ask.journalId });
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, label, ask.journalId]);
-            // A series keeps exactly one materialised occurrence, linked to its rule.
-            if (seriesId) linkAlarmOccurrence(tx, context.executionId, seriesId);
-            if (name === 'snooze_alarm') {
-              tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
-              // Snoozing moves the ringing occurrence only: the series' next reminder is unchanged.
-              carryOccurrenceSeries(tx, input.id!, context.executionId);
-            }
-            consumed = ask.journalId;
-            const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
-            // C-TIME read-back: weekday, date, local time, zone and the id, so she says what was committed.
-            // C-DIAG109: the clock and the distance are the execution clock's, never the ask stamp's.
-            const readBackNow = alarmDistance(parsed.fireAtUtc, alarmTz, now);
-            return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
-              local_time: parsed.localTime, date: parsed.date, weekday: parsed.weekday, label,
-              now_local_time: readBackNow.nowLocalTime, minutes_away: readBackNow.minutesAway,
-              ...(parsed.corrected ? { corrected: parsed.corrected } : {}),
-              ...(seriesId && parsed.series ? { series_id: seriesId, rule: seriesText(parsed.series) } : {}),
-              say: parsed.confirmation + (parsed.corrected === 'model_time_differs' ? ' I used the time you said.' : '') + (seriesDropped ? ' I set it once: you did not ask for a repeat.' : '') + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
-          });
-          // The scheduler recheck runs after the alarm commits and before the authority receipt is
-          // spent, so a failure here reaches the caller and the retry is still authorized.
-          options.alarms?.recheck();
-          if (consumed) {
-            ownerRequests.commit(runId, name, requestTarget, actionReceipt);
-            if (name !== 'cancel_alarm') {
-              const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [context.executionId]));
-              const actualMs = options.alarms?.now() ?? Date.now();
-              if (alarm) {
-                hostLogEvent({ event: 'alarm_set', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason: 'owner_request' });
-                for (const reason of options.alarms?.health().reasons ?? ['shell_unreachable']) hostLogEvent({ event: 'alarm_degraded', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason });
-              }
-            }
-          }
-          return { status: 'completed' as const, result };
-        },
-      });
-      // W1030: the write surface he asked for by voice. Each call is bound to one owner turn and one
-      // target, keeps its outcome as the receipt, and replays that receipt instead of writing twice.
-      for (const name of COMPOSE_NAMES) {
-        const tool = COMPOSE_TOOLS[name];
-        definitions.push({
-          ...COMPOSE_IDENTITY, name, effect: 'write', description: tool.description, guidance: COMPOSE_GUIDANCE,
-          parameters: tool.parameters, validate: tool.validate,
-          async execute(args, context) {
-            if (context.runId !== runId || !tool.validate(args) || context.signal.aborted) return { status: 'failed' as const };
-            await ownerRequests.waitForFinal(runId, context.signal);
-            const call = store.transaction(tx => {
-              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-              const stored = storedCall(tx, row);
-              exactIntent(tx, { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
-                toolName: name, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)),
-                ...(stored.callId !== undefined ? { callId: stored.callId } : {}) });
-              validateCallRun(tx, stored);
-              return stored as ToolCallIntent;
-            });
-            const finish = (response: JsonObject) => ({ status: 'completed' as const, result: store.transaction(tx => complete(call, response, ['ordinary'], tx)) });
-            // The target is derived from his words and this turn, so the peek only needs the turn: a spent
-            // grant still names its journal, and the authorize below decides whether this is its replay.
-            const peek = ownerRequests.authorize(runId, name, '');
-            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: peek.code === 'allowed' || peek.code === 'idempotent' ? 'none' : peek.code });
-            // C-PERMTIER (REQUIRED 6, P-R1): the authority refusal names its cause before any time parse, so a
-            // fenced or unanswered ask never turns into a missing_time question.
-            if (peek.code !== 'allowed' && peek.code !== 'idempotent') return finish(requestRefusal(peek.code));
-            // C-PERMTIER (REQUIRED 6): his authority is judged before the result gate, so a refusal names its
-            // real cause (no_owner_request, external_text_only) instead of a bare failed.
-            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-            const ownerRefused = peek.code !== 'allowed' && peek.code !== 'idempotent';
-            if ((gate.state !== 'allowed' && !ownerRefused) || context.signal.aborted) return { status: 'failed' as const };
-            const target = composeTarget(name, args, clientRequestId(peek.journalId));
-            const ask = ownerRequests.authorize(runId, name, target);
-            if (ask.code === 'idempotent') return finish(ask.receipt as JsonObject);
-            if (ask.code !== 'allowed') return finish(requestRefusal(ask.code));
-            const claimed = ownerRequests.claim(runId, name, target, ask.id);
-            if (claimed.code !== 'allowed') return finish(requestRefusal(claimed.code));
-            // W1030: a delete names either a block this session created (matched exactly against its own
-            // receipt) or one he named unambiguously and a calendar read in this session returned. A model
-            // id that matches neither is refused here and never reaches the helper.
-            let deleteId: string | undefined = typeof (args as JsonObject)['event_id'] === 'string' ? String((args as JsonObject)['event_id']) : undefined;
-            if (name === 'delete_event') {
-              const rows = store.transaction(tx => tx.all("SELECT intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed'", [ownerId, context.runId]));
-              const created = createdEventIds(rows);
-              // #107 CG-A2: a model-supplied id counts only when the owner's own words resolve to it
-              // through this call's calendar read, so the id is his ask's, never the model's guess.
-              const named = options.compose?.findNamedEvent !== undefined
-                ? await options.compose.findNamedEvent({ words: ask.words ?? '', clientRequestId: clientRequestId(ask.journalId) })
-                : undefined;
-              const resolved = named?.state === 'found' ? named.eventId : undefined;
-              if (deleteId === undefined || (!created.includes(deleteId) && resolved !== deleteId)) {
-                if (resolved !== undefined) deleteId = resolved;
-              }
-              if (deleteId === undefined) {
-                ownerRequests.failed(runId, name, target, ask.id);
-                const asked = named?.state === 'ambiguous' && named.candidates.length > 0
-                  ? `I have more than one block like that in this session: ${named.candidates.slice(0, 3).join(', ')}. Which one?`
-                  : 'I can only remove a block I made in this session. Tell me which one, or ask me to look at your calendar first.';
-                return finish({ status: 'refused', code: named?.state === 'ambiguous' ? 'event_ambiguous' : 'event_not_created_here', say: asked });
-              }
-              if (!created.includes(deleteId) && named?.state !== 'found') {
-                ownerRequests.failed(runId, name, target, ask.id);
-                return finish({ status: 'refused', code: 'event_not_created_here', say: 'I can only remove a block I made in this session, so I am not touching that event.' });
-              }
-            }
-            // A block the calendar read resolved is removed by the id that read returned, never by prose.
-            if (name === 'delete_event' && typeof deleteId === 'string') args = { event_id: deleteId };
-            const turn = clientRequestId(ask.journalId);
-            const outcome = options.compose === undefined
-              ? notAuthorizedFor(name)
-              : await runCompose(options.compose, name, args, { words: ask.words ?? '', clientRequestId: turn, now: options.alarms?.now() ?? Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-            // A lost remote answer spends the grant and claims nothing: he is told it is unknown, and a
-            // retry cannot write twice.
-            hostLogEvent({ event: 'compose_audit', ...ownerRequests.audit(runId, name), refusalCode: 'none' });
-            if (outcome.state === 'unknown') return { status: 'unknown' as const, code: dispatchedFailureCode('write_unknown') };
-            if (outcome.state === 'done') ownerRequests.commit(runId, name, target, composeResult(outcome));
-            else ownerRequests.failed(runId, name, target, ask.id);
-            return finish(composeResult(outcome));
-          },
-        });
-      }
-      // Host-native open actions: the frame goes down the local Live socket and the ack is the result.
-      for (const openTool of OPEN_TOOLS) definitions.push({
-        name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
-        parameters: openParameters(openTool), validate: args => validateOpen(args, openTool),
-        async execute(args, context) {
-          if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
-          await ownerRequests.waitForFinal(runId, context.signal);
-          const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
-          const anyKinds = openTool.name === 'open_source' ? anyOpenKinds(words) : [];
-          const top = anyKinds.length ? ownerRequests.topShown(runId, anyKinds) : undefined;
-          const effectiveArgs = top ? { ...args, handle: top } : args;
-          const requestTarget = JSON.stringify(effectiveArgs);
-          let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
-          let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
-          // P-R8/REQUIRED 6: his authority is judged before the result gate, so a refusal names its real cause
-          // (no_owner_request, external_text_only) instead of a bare failed the model cannot explain.
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (eligible && (gate.state !== 'allowed' || context.signal.aborted)) return { status: 'failed' as const };
-          if (context.signal.aborted) return { status: 'failed' as const };
-          const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
-          const refused = 'target' in resolved ? undefined : resolved.code;
-          let dispatched = 'target' in resolved ? resolved.target : undefined;
-          if (dispatched && authorization.code === 'allowed') {
-            authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
-            eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
-            if (!eligible) dispatched = undefined;
-          }
-          // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
-          // model is told the reason the call was refused.
-          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
-          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
-            : !eligible ? requestRefusal(authorization.code)
-            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
-            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
-            : { code, say: 'The host could not confirm that the target opened.' };
-          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
-          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
-          // F13: a request that never reached the native side is a host refusal, not a native action.
-          // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
-          // refused handle is traceable without ever logging the handle or his words.
-
-          // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
-          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
-          if (code === 'opened' && dispatched) {
-            noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
-          }
-          if (context.signal.aborted) return { status: 'failed' as const };
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: openTool.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return complete(call as ToolCallIntent, payload, ['ordinary'], tx);
-          });
-          return { status: 'completed' as const, result };
-        },
-      });
-      // C-OPENWEB8: a map, a site or a search he asked for, opened from his own words. The address is
-      // built by the host from the target; no model argument is ever a URL, a host or a query string.
-      definitions.push({
-        name: OPEN_WEB_NAME, description: OPEN_WEB_DESCRIPTION, effect: 'read' as const, accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
-        parameters: OPEN_WEB_PARAMETERS, validate: validateOpenWeb,
-        async execute(args, context) {
-          if (context.runId !== runId || !validateOpenWeb(args) || context.signal.aborted) return { status: 'failed' as const };
-          await ownerRequests.waitForFinal(runId, context.signal);
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const requestTarget = JSON.stringify(args);
-          let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
-          let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
-          const startedAt = Date.now();
-          const resolved = authorization.code === 'allowed' ? await resolveWebOpen(args, authorization.words ?? '', context.signal) : { code: 'no_open_intent' as const };
-          // F6a: the resolver's own answer and how long it took, in closed words.
-          openResolve({ target: 'web', outcome: 'target' in resolved ? 'opened' : resolved.code, ms: Date.now() - startedAt });
-          let dispatched = 'target' in resolved ? resolved.target : undefined;
-          if (dispatched && authorization.code === 'allowed') {
-            authorization = ownerRequests.claim(runId, 'open', requestTarget, authorization.id);
-            eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
-            if (!eligible) dispatched = undefined;
-          }
-          const refused = 'target' in resolved ? undefined : resolved.code;
-          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
-          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
-          // F13: a request that never reached the native side is a host refusal, not a native action.
-          // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
-          // bound it and the class it resolved to, never the words or the address.
-
-          openAudit({ ...ownerRequests.audit(runId, 'open'), refusalCode: eligible ? (refused ?? (code === 'opened' ? 'none' : code)) : authorization.code });
-          if (code === 'opened' && dispatched) {
-            noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
-          }
-          // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
-          // case carries the domains so she asks which one he means.
-          const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
-            : !eligible ? requestRefusal(authorization.code)
-            // F6a: a site the resolver could not find says so; it is never relabelled as an authorization refusal.
-            : refused === 'not_found' ? openWebFailure('not_found')
-            : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
-            : code === 'browser_not_running' ? { code, say: OPEN_GUIDANCE.browser_not_running, fixNotForSpeech: 'Chrome is not running and nothing was launched, so no profile was guessed. Say the line to the owner by name and do not claim anything opened.' }
-            : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
-            : { code, say: 'The host could not confirm that the target opened.' };
-          if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: OPEN_WEB_NAME, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call, tx);
-            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return complete(call as ToolCallIntent, payload, ['ordinary'], tx);
-          });
-          return { status: 'completed' as const, result };
-        },
-      });
-      // W7: the owner's Trello board, offered only while a sign-in record exists. Reads and writes are
-      // resolved on the pinned board by the board service before anything reaches the server.
-      const board = options.trello;
-      if (board && options.grantMode === 'owner-trusted-reads' && board.available()) {
-        for (const [identity, parameters, validate, description] of [
-          [TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, validateTrelloRead, TRELLO_READ_DESCRIPTION],
-          [TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloWrite, TRELLO_WRITE_DESCRIPTION],
-        ] as const) definitions.push({ ...identity, description, guidance: TRELLO_ARGUMENT_GUIDANCE, effect: identity === TRELLO_WRITE_IDENTITY ? 'write' : 'read', parameters, validate,
-          async execute(args, context) {
-            if (context.runId !== runId || !validate(args) || context.signal.aborted) return { status: 'failed' as const };
-            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
-            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-            const staged = store.transaction(tx => {
-              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-              const call = storedCall(tx, row);
-              const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: identity.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: identity.accountId, resourceId: identity.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-              if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-              const snapshot = validateCallRun(tx, call);
-              assertLiveIdentity(tx, call); target(snapshot, call, tx);
-              if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return call as ToolCallIntent;
-            });
-            const response = identity === TRELLO_WRITE_IDENTITY ? await board.write(runId, args, ownerWords(context.runId), context.signal) : await board.read(runId, args, context.signal);
-            const result = store.transaction(tx => complete(staged, response, ['ordinary'], tx));
-            return { status: 'completed' as const, result };
-          },
-        });
-      }
-      return definitions.filter(tool => !['remember_note', 'save_to_vault'].includes(tool.name));
-    },
-    definitions(runId, tx?: Transaction) {
-      let lease = bodyLeases.get(runId);
-      if (!lease) { lease = { closed: false }; bodyLeases.set(runId, lease); }
-      const evidenceLease = lease;
-      const snapshot = tx ? readRun(tx, runId).snapshot : store.transaction(current => readRun(current, runId).snapshot);
-      const definitions: ToolDefinition[] = [];
-      if (options.grantMode === 'owner-trusted-reads') definitions.push({ ...HISTORY_IDENTITY, effect: 'read', parameters: HISTORY_PARAMETERS,
-        description: 'Search retained local conversations and notes, or read an exact returned record. Use query/date bounds for search, recordRef alone for detail, or cursor alone to continue. Coverage gaps are explicit.',
-        validate: validateHistory,
-        async execute(args, context) {
-          if (!validateHistory(args) || context.signal.aborted) return { status: 'failed' };
-          const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
-          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          const result = store.transaction(tx => {
-            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-            const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
-              toolName: HISTORY_IDENTITY.name, accountId: HISTORY_IDENTITY.accountId, resourceId: HISTORY_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(call.callId ? { callId: call.callId } : {}) };
-            exactIntent(tx, expected);
-            const accepted = validateCallRun(tx, call).acceptance;
-            const conversation = chatRun(tx, call.runId);
-            const read = historyReader.read(tx, { ownerId, runId: call.runId, currentSessionId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
-              routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
-            const response = redactSecretsWithCount(read.response).value;
-            return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });
-          });
-          return { status: 'completed', result };
-        },
-      });
-      for (const bound of snapshot.connections) {
-        const p = bound.policy;
-        const descriptor = connectorDescriptor(p.connector);
-        if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
-        const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
-        const declarations = descriptor.declarations(p);
-        // #604/F17: a composite is registered only when the approved policy names it, so the model table
-        // and the dispatch table never offer a read the approval does not cover.
-        const composedNames = composedGrantedNames(p.connector, [...p.toolNames]);
-        for (const name of [...new Set([...p.toolNames, ...composedNames])]) {
-          if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
-          const declaration = declarations.find(candidate => candidate.name === name);
-          // A connector capability granted for internal use (Mattermost channel-name resolution)
-          // is absent from the model-facing table; it stays dispatchable through the connector.
-          if (!declaration) {
-            if (descriptor.envelope.includes(name)) continue;
-            // W1030: a write name is reachable only through the host's compose port, never the model.
-            if ((descriptor.writeEnvelope ?? []).includes(name)) continue;
-            throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
-          }
-          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
-            ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
-            ...(declaration.rejection === undefined ? {} : { rejection: declaration.rejection }),
-            parameters: declaration.parameters,
-            async execute(args, context) {
-              if (context.signal.aborted) { return { status: 'unknown' }; }
-              // Independent dispatch guard, checked at call time and not at declaration time: a
-              // connector whose current generation is not published and ready never reaches its
-              // handler, even when a stale run snapshot still names one of its tools.
-              const grant = registry.currentGrant(p.endpoint.id);
-              if (!grant || grant.generation !== p.generation) { return { status: 'failed', code: 'not_granted' }; }
-              // #604: a composite is authorized by the approved policy name; the registry grant keeps
-              // the published child names, so a granted composite is never in `grant.toolNames`.
-              // TR-R8: the door covers a composite exactly when the host's own derivation grants it, that is
-              // when every base read it stands on is granted; the derivation is the one function above, never
-              // a copy, and the composed names are never stored in the registry grant.
-              if (!grant.toolNames.includes(name) && !composedNames.includes(name)) { return { status: 'failed', code: 'not_granted' }; }
-              if (!declaration.validate(args)) { return { status: 'failed' }; }
-              // Normalize at the boundary. The declaration already normalized and journaled this call, so this
-              // pass is idempotent and the intent hash stays over the arguments the executor is handed.
-              const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
-              if (declaration.normalize !== undefined && prepared === undefined) { return { status: 'failed' }; }
-              const callArgs = prepared === undefined ? args : prepared.args;
-              const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
-              if (context.signal.aborted) return { status: 'unknown' };
-              if (gate.state !== 'allowed') { return { status: 'failed' }; }
-              const call = store.transaction(tx => {
-                const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
-                if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-                const committed = storedCall(tx, row);
-                const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, accountId: context.accountId, resourceId: context.resourceId, toolName: name, argumentsHash: sha256(JSON.stringify(args)), ...(committed.callId === undefined ? {} : { callId: committed.callId }) };
-                exactIntent(tx, expected); const accepted = validateCallRun(tx, expected);
-                if (!currentPolicies(tx, accepted, bound.connectionId) || !currentProjection(accepted, bound.connectionId)) return null;
-                if (target(accepted, expected, tx).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
-                return expected;
-              });
-              if (!call) return { status: 'failed' };
-              const resultScope = createResultScope();
-              let value: ModelSnapshot;
-              let sourceRefs: readonly SourceDispatchRef[] | undefined;
-              try {
-                let evidence: Awaited<ReturnType<typeof reader.call>>;
-                try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
-                  const code = resultScope.failureCode ?? (error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome');
-                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
-                  if (failure) hostLogEvent(failure);
-                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
-                  return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
-                }
-                if (resultScope.failureCode) {
-                  const code = resultScope.failureCode;
-                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
-                  if (failure) hostLogEvent(failure);
-                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
-                  return { status: 'failed', code };
-                }
-                // A completed read carries real data even when the turn deadline fired while it finished:
-                // never discard it silently (F9 partial calendar reads); a refused or unknown result stays unknown.
-                if (context.signal.aborted && evidence.state !== 'completed') return { status: 'unknown' };
-                if (evidence.state === 'unknown') {
-                  const code = dispatchedFailureCode(evidence.reason);
-                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
-                  // G5: the closed code stays what the model and the gate read, and the reason the connector
-                  // gave travels beside it, so `tool_call_outcome` never loses the cause to the collapse.
-                  return { status: 'unknown', code, reason: evidence.reason };
-                }
-                if (evidence.state !== 'completed') {
-                  // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
-                  // with its closed code's line rather than an empty result. A connector without a word
-                  // table answers undefined and keeps the plain failure code below.
-                  const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' || evidence.state === 'refused' ? descriptor.status?.(evidence, p.endpoint) : undefined;
-                  if (!status) {
-                    // Keep the failure cause truthful: a refused connector read names its reason; a child
-                    // tool/protocol error is an unusable result. Either way surface a real code.
-                    // #637: a channel the chat connector does not know is its own closed code, so the reply can
-                    // say the channel is unknown; every other refusal keeps the code it had.
-                    const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                    return { status: 'failed', code: failureCode, reason: 'reason' in evidence ? evidence.reason : evidence.state };
-                  }
-                  // A classified failure is visible: the endpoint flips to configured and the call
-                  // returns the plain reason as its projection, never an empty success. A status that
-                  // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
-                  reportToolStatus?.(p.endpoint.id, status);
-                  if (status.log) options.log?.(status.log);
-                  // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
-                  // failed read from an empty one. The endpoint id, the tool and the classified code only:
-                  // no argument, no payload, no helper text. A code that is not one word is not logged.
-                  // It travels on the host-log channel, whose sink owns validation, because the owner log
-                  // accepts only the closed transport-failure shape.
-                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
-                  if (failure) hostLogEvent(failure);
-                  // `classified` is the closed code this projection stands for, so the reader that shapes it can
-                  // call it a failed read by evidence instead of guessing from the words it carried.
-                  return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
-                }
-                reportToolStatus?.(p.endpoint.id, null);
-                sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
-                try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
-                  const code = resultScope.failureCode ?? (error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
-                    : error instanceof Error ? 'connector_error' : 'handler_outcome');
-                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
-                  if (failure) hostLogEvent(failure);
-                  // Only safe class/code metadata, never remote payloads or arbitrary exception text.
-                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
-                  return { status: 'failed', code };
-                }
-              } finally { resultScope.release(); }
-              // One boundary for every connector: a projected tool result is redacted before it is
-              // persisted to tool_calls, put into evidence or source cards, or sent to the model.
-              const redacted = redactSecretsWithCount(value.response);
-              // K1's redaction point is the one place a completed call's result text is final, so the
-              // journal copies it from here: already redacted, capped by the journal itself.
-              if (redacted.count > 0) {
-                // The owner log accepts one closed failure shape; the host log validates this receipt's
-                // own closed shape (event, tool, count) and drops anything else, so no value can ride along.
-                const receipt = options.log as unknown as ((event: Record<string, unknown>) => void) | undefined;
-                receipt?.({ event: 'tool_redaction', tool: name, count: redacted.count });
-                value = { ...value, response: redacted.value };
-              }
-              if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {
-                value = { ...value, response: { ...value.response, text: `${value.response['text']} ${prepared.notice}` } };
-              }
-              if (evidenceLease.closed) return { status: 'failed', code: 'cancelled' };
-              const hostEvidence = value[HOST_EVIDENCE];
-              if (hostEvidence?.kind === 'remote-body') {
-                const body = redactSecretsWithCount({ text: hostEvidence.body }).value.text as string;
-                return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, { ...hostEvidence, body, bodySha256: sha256(body) },sourceRefs) };
-              }
-              return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, hostEvidence,sourceRefs) };
-            },
-          });
-        }
-      }
-      if (definitions.some(tool => RECEIVED_BODY_TOOLS.has(tool.name))) {
-        bodyConsumers.add(runId);
-        definitions.push({ ...RECEIVED_BODY, effect: 'read', parameters: RECEIVED_BODY_PARAMETERS,
-          description: 'Continue a received tool body locally using only bodyContinuation.cursor or nextCursor from this run. This makes no source request. Initial source text is a preview; full received-body coordinates start at zero. Coverage distinguishes local remaining bytes from unconfirmed source completeness. A repeated prepared cursor returns a receipt, not duplicate text.',
-          validate: args => {
-            pruneEvidence();
-            if (!receivedBodyArguments(args) || evidenceLease.closed) return false;
-            const page = bodyPages.get(args.cursor), original = page && retained.get(page.parent.result.id);
-            return page?.runId === runId && original?.evidence.kind === 'remote-body' && original.evidence.expiresAt > Date.now();
-          },
-          async execute(args, context) {
-            if (!receivedBodyArguments(args) || context.runId !== runId || context.signal.aborted) return { status: 'failed' };
-            const page = bodyPages.get(args.cursor);
-            if (!page || page.runId !== runId) return { status: 'failed' };
-            const parentBinding = { ...page.parent, contentIndex: 0, partIndex: 0 };
-            const gated = await resultGate.authorize({ ...context, grants: [] }, [parentBinding], [], context.signal);
-            if (gated.state !== 'allowed' || context.signal.aborted || evidenceLease.closed || bodyPages.get(args.cursor) !== page) return { status: 'failed' };
-            const reference = retained.get(page.parent.result.id);
-            if (reference?.evidence.kind !== 'remote-body') return { status: 'failed' };
-            const evidence = reference.evidence;
-            const call = store.transaction(tx => {
-              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, runId, context.executionId]);
-              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
-              const committed = storedCall(tx, row);
-              const expected = { runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: RECEIVED_BODY.name, accountId: RECEIVED_BODY.accountId, resourceId: RECEIVED_BODY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(committed.callId ? { callId: committed.callId } : {}) };
-              exactIntent(tx, expected); return expected;
-            });
-            const coverage = { rootCursor: page.rootCursor, offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted, stage: 'canonical-preparation' };
-            const response: JsonObject = { status: 'completed', cursor: args.cursor, bodyCoverage: coverage, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor),
-              ...(page.completed ? { alreadyPrepared: true, bodySlices: [] } : { bodySlices: [{ source: evidence.tool === 'gmail_read_message' ? 'mail' : evidence.tool === 'get_insight' ? 'knowledge' : 'mongoose', tool: evidence.tool, text: evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted }] }) };
-            const provenance = store.transaction(tx => {
-              const { snapshot, hash } = readRun(tx, runId);
-              if (!authorizedStoredResult(tx, snapshot, page.parent)) throw Error('body_parent_unavailable');
-              const parentCall = originalCall(tx, runId, page.parent);
-              const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, parentCall, tx).connectionId);
-              if (!bound) throw Error('body_parent_unavailable');
-              const row = exactIntent(tx, parentCall);
-              const value = JSON.parse(String(row.result_json)) as { sourceDispatchRefs?: unknown };
-              const ids = value.sourceDispatchRefs;
-              if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length)) throw Error('dispatch_reference_denied');
-              return { bound, hash, snapshot, refs: (ids as string[] | undefined)?.map(id => ({ id })) };
-            });
-            dispatch.run({ call, bound: provenance.bound, snapshotSha256: provenance.hash, allowedClasses: provenance.snapshot.acceptance.allowedClasses.filter(c => provenance.snapshot.acceptance.route.allowedClasses.includes(c)) }, () => provenance.refs?.forEach(ref => dispatch.reuse(ref)));
-            const result = complete(call, response, gated.results[0]!.dataClasses, undefined, { kind: 'remote-page', parent: page.parent }, provenance.refs);
-            if (!page.completed) {
-              page.completed = result;
-              if (page.nextCursor) {
-                const cursor = page.nextCursor;
-                const end = receivedBodyEnd(evidence.body, page.end, page.maxResultBytes);
-                bodyPages.set(cursor, { runId, maxResultBytes: page.maxResultBytes, rootCursor: page.rootCursor, parent: page.parent, offset: page.end, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < evidence.body.length ? { nextCursor: randomUUID() } : {}) });
-              }
-            }
-            return { status: 'completed', result };
-          },
-        });
-      }
-      return definitions;
-      },
   };
   ownerBindings.set(owner, { store, registry, ownerId });
-  transactionDefinitions.set(owner, owner.definitions);
   return owner;
-}
-
-/** Read a frozen run through the caller's transaction, without opening a nested transaction. */
-export function definitionsInTransaction(owner: ToolsOwner, runId: string, tx: Transaction): ToolDefinition[] {
-  const read = transactionDefinitions.get(owner);
-  if (!read) throw Error('unbound_tools_owner');
-  return read(runId, tx);
 }

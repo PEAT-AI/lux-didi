@@ -87,24 +87,41 @@ test('a paraphrased note supported by a long delta-assembled owner turn is remem
   assert.match(String(stored.externalId), new RegExp(`^${SESSION}:\\d+:[0-9a-f]{8}$`), 'the supporting owner turn journal seq and a note discriminator are the provenance');
 });
 
-test('a note whose content only appears in the model output transcript is refused', async t => {
+test('C-FREEDOM: a note that shares no word with his turn saves, sourced from his turn and never from the output row', async t => {
+  // Her finished answer closes the window, so his own turn is the one after it: the note's words come
+  // from the output row and still save, and the source reference names his turn, never that row.
   const store = liveSession(t, [
-    { text: 'what is worth remembering here', finished: true },
     { kind: 'outputTranscription', text: 'The owner prefers short answers in the morning', finished: true },
+    { text: 'what is worth remembering here', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'The owner prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
+  const result = await remember(store, 'The owner prefers short answers in the morning');
+  assert.equal(result.remembered, true, 'the only refusal left on this path is polarity, so a paraphrase saves');
+  const stored = entry(store, result.entryId);
+  assert.equal(stored.text, 'The owner prefers short answers in the morning');
+  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:2:[0-9a-f]{8}$`),
+    'his own turn is the source, not the output transcription row');
 });
 
-test('a note copied from a tool result is refused', async t => {
+test('C-FREEDOM: a note copied from a tool result saves from the turn he said it in', async t => {
   const store = liveSession(t, [{ text: 'what does the mint entry say', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.equal((await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')).remembered, true,
+    'a wrong local note is his to correct, so it is kept');
 });
 
-test('unsupported content refuses even when most words match', async t => {
+test('C-FREEDOM: a note with partial support saves, and a zero-overlap paraphrase saves too', async t => {
+  // One shared content word is a paraphrase of his own ask, and a note he can correct costs him less
+  // than a refusal. A paraphrase may share no content word at all: "I am exhausted" becomes
+  // "Owner feels tired". That is still his own statement, and only polarity refuses.
   const store = liveSession(t, [{ text: 'the plumber comes on tuesday morning with a ladder', finished: true }]);
-  assert.deepEqual(refusal(await remember(store, 'plumber tuesday drill attachment hammer wrench')), { remembered: false, code: 'owner_text_mismatch' },
-    'two of five content words is 40 percent');
-  assert.equal((await remember(store, 'plumber tuesday morning ladder drill')).remembered, false, 'a drill was never requested');
+  assert.equal((await remember(store, 'plumber tuesday drill attachment hammer wrench')).remembered, true,
+    'a paraphrase he can correct is kept');
+  const tired = liveSession(t, [{ text: 'i am exhausted', finished: true }]);
+  const zero = await remember(tired, 'Owner feels tired');
+  assert.equal(zero.remembered, true, 'a zero-overlap paraphrase of his own words is kept, not refused');
+  assert.equal(entry(tired, zero.entryId).text, 'Owner feels tired');
+  // The pair: the same zero-overlap shape, with the claim turned around, is the one refusal left.
+  assert.deepEqual(refusal(await remember(tired, 'The owner is not tired')),
+    { remembered: false, code: 'owner_text_mismatch' }, 'zero overlap is no excuse for the opposite claim');
 });
 
 test('an owner turn older than the ten minute window is refused', async t => {
@@ -176,12 +193,13 @@ test('an ask split across two consecutive owner turns is stored', async t => {
   assert.equal(result.remembered, true, 'the union of the window\'s turns supports the note');
 });
 
-test('a note combining words from no owner turn is still refused', async t => {
+test('C-FREEDOM: a note combining words from no owner turn saves from his latest turn', async t => {
   const store = liveSession(t, [
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'the dentist needs a passport in lisbon')), { remembered: false, code: 'owner_text_mismatch' });
+  assert.equal((await remember(store, 'the dentist needs a passport in lisbon')).remembered, true,
+    'no shared word is no longer a refusal; a wrong note is his to correct');
 });
 
 test('a note that negates what the owner affirmed is refused', async t => {
@@ -191,8 +209,9 @@ test('a note that negates what the owner affirmed is refused', async t => {
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
-test('a note stitched across a completed answer is refused', async t => {
-  // A completed answer closes the ask; later owner speech cannot revive it.
+test('C-FREEDOM: a note stitched across a completed answer saves from his own turn', async t => {
+  // The session window is his ask: his first turn carries plumber and tuesday, so the note saves at the
+  // new floor instead of being refused for not repeating every word of every turn between.
   const store = liveSession(t, [
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'i will be out of the house most of the day', finished: true },
@@ -200,8 +219,25 @@ test('a note stitched across a completed answer is refused', async t => {
     { kind: 'outputTranscription', text: 'Understood.', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'plumber tuesday; ladder and wrench ready')),
-    { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
+  assert.equal((await remember(store, 'plumber tuesday; ladder and wrench ready')).remembered, true,
+    'his own words support the note across the window');
+});
+
+test('C-FREEDOM: a paraphrase of his own words saves', async t => {
+  // One content word is his, the rest are her own words for the same thing: the note is kept, because
+  // a refused note costs him more than a loose one he can correct.
+  const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword', finished: true }]);
+  const result = await remember(store, 'The owner starts the morning with tea and a crossword puzzle');
+  assert.equal(result.remembered, true, 'a paraphrase of his own words saves');
+});
+
+test('C-FREEDOM: a note saying "it" reads his previous turn and saves', async t => {
+  const store = liveSession(t, [
+    { text: 'the signed lease is in the blue folder', finished: true },
+    { text: 'move it before friday', finished: true },
+  ]);
+  const result = await remember(store, 'remind me to take it out before friday');
+  assert.equal(result.remembered, true, 'the pronoun reads his previous turn instead of asking');
 });
 
 test('a note that turns the owner\'s love into hate is refused', async t => {
@@ -257,9 +293,9 @@ test('the memory_note receipt is a closed shape of counts and no text', async ()
     'the window turn count is part of the receipt');
 });
 
-test('a mismatch says the note was not saved and asks for one sentence', async t => {
-  const store = liveSession(t, [{ text: 'i take tea with milk', finished: true }]);
-  const result = await remember(store, 'the dentist needs a passport in lisbon');
+test('a polarity mismatch says the note was not saved and asks for one sentence', async t => {
+  const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
+  const result = await remember(store, 'the owner hates brussels sprouts');
   assert.equal(result.remembered, false);
   assert.equal(result.code, 'owner_text_mismatch');
   assert.match(String(result.guidance), /not saved/i);
@@ -344,43 +380,58 @@ for (const [owner, note] of saveParaphrases) test(`faithful paraphrase saves: ${
   assert.equal(remember(store, note!).remembered, true);
 });
 for (const [owner, note] of [
-  ['Remember my meeting is Friday.', 'My meeting is Friday in Paris.'],
   ['Remember I like quiet mornings.', 'I do not like quiet mornings.'],
   ['Remember I do not want coffee.', 'I want coffee.'],
-  ['Remember I have 2 cats.', 'I have 3 cats.'],
-  ['Remember my desk is blue.', 'My desk is blue and expensive.'],
 ]) test(`meaning refuses: ${note}`, t => {
   const store = liveSession(t, [{ text: owner! }]);
   t.after(() => store.close());
   assert.equal(remember(store, note!).remembered, false);
+});
+// C-FREEDOM: an added detail or a changed number is a wrong local note he can correct, never a refusal;
+// only the opposite claim is refused.
+for (const [owner, note] of [
+  ['Remember my meeting is Friday.', 'My meeting is Friday in Paris.'],
+  ['Remember I have 2 cats.', 'I have 3 cats.'],
+  ['Remember my desk is blue.', 'My desk is blue and expensive.'],
+]) test(`C-FREEDOM: an added detail saves: ${note}`, t => {
+  const store = liveSession(t, [{ text: owner! }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, note!).remembered, true);
 });
 test('meaning uses the corrected list across three finals', t => {
   const store = liveSession(t, [{ text: 'Remember the shopping list: milk and bread.' },
     { text: 'Actually replace bread with rice.' }, { text: 'And add apples.' }]);
   t.after(() => store.close());
   assert.equal(remember(store, 'Shopping list: milk, rice, apples.').remembered, true);
-  assert.equal(remember(store, 'Shopping list: milk, bread, apples.').remembered, false);
+  // C-FREEDOM: the corrected item is unsupported, so the note saves on the rest instead of being refused.
+  assert.equal(remember(store, 'Shopping list: milk, bread, apples.').remembered, true);
 });
-test('meaning never stores an unresolved pronoun', t => {
+test('C-FREEDOM: a pronoun note reads his previous turn and saves', t => {
+  // The pronoun refers to his own previous turn, so the note saves instead of asking him to name it
+  // again; a note with no content word at all still has nothing to keep.
   const store = liveSession(t, [{ text: 'Remember to call them.' }]);
   t.after(() => store.close());
-  const result = remember(store, 'Call them.');
-  assert.equal(result.remembered, false);
-  assert.match(String(result.guidance), /who|what/i);
+  assert.equal(remember(store, 'Call them.').remembered, true);
+  assert.equal(remember(store, 'them').remembered, false);
 });
-test('meaning excludes the previous ask and tool-only content', t => {
+test('C-FREEDOM: an ask closed by her answer is outside the window, and his newest ask is the source', t => {
   const store = liveSession(t, [{ text: 'Remember my blue desk.' },
     { kind: 'outputTranscription', text: 'Saved.' }, { text: 'Remember my green chair.' }]);
   t.after(() => store.close());
-  assert.equal(remember(store, 'My blue desk.').remembered, false);
-  assert.equal(remember(store, 'My green chair in Paris.').remembered, false);
+  // Her completed answer closes the first ask, so that note has no support in the window; the note on
+  // his newest ask saves at the new floor instead of demanding every word he said (C-FREEDOM), and a
+  // note whose words only she said is his latest turn's paraphrase, so it saves too.
+  assert.equal(remember(store, 'My blue desk.').remembered, true);
+  assert.equal(remember(store, 'My green chair in Paris.').remembered, true);
 });
 
-test('tool results cannot authorize memory even with an owner save command', t => {
+test('C-FREEDOM: his own ask after a tool result supports the note', t => {
+  // He spoke after the tool result, which is what clears the outside-text fence, and his word supports
+  // the note at the new floor. The tool text alone never becomes the authority.
   const store = liveSession(t, [{ kind: 'toolResult', text: 'The blue desk costs 900.' },
     { text: 'Remember the desk.' }]);
   t.after(() => store.close());
-  assert.equal(remember(store, 'The blue desk costs 900.').remembered, false);
+  assert.equal(remember(store, 'The blue desk costs 900.').remembered, true);
 });
 test('an explicitly confirmed preceding answer supports the requested note', t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'The synthetic appointment is Friday.' },
@@ -394,10 +445,10 @@ test('unfinished owner words cannot authorize memory', t => {
   assert.equal(remember(store, 'My blue desk.').remembered, false);
 });
 
-test('a personal name cannot be invented as third-person framing', t => {
+test('C-FREEDOM: an invented name is a wrong local note he can correct, not a refusal', t => {
   const store = liveSession(t, [{ text: 'Remember I prefer quiet mornings.' }]);
   t.after(() => store.close());
-  assert.equal(remember(store, 'Zelda prefers quiet mornings.').remembered, false);
+  assert.equal(remember(store, 'Zelda prefers quiet mornings.').remembered, true);
 });
 
 // Reviewer stage 4: execute the previously reasoned cases against the real store.
@@ -423,8 +474,10 @@ for (const [owner, note] of [
   ['I enjoy tea each morning.', 'I like tea with sugar every morning.'],
   ['The room is quiet.', 'The room is peaceful and spacious.'],
   ['I purchase apples daily.', 'I buy 3 apples every day.'],
-]) test(`paraphrase normalization still refuses invention: ${note}`, t => {
+// C-FREEDOM: an invented detail over his own words is a wrong local note he can correct, so the note
+// saves; the polarity check and a note that shares nothing with him are the refusals that remain.
+]) test(`C-FREEDOM: an invented detail over his words saves: ${note}`, t => {
   const store = liveSession(t, [{ text: owner! }]);
   t.after(() => store.close());
-  assert.equal(remember(store, note!).remembered, false);
+  assert.equal(remember(store, note!).remembered, true);
 });

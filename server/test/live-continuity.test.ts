@@ -1,3 +1,4 @@
+import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -73,7 +74,7 @@ function openLive(t: TestContext, options: { timeZone?: string | null; promptTex
   });
   const detach = attachHostLogSink({ event: () => {} });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => clock.now, ...(options.timeZone === null ? {} : { timeZone: options.timeZone ?? 'Asia/Kolkata' }), schedule: clock.schedule });
+  const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, voice: port, profile, now: () => clock.now, ...(options.timeZone === null ? {} : { timeZone: options.timeZone ?? 'Asia/Kolkata' }), schedule: clock.schedule });
   const start = async () => {
     const session = owner.create({ idempotencyKey: `continuity-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
     const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);

@@ -72,6 +72,7 @@ export interface ClassificationSubject {
   sourceRefs?: readonly SourceRef[];
 }
 export interface ChatConfig {
+  createTaskRuntime: import('../tasks/host.js').HostTaskFactory;
   tools?: ChatToolsComposition;
   ownerProfile?: OwnerProfileSnapshot;
   store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort | null;

@@ -9,7 +9,7 @@ Rules that apply to all of them:
 - Fakes and synthetic fixtures only. No real account, credential, provider call, voice hardware or owner data.
 - A check that cannot run says so (a `CHECK BLOCKED` line and a non-zero exit) and is never read as a pass.
 - Run the checks that cover what you changed, not all of them. Do not run unit tests by hand for their own sake.
-- Browser-backed checks run under `lux-browser-slot run` (a lease on the shared GPU renderer; it is not an npm dependency and exists only on a managed host). Without it those checks are blocked, not skipped.
+- Browser-backed checks run under `lux-browser-slot run` (a separately installed browser concurrency prerequisite, not an npm dependency). Without it those checks are blocked, not skipped.
 - Most server checks copy the exact sources they cover into a temporary directory and compile there, so a stale `dist` can never make them pass.
 
 ## Memory discipline
@@ -19,7 +19,7 @@ compiler job (`-j 1 -num-threads 1`, declared once per script in a `swift_serial
 runs as `scripts/with-compile-lock.sh -- swiftc ...`. The wrapper takes one exclusive lock on the
 per-user path `${LUX_COMPILE_LOCK:-$HOME/.lux/state/compile.lock}`, starts the compiler only once
 it holds that lock, and the lock lives exactly as long as the compiler process. One compiler at a
-time per user on the machine is what stops three parallel lanes from each fanning a frontend out
+time per user on the machine is what stops several builds from each fanning a frontend out
 per core and eating the Mac's memory. Set `LUX_COMPILE_LOCK` to move the lock path, and a script
 that invents its own `HOME` pins `LUX_COMPILE_LOCK` to the real user path before it does. Test
 binaries run outside the lock: only the compiler is inside it.
@@ -73,67 +73,52 @@ A gate check that runs past twenty minutes is a defect; the CI job is under fift
 
 ### Every check in the map
 
-`config/check-map.json` names 42 check scripts. This table says what each one needs and what it
-costs, read from the scripts themselves and not from a run of each; the reference gate in
-`scripts/ci-gauntlet.sh` is exercised every pull request, so a reading is what keeps the map
-honest without turning a docs change into forty minutes of the shared Mac. `Group` is the CI group
-from the table above for the ten gate checks and `-` for a check CI does not run. `Repeats unit
-suites` counts test files this check names that another check also names, so a check marked `yes`
-runs work something else already runs. `Duration` is seconds measured by the gate's own record on
-this host (`GATE_CHECK` rows of `$DIDI_TIMING_FILE`), and `missing` where no measurement exists.
-These are one sample each, taken on a loaded shared Mac: the same ten checks took 318 seconds in one
-run and 886 in another on the same tree, so read a duration as a scale, never as a target.
+`config/check-map.json` maps changed paths to check scripts. The table below records their prerequisites. These are code-derived requirements, not fresh performance measurements. Consult the script for its current suite list.
 
-| Check | Group | Platform | Prerequisites | Repeats unit suites | Duration (s) |
-| --- | --- | --- | --- | --- | --- |
-| `check-evals` | - | Linux-portable | server `node_modules` installed in this worktree; refuses a symlinked one | no | missing |
-| `check-prompt` | other | Linux-portable | server TypeScript and `@types/node` installed | yes (10 of 28 test files) | 20 |
-| `check-live-voice` | session | Linux-portable | built server and the local provider fixtures | yes (1 of 5 test files) | 68 |
-| `check-live-session` | session | Linux-portable | built server and the live suites' local provider adapters | yes (17 of 44 test files) | 571 |
-| `check-model` | - | Linux-portable | server TypeScript and `@types/node` installed | yes (2 of 2 test files) | missing |
-| `check-host` | - | Mac only | Swift toolchain, a built app bundle and the `lux-browser-slot` lease | yes (8 of 18 test files) | missing |
-| `check-host-entry` | - | Linux-portable | a clean committed tree and a built `dist` | yes (1 of 1 test file) | missing |
-| `check-service` | - | Linux-portable | `npm ci` in `server` | yes (2 of 2 test files) | missing |
-| `check-connected` | - | Linux-portable | the renderer lease and a built server and web | yes (1 of 2 test files) | missing |
-| `check-archive-scale` | - | Linux-portable | Node 26 or newer, `node_modules`, and an output path it writes | no | missing |
-| `check-api-response` | - | Linux-portable | the renderer lease, installed server and web dependencies, built `dist` | no | missing |
-| `check-live-gateway` | gateway | Linux-portable | built server and the local provider fixture | yes (8 of 8 test files) | 110 |
-| `check-domain` | - | Linux-portable | `npm ci` in `server` | yes (3 of 3 test files) | missing |
-| `check-memory-context` | - | Linux-portable | server build and `git` | yes (10 of 10 test files) | missing |
-| `check-knowledge-connector` | - | Linux-portable | built server | yes (1 of 1 test file) | missing |
-| `check-chat` | - | Linux-portable | built server | yes (10 of 17 test files) | missing |
-| `check-provider-config` | - | Linux-portable | built server | no | missing |
-| `check-credential-binding` | - | Linux-portable | built server and `git` | no | missing |
-| `check-tool-owner` | other | Linux-portable | installed TypeScript, Node types and the MCP SDK | yes (4 of 18 test files) | 18 |
-| `check-google-connector` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | yes (4 of 10 test files) | 13 |
-| `check-company-connectors` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | yes (8 of 32 test files) | 16 |
-| `check-mcp` | - | Linux-portable | npm dependencies for the MCP surface | no | missing |
-| `check-mcp-stdio` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | no | missing |
-| `check-mcp-config` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly | no | missing |
-| `check-dispatch-gate` | - | Linux-portable | installed TypeScript, Node types and the MCP SDK | no | missing |
-| `check-test-sensitivity` | - | Linux-portable | `python3`, `tsc` and `git`; writes mutated copies and runs them | no | missing |
-| `check-latency-budget` | - | Linux-portable | npm dependencies and its budget test | no | missing |
-| `check-live-boundary` | - | Linux-portable | server TypeScript and `@types/node` installed | no | missing |
-| `check-native-live` | - | Mac only | `xcrun swiftc` under the compile lock and a built app bundle | yes (2 of 2 test files) | missing |
-| `check-native-conversation` | - | Mac only | a built macOS app, the renderer lease and `git` | yes (5 of 6 test files) | missing |
-| `check-macos-install` | - | Mac only | Swift toolchain, `codesign`, the installed-app paths and the renderer lease | no | missing |
-| `check-install-smoke` | other | Linux-portable | `npm` and `node` only | no | 8 |
-| `check-installed-alarm` | - | Mac only | the Swift toolchain and the installed app's shipped runtime | no | missing |
-| `check-installed-connectors` | - | Mac only | the installed app and its shipped runtime | no | missing |
-| `check-installed-open-web` | - | Mac only | the built app and the Swift toolchain | no | missing |
-| `check-pending-request` | - | Mac only | the Swift toolchain only | no | missing |
-| `check-package` | other | Linux-portable | `git`, `npm`, `tar`, `node` and an empty npm cache for the offline install | yes (1 of 3 test files) | 59 |
-| `check-selected-memory-ui` | - | Linux-portable | the renderer lease and a built server and web | yes (4 of 5 test files) | missing |
-| `check-asset-bundle` | - | Linux-portable | `git`, `node` and the asset-bundle build scripts | no | missing |
-| `check-web-unit` | other | Linux-portable | web dependencies installed | yes (2 of 24 test files) | 3 |
-| `check-docs` | - | Linux-portable | `node` only; also runs the gate inventory test | no | missing |
-| `check-combined-tree` | - | Mac only for the full union, `--static` is portable | `git`, `python3` and `swift` for the static Swift pass; runs the mapped union | yes, by design | missing |
-
-Two consequences worth naming. Nine scripts are `Mac only` (and `check-combined-tree` needs macOS
-for its full union), so they cannot move to an ubuntu runner without a rewrite that removes the
-Swift, `codesign` or installed-app dependency from each. Twenty two of the 42 run at least one test
-file another check already runs, which is where a future wagon can look for a real saving; nothing
-moves in this wagon, and the count is a file overlap, not a claim about duplicate seconds.
+| Check | Group | Platform | Prerequisites |
+| --- | --- | --- | --- |
+| `check-evals` | - | Linux-portable | server `node_modules` installed in this worktree; refuses a symlinked one |
+| `check-prompt` | other | Linux-portable | server TypeScript and `@types/node` installed |
+| `check-live-voice` | session | Linux-portable | built server and the local provider fixtures |
+| `check-live-session` | session | Linux-portable | built server and the live suites' local provider adapters |
+| `check-model` | - | Linux-portable | server TypeScript and `@types/node` installed |
+| `check-host` | - | Mac only | Swift toolchain, a built app bundle and the `lux-browser-slot` lease |
+| `check-host-entry` | - | Linux-portable | a clean committed tree and a built `dist` |
+| `check-service` | - | Linux-portable | `npm ci` in `server` |
+| `check-connected` | - | Linux-portable | the renderer lease and a built server and web |
+| `check-archive-scale` | - | Linux-portable | Node 26 or newer, `node_modules`, and an output path it writes |
+| `check-api-response` | - | Linux-portable | the renderer lease, installed server and web dependencies, built `dist` |
+| `check-live-gateway` | gateway | Linux-portable | built server and the local provider fixture |
+| `check-domain` | - | Linux-portable | `npm ci` in `server` |
+| `check-memory-context` | - | Linux-portable | server build and `git` |
+| `check-knowledge-connector` | - | Linux-portable | built server |
+| `check-chat` | - | Linux-portable | built server |
+| `check-provider-config` | - | Linux-portable | built server |
+| `check-credential-binding` | - | Linux-portable | built server and `git` |
+| `check-tool-owner` | other | Linux-portable | installed TypeScript, Node types and the MCP SDK |
+| `check-google-connector` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly |
+| `check-company-connectors` | other | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly |
+| `check-mcp` | - | Linux-portable | npm dependencies for the MCP surface |
+| `check-mcp-stdio` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly |
+| `check-mcp-config` | - | Linux-portable | a verified TypeScript, Node types and MCP SDK assembly |
+| `check-dispatch-gate` | - | Linux-portable | installed TypeScript, Node types and the MCP SDK |
+| `check-test-sensitivity` | - | Linux-portable | `python3`, `tsc` and `git`; writes mutated copies and runs them |
+| `check-latency-budget` | - | Linux-portable | npm dependencies and its budget test |
+| `check-live-boundary` | - | Linux-portable | server TypeScript and `@types/node` installed |
+| `check-native-live` | - | Mac only | `xcrun swiftc` under the compile lock and a built app bundle |
+| `check-native-conversation` | - | Mac only | a built macOS app, the renderer lease and `git` |
+| `check-macos-install` | - | Mac only | Swift toolchain, `codesign`, the installed-app paths and the renderer lease |
+| `check-install-smoke` | other | Linux-portable | `npm` and `node` only |
+| `check-installed-alarm` | - | Mac only | the Swift toolchain and the installed app's shipped runtime |
+| `check-installed-connectors` | - | Mac only | the installed app and its shipped runtime |
+| `check-installed-open-web` | - | Mac only | the built app and the Swift toolchain |
+| `check-pending-request` | - | Mac only | the Swift toolchain only |
+| `check-package` | other | Linux-portable | `git`, `npm`, `tar`, `node` and an empty npm cache for the offline install |
+| `check-selected-memory-ui` | - | Linux-portable | the renderer lease and a built server and web |
+| `check-asset-bundle` | - | Linux-portable | `git`, `node` and the asset-bundle build scripts |
+| `check-web-unit` | other | Linux-portable | web dependencies installed |
+| `check-docs` | - | Linux-portable | `node` only; also runs the gate inventory test |
+| `check-combined-tree` | - | Mac only for the full union, `--static` is portable | `git`, `python3` and `swift` for the static Swift pass; runs the mapped union |
 
 ## Timing
 
@@ -168,13 +153,13 @@ After installing the app, run `scripts/smoke.sh` once (it makes at most two real
 
 Release 8 shipped four live failures with every test green: an untested tool entry, a Trello call to a route the vendor does not publish, a connector refused after install, and host notes the model read as the owner's words. Each rule below names its trigger and the action it costs.
 
-- A tool is new or changed: it joins the registry-wide intent test (`server/test/intent-tools.test.ts`) and the real-host integration matrix under its own name, never through a sibling tool.
+- A tool is new or changed: it joins the typed registry tests and the real-host integration matrix under its own name, never through a sibling tool.
 - A transport calls an external API: it validates every outbound method and path against a pinned vendor-published spec, checked in under `server/test/fixtures/specs/` with its retrieval URL and date, and an agent-written extract is never a source.
-- A guard judges the owner's words: test it with the ask split across two finalized owner turns.
+- An isolated permission check judges the owner's words: test it with the ask split across two finalized owner turns.
 - A refusal or a gate gets a test: pair it with a test that the valid case passes.
 - Host-originated text moves toward the model: it carries the host-note mark (`[host note, not the owner]`) at the wire frame, never an unmarked user turn, and `server/test/wire-envelope.test.ts` lists every emitter so a new one cannot reach the model unregistered.
 - Per-turn state is added (admission, budgets, ledgers): add a two-turn reset test.
-- An install is declared done: `scripts/run-installed-checks.sh` passes on the installed bundle, and that script fails when zero checks ran (the script arrives with the release 9 install gate).
+- An install is declared done: `scripts/run-installed-checks.sh` passes on the installed bundle, and that script fails when zero checks ran (synthetic state must stay separate from owner state).
 - A test looks wrong against new code: never edit the test to match the code, and an accepted assertion changes only under a ruling that names it.
 
 ## Server and host
@@ -194,7 +179,7 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 | `check-api-response.sh` | The request boundary in a real browser against a real service (`api-response-browser.mjs`). |
 | `check-archive-scale.sh` | Synthetic owner-cost assessment of a large archive. Not a performance gate. |
 
-## Live voice and the research layer
+## Live voice and the helper
 
 `history_exclusions` and session kinds (F2): a live session's kind is the prefix of the idempotency key it was
 created under, and `liveSessionKindOf` reads it back from the store. An unmarked key is the owner's own call; a
@@ -207,10 +192,10 @@ filtered on read, so removing them is an owner decision and never a check or a m
 | Script | Covers |
 | --- | --- |
 | `check-live-voice.sh` | Provider adapters: `live-voice`, `openai-live-voice`, `resample` tests. |
-| `check-live-session.sh` | The call core: session, mute, continuity, resumption, recovery, watchdog, summary, selection, memory note, warm context, vault write, stop-phrase gate, trace store, voice fault replay, `naya-logs`, the research suites for continuation, knowledge, steps and web, and the C-LIVE replay eval `partial-research-turn-contract-replay` (one research operation per owner turn, the bounded operation, coverage rows). |
+| `check-live-session.sh` | Call lifecycle, mute, continuity, recovery, summaries, trace storage and helper integration. Consult the script for the exact selected files; older suite names are not a current tool contract. |
 | `check-live-gateway.sh` | The loopback Live gateway with chat, host, HTTP, open-actions and prompt regressions. |
-| `check-prompt.sh` | Prompt composition, the Live persona, runtime context and the research suites (`research`, calendar, mail query, routed, shape, web). It also runs `server/test/prompt-content.integration.mjs`, which compares the shipped instruction byte for byte against `server/test/fixtures/prompt-final.json` and pins the accepted character hash. This is where triage, topic, routing and the 2,500 character reply cap are pinned, and the Trello tool descriptions (`server/test/trello-guidance.test.ts`). |
-| `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests), and the open destinations: the shared table both allowlists answer, their host parity, Gmail, Calendar and Drive handles, and the open evals E1 to E9 replayed host side (`open-destinations` test). It also covers the owner-only write asks: the `create_event` length declaration beside its validator, a calendar ask answered after the model's own question (granted once, only inside the 120 s window), an explicit retry claim only held against a refused write, and a refused call's own rule names in the `tool_arguments_rejected` line, never its text. The argument normalizer's cases in the `tools-builtin-intent` suite prove the twelve-key person read dispatches, that a wrong value of a key the intent reads still refuses with every violation at once, and that `tool_arguments_rejected` carries a `path:keyword` per violation and no value, with dropped keys on their own `tool_arguments_normalized` event. |
+| `check-prompt.sh` | Prompt composition, runtime context, persona, tool guidance and the shipped prompt fixture. Assertions must describe the helper rather than the retired voice-directed lookup flow. |
+| `check-tool-owner.sh` | Tool schemas, dispatch, result projection and native opening. Task authority is owned by `server/tasks/authority.ts`; legacy assertions alone do not prove its integration. |
 
 ## Connectors and MCP
 
@@ -236,7 +221,7 @@ filtered on read, so removing them is an owner decision and never a check or a m
 | `check-combined-tree.sh` | The combined-tree gate for a release branch: `<base> <head>` maps every changed file through `config/check-map.json` to its check scripts and runs the union one at a time, and two static passes fail when a check's staging list or a Swift compile unit misses a changed file its target imports. Renders the LaunchAgent plist from the app's writer and lints it with a key whitelist when `Sources/` changes. `--static` runs the two static passes alone; `--selftest` proves the map, both static passes and the plist validator. The extractors read literal text: a `cp <src> "$out/source/..."` staging line and a `swiftc ... <files>.swift` compile unit. A check that stages through a variable or a helper, or builds with `swift build`, is named in a `STATIC WARN` line and is not extracted; that warning never fails the gate by itself. |
 | `red-at-base.sh` | Honesty probe (b): a named test must fail at a base commit. |
 
-| `check-live-boundary.sh` | The live-boundary evals (`docs/evals.md`): the scenario files and the phrasing corpus driven through the production live session and its dispatch path, with only the provider transport and the connector I/O replaced. Prints `PASS` / `EXPECTED_RED` / `FAIL` per scenario, then the per-kind false-refusal usability gate and the injection and noncommand safety gate. `EXPECTED_RED` names the base defect it waits on and never counts as a pass; the release train runs it with `--release-gate`. No model call, no network, no audio, about fifteen seconds. |
+| `check-live-boundary.sh` | The live-boundary evals (`docs/evals.md`): the scenario files and the phrasing corpus driven through the production live session and its dispatch path, with only the provider transport and the connector I/O replaced. Prints `PASS` / `EXPECTED_RED` / `FAIL` per scenario, then the per-kind false-refusal usability gate and the injection and noncommand safety gate. `EXPECTED_RED` names the base defect it waits on and never counts as a pass; the release runs it with `--release-gate`. No model call, no network, no audio, about fifteen seconds. |
 
 `scripts/run-local-evals.sh` is the owner's own run and is not a check: scripted by default, `--live` only
 with `--yes`, and the full private suite never leaves the owner's machine.
@@ -272,7 +257,7 @@ imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source
 | Script | Covers |
 | --- | --- |
 | `check-asset-bundle.sh` | The asset-only bundle: a planted bad bundle must be refused first (so green is never vacuous), then the real bundle is built and verified. |
-| `check-install-smoke.sh` | The install research smoke (`server/test/smoke/install-research-smoke.mjs`) against the repo build: a synthetic mail endpoint with every fetch intercepted, both research paths (the scheduler and a live tool call) started from arguments derived from the tool's declared input schema. The installer runs the same file against a bundle, so a newly required input field fails here instead of at install. |
+| `check-install-smoke.sh` | Packaged source-read smoke using synthetic mail and intercepted transport. The implementation file `server/test/smoke/install-research-smoke.mjs` retains a legacy filename; it is not a voice tool name. |
 | `check-macos-install.sh` | Composes the real app, drives it through LaunchServices, and checks signatures, artifact hygiene, the configure matrix and install with rollback. Takes the slot. When the accepted bundle carries no installed runtime (no bundled Node, or no packed host runtime), it prints `MACOS-INSTALL CHECK BLOCKED` and exits non-zero instead of passing, because an install was never proven. |
 | `test-npm-offline.sh` | The offline npm install helper fails loud on an empty cache and is a pure swap on a warm one. |
 
@@ -319,7 +304,7 @@ your configured connectors. The example is not a real account corpus. The format
 - Use 1 to 15 unique, safe `id` values. `finals` holds 1 to 8 owner finals per ask,
   including speech-recognition splits. Finals are injected unchanged through the existing
   typed-owner-text path, with `finalOrigin === 'typed'`; they are not a prompt quoting an ask.
-- `expect.tool` names the actual tool, including a source tool called inside research,
+- `expect.tool` names the actual tool, including a source tool called by the helper,
   not just the model's prose or a guessed connector name. `codeClass` is `success`.
   `nonEmpty` requires data in the tool's own reply. Successful typed read-data envelopes
   report `code=data`; explicit error/refusal fields always fail. A stored `completed`
@@ -328,11 +313,7 @@ your configured connectors. The example is not a real account corpus. The format
   belonging to a tool call in this canary session, then be cancelled. Opens must receive a
   matching acknowledgement from the production native transport. The shell's host-only
   `canary_ack` action returns before all URL, workspace, window and focus operations.
-- The active save tool is `stage_lux_note`, not the retired `remember_note`. Use a clearly
-  synthetic note. Its remote insight ID must match a confirmed `vault_writes` row for this
-  session. Cleanup reads that exact insight, archives it through the configured local
-  lux-knowledge endpoint, and verifies it in the archived list. Missing or failed cleanup
-  fails the ask. No arbitrary model-provided insight ID can authorize deletion.
+- A local staged note is not a remote save. Release 10.10 uses `save_to_vault` for an asked Lux vault save; the misleading local `stage_lux_note` tool has been removed. Any paid canary must match the current helper's actual operation and receipt, not assume an older voice-tool name proves a remote write. A real-account cleanup requires explicit authorization and exact receipt identity.
 
 Before any paid work, the script reads `logs/host.log` under `LUX_DIDI_DATA_DIR` (default:
 `~/Library/Application Support/ai.peat.lux-didi`), using the host's structured
@@ -380,17 +361,9 @@ Use the host's existing native bearer authorization with this endpoint; never
 put the bearer in a committed script, issue, or diagnostic report. A successful
 reply includes the number of cancelled alarms. It does not quit the app.
 
-### Recurring reminders
+### Reminder coverage
 
-A reminder can repeat daily, on weekdays or on a weekly weekday set ("every
-Saturday at ten remind me to do one hour of cardio"); `set_alarm` reads the rule
-from the owner's own words, `list_alarms` shows the rule and its next occurrence,
-and `cancel_alarm` cancels one occurrence ("skip this Saturday") or the whole
-series ("stop the Saturday cardio reminders"). The series keeps the timezone it
-was said in, so travel or a host timezone change never moves it. The stop
-endpoint above also cancels every active series: it cancels the series row
-(never a silent row delete) together with the ringing and pending occurrences,
-so a stopped series is gone from `list_alarms` until the owner asks again.
+Alarm scheduler recurrence and task-tool exposure are separate contracts. The current helper schemas in `server/tasks/tools.ts` declare create, list, cancel and update; do not infer a recurring-rule parameter from an older scheduler test. See [alarm.md](alarm.md) for delivery and wake behavior.
 
 ### Latency budget
 
@@ -400,5 +373,5 @@ recorded synthetic timings, and judges every host-side segment against `config/l
 Each budget is the recon's measured p50 for that segment plus a margin and says so in its `basis`. The
 eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
 receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
-itself a failure. No network, no model, well under two minutes. Run it with
+itself a failure. No real account or provider. Run it with
 `bash scripts/check-latency-budget.sh`; it takes no flags and builds the server host itself before the replay.

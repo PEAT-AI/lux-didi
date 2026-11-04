@@ -1,3 +1,6 @@
+import { hostTaskFactory } from '../tasks/host.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { resolveTaskModels } from '../config/tasks.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,10 +18,9 @@ import { installPeople, parsePeople } from '../people/index.js';
 // W1030: every fixture, address and id below is synthetic. No real account, token or Mattermost
 // server is touched: the children are local stdio fakes that record what they were asked for.
 const here = dirname(fileURLToPath(import.meta.url));
-const fixtures = join(here, '..', '..', 'test', 'fixtures');
+const fixtures = existsSync(join(here, 'fixtures', 'google-write-child.mjs')) ? join(here, 'fixtures') : join(here, '..', '..', 'test', 'fixtures');
 const googleWriteChild = join(fixtures, 'google-write-child.mjs');
 const mattermostChild = join(fixtures, 'host-compose-mattermost-child.mjs');
-const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
 
 interface Host { dir: string; store: Store; mcp: McpRuntimeComposition; identity: { connector: string; proven: boolean; endpointId?: string }[]; pid: (id: string) => string }
 
@@ -56,7 +58,14 @@ const callsOf = (pidFile: string): { tool: string; args: Record<string, unknown>
   });
 };
 const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => call.tool);
-/** The owner's tool table for one accepted synthetic run: the same call the Live host makes. */
+/** The accepted task registry, not a model-facing live-voice tool table. */
+const taskRuntime = (h: Host, connectionIds: readonly string[] = [...h.mcp.connectionIds()]) => hostTaskFactory({
+  store: h.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+  bindings: () => h.mcp.owner.taskBindings(connectionIds), executors: sessionId => h.mcp.owner.taskExecutors(sessionId),
+  contentAllowed: () => false, timeZone: 'UTC',
+  effectCheck: async () => true,
+  ...(h.mcp.draftChat ? { draftChat: (input, scope) => h.mcp.draftChat!(input, scope) } satisfies Pick<import('../tasks/host.js').HostTaskOptions, 'draftChat'> : {}),
+})('synthetic-compose-task', new FakeDelivery(), connectionIds);
 const ownerTools = (h: Host): string[] => {
   const acceptance: RunAcceptance = {
     ownerId: h.store.assistantId, actorId: 'synthetic-actor', runId: 'run-compose-wire', authorityEpoch: h.store.authorityEpoch, revision: 1,
@@ -64,7 +73,8 @@ const ownerTools = (h: Host): string[] => {
     allowedClasses: ['ordinary'], connectionIds: [...h.mcp.connectionIds()],
   };
   h.store.transaction(tx => h.mcp.owner.snapshotRun(tx, acceptance));
-  return h.mcp.owner.liveDefinitions(acceptance.runId, remember).map(tool => tool.name);
+  const runtime = taskRuntime(h, acceptance.connectionIds);
+  try { return [...runtime.registry.keys()]; } finally { runtime.close(); }
 };
 
 /** The three endpoints a configured host needs: both google write families and the Mattermost draft. */
@@ -75,7 +85,7 @@ const configured = (pid: (id: string) => string, googleMode = 'ok', mattermostMo
   endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mattermostMode] }),
 ];
 
-test('W1030: the real host composition offers the four write tools when the families are configured', async t => {
+test('W1030: the accepted task registry offers four typed write operations and keeps connector verbs private', async t => {
   const h = await host(t, pid => configured(pid));
   const names = ownerTools(h);
   for (const name of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) assert.ok(names.includes(name), `${name} is offered`);
@@ -172,7 +182,7 @@ test('W1030: a host with no write family answers connector_not_authorized and sp
   assert.equal(h.mcp.connectionIds().length, 0);
 });
 
-test('W1030: a connect with only the read families is the read surface it always was', async t => {
+test('W1030: read grants stay intact behind canonical task reads, not raw connector declarations', async t => {
   const readChild = join(fixtures, 'google-mcp-child.mjs');
   const h = await host(t, pid => [endpoint({ id: 'gmail', connector: 'google', file: readChild, argv: ['ok', pid('gmail')] })]);
   const grant = h.mcp.registry.currentGrant('gmail');
@@ -183,8 +193,8 @@ test('W1030: a connect with only the read families is the read surface it always
   assert.equal(report?.state, 'connected');
   assert.equal(report?.tools, GOOGLE_TOOLS.length);
   const names = ownerTools(h);
-  for (const name of ['gmail_get_profile', 'gmail_search_messages', 'calendar_list_events']) assert.ok(names.includes(name), `${name} is still offered`);
-  for (const name of ['gmail_create_draft', 'calendar_create_event', 'mattermost_save_draft']) assert.equal(names.includes(name), false, `${name} is not`);
+  for (const name of ['search_mail', 'read_mail', 'calendar_events']) assert.ok(names.includes(name), `${name} is offered by the task registry`);
+  for (const name of ['gmail_get_profile', 'gmail_create_draft', 'calendar_create_event', 'mattermost_save_draft']) assert.equal(names.includes(name), false, `${name} is not`);
   // The compose tools are offered and honest about the family this host does not have.
   const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 'Synthetic subject', body: 'Synthetic body', clientRequestId: 'req-draft' });
   assert.equal(draft.state, 'not_authorized');
@@ -249,4 +259,35 @@ test('W1030: an argument refusal keeps its own closed code and never the authori
   const draft = await h.mcp.compose.draftEmail({ to: 'sam@example.test', subject: 's'.repeat(1200), body: 'Synthetic body', clientRequestId: 'req-long' });
   assert.deepEqual(draft, { state: 'failed', reason: 'invalid-draft' });
   assert.equal(callsOf(h.pid('gmail_draft')).some(call => call.tool === 'gmail_create_draft'), false, 'a refused argument writes nothing');
+});
+
+test('the host task draft_chat reaches the real scoped compose bridge and native draft child receipt', async t => {
+  const h = await host(t, pid => configured(pid));
+  const runtime = taskRuntime(h);
+  try {
+  const revision = runtime.begin('Draft a synthetic reply to the synthetic Sam fixture.', 1);
+  const result = await runtime.runTool('draft_chat', { target: '@Sam', text: 'Synthetic task reply' }, { ...revision.identity, operation_id: 'synthetic-draft-operation' }, revision.signal);
+  assert.equal(result.receipt?.state, 'committed');
+  const calls = callsOf(h.pid('mattermost')).filter(call => call.tool === 'mattermost_save_draft');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.args, { message: 'Synthetic task reply', dm_username: 'Sam' });
+  assert.equal(callsOf(h.pid('mattermost')).some(call => /send|publish|post_message/.test(call.tool)), false, 'saving a draft never posts to a human');
+  } finally { runtime.close(); }
+});
+
+// These cross the same task factory/executor seam as the live host. Direct
+// compose-port tests above cannot prove a worker operation is wired to a child.
+for (const scenario of [
+  { name: 'draft_email', words: 'Draft a synthetic email to fixture@example.invalid about the invoice.', args: { to: ['fixture@example.invalid'], subject: 'Synthetic invoice', body: 'Synthetic body.' }, family: 'gmail_draft', native: 'gmail_create_draft' },
+  { name: 'create_event', words: 'Create a synthetic calendar event tomorrow at nine for half an hour.', args: { title: 'Synthetic block', start: '2030-01-02T09:00:00Z', end: '2030-01-02T09:30:00Z', calendar_id: null }, family: 'calendar_write', native: 'calendar_create_event' },
+]) test(`SOURCE DEFECT task wiring: ${scenario.name} reaches its configured write child`, async t => {
+  const h = await host(t, pid => configured(pid));
+  ownerTools(h); // Establish the accepted connection snapshot before task work.
+  const runtime = taskRuntime(h);
+  try {
+    const revision = runtime.begin(scenario.words, 1);
+    const result = await runtime.runTool(scenario.name, scenario.args, { ...revision.identity, operation_id: 'synthetic-write-operation' }, new AbortController().signal);
+    assert.equal(result.status, 'ok', `The configured ${scenario.name} must execute, not merely appear in the registry: ${result.repair ?? ''}`);
+    assert.equal(toolNames(h.pid(scenario.family)).filter(name => name === scenario.native).length, 1, 'one task operation produces exactly one native write');
+  } finally { runtime.close(); }
 });

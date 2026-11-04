@@ -1,6 +1,6 @@
 # Lux Knowledge connector
 
-Lux Knowledge is an optional source Naya can search through the canonical host. Its read connector is integrated with the registry, tools and research path; it is not an unconnected prototype or a copy of the knowledge database inside Didi.
+Lux Knowledge is an optional source Naya can search through the canonical host. Its read connector is integrated with the source registry and typed helper tools; it is not an unconnected prototype or a copy of the knowledge database inside Didi.
 
 ## Read boundary
 
@@ -12,7 +12,7 @@ The `luxKnowledgeDescriptor` entry in `server/connectors/index.ts` publishes the
 
 Use search to find relevant evidence, then retrieve the identified insight when the question needs its body. A weak or empty match is not a confident fact. Preserve source identity and coverage, including when a body is bounded or unavailable.
 
-Research reads knowledge in two stages. The `search_knowledge` call is the summary stage and keeps its bounded body window. When the ask names a person or a document, or asks for depth, `research` then makes exactly one batched `get_insight` call of at most three hit ids, the hits naming an asked entity first, under its own 1,500 ms bound and inside the operation's deadline. Each returned body is keyed by the hit id it came from and replaces that hit's summary line, so the reply shows the entry rather than its abstract. The stage-two body follows the reply budget (`readReplyChars`, 24,000 characters) rather than the 2,000-character search window, so a long document keeps its tail while the reply can still carry it. A plain search makes no second call, and an entry that names no hit in the summary is left out rather than appended.
+The helper chooses explicit typed reads. `search_knowledge` returns candidate hits; when the answer needs an entry's body, the helper can follow its id with `read_knowledge`. The connector maps that read to the service's `get_insight` with the requested id. There is no automatic second-stage batch selected by the wording of the question. Preserve the returned entry's identity and distinguish an unavailable body from an empty result.
 
 The reader owns accepted argument shapes and budgets. `KNOWLEDGE_BODY_MIN_CHARS`, `KNOWLEDGE_BODY_MAX_CHARS`, `KNOWLEDGE_DEADLINE_MIN_MS` and `KNOWLEDGE_DEADLINE_MAX_MS` are source constants, not a second set of documentation defaults. The source's result envelope and actual capture determine what was received; a local projection is not proof that the entire corpus was searched.
 
@@ -20,7 +20,7 @@ The reader owns accepted argument shapes and budgets. `KNOWLEDGE_BODY_MIN_CHARS`
 
 Configure the owner's endpoint and account through [mcp-configuration.md](mcp-configuration.md). A reachable knowledge server still needs a valid connection approval and allowed inference route/classes. Missing configuration or sign-in must remain unavailable, not become a successful empty answer.
 
-The read envelope does not authorize remote writes. Dictated and composed Lux notes use separate host-owned write paths with different owner gates; see [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md). Searching knowledge is not consent to save conversation content back into it. Both write paths name exactly one remote tool, `save_insight` under project `didi-voice`; `update_insight`, the delete and purge tools and every other write stay unreachable, so a research or model-initiated call can reach only the two reads above.
+The read envelope does not authorize remote writes. Dictated and composed Lux notes use separate host-owned write paths with different owner gates; see [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md). Searching knowledge is not consent to save conversation content back into it. Both write paths name exactly one remote tool, `save_insight` under project `didi-voice`; `update_insight`, the delete and purge tools and every other write stay unreachable, so a helper or model-initiated call can reach only the two reads above.
 
 ## Diagnosis and verification
 

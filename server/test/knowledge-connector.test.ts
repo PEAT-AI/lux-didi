@@ -225,7 +225,7 @@ test('3r: an older server that rejects a field fails loudly with its own message
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('a cut search result names the real search_knowledge limit follow-up; a larger limit returns the next slice', async () => {
+test('a larger native search limit returns and preserves the next slice without a host three-hit cap', async () => {
   const all = Array.from({ length: 25 }, (_, index) => ({ id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14', content: `Body ${index + 1}.` }));
   const f = await fixture({ call: (_name, args) => ({ content: [{ type: 'text', text: JSON.stringify({ results: all.slice(0, Number(args['limit'])) }) }] }) });
   const { adapter, registry } = setup(f.url);
@@ -241,13 +241,14 @@ test('a cut search result names the real search_knowledge limit follow-up; a lar
     assert.equal(JSON.parse(text(second)).results.length, 25, 'the named larger limit returns the next slice');
     assert.deepEqual(f.calls.at(-1), { name: 'search_knowledge', arguments: { query: 'q', limit: 25, include_sensitive: false } });
     const shaped = shapeLuxKnowledge('search_knowledge', text(second));
-    assert.equal(shaped.partial, true);
-    assert.match(shaped.text, /\[omitted: 22 more hits; call search_knowledge again with limit=25 for the rest\]/);
-    assert.equal(shaped.text.includes('Insight 21'), false);
+    assert.equal(shaped.partial, false, 'the formatter did not discard returned source bodies');
+    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 25);
+    assert.match(shaped.text, /Insight 25/);
+    assert.equal(shaped.text.includes('call search_knowledge again'), false, 'no self-repeating follow-up for a host-invented cut');
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('a completed search shapes to the top 3 hits with their compact bodies in one call', async () => {
+test('a completed native search preserves all returned hits and their bodies in one call', async () => {
   const all = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14', content: `Body of insight ${index + 1}. ${'Detail. '.repeat(100)}` }));
   const f = await fixture({ call: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: all }) }] }) });
   const { adapter, registry } = setup(f.url);
@@ -255,9 +256,9 @@ test('a completed search shapes to the top 3 hits with their compact bodies in o
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'q', limit: 12 }));
     const shaped = shapeLuxKnowledge('search_knowledge', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
-    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
+    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 12, 'all twelve actual native hits survive shaping');
     assert.match(shaped.text, /Body of insight 1\./);
-    assert.equal(shaped.text.includes('Insight 4'), false, 'the fourth hit never reaches the model');
+    assert.match(shaped.text, /Body of insight 12\./, 'the last actual native body is retained too');
   } finally { await adapter.close(); await f.close(); }
 });
 

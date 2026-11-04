@@ -8,7 +8,6 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
-import { configureProjectNames } from '../tools/research.js';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
@@ -117,6 +116,7 @@ export interface McpRuntimeComposition {
   owner: ToolsOwner;
   /** W1030: the write surface the owner's compose tools call, built by this host, never injected. */
   compose: ComposeDispatch;
+  draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): ReturnType<ComposeDispatch['draftChat']>;
   connectionIds(): string[];
   status(): { endpoints: (McpEndpointReport & { connector: string; retrying: boolean })[] };
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */
@@ -322,7 +322,6 @@ export async function composeMcpRuntime(options: {
   const selection = loadMcpEndpoints({ configDir });
   // V-R2: the owner's project names ride in the same provider catalogue as the grant mode; they are the
   // only source of a knowledge project hint, so a catalogue without the key leaves the hint set empty.
-  configureProjectNames(selection.state === 'configured' ? selection.catalog.researchProjects : undefined);
   // W2B-R1: the enabled entries of mcp.json are the connections a run may hold. A readable catalog with
   // no entry for a stored row retires it; a catalog that is missing retires nothing, because it says nothing.
   const configuredConnectionIds = selection.state === 'missing'
@@ -409,11 +408,12 @@ export async function composeMcpRuntime(options: {
   // reaches that endpoint through the same registry and transport the reads use; a family with no
   // approval answers `not_authorized` rather than disappearing.
   const compose = createComposeDispatch({ store, ownerId, registry, port });
+  const draftChat = (input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]) => createComposeDispatch({ store, ownerId, registry, port, ...(connectionIds !== undefined ? { connectionIds } : {}) }).draftChat(input);
   const owner = createToolsOwner({ ...(options.alarms ? { alarms: options.alarms } : {}), grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, compose, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     // No readable catalog means no approved family: the compose tools stay offered and answer honestly.
-    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, compose, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
+    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, compose, draftChat, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
@@ -742,7 +742,7 @@ export async function composeMcpRuntime(options: {
       // it stands on. It is never a published name, so the envelope above cannot carry it.
       // W1030: a write family is admitted by the same reviewed code, from its own write envelope and only
       // for the names the child published. These names ride in the grant so the compose port can reach
-      // them, and they never become model-facing reads (see liveDefinitions' declaration table).
+      // them, and they never become model-facing reads (the canonical task facade exposes only its closed read definitions).
       const publishedNames = discovery.tools.map(tool => tool.name);
       // W1030: the write names this child published, chosen by the connector's own write envelope. They do
       // not need a read name beside them here, which is exactly how a write-only endpoint connects at all;
@@ -985,7 +985,7 @@ export async function composeMcpRuntime(options: {
     }));
   };
   const composition: McpRuntimeComposition = {
-    registry, port: sourcePort, owner, compose,
+    registry, port: sourcePort, owner, compose, draftChat,
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
     connectionIds: () => {

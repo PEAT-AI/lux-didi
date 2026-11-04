@@ -137,7 +137,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');
-  const args = [child, 'first-mail:auth_needed', join(home, 'child.pid')];
+  const args = [child, 'first-mail:credential-refresh-failed', join(home, 'child.pid')];
   const store = new Store(join(home, 'data'), toolsMigrations);
   const registry = new McpRegistry();
   const env = { HOME: join(home, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
@@ -183,9 +183,13 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(outcome.status, 'completed', 'the model tool transport completes even when the contained read fails');
     assert.equal(task.results[0]?.status, 'failed', 'the actual canonical read is failed, never an empty success');
-    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_failure');
+    const nextIntent = { ...intent, executionId: 'run:1:1', callId: 'success-call' };
+    assert.equal(owner.journal.intent(nextIntent), 'fresh');
+    await definition.execute!(callArgs, { ...nextIntent, signal: new AbortController().signal });
+    assert.equal(task.results[1]?.status, 'completed', 'a later successful read is not poisoned by the transient failure');
+    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
     assert.equal(rows.length, 1, `exactly one native failure row reaches the host log: ${JSON.stringify(task.results).slice(0, 1200)}`);
-    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'scope_missing' });
+    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'credential-refresh-failed' });
     assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
     assert.equal(safeEvent({ ...(rows[0] as Record<string, unknown>), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');
   } finally {

@@ -63,7 +63,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   const segments: Record<string, number> = {};
   // GPT-Live now delegates on the client wire. There is no response.create or
   // response.event envelope: a completed task is session.commentary.append.
-  opened.session.sendAudio({ pcm: pcm16(2_400), sampleRateHz: 24_000 });
+  opened.session.sendAudio({ pcm: pcm16(2_400), dataClass: 'ordinary' });
   opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'Synthetic plain turn.' });
   clock.advance(700);
   await until(() => lines.some(line => line.event === 'owner_speech_end'));

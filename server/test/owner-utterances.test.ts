@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { beginHandleSession, endHandleSession, exposeHandles, withOpenHandles } from '../tools/open-handles.js';
-import { Authority, type JournalRecord } from '../tasks/authority.js';
+import { Authority, createTaskAuthority, type JournalRecord } from '../tasks/authority.js';
 import { failed } from '../tasks/results.js';
 import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
@@ -17,8 +17,18 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   const journal = new Map<string, JournalRecord>();
   const owner = new Authority({ journal: { get: async id => journal.get(id), put: async (id, record) => { journal.set(id, record); } }, checkEffect: async () => false, log() {} });
   const kind = row.call.tool.startsWith('open_') ? 'open' : row.call.tool === 'set_alarm' ? 'set_alarm' : 'remember_note';
+  if (row.finals.length === 0) {
+    const port = createTaskAuthority(owner, { isCurrent: () => true, taskContext: () => undefined, hostUrls: () => [], registry: () => new Map() });
+    let executions = 0;
+    const result = await port.authorize({ task_id: row.id, task_revision: 1, operation_id: 'synthetic-operation', tool: 'remember_note', effect: 'local', args: {}, outside_text: false }, async () => { executions++; return failed('unexpected execution'); }, new AbortController().signal);
+    assert.equal(result.status, 'failed', row.id);
+    assert.equal(executions, 0, 'no finalized task means no executor invocation');
+    assert.ok(result.repair, 'task refusal supplies a repair instead of a retired per-tool speech template');
+    assert.equal(row.code, 'no_owner_request');
+    return;
+  }
   const decision = await owner.authorize({ task: { id: row.id, revision: 1, ownerWords: words }, effect: kind, arguments: row.call, validate: () => true });
-  let code: string = row.finals.length === 0 ? 'no_owner_request' : decision.allow ? 'allowed' : decision.code;
+  let code: string = decision.allow ? 'allowed' : decision.code;
   if (code === 'allowed' && kind === 'set_alarm') {
     // C-TIME: the fixture's model epoch is the model's structured time, read as a UTC wall clock.
     const modelEpoch = (row.call.fire_at_utc as number | undefined) ?? row.fire_at_utc ?? undefined;
@@ -44,13 +54,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
   // C-PERMTIER: there is no alarm cue to judge. A finalized owner turn is the authority, so the row's
   // own expectation is the whole assertion.
   assert.equal(code, row.resolve_code ?? row.code, `${row.id}: ${row.finals.join(' / ')}`);
-  if (code === 'no_owner_request') {
-    // Per-tool speech templates were retired. Task failures carry a repair, never
-    // a successful write claim; live voice owns how that repair is spoken.
-    const refused = failed('A finalized owner task is required. Nothing changed.');
-    assert.equal(refused.status, 'failed');
-    assert.match(refused.repair ?? '', /Nothing changed/);
-  }
+
 });
 
 // C-PERMTIER (P-R1): a model turn neither grants nor revokes. His finalized words are the authority,

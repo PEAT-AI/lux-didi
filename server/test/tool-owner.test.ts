@@ -92,6 +92,12 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1,
     grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE })) };
   const signal = new AbortController().signal;
+  const ownerWords = new Map<string, string[]>();
+  const observeOwner = (runId: string, journalId: string, words: string, at: number) => {
+    ownerWords.set(runId, [...(ownerWords.get(runId) ?? []), words]);
+    taskRuns.delete(runId);
+    owner.observeAlarmOwner(runId, journalId, words, at);
+  };
   const taskRuns = new Map<string, { runtime: TaskRuntime; identity: ReturnType<TaskRuntime['begin']>['identity'] }>();
   const allDefinitions = (runId = 'run') => {
     let task = taskRuns.get(runId);
@@ -100,7 +106,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
         authority: new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
         infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
         delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
-      task = { runtime, identity: runtime.begin('Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
+      task = { runtime, identity: runtime.begin(ownerWords.get(runId)?.join(' ') ?? 'Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
     }
     return taskDefinitions(task.runtime, task.identity, owner, runId);
   };
@@ -111,7 +117,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions,
+  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
@@ -126,7 +132,7 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
   const outcome = await f.run(model);
   assert.equal(outcome.status, 'complete'); assert.equal(f.calls.length, 1); assert.equal(seen.length, 2);
-  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 1, include_sensitive: false });
+  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, include_sensitive: false });
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
@@ -778,9 +784,9 @@ async function receivedOwnerFixture(t: TestContext) {
 test('#795 a calendar ask answered after a question writes one owner-only block through the production path', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
+  f.observeOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
+  f.observeOwner('run', 'j2', 'one and a half hours', 60_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
   assert.equal(created.status, 'completed');
   assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
@@ -795,10 +801,10 @@ test('#795 a calendar ask answered after a question writes one owner-only block 
 // opaque handler_outcome the model sees, so this test names the throw before the production path does.
 test('#796 executor: set_alarm completes when the model rule is dropped', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
-  const call = { ...f.intent('run:1:0', 'set_alarm', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
+  f.observeOwner('run', 'j1', 'wake me at 11', 1_000);
+  const call = { ...f.intent('run:1:0', 'alarm_create', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
   f.owner.journal.intent(call);
-  const definition = liveTools(f).find(tool => tool.name === 'set_alarm');
+  const definition = liveTools(f).find(tool => tool.name === 'alarm_create');
   assert.ok(definition, 'the live table offers set_alarm');
   let thrown: unknown, outcome: Awaited<ReturnType<typeof definition.execute>> | undefined;
   try { outcome = await definition.execute({ kind: 'daily' }, { ...call, signal: f.signal } as never); } catch (error) { thrown = error; }
@@ -809,8 +815,8 @@ test('#796 executor: set_alarm completes when the model rule is dropped', async 
 // #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
 test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
-  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+  f.observeOwner('run', 'j1', 'wake me at 11', 1_000);
+  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'alarm_create', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
   // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
   // so the one call he made still sets the alarm he did ask for.
   // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
@@ -994,7 +1000,7 @@ function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
 }
 
 const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
-  ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
+  ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE,
 });
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.allDefinitions();
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
@@ -1017,8 +1023,8 @@ test('W1030 draft_email: a split two-turn ask writes one unsent draft through th
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
   assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
-  f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
-  f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
+  f.observeOwner('run', 'j1', 'draft an email', 1_000);
+  f.observeOwner('run', 'j2', 'to Priya about the invoice', 2_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
   assert.equal(first.status, 'completed', JSON.stringify(first));
@@ -1037,7 +1043,7 @@ test('W1030 recipient: two spoken matches ask, and no address is invented', asyn
   const port = composePort();
   const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
   const f = await fixture(t, { compose: ambiguous, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
   assert.equal(outcome.status, 'completed');
@@ -1050,17 +1056,17 @@ test('W1030 recipient: two spoken matches ask, and no address is invented', asyn
 test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a spoken send it sends nothing', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
+  f.observeOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
+  f.observeOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
   assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
   const names = liveTools(f).map(definition => definition.name);
   assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
   // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
+  f.observeOwner('run', 'j3', 'send it', 3_000);
   // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
   // still never posts, and the result says so.
   const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
@@ -1074,7 +1080,7 @@ test('W1030 create_event: the window comes from his words, a colleague stays uni
   const port = composePort();
   const clashing: ComposeDispatch = { ...port, createEvent: async input => ({ state: 'done', clash: 'your 9 o clock standup', response: await port.createEvent(input).then(outcome => outcome.state === 'done' ? outcome.response : {}) }) };
   const f = await fixture(t, { compose: clashing, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
+  f.observeOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
   const args = { summary: 'gym' };
   const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
   assert.equal(outcome.status, 'completed');
@@ -1093,19 +1099,19 @@ test('W1030 create_event: the window comes from his words, a colleague stays uni
 test('W1030 delete_event: an id this session never created is refused with a closed code, and a created one deletes', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'cancel that meeting', 1_000);
+  f.observeOwner('run', 'j1', 'cancel that meeting', 1_000);
   const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
   assert.equal(invented.status, 'completed', invented.reason);
   assert.match(String(invented.result_json), /event_not_created_here/);
   assert.match(String(invented.result_json), /in this session/);
   assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
+  f.observeOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
   const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
   assert.equal(created.status, 'completed');
   assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
+  f.observeOwner('run', 'j3', 'cancel that meeting', 3_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
   assert.equal(removed.status, 'completed');
   assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
@@ -1114,12 +1120,12 @@ test('W1030 delete_event: a block the owner names is removed only when this sess
   const port = composePort();
   const readBack: ComposeDispatch = { ...port, findNamedEvent: async input => input.words.includes('standup') ? { state: 'found', eventId: 'event-read-7' } : { state: 'none' } };
   const f = await fixture(t, { compose: readBack, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'cancel my standup meeting', 1_000);
+  f.observeOwner('run', 'j1', 'cancel my standup meeting', 1_000);
   const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
   assert.equal(removed.status, 'completed');
   assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
   // Model output does not mutate the host-owned task identity or finalized words.
-  f.owner.observeAlarmOwner('run', 'j2', 'cancel that meeting', 2_000);
+  f.observeOwner('run', 'j2', 'cancel that meeting', 2_000);
   const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
   assert.equal(none.status, 'completed');
   assert.match(String(none.result_json), /event_not_created_here/);
@@ -1132,7 +1138,7 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
   const port = composePort();
   const lost: ComposeDispatch = { ...port, draftEmail: async input => { port.log.push(`gmail_create_draft:${input.to}`); return { state: 'unknown', reason: 'timeout' }; } };
   const f = await fixture(t, { compose: lost, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
   assert.equal(first.status, 'unknown', 'a lost answer is not a success');
@@ -1145,7 +1151,7 @@ test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot wri
 test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient writes nothing', async t => {
   const port = composePort();
   const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
+  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
   const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
   assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args)).status, 'completed');
   assert.equal(port.log.length, 1);
@@ -1161,7 +1167,7 @@ test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient
 
 test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
+  f.observeOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
   const args = { summary: 'block' };
   const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
   assert.equal(outcome.status, 'completed');
@@ -1222,13 +1228,13 @@ const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, un
   { label: 'no mode', build: fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'mode')) },
 ];
 const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
-  ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+  ({ ...f.intent(executionId, 'alarm_create', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
 
 test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+  f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
   const { declarations } = declarationsFor(liveTools(f));
-  const time = declaredSchema(declarations, 'set_alarm').properties?.['time'];
+  const time = declaredSchema(declarations, 'alarm_create').properties?.['time'];
   assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
   // The property is a flat string the model can produce; the nested object it used to receive was empty.
   assert.equal(String(time.properties['date']?.type), 'STRING', 'date is declared as a string');
@@ -1242,7 +1248,7 @@ test('#873 conformance: every declared alarm time shape commits an alarm row', a
       const args = { time: values };
       step += 1;
       // One mutation per ask: each case is a new ask, so the last one is never a consumed request.
-      f.owner.observeAlarmOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
+      f.observeOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
       // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
       const executionId = `run:${step}:0`;
       const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
@@ -1260,7 +1266,7 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
   const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
   try {
     const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+    f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
     const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
     const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
     assert.equal(refused.status, 'refused', 'an unreadable date is refused');
@@ -1281,7 +1287,7 @@ test('#873 a refusal names the date field, and the retry with a valid date commi
 
 test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
   const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
+  f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
   const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
   const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
   assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
@@ -1298,7 +1304,7 @@ test('#873 conformance: create_event commits from the declared shape and from th
   // The event tool takes the day from his own words and offers no time of its own.
   assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
   const created = async (turn: number, args: Record<string, unknown>, words: string) => {
-    f.owner.observeAlarmOwner('run', `j${turn}`, words, ALARM_CLOCK);
+    f.observeOwner('run', `j${turn}`, words, ALARM_CLOCK);
     const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
     assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
     return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
@@ -1489,7 +1495,7 @@ test('task bindings use configured validated connector readers without the resea
   const f = await fixture(t);
   const bindings = f.owner.taskBindings(['lux']);
   assert.equal(bindings.length, 1); assert.equal(bindings[0]?.connector, 'lux-knowledge');
-  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic' }, f.signal);
+  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1, include_sensitive: false }, f.signal);
   assert.equal(read.state, 'completed'); assert.equal(f.calls.length, 1);
   f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
   assert.equal(f.owner.taskBindings(['lux']).length, 0);

@@ -24,6 +24,9 @@ printf 'NATIVE-LIVE source=%s UTC=%s\n' "$(git rev-parse HEAD)" "$(date -u '+%Y-
 # Committed locks, offline only; canonical web/dist is intentionally separate from all fixture state.
 bash scripts/npm-ci-offline.sh server
 npm --prefix server run build
+# tasks-contract imports the synthetic replay fixture relative to compiled tests.
+mkdir -p server/dist/scripts
+cp scripts/eval-worker-replay.mjs server/dist/scripts/eval-worker-replay.mjs
 bash scripts/npm-ci-offline.sh web
 npm --prefix web run build
 # R2: existing authority owner uses its production compiler policy, once.

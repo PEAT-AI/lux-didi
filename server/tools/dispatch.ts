@@ -100,7 +100,7 @@ export function createDispatchOwner(options: {
       let pending: Promise<CallResult>;
       try { pending = port.call(request,signal); } catch { pending = Promise.resolve({state:'unknown',reason:'source_threw'}); }
       let result: CallResult;
-      try { result = await pending; } catch { result = {state:'unknown',reason:'source_threw'}; }
+      try { result = await pending; } catch { result = {state:'unknown',reason:'sdk_protocol_rejected'}; }
       if (!recorded) {
         if (recordFailed) coverage(mcpCallObservation(result)?.wire === 'not_dispatched' ? 'pre_wire_rejected' : 'wire_record_failed',mcpCallObservation(result)?.wire === 'observed' ? 'insert_failed_wire_observed' : mcpCallObservation(result)?.wire === 'not_dispatched' ? 'insert_failed_pre_wire_refused' : 'insert_failed_dispatch_unknown',scope);
         return result;

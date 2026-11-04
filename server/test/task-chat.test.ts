@@ -26,7 +26,7 @@ test('chat declarations execute one read and one write through the shared task r
   const { declarations } = declarationsFor(registry);
   assert.ok(declarations.some(tool => tool.name === 'alarm_list')); assert.ok(declarations.some(tool => tool.name === 'alarm_create'));
   assert.ok(!declarations.some(tool => tool.name.includes('research')));
-  for (const [name, args] of [['alarm_list', {}], ['alarm_create', { text: 'Synthetic reminder', at: '2030-01-02T12:00:00Z' }]] as const) {
+  for (const [name, args] of [['alarm_list', {}], ['alarm_create', { text: 'Synthetic reminder', at: '2030-01-02T12:00:00Z', recurrence: null }]] as const) {
     const tool = registry.find(tool => tool.name === name)!;
     const result = await tool.execute({ ...args }, { runId: 'synthetic-chat', actorId: 'synthetic-client', authorityEpoch: 'synthetic-epoch', revision: 1,
       accountId: tool.accountId, resourceId: tool.resourceId, executionId: name, signal: new AbortController().signal });

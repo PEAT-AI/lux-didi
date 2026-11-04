@@ -1,3 +1,6 @@
+import { checkOwnerTime } from './time-check.js';
+import { commitAlarmEffect } from '../runtime/store.js';
+import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
 import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
@@ -12,7 +15,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
@@ -27,7 +30,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, ownerAlarmZone, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -89,7 +92,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // stands on, so the policy can never widen the envelope one composed name at a time.
   const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
   // W1030: a write family's own names are grantable, but never as reads: they ride beside the family's
-  // read-only consent probe and are never model-facing tool declarations (see liveDefinitions below).
+  // read-only consent probe and are never model-facing tool declarations (separate from the canonical task facade).
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
@@ -339,7 +342,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return evidence.tool === nativeTool && source.toolName === nativeTool && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
       && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
   };
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[], sourcePolicyRefs?: ModelSnapshot['sourcePolicyRefs']): ToolResultRef => {
     const call = callDTO(input);
     if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
     const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
@@ -354,7 +357,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
       if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
       if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
-      const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+      const value = { ...(sourcePolicyRefs ? { sourcePolicyRefs: detached(sourcePolicyRefs) } : {}), response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
       if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
       return persistTerminal(tx, call, 'completed', value);
     };
@@ -411,7 +414,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, page.parent); } catch { return undefined; }
     }
     if (row.state !== 'refused') { const selected = target(snapshot, call, tx); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return undefined; }
-    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean }; classSet(value.dataClasses);
+    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean; sourceDispatchRefs?: string[] }; classSet(value.dataClasses);
+    if (row.state === 'completed') for (const id of value.sourceDispatchRefs ?? []) {
+      const source = tx.get("SELECT connection_id, policy_sha256 FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed'", [id, ownerId]);
+      if (!source || typeof source.connection_id !== 'string' || snapshot.connections.find(bound => bound.connectionId === source.connection_id)?.sha256 !== source.policy_sha256
+        || !currentPolicies(tx, snapshot, source.connection_id) || !currentProjection(snapshot, source.connection_id)) return undefined;
+    }
+    if (row.state === 'completed') for (const source of value.sourcePolicyRefs ?? []) {
+      const bound = snapshot.connections.find(item => item.connectionId === source.connectionId);
+      if (!bound || bound.sha256 !== source.sha256 || !currentPolicies(tx, snapshot, source.connectionId) || !currentProjection(snapshot, source.connectionId)
+        || value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c))) return undefined;
+    }
     const reference = retained.get(binding.result.id);
     if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return undefined;
     if (reference?.evidence.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, reference.evidence.parent)?.dataClasses.some(c => !value.dataClasses.includes(c))) return undefined;
@@ -549,25 +562,70 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const project = (name: string, value: JsonObject) => value.ok === false
         ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
       const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
-        if (!options.alarms || !context.identity) return taskFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
-        const now = options.alarms.now(), at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
-        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
-        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
-        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
-        if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
-        const id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
-        const result = store.transaction(tx => {
-          if (action === 'create') {
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
-          } else {
-            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
-            if (!row) return taskFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
-            if (action === 'cancel') tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
-            else tx.run("UPDATE alarms SET label=?,fire_at_utc=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), id]);
+        const alarmFailed = (message: string, armed = store.transaction(tx => listPendingAlarms(tx))) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(armed)}`);
+        if (!options.alarms || !context.identity) return alarmFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
+        const now = options.alarms.now();
+        const effect = authorizedTaskEffect.getStore();
+        if (!effect) return alarmFailed('Alarm authority context is unavailable. Nothing changed.');
+        let rule = args.recurrence as SeriesRule | null | undefined;
+        let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        const zone = ownerAlarmZone(effect.ownerWords, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+        if (at !== undefined) {
+          const proposed = alarmReadBack(at, zone);
+          const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
+          const interpreted = parseAlarmTime(effect.ownerWords, effect.askAtUtc ?? now, zone, time.state === 'read' ? time.spec : undefined);
+          if (interpreted.status === 'ready' && interpreted.source !== 'model'
+            && (interpreted.fireAtUtc > now || checkOwnerTime(effect.ownerWords).status === 'unique')) {
+            // Combining a day constraint with the proposed clock must not erase its seconds.
+            if (interpreted.source !== 'combined' || Math.floor(at / 60_000) !== Math.floor(interpreted.fireAtUtc / 60_000)) at = interpreted.fireAtUtc;
+            rule = interpreted.series ?? rule;
           }
-          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString() }) }), id), references: [{ id }] };
+        }
+        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return alarmFailed('Invalid recurrence. Nothing changed.'); } }
+        if (at !== undefined && at <= now) return alarmFailed('The resolved alarm time is in the past. Nothing changed.');
+        if (at !== undefined) at = Math.max(at, now + 60_000);
+        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
+        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return alarmFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined && !rule) return alarmFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        let id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
+        const result = commitAlarmEffect(store, effect.identity, tx => {
+          if (action === 'create') {
+            if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, zone, label!, context.identity!.task_id]);
+            if (rule) linkAlarmOccurrence(tx, id, id);
+          } else {
+            id = pendingOccurrenceOf(tx, id) ?? id;
+            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
+            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.', listPendingAlarms(tx));
+            if (action === 'cancel') {
+              tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') tx.run("UPDATE alarm_series SET state='cancelled' WHERE id=?", [series.id]);
+              else if (series) materialiseSeriesOccurrence(tx, id, now);
+            }
+            else {
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (rule) {
+                if (series) tx.run('UPDATE alarm_series SET rule_kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
+                else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
+              } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
+              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? (at === undefined ? String(row.tz) : zone), id]);
+            }
+          }
+          const readBack = at === undefined ? undefined : alarmReadBack(at, zone);
+          const distance = at === undefined ? undefined : alarmDistance(at, zone, now);
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(readBack && distance ? {
+            at: new Date(at!).toISOString(), localTime: readBack.spoken, now_local_time: distance.nowLocalTime,
+            minutes_from_now: distance.minutesAway, confirmation: `Alarm ${action === 'create' ? 'set' : 'updated'} for ${readBack.spoken}.`,
+          } : {}) }), id), references: [{ id }] };
         });
-        if (result.status === 'ok') options.alarms.recheck();
+        if (result.status === 'ok') {
+          try { options.alarms.recheck(); } catch {
+            // The durable scheduler rows survive notification failure and restart. Retry once.
+            try { options.alarms.recheck(); } catch { /* Scheduler recovery reads committed rows. */ }
+          }
+        }
         return result;
       };
       const executors: ExistingExecutors = {
@@ -589,18 +647,28 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const nativeReader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
         const reader = { ...nativeReader, call: async (...args: Parameters<typeof nativeReader.call>) => {
           const evidence = await nativeReader.call(...args);
-          if ('reason' in evidence && isToolFailureCode(evidence.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
+          if (evidence.state === 'completed' || evidence.state === 'tool-error') {
+            const status = descriptor.status?.(evidence, policy.endpoint);
+            if (status) {
+              const event = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool: args[0], code: status.code });
+              if (event) hostLogEvent(event);
+              if (status.log) options.log?.(status.log);
+            }
+          }
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);
-            if (status) connectorFailures.set(evidence, status.reason);
+            if (status) connectorFailures.set(evidence, { repair: status.reason, code: isToolFailureCode(status.code) ? status.code : 'connector_error' });
             if (status?.log) options.log?.(status.log);
           }
           return evidence;
         } };
-        return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
+        return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode) => {
+          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code };
+          if (options.log) options.log(event); else hostLogEvent(event);
+        }, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
-          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id),
+          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
             recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },
             recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
         } };

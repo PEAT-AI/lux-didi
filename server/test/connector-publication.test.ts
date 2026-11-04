@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
@@ -651,7 +652,10 @@ function movedChild(dir: string): string {
   copyFileSync(PEOPLE_CHILD, rebuiltChild);
   // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
   // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(PEOPLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const modules = createRequire(import.meta.url).resolve.paths('@modelcontextprotocol/server')?.find(path => existsSync(join(path, '@modelcontextprotocol', 'server')));
+  assert.ok(modules, 'the relocated fixture requires the installed MCP SDK');
+  symlinkSync(modules, join(dir, 'node_modules'), 'dir');
+
   return rebuiltChild;
 }
 

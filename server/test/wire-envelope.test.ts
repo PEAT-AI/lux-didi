@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -81,29 +82,13 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
     expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],
   },
-  {
-    expression: 'hostNote(line)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: 'R6: a source that settles after the first answer is appended once, and said once on a quiet turn' },
-    ],
-  },
+
   {
     expression: 'MUTED_OFFER_TEXT', count: 1, channel: 'host',
     covers: [{ file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' }],
   },
-  {
-    expression: 'hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: 'C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn' },
-      { file: 'tools-builtin-intent.test.ts', title: 'the claim guard flags an empty result only after a rejected lookup, never after a real empty result' },
-    ],
-  },
-  {
-    expression: 'hostNote(text)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: '#660: a stalled delegation with nothing in flight delivers the unspoken result once' },
-    ],
-  },
+
+
   {
     expression: 'text', count: 1, channel: 'owner',
     covers: [
@@ -129,7 +114,7 @@ test('every host-note emitter in the shipped live host is registered and covered
   for (const row of EMITTERS) {
     assert.ok(row.covers.length > 0, `${row.expression} names the test that covers it`);
     for (const cover of row.covers) {
-      const source = readFileSync(new URL(`../../test/${cover.file}`, import.meta.url), 'utf8');
+      const source = readFileSync(process.env['DIDI_TEST_SOURCE_ROOT'] ? join(process.env['DIDI_TEST_SOURCE_ROOT'], cover.file) : new URL(`../../test/${cover.file}`, import.meta.url), 'utf8');
       assert.ok(source.includes(`test('${cover.title}'`) || source.includes('test(`' + cover.title + '`'), `${row.expression} is covered by ${cover.file}: ${cover.title}`);
     }
   }

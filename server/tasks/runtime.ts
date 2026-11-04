@@ -1,5 +1,6 @@
 import type { Identity as OperationIdentity } from './authority.js';
-import { failed } from './results.js';
+import { failed, redactTaskResult } from './results.js';
+import { redactSecrets } from '../tools/redact.js';
 import { randomUUID } from 'node:crypto';
 import type { Store } from '../runtime/store.js';
 import { safeEvent } from '../host/log.js';
@@ -30,7 +31,7 @@ export class TaskRuntime {
   #capture(taskId: string, result: ToolResult, tool?: TaskTool): void {
     let context = this.#contexts.get(taskId);
     if (!context) { context = { exposures: new Set(), urls: new Set() }; this.#contexts.set(taskId, context); }
-    const exposures = result.exposures ?? (tool?.outside_text ? ['company' as const] : []);
+    const exposures = result.exposures ?? (tool?.outside_text && result.status !== 'failed' ? ['company' as const] : []);
     for (const source of exposures) context.exposures.add(source);
     result.exposures = [...exposures];
     const visit = (value: unknown): void => {
@@ -65,12 +66,15 @@ export class TaskRuntime {
   }
   begin(words: string, generation: number, ownerTurn = 0): Revision {
     const revision = this.controller.finalize(words, generation, ownerTurn), { identity } = revision;
+    revision.askAtUtc = (this.options.now ?? Date.now)();
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, this.options.contentAllowed());
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     return revision;
   }
   async runTool(name: string, args: Record<string, unknown>, identity: OperationIdentity, signal: AbortSignal): Promise<ToolResult> {
+    if (signal.aborted || !this.#isCurrent() || !this.controller.isCurrentTask(identity.task_id, identity.task_revision)) return failed('Use the current task revision. This read or write was not dispatched.');
+    signal = AbortSignal.any([signal, this.controller.current!.signal]);
     const tool = this.registry.get(name); if (!tool) return failed('Use an available task tool.');
     this.recordOperation(identity, name, args, null);
     let result: ToolResult;
@@ -85,22 +89,22 @@ export class TaskRuntime {
     if (output) this.#capture(operation.task_id, output, this.registry.get(tool));
     if (output?.receipt) this.controller.recordReceipt(output);
   }
-  settle(identity: RevisionIdentity, answer: WorkerResult): void {
+  settle(identity: RevisionIdentity, answer: WorkerResult): WorkerResult {
+    answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
+      ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
     if (this.controller.isCurrent(identity)) {
       this.options.store.finishTask(identity, answer.status, answer, this.options.contentAllowed());
       this.controller.complete(identity, answer);
       this.log('complete', identity.task_revision, answer.findings.length, 0, identity);
     } else this.log('stale', identity.task_revision, 0, 0, identity);
+    return answer;
   }
   finalize(words: string, generation: number, ownerTurn = 0): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn), { identity } = revision;
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date((this.options.now ?? Date.now)()).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
-    }).then(answer => {
-      this.settle(identity, answer);
-      return answer;
-    });
+    }).then(answer => this.settle(identity, answer));
     return { revision, result };
   }
   attach(identity: RevisionIdentity, binding: string): boolean { return this.controller.attach(identity, binding); }

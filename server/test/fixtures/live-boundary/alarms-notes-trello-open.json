@@ -6,7 +6,8 @@
       "tool": "alarm_create",
       "args": {
         "text": "Synthetic alarm",
-        "at": "2030-01-02T15:00:00Z"
+        "at": "2030-01-02T15:00:00Z",
+        "recurrence": null
       },
       "words": "Set a synthetic alarm.",
       "case": "dispatch"
@@ -15,7 +16,8 @@
       "id": "cancel-alarm-positive",
       "tool": "alarm_cancel",
       "args": {
-        "id": "synthetic-alarm"
+        "id": "synthetic-alarm",
+        "scope": null
       },
       "words": "Cancel the synthetic alarm.",
       "case": "dispatch"
@@ -26,14 +28,15 @@
       "args": {
         "id": "synthetic-alarm",
         "text": null,
-        "at": "2030-01-02T15:10:00Z"
+        "at": "2030-01-02T15:10:00Z",
+        "recurrence": null
       },
       "words": "Move the synthetic alarm ten minutes later.",
       "case": "dispatch"
     },
     {
       "id": "note-save-positive",
-      "tool": "stage_lux_note",
+      "tool": "save_to_vault",
       "args": {
         "title": "Synthetic note",
         "text": "Synthetic content."
@@ -90,7 +93,8 @@
       "args": {
         "id": "synthetic-alarm",
         "text": "Synthetic alarm",
-        "at": "2030-01-02T15:10:00Z"
+        "at": "2030-01-02T15:10:00Z",
+        "recurrence": null
       },
       "words": "Move the synthetic alarm."
     }

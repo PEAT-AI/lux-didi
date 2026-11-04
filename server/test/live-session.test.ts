@@ -1,3 +1,4 @@
+import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
 import './tasks-store.test.js';
@@ -54,7 +55,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -693,35 +694,32 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
 });
 
-test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
-  const web = { search: async () => { throw new Error('not called at start'); } };
+test('retired backend injections do not advertise unbound source capabilities to the Live session', async t => {
   const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
-  const { attachment: withAttachment } = await attached(withWeb);
-  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
-  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
-  assert.ok(connected.split(', ').includes('his private notes'), `the knowledge read stays named: ${connected}`);
-  withAttachment.close(); await withAttachment.done;
-  const without = await harness(t, { tools: true, system: native });
-  const { attachment } = await attached(without);
-  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
-  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
-  attachment.close(); await attachment.done;
+  const web = { search: async () => { throw new Error('retired injection must not execute'); } };
+  for (const options of [{ researchWeb: web }, {}]) {
+    const h = await harness(t, { tools: true, system: native, ...options });
+    const { attachment } = await attached(h);
+    const connected = /^Connected now: (.*)\.$/mu.exec(h.requests[0]!.system.text)?.[1];
+    assert.equal(connected, 'none', 'legacy dependencies are not an accepted helper capability binding');
+
+    attachment.close(); await attachment.done;
+  }
 });
 
-test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
+test('both declared-tool and client-delegated sessions carry the exact master handoff conduct', async t => {
   const withTools = await harness(t, { tools: true });
   const { session: withSession, attachment: withAttachment } = await attached(withTools);
   assertFrozenInstruction(withTools, withSession.liveSessionId, 0);
   assert.equal(withTools.requests.length, 1);
-  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
+  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_WORK_DELIVERY),
     'the authored tools conduct is in the attached system instruction');
   withAttachment.close(); await withAttachment.done;
 
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
-  assert.equal(withoutTools.requests[0]!.system.text, 'Synthetic system', 'no declarations compose exactly as before');
+  assert.equal(withoutTools.requests[0]!.system.text, `Synthetic system\n\n${NAYA_WORK_DELIVERY}`, 'client delegation needs the same authored handoff even without direct voice tools');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
   withoutAttachment.close(); await withoutAttachment.done;
 });
@@ -1421,7 +1419,8 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['his private notes', 'memory'],
+
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
@@ -1911,7 +1910,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
-    import { lateFindingsText, researchProjection, createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
     import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
     const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
@@ -1999,9 +1998,9 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, memory: { status: 'empty', selectedIds: [], omitted: [] } });
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
-  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`);
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);
@@ -2037,7 +2036,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
+  assert.equal(frame.setup.systemInstruction.parts[0].text, `SYNTHETIC exact wire A\n\n${NAYA_WORK_DELIVERY}`);
   attachment.close();
 });
 
@@ -3128,7 +3127,7 @@ test('U1: calendar and Gmail model text carries no raw url and names each source
     { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
   ] });
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
-  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#all/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/owner@example.test/#all/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });
 
@@ -3636,7 +3635,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await openAiAttachment.ready;
   const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
   assert.deepEqual(start.session['delegation'], { type: 'client' }, 'the helper owns inference, not a provider responses backend');
-  assert.equal(String(start.session['instructions']).includes(NAYA_BACKEND_PROCEDURE), false, 'the OpenAI voice instructions never carry the procedure');
+  assert.equal(String(start.session['instructions']).includes(WORKER_INSTRUCTIONS), false, 'the OpenAI voice instructions never carry the procedure');
 
   const gemini = await fixture(t);
   const geminiLive = composeLive(store, dir, {
@@ -3651,7 +3650,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await geminiAttachment.ready;
   const setup = (gemini.frames[0] as { setup: { systemInstruction: { parts: { text: string }[] }; delegation?: unknown } }).setup;
   assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_LIVE_BASE), 'the Gemini setup carries the shared voice instruction');
-  assert.equal(setup.systemInstruction.parts[0]!.text.includes(NAYA_BACKEND_PROCEDURE), false, 'the Gemini setup never carries the delegated procedure');
+  assert.equal(setup.systemInstruction.parts[0]!.text.includes(WORKER_INSTRUCTIONS), false, 'the Gemini setup never carries the delegated procedure');
   assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 
@@ -4291,85 +4290,38 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
   ]) assert.equal(announcesLookup(said), false, `no lookup announced: ${said}`);
 });
 
-// C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
-// one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
-// C-ARGS: a lookup the host refused executed nothing, so a claim that its result came back empty is a
-// claim about a read that never ran, and the existing claim guard corrects it once, in its own words.
+// R25 retires C-TURN8's three speech-only corrections and C-CLAIMS9's research-claim
+// timer. Explicit task lifecycle/progress and its closed audit are covered by tasks-live.
 
-
-
-
-
-for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+// Typed delegation, not the spelling of a progress phrase, is the work boundary.
+// Actual delegation/duplicate/rebuild prerequisites are pinned in task-call.test.
+for (const progress of ['Checking.', 'On it.', 'One sec.', 'Let me look into that.']) test(`delegated work boundary: ${progress} alone grants no task or connector call`, async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-without-call');
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
-  });
-  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
-    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
-  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
-  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
-  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
-  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
+  await attached(h, 'progress-is-not-delegation');
+  h.f.send({ serverContent: { inputTranscription: { text: 'check the synthetic contract', finished: true } } });
+  for (let attempt = 0; attempt < 200 && !h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'); attempt++) await tick();
+  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), 'establish a real finalized owner turn');
+  const tasks = h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n;
+  const calls = h.calls.length;
   h.f.send({ serverContent: { outputTranscription: { text: progress, finished: true }, turnComplete: true } });
-  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
-  assert.ok(armed(), 'the announced lookup armed its three-second bound');
-  await advance(2_000);
-  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
-  assert.deepEqual(counted(), [], 'and nothing is logged yet');
-  await advance(1_000);
-  assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
-  assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
-  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
-  const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
-    && String((entry as { text?: string }).text ?? '').includes('again'));
-  for (let attempt = 0; attempt < 200 && !againSaid(); attempt++) await tick();
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
-  assert.equal(counted().length, 1, 'and it is logged once');
-  h.owner.revoke(session.liveSessionId);
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n, tasks, 'assistant progress text cannot synthesize a delegated task');
+  assert.equal(h.calls.length, calls, 'a phrase is not connector authority');
+  assert.equal(h.f.frames.some(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.includes('Correction:');
+  }), false, 'the retired lexical correction wire is not resurrected');
 });
-
-
 
 // C-CLAIMS9 outcome 1, live path: at 10:23:49Z she said "Let me look into that." and made no call for thirty
 // seconds. The host gives the announcement the same beat and corrects it once.
-test('C-CLAIMS9: "Let me look into that." with no call gets the correction inside the deadline', async t => {
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-look-into');
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.includes('Correction:');
-  });
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did the synthetic partner say about the contract', finished: true } } });
-  await settlePort();
-  h.f.send({ serverContent: { outputTranscription: { text: 'Let me look into that.', finished: true }, turnComplete: true } });
-  await settlePort();
-  assert.equal(corrections().length, 0, 'the announcement is given its beat before anything is said');
-  await advance(2_999);
-  assert.equal(corrections().length, 0, 'the deterministic clock has not reached the correction deadline');
-  await advance(1);
-  assert.equal(corrections().length, 1, 'the announced lookup with no call behind it is corrected inside the deadline');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /make the call now/i, 'and it offers the call');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /^\[host note, not the owner\] Correction:/u, 'W6 keeps the W3 correction separate from owner speech');
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the same announcement is corrected only once');
-  h.owner.revoke(session.liveSessionId);
-});
+
 
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.
+
 
 
 
@@ -4482,16 +4434,22 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   await continuity(output, 'resumed');
   assert.equal(h.owner.current().state, 'listening', 'the rebuilt generation is live');
   // A finished turn on the socket the host already left is not the owner's live words.
+  let supersededStopFrameReceived = false;
+  first.once('message', () => { supersededStopFrameReceived = true; });
   first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));
+  await fixtureUntil(() => supersededStopFrameReceived, 'superseded-generation stop frame');
   await tick();
   await tick();
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a superseded generation never ends the call');
   // The live generation is still armed, so the gate itself is not simply dead.
+  let liveStopFrameReceived = false;
+  h.f.clients.at(-1)!.once('message', () => { liveStopFrameReceived = true; });
   h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
+  await fixtureUntil(() => liveStopFrameReceived, 'current-generation stop frame');
   await tick();
   await tick();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' },
-    'the current generation ends the call on the same words');
+    `the current generation ends the call on the same words (transport received=${liveStopFrameReceived})`);
 });
 
 // TOPIC (#565): the query shape of every source call is persisted through the trace writer, so the
@@ -5021,7 +4979,7 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
 
 test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`, calendarDigest: {
+  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_WORK_DELIVERY}`, calendarDigest: {
     forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
   await h.owner.prepareCalendar();
   const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);

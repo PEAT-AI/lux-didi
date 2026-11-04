@@ -140,3 +140,23 @@ test('controller captures host owner turn and immediately preceding task words',
   assert.equal(revised.ownerTurn, 12);
   assert.equal(controller.taskContext(second.identity.task_id)?.ownerWords, 'Save it\nUse the other title');
 });
+
+
+for (const mode of ['inference failure', 'deadline expiry', 'no action'] as const) test(`R24 EF6: partial evidence with ${mode} is honest and no_action stays silent`, async () => {
+  let now = 0, inferred = 0, expireRevision = () => {};
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => {
+    return documentResult('Verified partial synthetic finding.', 'synthetic-read');
+  } });
+  const result = await runWorker({ registry, identity: { task_id: 'partial-fixture', task_revision: 1, connection_generation: 1 },
+    input: 'Read the synthetic source', signal: new AbortController().signal,
+    clock: { now: () => now, timer: (callback, ms) => { if (ms === 36000) expireRevision = callback; return () => {}; } }, infer: async () => {
+      if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_knowledge', args: { query: 'synthetic' } }] };
+      if (mode === 'no action') return { text: '', calls: [], no_action: true };
+      if (mode === 'deadline expiry') { now = 36001; expireRevision(); return { text: '', calls: [] }; }
+      throw Error('synthetic inference failure');
+    } });
+  assert.equal(result.findings.length, 1); assert.match(result.findings[0]!.text, /Verified partial synthetic finding/);
+  if (mode === 'no action') { assert.equal(result.status, 'no_action'); assert.equal(result.text, ''); }
+  else { assert.equal(result.status, 'incomplete'); assert.match(result.text, /Verified partial synthetic finding/);
+    assert.match(result.text, /couldn.t finish|could not finish|incomplete/i, 'partial evidence never sounds like a completed task'); }
+});

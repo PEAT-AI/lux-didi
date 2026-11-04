@@ -17,7 +17,7 @@ import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { VAULT_REMOTE_TOOL, VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -96,7 +96,7 @@ test('an admitted task operation freezes its first payload and repeats read the 
   assert.deepEqual(again, { saved: true, insightId: 'insight-7' }, 'the stored outcome, past case, spacing and punctuation');
   assert.equal(fake.calls.length, 1, 'the same authorization is never sent twice');
   const after = await save(h, NOTE);
-  assert.deepEqual(after, { saved: true, insightId: 'insight-7' }, 'a newer dictation does not change what a replay of the older one reads');
+  assert.deepEqual(after, { saved: true, insightId: 'insight-7' }, 'different replay arguments do not change the first frozen operation');
   assert.equal(fake.calls.length, 1, 'and it still sends nothing');
 });
 
@@ -211,6 +211,7 @@ test('the adapter-shaped transcript never mints a legacy dictation write authori
 test('the exact note supplied by an admitted task is the persisted content', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
+  assert.equal((await save(h, 'the survey boat is moored at pontoon three')).saved, true);
   const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
   assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
 });
@@ -291,6 +292,7 @@ test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () 
 
 test('startup claims an authorized operation by its execution identity exactly once', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
+  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('restart-op',?,'restart',?,?,?,?, 'authorized',?)", [SESSION, VAULT_REMOTE_TOOL, NOTE, vaultContentKey(NOTE), NOTE, NOW]));
   const calls: string[] = [];
   const options = { store: h.store, now: () => NOW, log: () => {},
     transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };
@@ -308,20 +310,18 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
     backoff: async ms => { delays.push(ms); },
     transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
-  h.store.transaction(tx => writer.observe(tx, SESSION, 'retry', `save this to lux: ${NOTE}`));
-  const claim = writer.claim(SESSION, NOTE);
-  assert.equal(claim.state, 'dispatch');
-  if (claim.state !== 'dispatch') return;
-  const result = await writer.dispatch(claim);
+  const input = { sessionId: SESSION, identity: { task_id: 'retry-task', task_revision: 1, operation_id: 'save', connection_generation: 1 }, content: NOTE, title: NOTE, outsideTextSeen: false };
+  const result = await writer.saveTask(input);
   assert.equal(result.saved, true);
   assert.match(String(result.guidance), /retried.*lux/i);
   assert.deepEqual(delays, [250]);
   assert.equal(calls, 2);
-  assert.equal(writer.claim(SESSION, NOTE).state, 'settled');
+  assert.deepEqual(await writer.saveTask(input), { saved: true, insightId: 'retry-7' }); assert.equal(calls, 2, 'replay does not send a third request');
 });
 
 test('startup retries a legacy unavailable row only once across restarts', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
+  h.store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: SESSION, stageId: 'legacy-unavailable', content: NOTE, title: NOTE, now: NOW }));
   h.store.transaction(tx => tx.run("UPDATE vault_writes SET state='failed',code='vault_unavailable'"));
   let calls = 0;
   const delays: number[] = [];

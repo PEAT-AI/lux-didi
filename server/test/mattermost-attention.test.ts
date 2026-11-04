@@ -1,3 +1,7 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { Authority } from '../tasks/authority.js';
+import { Store } from '../runtime/store.js';
+import { taskChatReader } from './fixtures/task-chat-reader.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -12,9 +16,6 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
-import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
-import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog } from '../tools/research.js';
-import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-attention-child.mjs');
@@ -36,7 +37,7 @@ function setup(mode: string) {
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
   const calls = (): { name: string; arguments: Record<string, unknown>; at?: number }[] =>
     existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown>; at?: number }) : [];
-  return { dir, log, registry, adapter, calls };
+  return { dir, log, registry, adapter, calls, endpoint: config };
 }
 
 async function approveWithout(registry: McpRegistry, adapter: ReturnType<typeof createMcpAdapter>, toolNames: readonly string[]) {
@@ -215,63 +216,6 @@ test('the thread tool accepts the id research sends and normalizes it for the re
   assert.deepEqual(declaration.normalize?.({ post_id: 'abcdef1234567890abcdefghij' }), { args: { postId: 'abcdef1234567890abcdefghij' } });
 });
 
-test('the attention tool is declared for text and voice, with its window bounds', () => {
-  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 } } as unknown as ConnectionPolicy;
-  const descriptor = connectorDescriptor('mattermost');
-  assert.ok(descriptor);
-  const declaration = descriptor.declarations(policy).find(candidate => candidate.name === 'mattermost_attention');
-  assert.ok(declaration);
-  assert.equal(declaration.effect, 'read');
-  assert.equal(declaration.validate({}), true);
-  assert.equal(declaration.validate({ days: 30, limit: 20 }), true);
-  assert.equal(declaration.validate({ days: 0 }), false);
-  assert.equal(declaration.validate({ days: 31 }), false);
-  assert.equal(declaration.validate({ limit: 21 }), false);
-  assert.equal(declaration.validate({ query: 'reply' }), false);
-  assert.match(declaration.description, /do I need to reply/u);
-  assert.ok(INTENT_TOOL_NAMES.includes('attention'));
-  assert.equal(validateIntent('attention', {}), true);
-  const plan = planIntent('attention', { days: 3 });
-  assert.deepEqual(plan.calls, [{ key: '0', name: INTERNAL.chatAttention, args: { days: 3 } }]);
-  assert.equal(MATTERMOST_ATTENTION.days, 7);
-});
-
-// #572: "anything urgent" was answered from relevance-ranked posts dated 2025 while the archive is
-// current. A chat triage ask is the attention read over its own window, newest first.
-test('#572: a chat triage ask reads what needs an answer in the window, and the old post never wins', async t => {
-  const f = setup('window');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
-  const dispatched: string[] = [];
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
-    dispatched.push(call.name);
-    if (call.name !== INTERNAL.chatAttention) return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 };
-    const result = await r.attention({ days: Number(call.args['days']) });
-    const projected = projectMattermostResult(f.adapter, result);
-    const text = projected.ok ? projected.projection.text : '';
-    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
-  }));
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  assert.ok(dispatched.includes(INTERNAL.chatAttention), 'the triage read is the attention digest, never a relevance search');
-  const findings = JSON.stringify(reply['findings'] ?? []);
-  assert.ok(findings.includes('can you confirm the 3k release'), 'the fresh post is in the answer');
-  assert.ok(!findings.includes('did you see this last week'), 'the ten-day-old post is outside the window');
-});
-
-// #572: an empty triage window is a window, never a bare "nothing urgent".
-test('#572: an empty chat triage names the window it read', async () => {
-  const deps: ResearchDeps = {
-    now: () => 0, configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 })),
-    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  assert.match(String(reply['note']), /I searched your team chat in the last 7 days and found nothing matching\./u);
-});
-
 // #610: the scan's independent reads run under one budget. A child that answers half a second late
 // cannot fit a serial scan of its twelve children in 4 s.
 test('#610: the attention scan reads its independent children concurrently', async t => {
@@ -315,52 +259,6 @@ test('#610: a search asks for at most the child maximum and reads newest first',
   assert.equal(first?.arguments['sort'], 'newest');
 });
 
-// #610: a channel named in the question is the connector's own filter, not a broader archive search.
-test('#610: a question that names a channel searches that channel only', async () => {
-  const planned: { name: string; args: Record<string, unknown> }[] = [];
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
-      planned.push({ name: call.name, args: call.args as Record<string, unknown> });
-      return { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 };
-    }),
-    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-  };
-  await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);
-  // C-CHAT: a named channel is the chat read, which resolves the name strictly before it reads that channel.
-  const search = planned.find(call => call.name === INTERNAL.chatRead);
-  assert.ok(search, 'the chat read is the channel read');
-  assert.equal(search.args['intent'], 'channel');
-  assert.equal(search.args['channel'], 'dogcation');
-  assert.equal(planned.some(call => call.name === INTERNAL.chatAttention), false, 'a channel ask is not the whole-account scan');
-});
-
-// #610: the chat receipt carries the query's shape, never its words.
-test('#610: the chat research_source line carries the query shape and no query text', async () => {
-  const logged: Record<string, unknown>[] = [];
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
-    emit: () => {},
-    log: () => {},
-    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
-    ledger: new ResearchLedger(),
-  };
-  // C-CHAT: a channel read searches only the topic the owner named, so the ask names one.
-  await runResearch(deps, { action: 'start', question: 'latest topics about the release freeze in the dogcation channel' }, new AbortController().signal);
-  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
-  assert.ok(receipt, 'the chat read is receipted');
-  const shape = receipt['chat'] as { terms: number; operators: string[]; limit: number; sort: string } | undefined;
-  assert.ok(shape, 'the receipt carries a chat query shape');
-  assert.ok(Number.isSafeInteger(shape.terms) && shape.terms > 0, 'the receipt reports a word count');
-  assert.deepEqual(shape.operators, []);
-  assert.equal(shape.limit, RESEARCH.chatLines);
-  assert.equal(shape.sort, 'newest');
-  const serialized = JSON.stringify(receipt);
-  assert.ok(!serialized.includes('dogcation'), 'no query word reaches the receipt');
-  assert.ok(!serialized.includes('latest'), 'no query word reaches the receipt');
-});
-
 // #604: a fixture that does not publish the thread read leaves the composite ungranted, and the
 // caller hears the connector's own closed reason instead of an unknown tool.
 test('#604: an ungranted composite refuses with tool-not-granted', async t => {
@@ -375,77 +273,51 @@ test('#604: an ungranted composite refuses with tool-not-granted', async t => {
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no child read follows an ungranted composite');
 });
 
-// R3: the chat read's reason is the failure the sub-call really returned. Only the two availability
-// codes mean not-granted; every other failure keeps its own closed reason.
-test('R3: a granted composite that fails for another reason is never reported as not granted', async () => {
-  const logged: Record<string, unknown>[] = [];
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => (call.name === INTERNAL.chatAttention
-      ? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'credential-refresh-failed' }
-      : { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
-    emit: () => {},
-    log: () => {},
-    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
-    ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
-  assert.ok(receipt, 'the failed chat read is receipted');
-  assert.equal(receipt['outcome'], 'failed');
-  const text = JSON.stringify(reply);
-  assert.ok(text.includes('sign in again'), `the reply keeps the real cause: ${text.slice(0, 400)}`);
-  assert.ok(!text.includes('tool not granted'), 'a credential failure is never a not-granted read');
-  // R3: the receipt records the reason the read really failed with, as one closed token.
-  const shape = receipt['chat'] as { reason?: string } | undefined;
-  assert.equal(shape?.reason, 'credential-refresh-failed', 'the receipt carries the real closed reason');
+test('R29 the helper selects native attention explicitly and keeps its real SDK composition', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
+  const result = await task.call('chat_attention', { days: 7, limit: 5 });
+  assert.notEqual(result.status, 'failed', JSON.stringify(result));
+  assert.ok(result.text);
+  assert.equal(task.tools.get('chat_attention')?.outside_text, true);
+  assert.ok(f.calls().some(call => call.name === 'mattermost_search'));
+  assert.equal(f.calls().some(call => call.name === 'mattermost_attention'), false, 'the existing native reader composes the digest, never a fictional child API');
 });
 
-// F17: a composite the connector cannot serve is a refusal, never a successful read of a token. The
-// chat sub-call names the closed reason and never reports the tool as unknown.
-test('F17: an ungranted composite refuses the chat sub-call with its own closed reason', async () => {
-  const logged: Record<string, unknown>[] = [];
-  let outcome = '';
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
-      if (call.name !== INTERNAL.chatAttention) return { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 };
-      outcome = call.name;
-      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'unknown_tool' };
-    }),
-    emit: () => {},
-    log: () => {},
-    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
-    ledger: new ResearchLedger(),
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  assert.equal(outcome, INTERNAL.chatAttention, 'the triage ask went to the composite');
-  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
-  assert.ok(receipt, 'the refused chat read is receipted');
-  assert.equal(receipt['outcome'], 'failed', 'a refused composite is a failed read, never ok');
-  assert.equal((receipt['chat'] as { reason?: string } | undefined)?.reason, 'tool-not-granted', 'the receipt names the not-granted read');
-  const text = JSON.stringify(reply);
-  assert.ok(text.includes('tool not granted'), `the reply names the closed reason: ${text.slice(0, 400)}`);
-  assert.ok(!text.includes('unknown tool'), 'the reply never reads as an unknown tool');
+test('R29 attention without its accepted composite grant fails before SDK IO', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS], []);
+  const before = f.calls().length;
+  assert.equal((await task.call('chat_attention', { days: 7 })).status, 'failed');
+  assert.equal(f.calls().length, before);
 });
 
-// R4: the emitted reason is clamped to the closed receipt vocabulary, so a failure code this build
-// does not know still produces a receipt instead of being dropped by the host log.
-test('R4: an out-of-vocabulary chat failure still produces a receipt', async () => {
-  const logged: Record<string, unknown>[] = [];
-  const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => (call.name === INTERNAL.chatAttention
-      ? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'some_future_failure' }
-      : { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
-    emit: () => {},
-    log: () => {},
-    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
-    ledger: new ResearchLedger(),
-  };
-  await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
-  assert.ok(receipt, 'the receipt survives an unknown failure code');
-  assert.equal((receipt['chat'] as { reason?: string } | undefined)?.reason, 'refused', 'an unknown code clamps to the closed fallback');
-  assert.equal(receipt['outcome'], 'failed');
+test('R29 attention rejects an invalid native window before SDK IO', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
+  const before = f.calls().length;
+  assert.equal((await task.call('chat_attention', { days: 31 })).status, 'failed');
+  assert.equal(f.calls().length, before);
+});
+
+
+test('R29 an actual native attention read advances task exposure, while invalid arguments do not', async t => {
+  const f = setup('window');
+  const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
+  const store = new Store(join(f.dir, 'task-state'));
+  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {}, journal: store.taskEffectJournal(() => false) }),
+    infer: async () => { throw Error('No inference in an explicit read fixture'); }, contentAllowed: () => false,
+    delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
+  });
+  t.after(async () => { runtime.close(); store.close(); await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const revision = runtime.begin('Read what is waiting for me', 1, 1);
+  const invalid = await runtime.runTool('chat_attention', { days: 31, limit: null }, { ...revision.identity, operation_id: 'invalid' }, new AbortController().signal);
+  assert.equal(invalid.status, 'failed');
+  assert.deepEqual(runtime.taskContext(revision.identity.task_id)?.exposures, []);
+  const result = await runtime.runTool('chat_attention', { days: 7, limit: 5 }, { ...revision.identity, operation_id: 'native-read' }, new AbortController().signal);
+  assert.notEqual(result.status, 'failed', JSON.stringify(result));
+  assert.ok(runtime.taskContext(revision.identity.task_id)?.exposures.includes('company'));
 });

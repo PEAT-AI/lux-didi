@@ -1,3 +1,5 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { documentResult, rankedResult, failed } from '../tasks/results.js';
@@ -10,7 +12,12 @@ test('opened documents are whole up to 24000 with explicit continuation', () => 
   const first = documentResult(body, 'synthetic');
   assert.equal(first.text.length, 24000);
   assert.equal(first.status, 'partial');
-  assert.equal(first.next_cursor, '24000');
+  assert.equal(typeof first.next_cursor, 'string');
+  assert.equal(documentResult(body, 'synthetic', '24000').status, 'failed', 'bare offsets are not proof of a captured version');
+  assert.equal(documentResult(body + 'changed', 'synthetic', first.next_cursor!).status, 'failed', 'a continuation cannot read another source version');
+  const other = documentResult(body, 'another-document', first.next_cursor!);
+  assert.equal(other.status, 'failed', 'identical bytes from another document do not share a continuation');
+  assert.match(other.repair!, /restart/i);
   const rest = documentResult(body, 'synthetic', first.next_cursor!);
   assert.equal(first.text + rest.text, body);
   assert.equal(rest.next_cursor, null);
@@ -25,7 +32,7 @@ test('ranked no match does not present neighbours as matches or open them', () =
   assert.equal(rankedResult('Orchid', []).status, 'empty');
   assert.ok(failed('Try a different id.').repair);
 });
-test('strict provider arguments survive validation and executor null translation uses one authority port', async () => {
+test('SOURCE DEFECT task declaration: strict provider parameters must require every field including nullable recurrence', async () => {
   const calls: unknown[] = [];
   const authority = new FakeAuthority();
   const registry = createRegistry({ execute: async (name, args) => { calls.push({ name, args }); return documentResult('done', 'fixture'); }, authority });
@@ -34,10 +41,20 @@ test('strict provider arguments survive validation and executor null translation
     assert.deepEqual(Object.keys(tool.parameters.properties as object).sort(), [...tool.parameters.required as string[]].sort());
     const visit = (value: unknown): void => {
       if (typeof value === 'number') assert.ok(Number.isInteger(value));
-      if (value && typeof value === 'object') Object.values(value).forEach(visit);
+      if (value && typeof value === 'object') {
+        const schema = value as Record<string, unknown>;
+        if (schema['properties'] && typeof schema['properties'] === 'object') {
+          assert.deepEqual(Object.keys(schema['properties']).sort(), [...schema['required'] as string[]].sort(), `${tool.name}: every nested object property is required`);
+          assert.equal(schema['additionalProperties'], false);
+        }
+        Object.values(value).forEach(visit);
+      }
     };
     visit(tool.parameters);
   }
+  const recurrence = (registry.get('alarm_create')!.parameters.properties as Record<string, { type: unknown }>).recurrence!;
+  assert.ok(Array.isArray(recurrence.type) && recurrence.type.includes('null'), 'strict recurrence remains nullable');
+  assert.ok([...registry.keys()].some(name => name.startsWith('chat_')), 'new Mattermost reads are included in the same strict traversal');
   const search = registry.get('search_mail')!;
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null, extra: true }).ok, false);
   assert.equal(validateArguments(search, { query: 'after:2026/01/01', cursor: null }).ok, true);
@@ -73,7 +90,8 @@ test('both provider ports carry strict typed calls and return a final answer wit
 });
 
 test('Gmail operators narrow synthetic fixture results and read returns the whole body', async () => {
-  const fixtures = await import(new URL('../scripts/eval-worker-replay.mjs', import.meta.url).href);
+  const testRoot = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
+  const fixtures = await import(pathToFileURL(resolve(testRoot, '../../scripts/eval-worker-replay.mjs')).href);
   const all = fixtures.searchMail({ query: 'after:2000/01/01' });
   const none = fixtures.searchMail({ query: 'after:2099/01/01' });
   assert.ok(JSON.stringify(all).includes('m_'));
@@ -257,6 +275,25 @@ test('task model roles default independently to Terra low and support Gemini exp
   assert.equal(selected.effect_check.model, 'gpt-6.1-terra');
   assert.throws(() => resolveTaskModels({ worker: { effort: 'unbounded' } }));
   assert.throws(() => resolveTaskModels({ worker: { tools: ['send'] } }));
+});
+
+test('R29 native chat capabilities have distinct outside-read schemas, not action-dependent modes', () => {
+  const registry = createRegistry({ execute: async () => documentResult('native result', 'fixture'), authority: new FakeAuthority() });
+  for (const [name, selector] of [
+    ['chat_attention', 'days'], ['chat_person', 'person'], ['chat_channel', 'channel'],
+    ['chat_group', 'people'], ['chat_overview', 'person'],
+    ['chat_person_topics', 'person'], ['chat_channel_topics', 'channel'],
+  ]) {
+    const tool = registry.get(name!);
+    assert.ok(tool, `the helper can select ${name}`);
+    assert.equal(tool.outside_text, true);
+    assert.equal(tool.effect, 'none');
+    const fields = tool.parameters.properties as Record<string, unknown>;
+    assert.ok(Object.hasOwn(fields, selector!));
+    assert.equal(Object.hasOwn(fields, 'mode'), false);
+    assert.equal(Object.hasOwn(fields, 'intent'), false);
+    if (selector === 'person' || selector === 'channel') assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false);
+  }
 });
 
 test('worker inference receives public instructions followed by presentation style, never lore', async () => {

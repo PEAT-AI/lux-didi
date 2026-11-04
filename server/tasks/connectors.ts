@@ -1,4 +1,4 @@
-import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
+import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
@@ -8,7 +8,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -16,6 +16,13 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
+  chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
+  chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
+  chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
+  chat_group: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'group' }) },
+  chat_overview: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'overview' }) },
+  chat_person_topics: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'topics' }) },
+  chat_channel_topics: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'topics' }) },
   search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
   calendar_events: { connector: 'google', tool: 'calendar_list_events', args: a => ({ timeMin: a.start, timeMax: a.end }) },
@@ -114,16 +121,17 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
+    const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: repair }; };
     const hostRepair = connectorFailures.get(result);
-    if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
-    if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
-      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' };
+    if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
+    if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
     if (binding.project) {
       try {
         const snapshot = binding.project(result);
-        const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
+        const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+        if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
         return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
-      } catch { return failed('The connector result could not be safely disclosed. Repair its source policy or use another approved source.'); }
+      } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
     }
     return projectTaskPayload(name, result.decodedResult, args);
   };

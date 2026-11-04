@@ -1,3 +1,4 @@
+import { TASK_DISCLOSURE } from '../tasks/results.js';
 import { TaskRuntime } from '../tasks/runtime.js';
 import { FakeDelivery } from '../tasks/controller.js';
 import { Authority } from '../tasks/authority.js';
@@ -91,4 +92,31 @@ test('Store owns a durable effect journal without persisting canonical argument 
     await store.taskEffectJournal(() => false).put('redacted', { status: 'succeeded', value: { text: 'synthetic-private-marker' } });
     assert.equal(JSON.stringify(await store.taskEffectJournal(() => true).get('redacted')).includes('synthetic-private-marker'), false);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('R24 EF4: effect executor output is redacted before the durable journal and replay', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-effect-secret-fixture-'));
+  const store = new Store(directory), secret = 'sk-syntheticFixtureSecretOnly1234567890';
+  let calls = 0;
+  const runtime = new TaskRuntime({ store, delivery: new FakeDelivery(), contentAllowed: () => true,
+    authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }),
+    infer: async () => ({ text: 'unused', calls: [] }), execute: async () => {
+      calls++; return { status: 'ok', text: `Ordinary receipt ${secret}`, references: [{ id: 'synthetic', title: secret }], next_cursor: null,
+        coverage: 'Ordinary receipt coverage', repair: null, receipt: { operation_id: secret, state: 'committed' },
+        [TASK_DISCLOSURE]: { response: { text: `Ordinary proof ${secret}` }, dataClasses: ['ordinary'], sourceDispatchRefs: ['synthetic-dispatch'] } };
+    } });
+  try {
+    const revision = runtime.begin('Remember this ordinary synthetic note', 1, 1);
+    const identity = { ...revision.identity, operation_id: 'synthetic-write' }, signal = new AbortController().signal;
+    const result = await runtime.runTool('remember_note', { text: 'ordinary note' }, identity, signal);
+    const rows = store.transaction(tx => tx.all('SELECT status,value FROM task_effect_journal'));
+    assert.equal(rows.length, 1); assert.equal(rows[0]!.status, 'succeeded');
+    assert(!JSON.stringify(rows).includes(secret), 'no executor secret reaches the retained effect journal');
+    assert.match(JSON.stringify(rows), /Ordinary receipt/); assert.match(JSON.stringify(rows), /\[redacted\]/);
+    assert.deepEqual(result[TASK_DISCLOSURE]?.sourceDispatchRefs, ['synthetic-dispatch'], 'host-only disclosure proof survives pre-journal redaction');
+    const replay = await runtime.runTool('remember_note', { text: 'ordinary note' }, identity, signal);
+    assert.equal(calls, 1); assert(!JSON.stringify([result, replay]).includes(secret));
+    assert.match(result.text, /Ordinary receipt/); assert.match(replay.text, /\[redacted\]/);
+  } finally { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); }
 });

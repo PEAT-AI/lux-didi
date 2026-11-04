@@ -16,10 +16,13 @@ mkdir -p dist/test/fixtures
 cp test/fixtures/open-destinations.json test/fixtures/open-evals.json test/fixtures/owner-utterances.json dist/test/fixtures/
 cp tools/open-handles.ts dist/test/fixtures/parity-open-handles.ts
 cp ../Sources/LuxDidi/NativeActions.swift dist/test/fixtures/parity-NativeActions.swift
+status=0
 node_test_files --test-reporter=tap --test-timeout=15000 \
   dist/test/owner-utterances.test.js dist/test/tool-owner.test.js \
   dist/test/live-shape.test.js dist/test/redact.test.js \
-  dist/test/open-destinations.test.js dist/test/lux-note.test.js
+  dist/test/open-destinations.test.js dist/test/lux-note.test.js || status=1
 node_test_files --test-reporter=tap --test-timeout=30000 \
   dist/test/tools-builtin-intent.test.js dist/test/time-corpus.test.js \
-  dist/test/chat-tools.test.js dist/test/task-authority.test.js
+  dist/test/chat-tools.test.js dist/test/task-authority.test.js \
+  dist/test/alarm-authority.test.js dist/test/alarm-atomic.test.js || status=1
+exit "$status"

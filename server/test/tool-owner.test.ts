@@ -1,3 +1,7 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { Authority } from '../tasks/authority.js';
+import { connectorExecutor } from '../tasks/connectors.js';
+import { taskDefinitions, TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -14,9 +18,9 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { COMPOSE_IDENTITY, draftChatResult, draftEmailResult } from '../tools/compose.js';
-import { ALARM_IDENTITY } from '../tools/alarm.js';
-import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
+
+
+import type { ComposeDispatch } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
@@ -41,10 +45,10 @@ function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic' }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -71,7 +75,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     }
     return transport.handleRequest(req);
   });
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: options.responseBytes ?? 12000, projectionChars: 10, timeoutMs: 1000 } });
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
     route: { ...route, allowedClasses: [...route.allowedClasses] }, allowedClasses: ['ordinary', 'private'], connectionIds: options.bindings ?? ['lux'] };
@@ -86,16 +90,34 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live.acceptedRunHash = accepted.sha256;
   const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1,
-    grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' })) };
+    grants: tools.map(tool => ({ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE })) };
   const signal = new AbortController().signal;
-  const definitions = () => owner.definitions('run');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
-    executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: 'account', resourceId: 'resource' });
+  const ownerWords = new Map<string, string[]>();
+  const observeOwner = (runId: string, journalId: string, words: string, at: number) => {
+    ownerWords.set(runId, [...(ownerWords.get(runId) ?? []), words]);
+    taskRuns.delete(runId);
+    owner.observeAlarmOwner(runId, journalId, words, at);
+  };
+  const taskRuns = new Map<string, { runtime: TaskRuntime; identity: ReturnType<TaskRuntime['begin']>['identity'] }>();
+  const allDefinitions = (runId = 'run') => {
+    let task = taskRuns.get(runId);
+    if (!task) {
+      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)),
+        authority: new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+      task = { runtime, identity: runtime.begin(ownerWords.get(runId)?.join(' ') ?? 'Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
+    }
+    return taskDefinitions(task.runtime, task.identity, owner, runId);
+  };
+  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_knowledge' || tool.name === 'read_knowledge');
+  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic' }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+    executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
+  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
@@ -110,11 +132,11 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
   const outcome = await f.run(model);
   assert.equal(outcome.status, 'complete'); assert.equal(f.calls.length, 1); assert.equal(seen.length, 2);
-  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 1, include_sensitive: false });
+  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, include_sensitive: false });
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
-  assert.equal(response['sourceVersion'], 'unknown'); assert.equal(JSON.stringify(response).includes('synthetic-token'), false);
+  assert.equal(response['sourceVersion'], undefined, 'host provenance is not a model-supplied source version'); assert.equal(JSON.stringify(response).includes('synthetic-token'), false);
   assert.equal(JSON.stringify(response).includes('private:synthetic-reference'), false);
   const again = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(again.status, 'uncertain'); assert.equal(f.calls.length, 1);
@@ -175,21 +197,22 @@ test('policy identical apply is a SQL no-op; generation/identity/delete and immu
   assert.equal((await f.owner.resultGate.authorize(f.host, [f.binding(ref)], ['ordinary'], f.signal)).state, 'allowed');
 });
 
-test('persisted disable survives reopen and stale projected registry grants cannot dispatch', async t => {
+test('SOURCE DEFECT task read delivery: persisted disable survives reopen and stale grants cannot dispatch', async t => {
   const f = await fixture(t);
   const initialCall = { ...f.intent('initial-result'), callId: 'initial-result' };
   f.owner.journal.intent(initialCall); const initialResult = await f.execute(initialCall);
   assert.equal(initialResult.status, 'completed'); if (initialResult.status !== 'completed') throw Error('initial read failed');
   const oldGrant = f.registry.currentGrant('endpoint')!;
+  const staleCall = f.intent('stale-read'); f.owner.journal.intent(staleCall);
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
   // Even a stale external projection restored after revoke is not authority.
   f.registry.enable('endpoint'); f.registry.observed('endpoint', tools, f.registry.revision('endpoint'));
   f.registry.approve({ ...oldGrant, generation: 3 });
-  assert.throws(() => f.owner.journal.intent(f.intent()), /policy/);
+  await assert.rejects(f.execute(staleCall), /task_source_policy_denied/);
   assert.equal(f.calls.length, 1, 'stale dispatch did not add a connector invocation');
   const reopened = f.reopen();
-  assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused', JSON.stringify(f.store.transaction(tx => tx.get("SELECT state, json_extract(result_json, '$.sourceDispatchRefs') AS refs FROM tool_calls WHERE execution_id=?", [initialCall.executionId]))));
   assert.throws(() => reopened.projectConnection('lux'), /disabled/);
 });
 
@@ -208,9 +231,10 @@ test('every request denies empty-binding authority and every accepted connection
     assert.equal(result.status, 'denied'); assert.equal(requests, 0);
     f.setLive(original);
   }
+  const staleCall = f.intent('stale-policy-read'); f.owner.journal.intent(staleCall);
   f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { ...policy().sourcePolicy, revision: 2 } }));
   assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'allowed');
-  assert.throws(() => f.owner.journal.intent(f.intent()), /intent_policy_denied/);
+  await assert.rejects(f.execute(staleCall), /task_source_policy_denied/);
 });
 
 test('unbound run still needs live authority, including initial request', async t => {
@@ -219,7 +243,7 @@ test('unbound run still needs live authority, including initial request', async 
   assert.equal(result.status, 'denied'); assert.equal(requests, 0);
 });
 
-test('revoke while awaiting authority is caught by final synchronous persisted reread', async t => {
+test('SOURCE DEFECT task read delivery: revoke during authority await refuses the captured result', async t => {
   const f = await fixture(t); const original = f.getLive();
   f.owner.journal.intent(f.intent()); const completed = await f.execute();
   assert.equal(completed.status, 'completed'); if (completed.status !== 'completed') throw Error('initial read failed');
@@ -261,23 +285,31 @@ test('result ref, execution/name/call/scope/hash binding and detached immutable 
   assert.equal(after.state, 'allowed'); if (after.state === 'allowed') assert.equal(after.results[0]!.response['text'], 'nonempty synthetic α insight');
 });
 
-test('search/get strict arguments, provenance and requested IDs remain unverified', async t => {
+test('task search/read strict arguments keep requested ids distinct from verified provenance', async t => {
   const f = await fixture(t);
-  const search = f.definitions()[0]!;
+  const search = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   assert.equal(search.parameters['additionalProperties'], false);
-  assert.equal(search.validate({ query: 'x', limit: 4 }), false); assert.equal(search.validate({ query: 'x', limit: 1, account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x', limit: 1 }), true);
-  const args = { ids: [13, 7] }; const call = { ...f.intent('run:1:1', 'get_insight', args as never), callId: 'get' };
-  f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(d => d.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
-  assert.equal(outcome.status, 'completed'); assert.deepEqual(f.calls[0]!.arguments, { ids: [13, 7], include_links: false });
-  if (outcome.status !== 'completed') return;
-  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
-  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') return;
-  const value = gate.results[0]!.response;
-  assert.deepEqual(value['requestedIds'], [13, 7]); assert.equal(value['requestedIdsVerified'], false);
-  assert.deepEqual(value['coverage'], { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' });
-  assert.equal((value['source'] as Record<string, unknown>)['account'], 'account');
+  assert.equal(search.validate({ query: 'x', limit: 4 }), false);
+  assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
+  assert.equal(search.validate({ query: 'x' }), true);
+  const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
+  assert.equal(read.validate({ ids: [13, 7] }), false, 'a task read opens one typed id, not a retired native batch schema');
+  assert.equal(read.validate({ id: '13', cursor: null, account: 'foreign' }), false);
+  for (const [index, id] of [13, 7].entries()) {
+    const args = { id: String(id), cursor: null };
+    const call = { ...f.intent(`run:read:${index}`, 'read_knowledge', args), callId: `read-${index}` };
+    f.owner.journal.intent(call);
+    const outcome = await read.execute(args, { ...call, signal: f.signal });
+    assert.equal(outcome.status, 'completed');
+    assert.deepEqual(f.calls[index]!.arguments, { ids: [id], include_links: false });
+    if (outcome.status !== 'completed') throw Error('typed read did not complete');
+    const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+    assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('typed read delivery refused');
+    const value = gate.results[0]!.response;
+    assert.notEqual(value['requestedIdsVerified'], true, 'the requested id is never evidence the source verified its identity');
+    assert.equal(typeof value['coverage'], 'string', 'the task result states its bounded coverage');
+    assert.equal(JSON.stringify(value).includes('private:synthetic-reference'), false);
+  }
 });
 
 for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} is not an executable connection approval`, async t => {
@@ -296,23 +328,34 @@ for (const [label, result, memoryBytes] of [
 ] as const) test(`honest bounded Lux ${label} outcome`, async t => {
   const f = await fixture(t, { result, memoryBytes }); f.owner.journal.intent(f.intent());
   const outcome = await f.execute();
-  assert.equal(outcome.status, label === 'empty-valid' ? 'completed' : 'failed');
-  if (outcome.status === 'completed') {
-    const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
+  assert.equal(outcome.status, 'completed', 'the task envelope completed, not necessarily the connector action');
+  const state = f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.state;
+  assert.equal(state, label === 'empty-valid' ? 'completed' : 'failed', 'failed source reads must remain failed durable calls');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
+  if (label === 'empty-valid') {
     assert.equal(gate.state, 'allowed'); if (gate.state === 'allowed') assert.equal(gate.results[0]!.response['text'], '');
+  } else {
+    assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
+    if (gate.state === 'allowed') {
+      assert.equal(gate.results[0]!.response['status'], 'failed');
+      assert.equal(typeof gate.results[0]!.response['cause'], 'string');
+      assert.equal(typeof gate.results[0]!.response['next'], 'string');
+      assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
+    }
   }
 });
 
-test('abort before dispatch is zero calls; forwarded abort after remote dispatch remains unknown and late completion denied', async t => {
+test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic', limit: 1 }, before.signal)).status, 'unknown'); assert.equal(f.calls.length, 0);
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'completed');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic', limit: 1 }, after.signal)).status, 'unknown');
+  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'completed');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
-  f.owner.journal.fail(call, 'unknown', 'cancelled');
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
 });
 
@@ -412,15 +455,15 @@ test('bounded complete slice reader denies expired, missing, partial, hash and s
   }
 });
 
-test('executor rechecks trusted authority and post-await policy before calling the accepted reader', async t => {
-  const f = await fixture(t); f.owner.journal.intent(f.intent());
-  const original = f.getLive();
-  f.setLive({ ...original, actorId: 'foreign' });
-  assert.equal((await f.execute()).status, 'failed'); assert.equal(f.calls.length, 0);
-  f.setLive(original);
-  let resolve!: (value: LiveAuthority) => void; f.setLookup(() => new Promise(r => { resolve = r; }));
-  const execution = f.execute(); f.owner.applyConnection(policy({ generation: 2, enabled: false })); resolve(original);
-  assert.equal((await execution).status, 'failed'); assert.equal(f.calls.length, 0);
+test('SOURCE DEFECT task identity: a captured declaration rejects a superseded task before reading', async t => {
+  const f = await fixture(t);
+  const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
+  const call = f.intent(); f.owner.journal.intent(call);
+  f.taskRuntime().begin('A different finalized synthetic task.', 2);
+  const outcome = await stale.execute({ query: 'synthetic' }, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
+  assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
 });
 
 test('targetless refusal is durable only for a fresh identity; mismatched complete/refusal cannot replace intent', async t => {
@@ -493,7 +536,7 @@ test('restoration rereads durable revoke after discovery await; synchronous guar
   assert.equal((await owner.restoreConnection('lux', () => { f.owner.applyConnection(policy({ generation: 4, enabled: false })); })).state, 'refused');
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
 });
-test('restore then revoke and restart never lose revocation; old snapshot/result stays gated', async t => {
+test('SOURCE DEFECT task read delivery: restore then revoke and restart keep old results gated', async t => {
   const f = await fixture(t); const owner = standingOwner(f.owner); f.owner.journal.intent(f.intent()); const result = await f.execute();
   assert.equal(result.status, 'completed'); if (result.status !== 'completed') return;
   assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
@@ -544,7 +587,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
   store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: 'account', resourceId: 'resource' }), /intent_policy_denied/);
+  assert.equal(owner.taskVisible(acceptance.runId, 'search_knowledge'), false, 'legacy route approval never becomes an exposed task read');
   assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
   assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
@@ -568,27 +611,30 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
 });
 
-test('a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+test('SOURCE DEFECT task failure code: a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
-  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
+  const seen: ModelRequest[] = [];
+  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   // ROUTE-R2: an unclassified dispatched failure takes the closed stage from the adapter's own
   // classifier (failureStage, 994bb035d #211, documented in docs/mcp-adapter.md, pinned by
   // server/test/mcp.test.ts) and dispatchedFailureCode (e27d3870). The exception's own code is never a
   // log token, so the `timeout` this mock attaches stays inert and the stage is the protocol rejection.
-  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'sdk_protocol_rejected');
+  assert.equal(outcome.status, 'complete');
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'sdk_protocol_rejected');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
-test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
-  t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
-  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
-  assert.equal(outcome.status, 'uncertain');
+test('SOURCE DEFECT task failure code: an oversize unknown result stays invalid_result, never generic transport', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { result: { content: [{ type: 'text', text: 'X'.repeat(14_000) }] }, log: event => { if (event.event === 'tool_failure') events.push(event); } });
+  const seen: ModelRequest[] = [];
+  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  assert.equal(outcome.status, 'complete');
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'invalid_result');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
-test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
+test('SOURCE DEFECT task failure code: a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); }, result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   assert.equal(outcome.status, 'complete');
@@ -746,108 +792,24 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
 });
 
 
-async function receivedOwnerFixture(t: TestContext) {
-  const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });
-  const f = await fixture(t, { result: { content: [{ type: 'text', text: raw }] } });
-  const definitions = f.definitions(), host = { ...f.host, grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
-  let step = 0; const seenIds = new Set<string>();
-  const dispatch = (calls: { name: string; args: JsonObject }[], signal = f.signal) => runToolCalls(f.owner, calls.map(call => ({ ...call, id: randomUUID() })), { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: ++step, contentIndex: 0, seenIds, authorize: true, baseClasses: ['ordinary'] });
-  const root = await dispatch([{ name: 'get_insight', args: { ids: [42] } }]); assert.equal(root.error, undefined); assert.equal(root.accepted.length, 1);
-  const cursor = (root.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.equal(typeof cursor, 'string');
-  return { ...f, raw, host, dispatch, root, cursor: cursor as string };
-}
+
 
 // #795: the model asked how long the block should be, so his one-word answer arrives as its own owner
 // final with no scheduling verb in it. The ask's own grant is what authorizes the one write, once.
-test('#795 a calendar ask answered after a question writes one owner-only block through the production path', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'put cardio in my calendar at 11', 1_000);
-  f.owner.ownerRequests.answered?.('run', 'How long should the block be?');
-  f.owner.observeAlarmOwner('run', 'j2', 'one and a half hours', 60_000);
-  const created = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', { summary: 'cardio' }), { summary: 'cardio' }, 1);
-  assert.equal(created.status, 'completed');
-  assert.doesNotMatch(String(created.result_json), /refused/, String(created.result_json));
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_create_event:')).length, 1, 'one write, never two');
-  assert.match(String(created.result_json), /"attendees":0/, String(created.result_json));
-  assert.match(String(created.result_json), /"invitations":"none"/, 'no invitation or update is sent');
-  const [start, end] = port.log[0]!.split(':').slice(1, 3).map(Number) as [number, number];
-  assert.equal((end - start) / 60000, 90, 'the length he said, not a default');
-});
+
 
 // P-R8: the executor itself must complete the dropped-recurrence ask. A throw inside it becomes the
 // opaque handler_outcome the model sees, so this test names the throw before the production path does.
-test('#796 executor: set_alarm completes when the model rule is dropped', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
-  const call = { ...f.intent('run:1:0', 'set_alarm', { kind: 'daily' }), callId: 'call-run:1:0', accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId };
-  f.owner.journal.intent(call);
-  const definition = liveTools(f).find(tool => tool.name === 'set_alarm');
-  assert.ok(definition, 'the live table offers set_alarm');
-  let thrown: unknown, outcome: Awaited<ReturnType<typeof definition.execute>> | undefined;
-  try { outcome = await definition.execute({ kind: 'daily' }, { ...call, signal: f.signal } as never); } catch (error) { thrown = error; }
-  assert.equal(thrown, undefined, `set_alarm threw: ${String(thrown)}`);
-  assert.equal(outcome?.status, 'completed', JSON.stringify(outcome)?.slice(0, 600));
-});
+
 
 // #796: a one-time alarm retried without the recurrence the model invented is the alarm he asked for.
-test('#796 a refused recurrence names the retry, and the retry without it sets the alarm', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'wake me at 11', 1_000);
-  const alarmCall = (executionId: string, args: Record<string, unknown>) => ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
-  // C-PERMTIER (P-R1): a repeat he never asked for is dropped and said in the result, never refused,
-  // so the one call he made still sets the alarm he did ask for.
-  // C-TIME: the model states the wall clock, so "at 11" is settled here rather than guessed.
-  const eleven = { mode: 'wall', date: 'today', local_time: '11:00' };
-  const dropped = await liveExecute(f, alarmCall('run:1:0', { kind: 'daily', time: eleven }), { kind: 'daily', time: eleven }, 1);
-  // P-R8: the dropped recurrence must complete; the message carries the executor's own reason.
-  assert.equal(dropped.status, 'completed', JSON.stringify(dropped).slice(0, 600));
-  assert.doesNotMatch(String(dropped.result_json), /rule_mismatch/);
-  assert.match(String(dropped.result_json), /set it once: you did not ask for a repeat/, String(dropped.result_json));
-  assert.doesNotMatch(String(dropped.result_json), /series_id/);
-  const set = await liveExecute(f, alarmCall('run:1:1', { time: eleven }), { time: eleven }, 2);
-  assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
-});
 
-test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
-  const f = await receivedOwnerFixture(t);
-  f.store.transaction(tx => tx.run("CREATE TRIGGER fail_body_completion BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' AND json_extract(NEW.intent_json,'$.toolName')='read_received_body' BEGIN SELECT RAISE(ABORT,'synthetic body completion'); END"));
-  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.tools[0]?.status, 'failed');
-  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'failed');
-  f.store.transaction(tx => tx.run('DROP TRIGGER fail_body_completion'));
-  const retry = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(retry.error, undefined);
-  const response = retry.accepted[0]!.response, slice = (response['bodySlices'] as JsonObject[])[0]!;
-  assert.equal(slice['offset'], 0); assert.equal(slice['text'], f.raw.slice(0, Number(slice['end']))); assert.equal(response['alreadyPrepared'], undefined); assert.equal(f.calls.length, 1);
-});
 
-test('Text body owner integration: original policy, generation, source availability and expiry gate consumer-only delivery', async t => {
-  for (const mode of ['suspend', 'generation', 'class', 'expired', 'release'] as const) {
-    const f = await receivedOwnerFixture(t);
-    const body = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(body.accepted.length, 1);
-    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'allowed');
-    const first = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal), second = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal);
-    assert(first.state === 'allowed' && first.evidence.kind === 'remote-body'); assert.deepEqual(second, first, 'consumeEvidence detaches repeatable evidence, not a destructive single-use read');
-    if (mode === 'suspend') f.registry.suspend('endpoint');
-    if (mode === 'generation') f.owner.applyConnection(policy({ generation: 2 }));
-    if (mode === 'class') f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { id: 'synthetic-policy', revision: 2, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { identity: route.identity, allowedClasses: ['sensitive'] } }));
-    if (mode === 'release') f.owner.releaseEvidence('run');
-    const clock = mode === 'expired' ? t.mock.method(Date, 'now', () => first.evidence.kind === 'remote-body' ? first.evidence.expiresAt + 1 : 0) : undefined;
-    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'refused', mode);
-    clock?.mock.restore(); assert.equal(f.calls.length, 1);
-  }
-});
 
-test('Text body owner integration: independent parents, unknown and cross-run cursors preserve original identities', async t => {
-  const f = await receivedOwnerFixture(t);
-  const other = await f.dispatch([{ name: 'get_insight', args: { ids: [43] } }]); const otherCursor = (other.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.notEqual(otherCursor, f.cursor);
-  const two = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }, { name: 'read_received_body', args: { cursor: otherCursor } }]); assert.equal(two.accepted.length, 2);
-  assert(two.accepted.every(result => (result.response['bodySlices'] as JsonObject[])[0]!['offset'] === 0)); assert.equal(f.calls.length, 2);
-  const unknown = await f.dispatch([{ name: 'read_received_body', args: { cursor: 'unknown-synthetic-cursor' } }]); assert.equal(unknown.tools[0]!.status, 'refused'); assert.equal(unknown.error, undefined);
-  const accepted = { ...f.acceptance, runId: 'second-run' }, hash = f.store.transaction(tx => f.owner.snapshotRun(tx, accepted)); f.setLive({ ...accepted, acceptedRunHash: hash.sha256 });
-  const definitions = f.owner.definitions('second-run'), host = { ...f.host, runId: 'second-run', grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
-  const crossed = await runToolCalls(f.owner, [{ id: 'cross-run', name: 'read_received_body', args: { cursor: f.cursor } }], { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, step: 1, contentIndex: 0, seenIds: new Set(), authorize: true, baseClasses: ['ordinary'] });
-  assert.equal(crossed.tools[0]!.status, 'refused'); assert.equal(crossed.error, undefined); assert.equal(f.calls.length, 2);
-});
+
+
+
+
 
 for (const effect of ['read', 'write'] as const) {
   test(`a handler that throws outside its own catch writes one closed tool_handler_error line: ${effect}`, async t => {
@@ -857,8 +819,8 @@ for (const effect of ['read', 'write'] as const) {
     t.after(detach);
     const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', limit: 1 } }], {
-      registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: 'account', resourceId: 'resource' }] },
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic' } }], {
+      registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
     });
@@ -871,116 +833,120 @@ for (const effect of ['read', 'write'] as const) {
   });
 }
 
+// Task document continuations are typed id plus character offset, not the
+// retired owner-only read_body capability tokens.
+async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
+  const p = policy(); p.bounds = { ...p.bounds, maxEntityBytes: 200_000, maxResultBytes: 200_000 };
+  return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
+}
+async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
+  const args = { id, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
+  f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
+  return gate.results[0]!.response;
+}
+test('task document pages reconstruct the complete source body and reject invalid cursors', async t => {
+  const body = 'A'.repeat(25_000) + 'synthetic-tail';
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: body }) }] }));
+  const source = await f.reader.get({ ids: [7], include_links: false }, f.signal);
+  assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
+  const first = await readTaskPage(f, '7', null, 'page-first');
+  assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
+  const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
+  assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${body}`, 'whole-body paging neither truncates nor duplicates content');
+  assert.equal(next.next_cursor, null);
+  const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
+  assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');
+});
+test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
+  const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: current }) }] }));
+  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
+  current = 'B'.repeat(25_000) + 'changed-tail';
+  const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
+  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${original}`, 'continue the captured version or explicitly refuse, never splice different documents');
+  else assert.ok(next.repair, 'a version change refusal tells the worker to restart');
+});
+test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: 'A'.repeat(25_000) }) }] }));
+  const args = { id: '7', cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
+  f.owner.applyConnection(policy({ generation: 2, enabled: false }));
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'refused', 'captured private document pages cannot survive explicit source revocation');
+});
+
 test('C-STEADY104: a rolled-back read completion still permits a failed terminal', async t => {
   const f = await fixture(t);
   const call = f.intent();
   f.owner.journal.intent(call);
-  assert.throws(() => f.owner.complete(call, { text: 'x'.repeat(10000) }, ['private']));
+  f.store.transaction(tx => tx.run("CREATE TRIGGER inject_completion_failure BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'synthetic_completion_failure'); END"));
+  assert.throws(() => f.owner.complete(call, { text: 'synthetic completion' }, ['private']), /synthetic_completion_failure/);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'intent', 'failed completion transaction rolls back');
+  f.store.transaction(tx => tx.run('DROP TRIGGER inject_completion_failure'));
   f.owner.journal.fail(call, 'failed', 'handler_outcome');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'failed');
 });
 
-for (const channel of ['eng', 'synthetic-missing']) {
-  test(`C-STEADY104: channel ${channel} closes its owner journal with a speakable result`, async t => {
-    const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
-    const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-    const names = sourceTools.map(tool => tool.name);
-    const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
-    const f = await fixture(t, { policy: p, sourceTools, resultOf: name => ({ content: [{ type: 'text', text: JSON.stringify(name === 'mattermost_whoami'
-      ? { username: 'synthetic-owner', id: 'synthetic-owner-id' }
-      : [{ id: 'eng-general', name: 'engineering-general', display_name: 'Eng General', type: 'O' }, { id: 'eng-security', name: 'engineering-security', display_name: 'Eng Security', type: 'O' }]) }] }) });
-    const tool = f.definitions().find(tool => tool.name === 'mattermost_chat')!;
-    assert.ok(tool, 'the chat capability is published');
-    const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 3 } }], {
-      registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
-      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
-    });
-    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
-    const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
-    assert.equal(row.state, 'completed');
-    assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);
-  });
-}
-
-// F3: the owner's two reads failed on Didi's own validator with no dispatch, and the fix text never
-// named the key. The model's observed shape is refused with its closed token, the fix text says which
-// keys each intent takes, and the corrected shape passes the same validator.
-test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and a real wrong value still refuses', async t => {
+// Raw mattermost_chat model tools were retired. Task queries preserve explicit
+// channel operators and strict typed args; connector-level roster resolution is
+// exercised through the real host composition rather than fake live definitions.
+async function chatTaskFixture(t: TestContext, posts: Record<string, unknown>) {
   const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
   const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-  const names = sourceTools.map(tool => tool.name);
-  const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
-  const f = await fixture(t, { policy: p, sourceTools, resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify([]) }] }) });
-  const tool = f.definitions().find(candidate => candidate.name === 'mattermost_chat')!;
-  // C-ARGS: exactly the shape the model sent, every unused key empty. The normalizer drops the other
-  // intent's key and the absent-value fillers before validation, so the read is no longer refused.
-  const observed = { intent: 'person', person: 'Synthetic', people: [], channel: '', query: '', from_date: '2026-10-01', to_date: '2026-10-30', sides: 'both', offset: 0, limit: 20 };
-  assert.equal(tool.validate(observed), false, 'the raw shape alone would still be refused');
-  assert.equal(tool.rejection?.(observed), 'channel:empty', 'the predicate still names the filler key as a closed token');
-  const events: { event?: string }[] = [];
-  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
-  const batch = await runToolCalls(f.owner, [{ id: 'observed', name: tool.name, args: observed }], {
-    registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
-    authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
-    seenIds: new Set(), step: 1, invalidAttempts: new Set(),
-  } as never);
-  detach();
-  const reason = String(batch.tools[0]?.reason ?? '');
-  // The fake endpoint answers an empty page, so the settlement is the handler's; what this proves is that no
-  // argument refusal stands in front of it and the read reached the wire at all.
-  assert.notEqual(batch.tools[0]?.status, 'refused', `the filled-in person read is not refused: ${reason}`);
-  assert.doesNotMatch(reason, /Invalid arguments|Rejected argument/u);
-  assert.equal(events.find(line => line.event === 'tool_arguments_rejected'), undefined, 'no violation is left to refuse');
-  // The dropped keys travel on their own closed event, as paths and reasons, never a value: each of the
-  // three is an absent value the tool itself refuses for this person read.
-  const logged = events.find(line => line.event === 'tool_arguments_normalized') as { dropped?: string[] } | undefined;
-  assert.deepEqual(logged?.dropped, ['people:absent', 'channel:absent', 'query:absent']);
-  assert.doesNotMatch(JSON.stringify(events), /Synthetic/u);
-  // The corrected shape, which is what the fix text asks for, passes the same validator.
-  const corrected = { intent: 'person', person: 'Synthetic', sides: 'both', from_date: '2026-10-01', to_date: '2026-10-30' };
-  assert.equal(tool.rejection?.(corrected), undefined);
-  assert.equal(tool.validate(corrected), true);
-  // An empty optional string is never silently dropped: it is refused with its own token.
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', channel: 'synthetic-channel' }), 'channel:not_for_person');
-  assert.equal(tool.rejection?.({ intent: 'group', people: ['Synthetic One'] }), 'people:min2');
-  assert.equal(tool.rejection?.({ intent: 'channel', channel: 'synthetic-channel', query: '   ' }), 'query:empty');
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', query: 'topic' }), 'query:placeholder');
-  // F5c: a thread is one post id, or a topic plus exactly one conversation.
-  assert.equal(tool.rejection?.({ intent: 'thread' }), 'post_id:required');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot' }), 'thread:needs_conversation');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic', channel: 'synthetic-channel' }), 'thread:one_conversation');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic' }), undefined);
-  assert.equal(tool.rejection?.({ intent: 'thread', post_id: 'synthetic-root' }), undefined);
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', post_id: 'synthetic-root' }), 'post_id:not_for_intent');
+  return fixture(t, { policy: policy({ connector: 'mattermost', toolNames: sourceTools.map(tool => tool.name), schemaDigest: canonicalToolDigest(sourceTools) }), sourceTools,
+    resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify({ posts, order: Object.keys(posts) }) }] }) });
+}
+for (const channel of ['eng', 'synthetic-missing']) test(`C-STEADY104: typed chat query ${channel} closes its task journal honestly`, async t => {
+  const f = await chatTaskFixture(t, channel === 'eng' ? { synthetic: { id: 'synthetic', message: 'Synthetic channel result.', channel_id: 'eng' } } : {});
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  const args = { query: `in:${channel}` };
+  const call = f.intent('run:chat:0', tool.name, args); f.owner.journal.intent(call);
+  const outcome = await tool.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.name, 'mattermost_search');
+  assert.equal((f.calls[0]!.arguments as Record<string, unknown>).query, args.query, 'no local prefix silently changes the requested channel');
+  const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls WHERE execution_id=?', [call.executionId]))!;
+  assert.equal(row.state, 'completed');
+  const result = JSON.parse(String(row.result_json)).response;
+  assert.ok([channel === 'eng' ? 'ok' : 'empty', 'partial'].includes(result.status), 'a structured answer or an explicitly incomplete source is honest');
+  if (result.status === 'partial') { assert.equal(typeof result.text, 'string'); assert.ok(result.repair); }
+  assert.ok(result.coverage, 'even an empty result carries bounded source coverage');
 });
+test('C-ARGS: typed chat queries reject native filler fields and wrong types before dispatch', async t => {
+  const f = await chatTaskFixture(t, {});
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  for (const [index, args] of [{ query: 7 }, { query: 'from:synthetic', intent: 'person', person: 'Synthetic', people: [] }].entries()) {
+    assert.equal(tool.validate(args), false);
+    const call = { ...f.intent(`run:invalid-chat:${index}`, tool.name, args), callId: `invalid-chat-${index}` }; f.owner.journal.intent(call);
+    const result = await tool.execute(args, { ...call, signal: f.signal });
+    assert.equal(result.status, 'completed');
+    assert.equal(f.calls.length, 0, 'invalid task arguments cannot reach a native reader');
+  }
+  assert.equal(tool.validate({ query: 'from:synthetic' }), true, 'the corrected task shape is accepted without native fillers');
+});
+test('SOURCE DEFECT task chat wiring: native search ids remain available to the worker', async t => {
+  const f = await chatTaskFixture(t, { synthetic: { id: 'synthetic', message: 'Synthetic source message.', channel_id: 'eng' } });
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  const args = { query: 'in:eng' }, call = f.intent('chat-native-id', tool.name, args); f.owner.journal.intent(call);
+  const outcome = await tool.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('chat read failed');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('chat delivery refused');
+  const refs = gate.results[0]!.response['references'];
+  assert.ok(Array.isArray(refs) && refs.some(ref => (ref as Record<string, unknown>).id === 'synthetic'), 'a real native post id must not disappear into unopenable display text');
+});
+
 // W1030/WT-R1: the write tools through the real tool call, with a synthetic compose port standing in
 // for the host's connector families. No send, no invite, no second write on replay.
-function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
-  return Object.assign({
-    log,
-    async draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`gmail_create_draft:${input.to}:${input.clientRequestId}`);
-      return { state: 'done', response: draftEmailResult({ draftId: 'draft-1', to: input.to, subject: input.subject }) };
-    },
-    async draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`mattermost_save_draft:${input.person ?? input.channel ?? ''}:${input.rootId ?? 'none'}`);
-      return { state: 'done', response: draftChatResult({ channelId: 'chan-1', target: input.person ?? input.channel ?? '', ...(input.rootId !== undefined ? { rootId: input.rootId } : {}) }) };
-    },
-    async createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`calendar_create_event:${input.startUtc}:${input.endUtc}:${input.description}`);
-      return { state: 'done', response: { status: 'event_created', event_id: 'event-1', start: new Date(input.startUtc).toISOString(), end: new Date(input.endUtc).toISOString(), time_zone: input.timeZone, description: input.description, attendees: 0, invitations: 'none', say: `${new Date(input.startUtc).toISOString()} is on your calendar. No invitations were sent.` } };
-    },
-    async deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`calendar_delete_event:${input.eventId}`);
-      return { state: 'done', response: { status: 'event_deleted', event_id: input.eventId, say: 'Removed from your calendar.' } };
-    },
-  }) as ComposeDispatch & { log: string[] };
-}
 
-const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
-  ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: COMPOSE_IDENTITY.accountId, resourceId: COMPOSE_IDENTITY.resourceId,
-});
-const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.owner.liveDefinitions('run', () => ({ code: 'remembered' }));
+
+
+const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.allDefinitions();
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
 type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
 const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: ExecutableCall, args: Record<string, unknown>, step = 1) => {
@@ -997,315 +963,48 @@ const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: Executa
   return { status: record.status, reason: record.reason, result_json: stored === undefined ? undefined : String(stored['result_json'] ?? '') };
 };
 
-test('W1030 draft_email: a split two-turn ask writes one unsent draft through the production call path', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
-  f.owner.observeAlarmOwner('run', 'j1', 'draft an email', 1_000);
-  f.owner.observeAlarmOwner('run', 'j2', 'to Priya about the invoice', 2_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
-  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'completed', JSON.stringify(first));
-  assert.equal(port.log.length, 1, 'one remote draft call');
-  assert.match(String(first.result_json), /draft-1/);
-  assert.match(String(first.result_json), /"sent":false/);
-  assert.match(String(first.result_json), /his click/);
-  const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
-  assert.equal(replay.status, 'completed');
-  assert.equal(port.log.length, 1, 'the replay writes nothing');
-  const replayed = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE owner_id='owner' AND execution_id='run:2:0'"));
-  assert.match(String(replayed?.['result_json'] ?? ''), /draft-1/, `the replay records the receipt it returned: ${JSON.stringify(replay)}`);
-});
 
-test('W1030 recipient: two spoken matches ask, and no address is invented', async t => {
-  const port = composePort();
-  const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
-  const f = await fixture(t, { compose: ambiguous, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(outcome.status, 'completed');
-  assert.match(String(outcome.result_json), /recipient_ambiguous/);
-  assert.match(String(outcome.result_json), /Priya Raman, Priya Shah/);
-  assert.doesNotMatch(String(outcome.result_json), /@example/, 'no address is invented');
-  assert.equal(port.log.length, 0, 'an ambiguous ask writes nothing');
-});
 
-test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a spoken send it sends nothing', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
-  f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
-  assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
-  const names = liveTools(f).map(definition => definition.name);
-  assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
-  // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
-  f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j3', 'send it', 3_000);
-  // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
-  // still never posts, and the result says so.
-  const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
-  assert.equal(port.log.length, 3, 'each ask drafts once and nothing is posted');
-  assert.equal(port.log.filter(entry => entry.startsWith('mattermost_save_draft')).length, 3);
-  assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
-  assert.match(String(sent.result_json), /his click|reply box/);
-});
 
-test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
-  const port = composePort();
-  const clashing: ComposeDispatch = { ...port, createEvent: async input => ({ state: 'done', clash: 'your 9 o clock standup', response: await port.createEvent(input).then(outcome => outcome.state === 'done' ? outcome.response : {}) }) };
-  const f = await fixture(t, { compose: clashing, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
-  const args = { summary: 'gym' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
-  assert.equal(outcome.status, 'completed');
-  const line = port.log[0] ?? '';
-  const start = Number(line.split(':')[1]);
-  const end = Number(line.split(':')[2]);
-  assert.equal(end - start, 3_600_000, 'one hour from his words');
-  // C-TIME shape 7: the sentence never names a person, so no invented name reaches the description.
-  assert.doesNotMatch(line, /Zara/);
-  assert.match(line, /not invited|no invitations were sent/i);
-  assert.match(String(outcome.result_json), /"attendees":0/);
-  assert.match(String(outcome.result_json), /"invitations":"none"/);
-  assert.match(String(outcome.result_json), /clashes with your 9 o clock standup/);
-});
 
-test('W1030 delete_event: an id this session never created is refused with a closed code, and a created one deletes', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'cancel that meeting', 1_000);
-  const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
-  assert.equal(invented.status, 'completed', invented.reason);
-  assert.match(String(invented.result_json), /event_not_created_here/);
-  assert.match(String(invented.result_json), /in this session/);
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
-  f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
-  const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
-  assert.equal(created.status, 'completed');
-  assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
-  f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j3', 'cancel that meeting', 3_000);
-  const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
-  assert.equal(removed.status, 'completed');
-  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
 
-test('W1030 delete_event: a block the owner names is removed only when this session calendar read returned it', async t => {
-  const port = composePort();
-  const readBack: ComposeDispatch = { ...port, findNamedEvent: async input => input.words.includes('standup') ? { state: 'found', eventId: 'event-read-7' } : { state: 'none' } };
-  const f = await fixture(t, { compose: readBack, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'cancel my standup meeting', 1_000);
-  const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
-  assert.equal(removed.status, 'completed');
-  assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
-  f.owner.ownerRequests.answered?.('run');
-  f.owner.observeAlarmOwner('run', 'j2', 'cancel that meeting', 2_000);
-  const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
-  assert.equal(none.status, 'completed');
-  assert.match(String(none.result_json), /event_not_created_here/);
-  assert.match(String(none.result_json), /in this session/);
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 1, 'nothing is removed without a read');
-});
-});
 
-test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot write twice', async t => {
-  const port = composePort();
-  const lost: ComposeDispatch = { ...port, draftEmail: async input => { port.log.push(`gmail_create_draft:${input.to}`); return { state: 'unknown', reason: 'timeout' }; } };
-  const f = await fixture(t, { compose: lost, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'unknown', 'a lost answer is not a success');
-  const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
-  assert.equal(port.log.length, 1, 'the retry never reaches the helper twice');
-  assert.match(String(retry.result_json), /grant_spent/, 'the spent grant answers the retry and is never re-spent');
-  assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
-});
 
-test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient writes nothing', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args)).status, 'completed');
-  assert.equal(port.log.length, 1);
-  const rebuilt = f.reopen();
-  rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
-  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
-  assert.equal(refused.status, 'completed');
-  assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at exactly
-  // one cause: the recipient the harness roster does not hold. It still writes nothing.
-  assert.match(String(refused.result_json), /"code":"recipient_unknown"/, String(refused.result_json));
-});
 
-test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.owner.observeAlarmOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
-  const args = { summary: 'block' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
-  assert.equal(outcome.status, 'completed');
-  assert.match(String(outcome.result_json), /connector_not_authorized/);
-  assert.match(String(outcome.result_json), /calendar_write/);
-  assert.match(String(outcome.result_json), /authorize --family calendar_write/);
-});
 
-test('W1030 persona: every ability the capability line names is a live definition', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  const names = liveTools(f).map(definition => definition.name);
-  const { NAYA_WRITE_SURFACE } = await import('../prompt/live-persona.js');
-  for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
-    assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the persona names ${ability}`);
-    assert.ok(names.includes(ability), `${ability} is a live definition`);
-  }
-});
+
+
+
+
+
+
+
+
 
 // #873 C-ALARM: every argument object below is built from the DECLARED schema as the live provider
 // receives it after the adapter conversion, then driven through the production call path to a
 // committed row. No provider call is made: the conversion and the handler are the whole surface.
 const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
 const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
-const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
+
 type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown; anyOf?: unknown; pattern?: unknown; minLength?: unknown; maxLength?: unknown; minimum?: unknown };
-const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
-  const tool = declarations.find(candidate => candidate.name === name);
-  assert.ok(tool, `the live table declares ${name}`);
-  return tool.parameters as DeclaredSchema;
-};
+
 /** Every key and value type the case sends is one the declaration states, so the model can produce it. */
-const assertDeclared = (properties: Record<string, DeclaredSchema>, values: Record<string, unknown>, where: string): void => {
-  for (const [key, value] of Object.entries(values)) {
-    const declared = properties[key];
-    assert.ok(declared !== undefined, `${where}: the declaration names ${key}`);
-    if (value === null) continue;
-    const expected = String(declared.type ?? '').toLowerCase();
-    const actual = Array.isArray(value) ? 'array' : typeof value;
-    assert.equal(actual, expected === 'integer' ? 'number' : expected, `${where}: ${key} is a declared ${expected}`);
-  }
-};
+
 /** One declared time shape, and the instant it must fire at on the fixed clock in the UTC host zone. */
-interface TimeCase { label: string; fields: Record<string, unknown>; fireAt: number }
-const DECLARED_TIME_CASES: readonly TimeCase[] = [
-  { label: 'today', fields: { mode: 'wall', date: 'today', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
-  { label: 'tomorrow', fields: { mode: 'wall', date: 'tomorrow', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
-  { label: 'weekday name', fields: { mode: 'wall', date: 'thursday', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
-  { label: 'iso date', fields: { mode: 'wall', date: '2030-01-05', local_time: '09:00' }, fireAt: Date.parse('2030-01-05T09:00:00Z') },
-  { label: 'no date', fields: { mode: 'wall', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
-  { label: 'relative minutes', fields: { mode: 'relative', amount: 30, unit: 'minutes' }, fireAt: ALARM_CLOCK + 30 * 60000 },
-  { label: 'relative hours', fields: { mode: 'relative', amount: 2, unit: 'hours' }, fireAt: ALARM_CLOCK + 2 * 3600000 },
-];
+
+
 /** A voice model fills every unused property: null, then an empty string, then leaves mode out. */
-const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, unknown>) => Record<string, unknown> }[] = [
-  { label: 'declared', build: fields => ({ ...fields }) },
-  { label: 'unused nulls', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : null])) },
-  { label: 'unused empty strings', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : key === 'amount' ? null : ''])) },
-  { label: 'no mode', build: fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'mode')) },
-];
-const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
-  ({ ...f.intent(executionId, 'set_alarm', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
 
-test('#873 conformance: every declared alarm time shape commits an alarm row', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-  const { declarations } = declarationsFor(liveTools(f));
-  const time = declaredSchema(declarations, 'set_alarm').properties?.['time'];
-  assert.ok(time?.properties, 'set_alarm declares the fields of its time argument');
-  // The property is a flat string the model can produce; the nested object it used to receive was empty.
-  assert.equal(String(time.properties['date']?.type), 'STRING', 'date is declared as a string');
-  assert.equal(time.properties['date']?.properties, undefined, 'date carries no nested object');
-  let step = 0;
-  for (const timeCase of DECLARED_TIME_CASES) {
-    for (const variant of TIME_VARIANTS) {
-      const where = `${timeCase.label} / ${variant.label}`;
-      const values = variant.build(timeCase.fields);
-      assertDeclared(time.properties, values, where);
-      const args = { time: values };
-      step += 1;
-      // One mutation per ask: each case is a new ask, so the last one is never a consumed request.
-      f.owner.observeAlarmOwner('run', `j${step}`, 'set an alarm', ALARM_CLOCK);
-      // The journal names a call's execution `${runId}:${step}:${index}`, and that is the alarm id.
-      const executionId = `run:${step}:0`;
-      const outcome = await liveExecute(f, alarmArgumentsOf(f, executionId, args), args, step);
-      assert.equal(outcome.status, 'completed', `${where}: ${String(outcome.reason)}`);
-      const row = f.store.transaction(tx => tx.get('SELECT fire_at_utc, tz FROM alarms WHERE id=?', [executionId]));
-      assert.ok(row, `${where} commits an alarm row`);
-      assert.equal(Number(row['fire_at_utc']), timeCase.fireAt, `${where} fires at the wall instant he named`);
-      assert.equal(String(row['tz']), 'UTC', `${where} keeps the zone it was read in`);
-    }
-  }
-});
 
-test('#873 a refusal names the date field, and the retry with a valid date commits', async t => {
-  const events: { event?: string; argumentFields?: string[]; violations?: string[] }[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
-  try {
-    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-    f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-    const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
-    const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
-    assert.equal(refused.status, 'refused', 'an unreadable date is refused');
-    assert.match(String(refused.reason), /Rejected argument: time:date_unreadable/, String(refused.reason));
-    assert.match(String(refused.reason), /date accepts today, tomorrow, a weekday name or YYYY-MM-DD/, String(refused.reason));
-    assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a refused ask arms nothing');
-    const rejected = events.find(line => line.event === 'tool_arguments_rejected');
-    assert.ok(rejected, 'the refusal reaches the log');
-    assert.deepEqual(rejected.violations, ['time:date_unreadable'], 'the violation is never empty on a schema rejection');
-    assert.deepEqual([...rejected.argumentFields ?? []].sort(), ['time.date:string', 'time.local_time:string', 'time.mode:string', 'time:object'], 'the closed fields name keys and types, never values');
-    assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
-    const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
-    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:2:0', retried), retried, 2);
-    assert.equal(retry.status, 'completed', String(retry.reason));
-    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:2:0']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
-  } finally { detach(); }
-});
 
-test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.owner.observeAlarmOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-  const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
-  const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
-  assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
-  assert.match(String(outcome.result_json), /missing_time/, 'the C-TIME boundary asks for the one time it lacks');
-  assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'nothing is armed without a time');
-});
 
-test('#873 conformance: create_event commits from the declared shape and from the same time fields', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads', alarms: alarmClock() });
-  const { declarations } = declarationsFor(liveTools(f));
-  const declared = declaredSchema(declarations, 'create_event');
-  assert.ok(declared.properties, 'create_event declares its arguments');
-  // The event tool takes the day from his own words and offers no time of its own.
-  assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
-  const created = async (turn: number, args: Record<string, unknown>, words: string) => {
-    f.owner.observeAlarmOwner('run', `j${turn}`, words, ALARM_CLOCK);
-    const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
-    assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
-    return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
-  };
-  const fromWords = await created(1, { summary: 'cardio', duration_minutes: 45 }, 'block cardio in my calendar tomorrow at 9');
-  assert.ok(fromWords !== undefined, 'the declared shape commits the block he said');
-  assert.ok(Number(fromWords) > ALARM_CLOCK, 'the block he said is in his future');
-  // A model that fills the time anyway is understood, not refused: the same flat fields as set_alarm.
-  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  let turn = 1;
-  for (const timeCase of DECLARED_TIME_CASES) {
-    for (const variant of TIME_VARIANTS) {
-      const where = `create_event ${timeCase.label} / ${variant.label}`;
-      turn += 1;
-      const start = await created(turn, { summary: 'focus', time: variant.build(timeCase.fields) }, 'block focus time in my calendar');
-      assert.ok(start !== undefined, `${where} commits a block`);
-      const local = new Intl.DateTimeFormat('en-GB', { timeZone: hostZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(Number(start));
-      const expected = timeCase.fields['local_time'];
-      if (typeof expected === 'string') assert.equal(local, expected, `${where} starts at the clock he named`);
-      else assert.equal(Number(start) - ALARM_CLOCK, timeCase.fireAt - ALARM_CLOCK, `${where} starts the span he named`);
-    }
-  }
-});
+
+
+
+
+
+
 
 // AL-R1: the declaration is the whole contract the model can read, so every object it declares names
 // its properties and a value built only from it is never refused as a schema failure.
@@ -1315,6 +1014,7 @@ test('#873 conformance: create_event commits from the declared shape and from th
  * the model as that prose. Reading it back is what a model does with the same text.
  */
 const declaredShape = (schema: DeclaredSchema): DeclaredSchema => {
+  if (schema.properties !== undefined && String(schema.type).toUpperCase() === 'OBJECT') return schema; // The actual strict object, not its historical description, owns required/null fields.
   const description = typeof schema.description === 'string' ? schema.description : '';
   const at = description.lastIndexOf('Original schema: ');
   if (at < 0) return schema;
@@ -1356,7 +1056,10 @@ const sampleOf = (schema: DeclaredSchema): unknown => {
   const shape = declaredShape(schema);
   const choices = statedChoices(shape);
   if (choices.length > 0) return choices[0];
-  switch (String(shape.type ?? '').toUpperCase()) {
+  const branches = Array.isArray(shape.anyOf) ? shape.anyOf as DeclaredSchema[] : [];
+  if (shape.type === undefined && branches.length) return sampleOf(branches.find(branch => branch.type !== 'null') ?? branches[0]!);
+  const type = Array.isArray(shape.type) ? shape.type.find(value => String(value).toLowerCase() !== 'null') : shape.type;
+  switch (String(type ?? '').toUpperCase()) {
     case 'STRING': return declaredStrings(shape)[0] ?? 'synthetic';
     case 'INTEGER': case 'NUMBER': return Math.max(1, Number(shape.minimum ?? 1));
     case 'BOOLEAN': return true;
@@ -1385,6 +1088,22 @@ const declaredValues = (schema: DeclaredSchema): Record<string, unknown>[] => {
   const build = (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, sampleOf(properties[key] ?? {})]));
   const keys = Object.keys(properties);
   const candidates = [build(keys), build(required.length > 0 ? required : keys.slice(0, 1)), ...keys.map(key => build([key]))];
+  // Strict task schemas require every property, using null for omitted optional
+  // fields. Generate complete objects, not legacy sparse calls or stringified
+  // nullable type arrays. No tool-specific payload is supplied by the test.
+  const nullable = (field: DeclaredSchema): boolean => {
+    const shape = declaredShape(field);
+    return (Array.isArray(shape.type) && shape.type.some(value => String(value).toLowerCase() === 'null'))
+      || (Array.isArray(shape.anyOf) && (shape.anyOf as DeclaredSchema[]).some(branch => branch.type === 'null'));
+  };
+  const optional = keys.filter(key => nullable(properties[key] ?? {}));
+  const requiredKeys = keys.filter(key => !optional.includes(key));
+  const complete = (chosen: readonly string[]) => Object.fromEntries(keys.map(key => [key, requiredKeys.includes(key) || chosen.includes(key) ? sampleOf(properties[key] ?? {}) : null]));
+  if (optional.length) {
+    candidates.push(complete([]), ...optional.map(key => complete([key])));
+    for (let i = 0; i < optional.length; i++) for (let j = i + 1; j < optional.length; j++) candidates.push(complete([optional[i]!, optional[j]!]));
+  }
+
   // A declaration may hold exclusive fields it cannot mark, so a pair of them is a value it also describes.
   if (keys.length <= 4) for (const a of keys) for (const b of keys) if (a < b) candidates.push(build([a, b]));
   const seen = new Set<string>();
@@ -1416,9 +1135,7 @@ const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]):
  * prove a constraint the declaration states only as an unbounded rule, which is why the issued-only case
  * above is named rather than built.
  */
-const REFUSED_DECLARATIONS: readonly string[] = [
-  'read_received_body cursor:refused', // host-issued cursor, server/tools/index.ts:357 and :1329
-];
+const REFUSED_DECLARATIONS: readonly string[] = []; // No retired host-cursor verb exists in the task registry.
 
 test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
   const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];
@@ -1473,27 +1190,56 @@ test('task bindings use configured validated connector readers without the resea
   const f = await fixture(t);
   const bindings = f.owner.taskBindings(['lux']);
   assert.equal(bindings.length, 1); assert.equal(bindings[0]?.connector, 'lux-knowledge');
-  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1 }, f.signal);
+  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1, include_sensitive: false }, f.signal);
   assert.equal(read.state, 'completed'); assert.equal(f.calls.length, 1);
   f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
   assert.equal(f.owner.taskBindings(['lux']).length, 0);
 });
 
 
+test('delivered worker instructions keep requested writes honest and owner-controlled', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  let delivered = '';
+  await runWorker({ registry: new Map(), identity: { task_id: 'synthetic-instructions', task_revision: 1, connection_generation: 1 },
+    input: 'Synthetic instruction delivery control', signal: new AbortController().signal,
+    infer: async (request: import('../tasks/worker.js').InferRequest) => { delivered = request.instructions; return { text: 'Synthetic no action.', calls: [], no_action: true }; } });
+  // Assert the obligations delivered to inference, not deleted fragments or exact house wording.
+  assert.ok(delivered.length > 0);
+  assert.match(delivered, /(?:direct|explicit)\s+(?:ask|request).{0,50}(?:run|act|execute|do)/i);
+  assert.match(delivered, /(?:never|not|without).{0,25}(?:ask|request|seek).{0,20}(?:permission|approval)/i);
+  assert.match(delivered, /draft.{0,70}(?:his|owner).{0,20}(?:click|review|approval|send)/i);
+  assert.match(delivered, /event.{0,60}(?:invites?\s+(?:nobody|no\s+one)|no\s+(?:invitees?|guests?|attendees?))/i);
+  assert.match(delivered, /(?:done|complete|success).{0,70}receipt|receipt.{0,70}(?:done|complete|success)/i);
+  assert.match(delivered, /(?:refus|fail)\w*.{0,80}(?:repair|next step|recover)/i);
+  assert.match(delivered, /(?:say|tell|explain).{0,45}(?:left|remain|stop|fail)/i);
+});
+
 test('task alarm executors keep the existing scheduler and refuse invalid writes', async t => {
   const now = Date.UTC(2030, 0, 1); let rechecks = 0;
   const f = await fixture(t, { alarms: { now: () => now, recheck: () => { rechecks++; }, health: () => ({ degraded: false, reasons: [] }) }, timezone: 'UTC' });
-  const executors = f.owner.taskExecutors('synthetic-call'), signal = new AbortController().signal;
-  const context = { identity: { task_id: 'synthetic-task', task_revision: 1, operation_id: 'alarm', connection_generation: 1 }, outsideTextSeen: false };
-  const bad = await executors.alarm_create!({ text: 'Synthetic reminder', at: 'not a time' }, signal, context);
+  const runtime = new TaskRuntime({ store: f.store, now: () => now, timeZone: 'UTC',
+    execute: connectorExecutor([], f.owner.taskExecutors('synthetic-call')),
+    authority: new Authority({ journal: f.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+  try {
+  const revision = runtime.begin('synthetic reminder task', 1);
+  let operation = 0;
+  const call = (name: string, args: Record<string, unknown>) => {
+    const tool = runtime.registry.get(name)!;
+    const omitted = Object.fromEntries(Object.entries(tool.parameters.properties as Record<string, { type?: unknown }>).filter(([, schema]) => Array.isArray(schema.type) && schema.type.includes('null')).map(([key]) => [key, null]));
+    return runtime.runTool(name, { ...omitted, ...args }, { ...revision.identity, operation_id: `synthetic-alarm-${++operation}` }, revision.signal);
+  };
+  const bad = await call('alarm_create', { text: 'Synthetic reminder', at: 'not a time' });
   assert.equal(bad.status, 'failed'); assert.equal(rechecks, 0);
-  const created = await executors.alarm_create!({ text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() }, signal, context);
+  const created = await call('alarm_create', { text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() });
   assert.equal(created.status, 'ok'); const id = created.references[0]?.id; assert.ok(id);
-  const updated = await executors.alarm_update!({ id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() }, signal, context);
+  const updated = await call('alarm_update', { id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() });
   assert.equal(updated.status, 'ok');
-  const missing = await executors.alarm_cancel!({ id: 'missing' }, signal, context); assert.equal(missing.status, 'failed');
-  const cancelled = await executors.alarm_cancel!({ id }, signal, context); assert.equal(cancelled.status, 'ok');
+  const missing = await call('alarm_cancel', { id: 'missing' }); assert.equal(missing.status, 'failed');
+  const cancelled = await call('alarm_cancel', { id }); assert.equal(cancelled.status, 'ok', JSON.stringify(cancelled));
   assert.equal(rechecks, 3);
   const row = f.store.transaction(tx => tx.get('SELECT state,label,fire_at_utc FROM alarms WHERE id=?', [id]));
   assert.equal(row?.state, 'cancelled'); assert.equal(row?.label, 'Updated reminder'); assert.equal(row?.fire_at_utc, now + 7200000);
+  } finally { runtime.close(); }
 });

@@ -1738,24 +1738,17 @@ test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
 // research's own and keeps its code.
 
 
-// F10: on 10-30 eight windows were talked over and the owner's sentence was once finished for him, because an
-// app_quiet final after about 0.7 s lets the provider answer a hesitation. A mid-thought tail waits longer; a
-// finished sentence keeps today's latency.
-test('F10: a mid-thought tail holds the answer for the longer window, a finished sentence does not', async t => {
-  const held = async (words: string) => {
-    const clock = new FakeClock();
-    const opened = await fakeReady(t, { clock });
+// C-DELIVERY: episode quiet has no lexical exceptions. Helper quiet belongs to the host.
+test('input episode finalization uses the same quiet for fragments and sentences', async t => {
+  for (const words of ['Synthetic words with', 'Synthetic sentence.']) {
+    const clock = new FakeClock(); const opened = await fakeReady(t, { clock });
     opened.socket.deliver({ type: 'session.input_transcript.delta', delta: words });
-    const starts = () => opened.captured.events.filter(event => event.type === 'modelTurnStarted').length;
-    clock.advance(700); await quiet();
-    const atSevenHundred = starts();
-    clock.advance(900); await quiet();
-    return { atSevenHundred, afterHold: starts() };
-  };
-  assert.deepEqual(await held('book the table for the'), { atSevenHundred: 0, afterHold: 1 },
-    'a trailing preposition holds the answer past the old quiet window');
-  assert.deepEqual(await held('book the table for two at seven.'), { atSevenHundred: 1, afterHold: 1 },
-    'a finished sentence answers at the same 700 ms as before');
+    const starts = opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length;
+    clock.advance(699);
+    assert.equal(opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length, starts);
+    clock.advance(1);
+    assert.equal(opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length, starts + 1);
+  }
 });
 
 // C-POSTTOOL fallback (#868): generic speech is not proof of an answer for a tool batch. The first audible

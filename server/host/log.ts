@@ -183,7 +183,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'task_delivery') {
     if (!closedKeys(value, ['event', 'taskId', 'revision', 'state']) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
-      !['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered'].includes(String(value.state))) return;
+      !['sent', 'accepted', 'retry', 'undelivered'].includes(String(value.state))) return;
     return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
   }
   if (value.event === 'task_lifecycle') {
@@ -1287,6 +1287,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
     // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
     const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
+    const owed = value.owed === undefined ? {} : { owed: value.owed };
+    if (value.owed !== undefined) {
+      keys.push('owed');
+      if (!['running_task', 'finished_answer_pending', 'nothing_owed'].includes(String(value.owed))) return;
+    }
     const response = responsePair(value);
     if (response === undefined) return;
     const base = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
@@ -1297,10 +1302,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation)) return;
     if (Object.hasOwn(value, 'closeCode')) {
       if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
-      return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
+      return { ...owed, event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
         generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason, ...response };
     }
-    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
+    return { ...owed, event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
   }
   if (value.event === 'research_context_rebuild') {
     // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the

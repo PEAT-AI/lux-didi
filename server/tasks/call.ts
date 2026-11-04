@@ -6,11 +6,11 @@ import type { WorkerResult } from './worker.js';
 export interface TaskCallPorts {
   provider: 'openai' | 'gemini';
   createRuntime(delivery: Delivery): TaskRuntime;
-  append(generation: number, delegationId: string, text: string): string | undefined;
+  append(generation: number, delegationId: string | null, text: string): string | undefined;
   respond(generation: number, responses: LiveToolResponse[]): LiveToolSendOutcome;
-  reconnect(text: string, identity: RevisionIdentity): boolean;
   state(identity: RevisionIdentity, state: DeliveryState, chunk: number): void;
   working?(active: boolean): void;
+  after?(ms: number, callback: () => void): () => void;
 }
 /** A call owns work. A provider socket only owns the current delivery binding. */
 export class TaskCall {
@@ -21,26 +21,53 @@ export class TaskCall {
   #functions: LiveToolCall[] = [];
   #answer: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   #closed = false;
+  #spoken = false;
+  #outputQuiet = true;
+  #queuedWords = '';
+  #queuedTurn = 0;
+  #inputPending = false;
+  #cancelQuiet: (() => void) | undefined;
   constructor(readonly ports: TaskCallPorts) {
     this.delivery = new TaskDelivery({ isCurrent: identity => !this.#closed && this.runtime.controller.isCurrent(identity),
       append: (id, text) => ports.append(this.#generation, id, text),
-      reconnect: (text, identity) => ports.reconnect(text, identity), state: ports.state });
+      state: (identity, state, chunk) => { this.runtime.deliveryState(identity, state, chunk); ports.state(identity, state, chunk); } });
     this.runtime = ports.createRuntime({
       attach: (identity, binding) => { if (ports.provider === 'openai') this.delivery.attach(identity, binding); },
       progress: identity => this.delivery.progress(identity),
       closed: identity => this.delivery.closed(identity),
       deliver: (identity, answer) => {
         this.#answer = { identity, answer };
-        if (ports.provider === 'openai') this.delivery.deliver(identity, answer);
+        if (ports.provider === 'openai') {
+          if (answer.status === 'no_action' && !this.#delegation) return;
+          if ((answer.status === 'complete' || answer.status === 'incomplete') && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation) return;
+          this.delivery.deliver(identity, answer);
+        }
         else this.#respond();
       },
     });
   }
   get running(): boolean { return this.runtime.controller.running; }
-  socket(generation: number): void {
+  socket(generation: number, ready = true): void {
     this.#generation = generation; this.#delegation = undefined; this.#functions = [];
-    this.delivery.socket(generation);
+    this.delivery.socket(generation, ready);
   }
+  ownerWords(): void {
+    this.#cancelQuiet?.(); this.#cancelQuiet = undefined; this.#inputPending = true;
+    this.#spoken = false; this.#delegation = undefined;
+  }
+  finalized(words: string, ownerTurn: number): void {
+    this.#queuedWords = [this.#queuedWords, words].filter(Boolean).join(' ');
+    this.#queuedTurn = ownerTurn; this.#inputPending = true; this.#cancelQuiet?.();
+    const after = this.ports.after ?? ((ms: number, callback: () => void) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
+    this.#cancelQuiet = after(1_200, () => {
+      this.#cancelQuiet = undefined; const input = this.#queuedWords; this.#queuedWords = '';
+      const result = this.input(input, this.#queuedTurn);
+      this.#inputPending = false;
+      this.delivery.activity({ outputQuiet: this.#outputQuiet, ownerSpeaking: false });
+      void result.catch(() => {});
+    });
+  }
+  spoke(): void { this.#spoken = true; }
   input(words: string, ownerTurn: number): Promise<WorkerResult> {
     this.#answer = undefined;
     const { revision, result } = this.runtime.finalize(words, this.#generation, ownerTurn);
@@ -63,7 +90,8 @@ export class TaskCall {
   cancelFunctions(ids: readonly string[]): void { this.#functions = this.#functions.filter(call => !ids.includes(call.id)); }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
     if (input.ownerSpeaking) this.runtime.ownerSpeaking();
-    this.delivery.activity(input);
+    this.#outputQuiet = input.outputQuiet;
+    this.delivery.activity({ ...input, ownerSpeaking: input.ownerSpeaking || this.#inputPending });
   }
   reconnectAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     return this.delivery.waitingAnswer();
@@ -75,5 +103,5 @@ export class TaskCall {
       response: { status: value.answer.status, text: value.answer.text } }));
     if (this.ports.respond(this.#generation, responses) !== 'failed') this.#functions = [];
   }
-  close(): void { this.#closed = true; this.delivery.dispose(); this.runtime.close(); this.ports.working?.(false); }
+  close(): void { this.#closed = true; this.#cancelQuiet?.(); this.delivery.dispose(); this.runtime.close(); this.ports.working?.(false); }
 }

@@ -105,24 +105,6 @@ const QUEUE_LOG_INTERVAL_MS = 1_000;
 /** Turn taking: the owner's input episode ends after this much quiet on the input transcript. The episode closes
  *  the journal pair the host needs; it cuts nothing (ruling W1-R1). */
 const INPUT_EPISODE_QUIET_MS = 700;
-/** F10: on 10-30 eight windows were talked over and the model once finished the owner's sentence for him. His last
- *  words ending mid-thought (no terminal punctuation and a trailing preposition, article or conjunction) are a
- *  hesitation, not a finished turn, so the episode waits this much longer before the provider may answer. A clear
- *  sentence end keeps INPUT_EPISODE_QUIET_MS, and the bound is fixed, never open ended. */
-const INPUT_EPISODE_HESITATION_QUIET_MS = 1_600;
-/** The words that leave one thought open: a preposition, an article or a conjunction at the tail of the transcript. */
-const HESITATION_TAIL_WORDS: ReadonlySet<string> = new Set<string>([
-  'a', 'an', 'the', 'and', 'or', 'but', 'so', 'to', 'for', 'of', 'with', 'at', 'in', 'on', 'about', 'from', 'by',
-  'into', 'as', 'that', 'is', 'was', 'will', 'would', 'can', 'could', 'my', 'our', 'your', 'their', 'his', 'her',
-  'its', 'than', 'then', 'like', 'over', 'under', 'between', 'before', 'after',
-]);
-/** The owner's episode ends mid-thought: no terminal punctuation, and a word that leaves the sentence open. */
-export function hesitationOpen(words: string): boolean {
-  const tail = words.trim();
-  if (tail === '' || /[.!?]['"’”)]?$/u.test(tail)) return false;
-  const last = tail.split(/\s+/u).at(-1)?.toLowerCase().replace(/[^a-z']/gu, '') ?? '';
-  return HESITATION_TAIL_WORDS.has(last);
-}
 /** Audible silence: SPEAKING ends after this much output quiet with the local playback drained, and the 2000 ms
  *  presentation idle stays the semantic end of the turn. */
 const OUTPUT_SILENCE_MS = 500;
@@ -382,7 +364,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
 
 class Session implements LiveVoiceSession {
   private latestDelegationId: string | undefined;
-  private readonly commentaryCommands = new Map<string, string>();
+  private readonly commentaryCommands = new Map<string, string | null>();
   private readonly readiness = deferred<void>();
   private readonly completion = deferred<LiveVoiceOutcome>();
   readonly ready = this.readiness.promise;
@@ -465,7 +447,6 @@ class Session implements LiveVoiceSession {
   private episodeWords = '';
   /** LAT-1022: whether the quiet rule that ended the last input episode was the hesitation one, so the end-of-
    *  speech line names the rule that actually fired instead of the default. */
-  private episodeHesitation = false;
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -868,10 +849,7 @@ class Session implements LiveVoiceSession {
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
     const token = this.episodeToken + 1, epoch = this.socket;
     this.episodeToken = token;
-    // F10: a mid-thought tail earns the longer window, so a hesitation is not answered over.
-    const hesitation = hesitationOpen(this.episodeWords);
-    this.episodeHesitation = hesitation;
-    const quiet = hesitation ? INPUT_EPISODE_HESITATION_QUIET_MS : INPUT_EPISODE_QUIET_MS;
+    const quiet = INPUT_EPISODE_QUIET_MS;
     this.episodeQuiet = this.clock.setTimer(quiet, () => {
       if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
       this.endInputEpisode();
@@ -885,8 +863,7 @@ class Session implements LiveVoiceSession {
     // is stamped here, on the monotonic audio clock and on the wall clock beside it. The session and the turn are
     // the envelope's; the rule that fired is the only other field.
     hostLogEvent({ event: 'owner_speech_end', monoMs: Math.max(0, Math.round(this.clock.now())), wallMs: Date.now(),
-      reason: this.episodeHesitation ? 'hesitation' : 'quiet' });
-    this.episodeHesitation = false;
+      reason: 'quiet' });
     this.ownerTurnEnded();
   }
 
@@ -1308,8 +1285,8 @@ class Session implements LiveVoiceSession {
   sendCommentary(input: { text: string }): boolean {
     return this.latestDelegationId !== undefined && this.sendTaskAnswer({ ...input, delegationId: this.latestDelegationId }) !== undefined;
   }
-  sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
-    if (this.draining || this.terminal || !this.isReady || input.delegationId !== this.latestDelegationId) return undefined;
+  sendTaskAnswer(input: { text: string; delegationId: string | null }): string | undefined {
+    if (this.draining || this.terminal || !this.isReady || input.delegationId !== (this.latestDelegationId ?? null)) return undefined;
     if (!input.text.length || input.text.length > 450) return undefined;
     const commandId = this.commandId('cmt');
     if (!this.write(JSON.stringify({ type: 'session.commentary.append', event_id: commandId, delegation_id: input.delegationId, content: input.text }))) return undefined;

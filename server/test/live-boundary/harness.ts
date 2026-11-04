@@ -24,7 +24,7 @@ export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffec
     saveTaskDelivery: () => {},
     finishTask: () => true,
   } as unknown as Store;
-  const sent: { id: string; text: string; generation: number }[] = [];
+  const sent: { id: string | null; text: string; generation: number }[] = [];
   const states: string[] = [];
   let reconnects = 0;
   const call = new TaskCall({ provider: 'openai',
@@ -34,7 +34,7 @@ export function fixture(infer: Infer, execute?: ToolPorts["execute"], allowEffec
       execute: execute ?? (async () => { throw new Error('Unexpected connector I/O'); }),
     }),
     append: (generation, id, text) => { sent.push({ generation, id, text }); return `c${sent.length}`; },
-    respond: () => 'sent', reconnect: () => { reconnects++; return true; },
+    respond: () => 'sent',
     state: (_identity, state) => { states.push(state); },
   });
   call.socket(1);
@@ -84,7 +84,7 @@ export const cases: Record<string, () => Promise<void>> = {
   },
   async 'no-delegation'() {
     const f = fixture(async () => ({ text: 'Synthetic answer.', calls: [] }));
-    try { await f.call.input('Synthetic request', 1); equal(f.reconnects(), 1); equal(f.call.reconnectAnswer()?.text, 'Synthetic answer.'); }
+    try { await f.call.input('Synthetic request', 1); equal(f.reconnects(), 0); equal(f.sent[0]?.id, null); equal(f.call.reconnectAnswer()?.text, 'Synthetic answer.'); }
     finally { f.call.close(); }
   },
   async 'correction-during-wait'() {
@@ -120,10 +120,10 @@ export const cases: Record<string, () => Promise<void>> = {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
       equal(f.sent.length, 1); assert.notEqual(f.sent[0]?.text, text);
       for (let i = 0; i < f.sent.length; i++) {
-        const chunk = f.sent[i]!; f.call.delivery.accepted(`c${i + 1}`); f.call.delivery.transcript(chunk.text);
+        const chunk = f.sent[i]!; f.call.delivery.accepted(`c${i + 1}`);
       }
       assert.ok(f.sent.length > 1); equal(f.sent.map(s => s.text).join(' '), text);
-      assert.ok(f.states.includes('accepted')); assert.ok(f.states.includes('heard'));
+      assert.ok(f.states.includes('accepted')); equal(f.call.reconnectAnswer(), undefined);
     } finally { f.call.close(); }
   },
   async 'mic-pause'() {
@@ -145,7 +145,7 @@ export const cases: Record<string, () => Promise<void>> = {
       f.call.delivery.rejected('wrong-command'); equal(f.reconnects(), 0);
       f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
       f.call.delivery.rejected('c1'); assert.ok(f.states.includes('retry')); equal(f.sent.length, 2);
-      f.call.delivery.rejected('c2'); equal(f.reconnects(), 1);
+      f.call.delivery.rejected('c2'); equal(f.reconnects(), 0); assert.ok(f.states.includes('undelivered'));
       equal(f.states.includes('heard'), false);
     } finally { f.call.close(); }
   },

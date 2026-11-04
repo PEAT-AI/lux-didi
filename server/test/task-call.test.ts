@@ -20,13 +20,13 @@ import { TaskCall } from '../tasks/call.js';
 import type { Infer, Inference } from '../tasks/worker.js';
 function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai') {
   const directory = mkdtempSync(join(tmpdir(), 'task-call-synthetic-')), store = new Store(directory);
-  const sent: { id: string; text: string }[] = [], responses: unknown[] = []; let reconnects = 0;
+  const sent: { id: string | null; text: string }[] = [], responses: unknown[] = []; let reconnects = 0;
   const call = new TaskCall({ provider,
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer, contentAllowed: () => true,
       authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }), execute: async () => { throw new Error('unexpected fixture tool'); } }),
     append: (_generation, id, text) => { sent.push({ id, text }); return `c${sent.length}`; },
     respond: (_generation, values) => { responses.push(values); return 'sent'; },
-    reconnect: () => { reconnects++; return true; }, state: () => {},
+    state: () => {},
   });
   call.socket(1); t.after(() => { call.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { call, store, sent, responses, reconnects: () => reconnects };

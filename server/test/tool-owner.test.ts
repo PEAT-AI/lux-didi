@@ -396,7 +396,7 @@ test('canonical UTF8 JSON rejects unsupported data without accessors; array orde
 });
 
 test('actual reader defaults remain untouched; trusted typed restrictions constrain separate classified snapshot', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic' }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
   assert.equal(evidence.state, 'completed');
   if (evidence.state !== 'completed') return;
   assert.equal(evidence.classification, 'unknown'); assert.equal(evidence.capability, 'local-only');
@@ -412,7 +412,7 @@ test('actual reader defaults remain untouched; trusted typed restrictions constr
 });
 
 test('bounded complete slice reader denies expired, missing, partial, hash and source scope mismatches', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic' }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
   if (evidence.state !== 'completed') { assert.fail('nonempty fixture must complete'); }
   for (const state of ['expired', 'unavailable', 'refused'] as const) {
     assert.throws(() => projectLuxResult(evidence, policy(), { ...f.port, readSlice: () => ({ state, reason: 'synthetic' }) }));

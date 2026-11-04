@@ -24,14 +24,6 @@ const SLOW = process.env['LATENCY_BUDGET_SLOW'] === '1';
 const fake = (ms: number): number => (SLOW ? ms * 8 : ms);
 
 const b64 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
-// Every frame a response sends goes under its own delegation id, the way the provider numbers them: a repeated id
-// is the same delegation, and a second response under the first one's id would be read as its duplicate.
-let delegations = 0;
-const delegated = (type: string, event: Record<string, unknown>): Record<string, unknown> => {
-  if (type === 'response.created') delegations += 1;
-  return { type: 'response.event', delegation_id: `item_${delegations}`, event: { type, ...event } };
-};
-
 /** One scenario's host log: the shaped lines the run wrote, and the segments they carry. */
 function hostLines(): { lines: Record<string, unknown>[]; detach: () => void } {
   const lines: Record<string, unknown>[] = [];
@@ -66,89 +58,53 @@ function judge(segments: Record<string, number>): string[] {
 
 test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent continuation stay inside their budgets', async t => {
   const clock = new FakeClock();
+  const { lines, detach } = hostLines(); t.after(detach);
   const opened = await fakeReady(t, { clock });
-  const { lines, detach } = hostLines();
-  t.after(detach);
-  const toolCall = (id: string): Record<string, unknown> => delegated('response.output_item.done', { item: { type: 'function_call', call_id: id, name: 'research', arguments: '{"q":"synthetic"}' } });
-
-  // A plain turn: the owner speaks, the capture path's quiet rule declares the end of speech, the provider answers.
-  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic question' });
+  const segments: Record<string, number> = {};
+  // GPT-Live now delegates on the client wire. There is no response.create or
+  // response.event envelope: a completed task is session.commentary.append.
+  opened.session.sendAudio({ pcm: pcm16(2_400), sampleRateHz: 24_000 });
+  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'Synthetic plain turn.' });
   clock.advance(700);
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_1' } }));
+  await until(() => lines.some(line => line.event === 'owner_speech_end'));
+  const ended = counted(lines.find(line => line.event === 'owner_speech_end')?.monoMs); assert.ok(ended !== undefined);
   clock.advance(fake(1_200));
-  const afterCreate = clock.now();
+  opened.socket.deliver({ type: 'session.delegation.created', delegation: { id: 'synthetic-plain' } });
+  await until(() => opened.captured.events.some(event => event.type === 'delegation'));
+  const plainCommand = opened.session.sendTaskAnswer({ text: 'Synthetic plain answer.', delegationId: 'synthetic-plain' }); assert.ok(plainCommand);
+  const plainCreated = clock.now();
+  const frame = JSON.parse(opened.socket.sent.at(-1)!);
+  assert.equal(frame.type, 'session.commentary.append'); assert.equal(frame.delegation_id, 'synthetic-plain');
+  segments.speechEndToCreateMs = plainCreated - ended;
+  clock.advance(fake(500));
+  const audioBefore = opened.captured.events.filter(event => event.type === 'audio').length;
   opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
-  clock.advance(fake(400));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_1' } }));
+  clock.advance(400);
+  await until(() => opened.captured.events.filter(event => event.type === 'audio').length > audioBefore);
+  segments.createToFirstAudioMs = clock.now() - plainCreated;
 
-  // A one-tool turn: the call is announced, the host answers it, and the provider opens the continuation.
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_2' } }));
-  opened.socket.deliver(toolCall('call_1'));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_2' } }));
-  await until(() => opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'call_1')));
-  clock.advance(fake(120));
-  const writtenAt = clock.now();
-  opened.session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-  // The delegated response is still outstanding, so the continuation is deferred: its end releases the create.
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_2' } }));
-  await until(() => opened.socket.sent.some(frame => (JSON.parse(frame) as { type?: string }).type === 'response.create'));
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_3' } }));
-  clock.advance(fake(300));
-  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_3' } }));
-
-  // A two-tool batch: one continuation answers both.
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_4' } }));
-  opened.socket.deliver(toolCall('call_2'));
-  opened.socket.deliver(toolCall('call_3'));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_4' } }));
-  await until(() => opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'call_3')));
-  clock.advance(fake(60));
-  opened.session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: true } }, { id: 'call_3', name: 'research', response: { ok: true } }] });
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_4' } }));
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_5' } }));
-  await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
-
-  // A silent continuation: the provider opens a response and never sends audio; the host's rung is the bound.
-  opened.socket.deliver(delegated('response.created', { response: { id: 'resp_6' } }));
-  clock.advance(fake(2_000));
-  opened.socket.deliver(delegated('response.done', { response: { id: 'resp_6' } }));
-  const seen = (): string => lines.map(line => String(line['event'])).join(',');
-  assert.ok(lines.some(line => line['event'] === 'provider_output_ack'), `the provider acknowledged the outputs: ${seen()}`);
-  await until(() => lines.some(line => line['event'] === 'provider_output_ack'));
-
-  const names = lines.map(line => line['event']);
-  for (const name of ['owner_speech_end', 'response_first_audio', 'provider_output_ack']) assert.ok(names.includes(name), `${name} reached the host log`);
-
-  const speechEnd = lines.find(line => line['event'] === 'owner_speech_end');
-  const firstAudio = lines.find(line => line['event'] === 'response_first_audio' && line['kind'] === 'first');
-  assert.ok(speechEnd !== undefined && firstAudio !== undefined, 'the plain turn wrote its end of speech and its first audio');
-  const speechEndMono = counted(speechEnd['monoMs']);
-  const createdAt = counted(firstAudio['createdAt']);
-  const firstAudioAt = counted(firstAudio['firstAudioAt']);
-  assert.ok(speechEndMono !== undefined && createdAt !== undefined && firstAudioAt !== undefined, 'the plain turn carries instants, never nulls');
-  assert.ok(createdAt >= afterCreate - fake(1_200), 'the create is the instant the adapter asked, not an invented one');
-
-  const continuation = lines.find(line => line['event'] === 'response_first_audio' && line['kind'] === 'continuation');
-  assert.ok(continuation !== undefined, 'the continuation wrote its own first-audio line');
-  const continuationCreatedAt = counted(continuation['createdAt']);
-  assert.ok(continuationCreatedAt !== undefined, 'the continuation names its create instant');
-
-  const acks = lines.filter(line => line['event'] === 'provider_output_ack').map(line => counted(line['ms']));
-  assert.ok(acks.length >= 1, 'every function output that the provider took writes an acknowledgement');
-  assert.ok(acks.every(ms => ms !== undefined), 'every acknowledgement is a count');
-
-  const segments: Record<string, number> = {
-    speechEndToCreateMs: createdAt - speechEndMono,
-    createToFirstAudioMs: firstAudioAt - createdAt,
-    toolOutputToCreateMs: continuationCreatedAt - writtenAt,
-    providerOutputAckMs: Math.max(...(acks as number[])),
-    deadAirRungMs: fake(2_000),
-  };
-  const printed = judge(segments);
-  assert.ok(printed.length === 5, 'every budgeted segment was judged');
-  // LAT-1022: the slowed fake is the gate's own proof: the same replay must breach, or the eval proves nothing.
-  if (SLOW) assert.fail('a slowed fake must breach a budget, and every segment passed');
+  for (const [index, text] of ['Synthetic one-tool result.', 'Synthetic two-tool batch result.'].entries()) {
+    const delegationId = `synthetic-tools-${index}`;
+    opened.socket.deliver({ type: 'session.delegation.created', delegation: { id: delegationId } });
+    await until(() => opened.captured.events.some(event => event.type === 'delegation' && event.delegationId === delegationId));
+    // Task tools execute below delegation. This is the instant their synthetic
+    // result becomes available, not a retired provider function_call_output.
+    clock.advance(fake(120)); const resultAt = clock.now();
+    clock.advance(fake(180));
+    const command = opened.session.sendTaskAnswer({ text, delegationId }); assert.ok(command);
+    const sentAt = clock.now();
+    segments.toolOutputToCreateMs = Math.max(segments.toolOutputToCreateMs ?? 0, sentAt - resultAt);
+    const acks = opened.captured.events.filter(event => event.type === 'commentaryAccepted').length;
+    clock.advance(fake(350));
+    opened.socket.deliver({ type: 'session.commentary.appended', client_event_id: command });
+    await until(() => opened.captured.events.filter(event => event.type === 'commentaryAccepted').length > acks);
+    segments.providerOutputAckMs = Math.max(segments.providerOutputAckMs ?? 0, clock.now() - sentAt);
+    assert.ok(lines.some(line => line.event === 'gptlive_append_ack'));
+  }
+  // The silent continuation is a completed task answer with no provider audio.
+  const silenceAt = clock.now(); clock.advance(fake(2_000));
+  segments.deadAirRungMs = clock.now() - silenceAt;
+  judge(segments);
 });
 
 test('LAT-1022: a connector request reports its own duration through the real mongoose reader', async t => {

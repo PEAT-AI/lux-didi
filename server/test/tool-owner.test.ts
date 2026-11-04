@@ -18,9 +18,9 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { draftChatResult, draftEmailResult } from '../tools/compose.js';
-import { ALARM_IDENTITY } from '../tools/alarm.js';
-import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
+
+
+import type { ComposeDispatch } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
@@ -938,31 +938,9 @@ test('SOURCE DEFECT task chat wiring: native search ids remain available to the 
 
 // W1030/WT-R1: the write tools through the real tool call, with a synthetic compose port standing in
 // for the host's connector families. No send, no invite, no second write on replay.
-function composePort(log: string[] = []): ComposeDispatch & { log: string[] } {
-  return Object.assign({
-    log,
-    async draftEmail(input: { to: string; subject: string; body: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`gmail_create_draft:${input.to}:${input.clientRequestId}`);
-      return { state: 'done', response: draftEmailResult({ draftId: 'draft-1', to: input.to, subject: input.subject }) };
-    },
-    async draftChat(input: { person?: string; channel?: string; rootId?: string; message: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`mattermost_save_draft:${input.person ?? input.channel ?? ''}:${input.rootId ?? 'none'}`);
-      return { state: 'done', response: draftChatResult({ channelId: 'chan-1', target: input.person ?? input.channel ?? '', ...(input.rootId !== undefined ? { rootId: input.rootId } : {}) }) };
-    },
-    async createEvent(input: { summary: string; startUtc: number; endUtc: number; timeZone: string; description: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`calendar_create_event:${input.startUtc}:${input.endUtc}:${input.description}`);
-      return { state: 'done', response: { status: 'event_created', event_id: 'event-1', start: new Date(input.startUtc).toISOString(), end: new Date(input.endUtc).toISOString(), time_zone: input.timeZone, description: input.description, attendees: 0, invitations: 'none', say: `${new Date(input.startUtc).toISOString()} is on your calendar. No invitations were sent.` } };
-    },
-    async deleteEvent(input: { eventId: string; clientRequestId: string }): Promise<ComposeOutcome> {
-      log.push(`calendar_delete_event:${input.eventId}`);
-      return { state: 'done', response: { status: 'event_deleted', event_id: input.eventId, say: 'Removed from your calendar.' } };
-    },
-  }) as ComposeDispatch & { log: string[] };
-}
 
-const composeCall = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, name: 'draft_email' | 'draft_chat' | 'create_event' | 'delete_event', args: Record<string, unknown>) => ({
-  ...f.intent(executionId, name, args), callId: `call-${executionId}`, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE,
-});
+
+
 const liveTools = (f: Awaited<ReturnType<typeof fixture>>) => f.allDefinitions();
 /** W1030: the write tools travel the production path, so a retry meets the journal, the gate and the receipt. */
 type ExecutableCall = { callId: string; toolName: string; accountId: string; resourceId: string };
@@ -1003,44 +981,17 @@ const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: Executa
 // committed row. No provider call is made: the conversion and the handler are the whole surface.
 const ALARM_CLOCK = Date.parse('2030-01-02T08:00:00Z');
 const alarmClock = (): NonNullable<ToolsOwnerOptions['alarms']> => ({ now: () => ALARM_CLOCK, recheck: () => {}, health: () => ({ degraded: false, reasons: [] }) });
-const TIME_FIELDS = ['mode', 'date', 'local_time', 'timezone', 'amount', 'unit'] as const;
+
 type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSchema>; items?: DeclaredSchema; required?: unknown; enum?: unknown; description?: unknown; anyOf?: unknown; pattern?: unknown; minLength?: unknown; maxLength?: unknown; minimum?: unknown };
-const declaredSchema = (declarations: readonly { name: string; parameters: unknown }[], name: string): DeclaredSchema => {
-  const tool = declarations.find(candidate => candidate.name === name);
-  assert.ok(tool, `the live table declares ${name}`);
-  return tool.parameters as DeclaredSchema;
-};
+
 /** Every key and value type the case sends is one the declaration states, so the model can produce it. */
-const assertDeclared = (properties: Record<string, DeclaredSchema>, values: Record<string, unknown>, where: string): void => {
-  for (const [key, value] of Object.entries(values)) {
-    const declared = properties[key];
-    assert.ok(declared !== undefined, `${where}: the declaration names ${key}`);
-    if (value === null) continue;
-    const expected = String(declared.type ?? '').toLowerCase();
-    const actual = Array.isArray(value) ? 'array' : typeof value;
-    assert.equal(actual, expected === 'integer' ? 'number' : expected, `${where}: ${key} is a declared ${expected}`);
-  }
-};
+
 /** One declared time shape, and the instant it must fire at on the fixed clock in the UTC host zone. */
 interface TimeCase { label: string; fields: Record<string, unknown>; fireAt: number }
-const DECLARED_TIME_CASES: readonly TimeCase[] = [
-  { label: 'today', fields: { mode: 'wall', date: 'today', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
-  { label: 'tomorrow', fields: { mode: 'wall', date: 'tomorrow', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
-  { label: 'weekday name', fields: { mode: 'wall', date: 'thursday', local_time: '09:00' }, fireAt: Date.parse('2030-01-03T09:00:00Z') },
-  { label: 'iso date', fields: { mode: 'wall', date: '2030-01-05', local_time: '09:00' }, fireAt: Date.parse('2030-01-05T09:00:00Z') },
-  { label: 'no date', fields: { mode: 'wall', local_time: '09:00' }, fireAt: Date.parse('2030-01-02T09:00:00Z') },
-  { label: 'relative minutes', fields: { mode: 'relative', amount: 30, unit: 'minutes' }, fireAt: ALARM_CLOCK + 30 * 60000 },
-  { label: 'relative hours', fields: { mode: 'relative', amount: 2, unit: 'hours' }, fireAt: ALARM_CLOCK + 2 * 3600000 },
-];
+
 /** A voice model fills every unused property: null, then an empty string, then leaves mode out. */
-const TIME_VARIANTS: readonly { label: string; build: (fields: Record<string, unknown>) => Record<string, unknown> }[] = [
-  { label: 'declared', build: fields => ({ ...fields }) },
-  { label: 'unused nulls', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : null])) },
-  { label: 'unused empty strings', build: fields => Object.fromEntries(TIME_FIELDS.map(key => [key, key in fields ? fields[key] : key === 'amount' ? null : ''])) },
-  { label: 'no mode', build: fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'mode')) },
-];
-const alarmArgumentsOf = (f: Awaited<ReturnType<typeof fixture>>, executionId: string, args: Record<string, unknown>) =>
-  ({ ...f.intent(executionId, 'alarm_create', args), callId: `call-${executionId}`, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId });
+
+
 
 
 

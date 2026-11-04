@@ -239,11 +239,13 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
     globals.didiNativeSurfaceVisible = true;
     listeners.get('didi-surface-visibility')?.();
     assert.equal(published.length, 1, 'the native re-assert paints on the spot');
+    tick(TRANSITION_MS); // the re-asserted state's blend finishes, then nothing moves
+    const settled = published.length;
     tick(16);
     tick(16);
     // #865: those two frames change nothing, so the settled pill writes nothing; what ORB-107
     // needs here is that the loop is still alive and holding the next frame.
-    assert.equal(published.length, 1, 'a settled pill does not repaint an unchanged frame');
+    assert.equal(published.length, settled, 'a settled pill does not repaint an unchanged frame');
     assert.equal(queued.length, 1, 'and the loop still holds the next tick');
   } finally {
     stop();

@@ -653,16 +653,16 @@ selftest_checks() {
     || { echo 'COMBINED SELFTEST FAIL: a passing check was not reported as a pass' >&2; rm -rf "$fixture"; return 1; }
   grep -Eq '^\| total \| \| [0-9]+s \| \|$' "$summary" \
     || { echo 'COMBINED SELFTEST FAIL: the summary has no total duration row' >&2; rm -rf "$fixture"; return 1; }
-  grep -q '^COMBINED_TOTAL\tall\t[0-9]*$' "$timing" \
+  grep -q $'^COMBINED_TOTAL\tall\t[0-9]*$' "$timing" \
     || { echo 'COMBINED SELFTEST FAIL: no machine readable total was recorded' >&2; rm -rf "$fixture"; return 1; }
-  grep -q '^COMBINED_CHECK\t.*blocked.sh\tblocked\t[0-9]*$' "$timing" \
+  grep -q $'^COMBINED_CHECK\t.*blocked.sh\tblocked\t[0-9]*$' "$timing" \
     || { echo 'COMBINED SELFTEST FAIL: the blocked check was not recorded' >&2; rm -rf "$fixture"; return 1; }
   # The timing record carries the head, the base, the selected checks, the three counts, the total
   # and the machine's load average at both ends, so a slow check can be told from a loaded host.
-  for field in 'COMBINED_HEAD\thead\t.*' 'COMBINED_BASE\tbase\t.*' 'COMBINED_SELECTED\tcount\t3' \
-    'COMBINED_SELECTED\tnames\t.*pass.sh .*fail.sh .*blocked.sh *' 'COMBINED_COUNTS\tpass\t1' \
-    'COMBINED_COUNTS\tfail\t1' 'COMBINED_COUNTS\tblocked\t1' 'COMBINED_TOTAL\tall\t[0-9]*' \
-    'COMBINED_LOAD\tstart\t..*' 'COMBINED_LOAD\tend\t..*'; do
+  for field in $'COMBINED_HEAD\thead\t.*' $'COMBINED_BASE\tbase\t.*' $'COMBINED_SELECTED\tcount\t3' \
+    $'COMBINED_SELECTED\tnames\t.*pass.sh .*fail.sh .*blocked.sh *' $'COMBINED_COUNTS\tpass\t1' \
+    $'COMBINED_COUNTS\tfail\t1' $'COMBINED_COUNTS\tblocked\t1' $'COMBINED_TOTAL\tall\t[0-9]*' \
+    $'COMBINED_LOAD\tstart\t..*' $'COMBINED_LOAD\tend\t..*'; do
     grep -q "^$field\$" "$timing" \
       || { echo "COMBINED SELFTEST FAIL: the timing record is missing $field" >&2; rm -rf "$fixture"; return 1; }
   done

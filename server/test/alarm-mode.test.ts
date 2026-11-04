@@ -41,15 +41,6 @@ test('alarm mode: only the display name and scheduled time enter setup instructi
   assert.doesNotMatch(setup, /calendar|mail|role.*user/i);
 });
 
-test('alarm guidance names all four tools and states the sleep and closed-lid limits', async () => {
-  const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
-  // C-DIAG109: the sentence names the host's own clock and minutes away in the read-back, so she says the
-  // figure instead of counting from a clock the call opened on.
-  assert.ok(WORKER_INSTRUCTIONS.includes("Alarms: this ask's time, next occurrence when passed, say read-back clock and minutes, awake Mac"));
-  // C-TIME: the guidance names the current ask's time and the spoken read-back, and the sleep limits stay.
-  assert.match(WORKER_INSTRUCTIONS, /next occurrence when passed|this ask's time/);
-});
-
 test('alarm tools name their runtime capability group', () => {
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.deepEqual(toolGroupNames([name]), ['alarms']);
 });

@@ -255,3 +255,15 @@ test('C-SILENCE: recovery rejection waits for another event, not activity', asyn
   f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sent.length, 3);
   f.call.delegation('retry'); assert.equal(f.sent.length, 4);
 });
+
+test('SILENCE-R1: failed composition speaks plain findings with one incomplete clause', async t => {
+  let runs = 0;
+  const f = fixture(t, async () => {
+    if (++runs === 1) return { text: '', calls: ['first', 'second'].map(id => ({ id, name: 'search_knowledge', args: { query: `Synthetic ${id}` } })) };
+    throw new Error('Synthetic composition failure');
+  }, 'openai', undefined, async (_name, args) => ({ status: 'ok', text: `${(args as { query: string }).query} finding.`, references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
+  const answer = await f.call.input('Synthetic two sources', 1);
+  assert.equal(answer.status, 'incomplete');
+  assert.equal(answer.text, "I couldn't finish that request. Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
+  assert.doesNotMatch(answer.text, /\d+[.)]|\n/);
+});

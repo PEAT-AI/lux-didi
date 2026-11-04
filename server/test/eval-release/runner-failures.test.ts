@@ -4,14 +4,14 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadScenarios, type ReleaseScenario } from './plan.js';
-import { loadRecording } from './replay.js';
-import { runScenario } from './runner.js';
+import { loadRecording, replayServer } from './replay.js';
+import { runScenario, type BoundTimers } from './runner.js';
 import { recordingsDir, scenariosDir } from './locate.js';
 
 /**
  * Issue 884's failure paths, pinned. The old runner had no bound and no teardown, so a fixture that never answered
- * held the whole check open for as long as the wall allowed. These rows prove the opposite: each dead end ends by
- * name inside the scenario's bound, and the next scenario runs on a free socket.
+ * held the whole check open for as long as the wall allowed. These rows prove the opposite: every dead end ends by
+ * name inside the bound the runner sets, the fake provider is closed afterwards, and none of it waits on a real clock.
  */
 
 const scenarioOf = (id: string): ReleaseScenario => {
@@ -27,6 +27,20 @@ const recordingFor = (steps: readonly unknown[]) => {
   return loadRecording(path);
 };
 
+/**
+ * Time under the test's own hand: `now` only moves when the runner sleeps or arms a timer, so a bound is reached in a
+ * few steps and no row spends the timeout it is testing. Nothing here waits on the wall clock.
+ */
+const drivenBounds = (): BoundTimers => {
+  let now = 1_000_000;
+  return {
+    now: () => now,
+    setTimer: (ms, fire) => { now += Math.max(1, ms); queueMicrotask(fire); return ms; },
+    clearTimer: () => {},
+    tick: () => { now += 50; return Promise.resolve(); },
+  };
+};
+
 const STARTED = { trigger: 'start', frames: [{ type: 'session.started', session: { id: 'sess_failure' } }] };
 const DELEGATION = (helper?: unknown) => ({
   trigger: 'audio',
@@ -36,40 +50,51 @@ const DELEGATION = (helper?: unknown) => ({
 const ANSWER = { trigger: 'answer', audio_ms: 600, frames: [{ type: 'session.output_transcript.delta', delta: 'Tomorrow you have the design review at 3.' }] };
 const HELPER = { calls: [{ tool: 'calendar.read' }], answer: 'Tomorrow you have the design review at 3.' };
 
-test('a provider that never says it started fails readiness inside the bound', async () => {
-  // No `session.started`: readiness never settles, which is the exact wall the old runner waited on forever.
+test('readiness that never settles fails on the runner bound, by name, without waiting it out', async () => {
+  // No `session.started`: readiness never settles, which is the wall the old runner waited on forever.
   const recording = recordingFor([{ trigger: 'start', frames: [{ type: 'session.usage.updated' }] }, DELEGATION(HELPER), ANSWER]);
   const at = Date.now();
-  await assert.rejects(runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300 }));
-  const elapsed = Date.now() - at;
-  assert.ok(elapsed < 5_000, `readiness took ${elapsed} ms, so it is not bounded by the scenario timeout`);
+  await assert.rejects(
+    runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds() }),
+    /^Error: eval timeout: waited 300 ms for the session to be ready$/,
+  );
+  const wall = Date.now() - at;
+  assert.ok(wall < 300, `the bound took ${wall} ms of wall clock, so the seam did not reach it`);
 });
 
-test('a recording that never serves its answer ends red, by name', async () => {
+test('a recording that never serves its answer ends red, by name, without waiting it out', async () => {
   const recording = recordingFor([STARTED, DELEGATION(HELPER)]);
   const at = Date.now();
-  const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300 });
+  const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds() });
   assert.equal(outcome.pass, false);
   assert.ok(outcome.reasons.includes('turn_not_answered:0'), outcome.reasons.join('; '));
   assert.ok(outcome.reasons.includes('spoken_missing:design review'), outcome.reasons.join('; '));
-  const elapsed = Date.now() - at;
-  assert.ok(elapsed < 5_000, `the unanswered turn took ${elapsed} ms, so the wait is not bounded`);
+  const wall = Date.now() - at;
+  assert.ok(wall < 300, `the unanswered turn took ${wall} ms of wall clock, so the bound was waited out`);
 });
 
 test('a delegation the fixture does not staff is named, not waited out', async () => {
   const recording = recordingFor([STARTED, DELEGATION(), ANSWER]);
-  const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300 });
+  const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds() });
   assert.equal(outcome.pass, false);
   assert.ok(outcome.reasons.includes('delegation_unfixtured'), outcome.reasons.join('; '));
 });
 
-test('a failed scenario releases the socket, so the next one passes', async () => {
-  const broken = recordingFor([STARTED, DELEGATION(HELPER)]);
-  const failed = await runScenario({ scenario: scenarioOf('calendar-split'), recording: broken, timeoutMs: 300 });
-  assert.equal(failed.pass, false);
+test('a failed scenario closes the fake provider it opened', async () => {
+  const recording = recordingFor([STARTED, DELEGATION(HELPER)]);
+  const replay = await replayServer(recording);
+  assert.equal(replay.closed(), false, 'the fake provider is open before the run');
+  const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds(), replay });
+  assert.equal(outcome.pass, false, 'the unanswered turn is the failure under test');
+  assert.equal(outcome.release.replayClosed, true, 'teardown reports the provider closed');
+  assert.equal(replay.closed(), true, 'the handle itself is closed, not merely abandoned');
+});
+
+test('a passing scenario closes the fake provider it opened', async () => {
   const scenario = scenarioOf('calendar-split');
-  const good = await runScenario({
-    scenario, recording: loadRecording(join(recordingsDir(), scenario.recording)), timeoutMs: 8_000,
-  });
-  assert.equal(good.pass, true, good.reasons.join('; '));
+  const replay = await replayServer(loadRecording(join(recordingsDir(), scenario.recording)));
+  const outcome = await runScenario({ scenario, recording: loadRecording(join(recordingsDir(), scenario.recording)), replay });
+  assert.equal(outcome.pass, true, outcome.reasons.join('; '));
+  assert.equal(outcome.release.replayClosed, true, 'teardown reports the provider closed');
+  assert.equal(replay.closed(), true, 'the handle itself is closed after a pass');
 });

@@ -94,6 +94,9 @@ export interface Replay {
   readonly totalSteps: () => number;
   /** The work the fixture's helper does for the delegation just served, taken once: undefined means unfixtured. */
   readonly takeDelegation: () => HelperWork | undefined;
+  /** Observed teardown: whether the server closed, and whether the deadline had to terminate a peer. */
+  readonly closed: () => boolean;
+  readonly forced: () => boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -112,6 +115,8 @@ export async function replayServer(recording: Recording): Promise<Replay> {
 
   let started = false;
   let delegated: HelperWork | undefined;
+  let closed = false;
+  let forcedClose = false;
   const next = (trigger: ReplayTrigger): void => {
     const step = queue.shift();
     if (step === undefined || step.trigger !== trigger) { queue.unshift(...(step === undefined ? [] : [step])); return; }
@@ -154,11 +159,16 @@ export async function replayServer(recording: Recording): Promise<Replay> {
     totalSteps: () => total,
     takeDelegation: () => { const work = delegated; delegated = undefined; return work; },
     // C-EVALS: teardown is forced, never a wait on another process's goodwill. A peer that does not finish the
-    // close handshake is terminated, so this resolves for any adapter state and cannot hold the check open.
+    // close handshake is terminated after the deadline, so this resolves for any adapter state.
     close: async () => {
       peer?.close(1000, 'replay done');
-      const deadline = setTimeout(() => { for (const client of server.clients) client.terminate(); }, CLOSE_DEADLINE_MS);
-      try { await new Promise<void>(resolve => server.close(() => resolve())); } finally { clearTimeout(deadline); }
+      const deadline = setTimeout(() => {
+        forcedClose = true;
+        for (const client of server.clients) client.terminate();
+      }, CLOSE_DEADLINE_MS);
+      try { await new Promise<void>(resolve => server.close(() => resolve())); } finally { clearTimeout(deadline); closed = true; }
     },
+    closed: () => closed,
+    forced: () => forcedClose,
   };
 }

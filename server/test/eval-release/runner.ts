@@ -14,7 +14,7 @@ import type { EvalCase } from '../../eval/types.js';
 import { fakeWorld, type FakeWorld, type ToolMap } from '../../eval/world.js';
 import { synthUtterance } from './audio.js';
 import { unsupportedClaims, type Receipt } from './judge.js';
-import { replayServer, type Recording } from './replay.js';
+import { replayServer, type Recording, type Replay } from './replay.js';
 import type { ReleaseScenario, ScenarioTurn } from './plan.js';
 
 export function loadToolMap(path: string): ToolMap {
@@ -77,6 +77,8 @@ export interface ScenarioRun {
   readonly spoken: string;
   readonly receipts: readonly Receipt[];
   readonly events: number;
+  /** What teardown did to the fake provider, read off the handle itself rather than assumed. */
+  readonly release: { readonly replayClosed: boolean; readonly replayForced: boolean };
 }
 
 export interface RunScenarioOptions {
@@ -84,7 +86,27 @@ export interface RunScenarioOptions {
   readonly recording: Recording;
   /** A guard against a hung replay: the fake provider answers at once, so this never fires in practice. */
   readonly timeoutMs?: number;
+  /** A test seam: the timers every bound is measured with, so a bound is exercised without waiting it out. */
+  readonly bounds?: BoundTimers;
+  /** A test seam: the caller keeps the replay handle and can observe what teardown did to it. */
+  readonly replay?: Replay;
 }
+
+/** The timers a scenario's bounds are measured with. The default is the wall clock; a test supplies its own. */
+export interface BoundTimers {
+  readonly now: () => number;
+  readonly setTimer: (ms: number, fire: () => void) => unknown;
+  readonly clearTimer: (handle: unknown) => void;
+  /** One step of a polling wait: the wall clock sleeps a millisecond, a test seam advances its own time. */
+  readonly tick: () => Promise<void>;
+}
+
+const WALL_TIMERS: BoundTimers = {
+  now: () => Date.now(),
+  setTimer: (ms, fire) => setTimeout(fire, ms),
+  clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  tick: () => new Promise(resolve => { setTimeout(resolve, 1); }),
+};
 
 /** 100 ms of synthetic tone per fragment: the owner's uplink, standing in for an ask nobody actually spoke. */
 const ASK_PCM = synthUtterance(2_400);
@@ -119,12 +141,13 @@ function drivenClock(): LiveVoiceClock & { fireNext: () => boolean } {
 export async function runScenario(options: RunScenarioOptions): Promise<ScenarioRun> {
   const { scenario, recording } = options;
   const timeoutMs = options.timeoutMs ?? 20_000;
+  const bounds = options.bounds ?? WALL_TIMERS;
   const toolMap = loadToolMap(new URL('../../eval/tool-map.json', import.meta.url).pathname);
   const declared = declaredNames(toolMap);
   const t0 = Date.parse(scenario.clock_T0);
   const env = alarmWorld(t0);
   const world: FakeWorld = fakeWorld({ case: evalCaseOf(scenario), clock: { now: () => Date.now() }, alarms: env.world, toolMap });
-  const replay = await replayServer(recording);
+  const replay = options.replay ?? await replayServer(recording);
   const clock = drivenClock();
   const receipts: Receipt[] = [];
   const reasons: string[] = [];
@@ -141,9 +164,10 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
     try {
       session?.close();
       if (pump !== undefined) {
-        try { await settle(timeoutMs, pump, 'the event pump to end after close'); } catch { reasons.push('pump_never_ended'); }
+        // Teardown is socket work, so its bound is the wall clock: the scenario bound is the one a test seam drives.
+        try { await settle(WALL_TIMERS, CLOSE_TIMEOUT_MS, pump, 'the event pump to end after close'); } catch { reasons.push('pump_never_ended'); }
       }
-      try { await settle(CLOSE_TIMEOUT_MS, replay.close(), 'the replay socket to close'); } catch { reasons.push('replay_close_bounded'); }
+      try { await settle(WALL_TIMERS, CLOSE_TIMEOUT_MS, replay.close(), 'the replay socket to close'); } catch { reasons.push('replay_close_bounded'); }
     } finally {
       env.world.close();
     }
@@ -186,7 +210,7 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
       }
     })();
 
-    await settle(timeoutMs, live.ready, 'the session to be ready');
+    await settle(bounds, timeoutMs, live.ready, 'the session to be ready');
     // The adapter is audio-only after readiness (`client mode is audio-only`, openai-live-voice.test.ts): a typed
     // ask is refused, so each fragment goes up the same uplink a microphone uses. The scenario's text is the ask the
     // synthetic tone stands for; what a row proves is the adapter and the fixture contract over that ask, not the
@@ -195,9 +219,9 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
     for (const [at, turn] of turns.entries()) {
       // A split final is one ask: every fragment goes up in the same synchronous burst, exactly as a transcript splits.
       for (let fragment = 0; fragment < turn.fragments.length; fragment += 1) live.sendAudio({ pcm: ASK_PCM, dataClass: 'ordinary' });
-      if (!await waitFor(() => state.finished > at || reasons.length > 0, timeoutMs, clock)) reasons.push(`turn_not_answered:${at}`);
+      if (!await waitFor(() => state.finished > at || reasons.length > 0, timeoutMs, clock, bounds)) reasons.push(`turn_not_answered:${at}`);
     }
-    if (!await waitFor(() => replay.servedCount() >= replay.totalSteps(), timeoutMs)) reasons.push('recording_not_served');
+    if (!await waitFor(() => replay.servedCount() >= replay.totalSteps(), timeoutMs, undefined, bounds)) reasons.push('recording_not_served');
   } finally {
     await release();
   }
@@ -216,28 +240,29 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
   for (const mustNot of scenario.expect.spoken_must_not ?? []) if (state.spoken.toLowerCase().includes(mustNot.toLowerCase())) reasons.push(`spoken_forbidden:${mustNot}`);
   reasons.push(...unsupportedClaims({ spoken: state.spoken, receipts }));
 
-  return { id: scenario.id, pass: reasons.length === 0, reasons, calls, spoken: state.spoken, receipts, events: state.events };
+  return { id: scenario.id, pass: reasons.length === 0, reasons, calls, spoken: state.spoken, receipts, events: state.events,
+    release: { replayClosed: replay.closed(), replayForced: replay.forced() } };
 }
 
 /** Bounded wait on a condition the fake provider settles at once: every round drains the socket and fires the
  * adapter's next timer, so a turn that never ends fails by name instead of hanging. */
 async function waitFor(
-  condition: () => boolean, timeoutMs: number, clock?: { fireNext: () => boolean },
+  condition: () => boolean, timeoutMs: number, clock: { fireNext: () => boolean } | undefined, bounds: BoundTimers,
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = bounds.now() + timeoutMs;
   while (!condition()) {
-    if (Date.now() > deadline) return false;
-    await new Promise<void>(resolve => setTimeout(resolve, 1));
+    if (bounds.now() > deadline) return false;
+    await bounds.tick();
     if (clock !== undefined && !condition()) clock.fireNext();
   }
   return true;
 }
 
 /** A bounded await: a fixture that never settles fails the run by name instead of hanging the check. */
-async function settle<T>(timeoutMs: number, pending: Promise<T>, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+async function settle<T>(bounds: BoundTimers, timeoutMs: number, pending: Promise<T>, what: string): Promise<T> {
+  let timer: unknown;
   const wall = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`eval timeout: waited ${timeoutMs} ms for ${what}`)), timeoutMs);
+    timer = bounds.setTimer(timeoutMs, () => reject(new Error(`eval timeout: waited ${timeoutMs} ms for ${what}`)));
   });
-  try { return await Promise.race([pending, wall]); } finally { clearTimeout(timer); }
+  try { return await Promise.race([pending, wall]); } finally { bounds.clearTimer(timer); }
 }

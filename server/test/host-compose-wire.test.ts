@@ -283,9 +283,11 @@ for (const scenario of [
 ]) test(`SOURCE DEFECT task wiring: ${scenario.name} reaches its configured write child`, async t => {
   const h = await host(t, pid => configured(pid));
   ownerTools(h); // Establish the accepted connection snapshot before task work.
-  const runtime = taskRuntime(h); t.after(() => runtime.close());
+  const runtime = taskRuntime(h);
+  try {
   const revision = runtime.begin(scenario.words, 1);
   const result = await runtime.runTool(scenario.name, scenario.args, { ...revision.identity, operation_id: 'synthetic-write-operation' }, new AbortController().signal);
   assert.equal(result.status, 'ok', `The configured ${scenario.name} must execute, not merely appear in the registry: ${result.repair ?? ''}`);
   assert.equal(toolNames(h.pid(scenario.family)).filter(name => name === scenario.native).length, 1, 'one task operation produces exactly one native write');
+  } finally { runtime.close(); }
 });

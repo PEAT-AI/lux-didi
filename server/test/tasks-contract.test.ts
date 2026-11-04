@@ -24,7 +24,7 @@ test('ranked no match does not present neighbours as matches or open them', () =
   assert.equal(rankedResult('Orchid', []).status, 'empty');
   assert.ok(failed('Try a different id.').repair);
 });
-test('strict provider arguments survive validation and executor null translation uses one authority port', async () => {
+test('SOURCE DEFECT task declaration: strict provider parameters must require every field including nullable recurrence', async () => {
   const calls: unknown[] = [];
   const authority = new FakeAuthority();
   const registry = createRegistry({ execute: async (name, args) => { calls.push({ name, args }); return documentResult('done', 'fixture'); }, authority });

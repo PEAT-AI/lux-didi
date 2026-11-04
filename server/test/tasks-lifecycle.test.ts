@@ -143,16 +143,16 @@ test('controller captures host owner turn and immediately preceding task words',
 
 
 for (const mode of ['inference failure', 'deadline expiry', 'no action'] as const) test(`R24 EF6: partial evidence with ${mode} is honest and no_action stays silent`, async () => {
-  let now = 0, inferred = 0;
+  let now = 0, inferred = 0, expireRevision = () => {};
   const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => {
-    if (mode === 'deadline expiry') now = 36001;
     return documentResult('Verified partial synthetic finding.', 'synthetic-read');
   } });
   const result = await runWorker({ registry, identity: { task_id: 'partial-fixture', task_revision: 1, connection_generation: 1 },
     input: 'Read the synthetic source', signal: new AbortController().signal,
-    clock: { now: () => now, timer: () => () => {} }, infer: async () => {
+    clock: { now: () => now, timer: (callback, ms) => { if (ms === 36000) expireRevision = callback; return () => {}; } }, infer: async () => {
       if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_knowledge', args: { query: 'synthetic' } }] };
       if (mode === 'no action') return { text: '', calls: [], no_action: true };
+      if (mode === 'deadline expiry') { now = 36001; expireRevision(); return { text: '', calls: [] }; }
       throw Error('synthetic inference failure');
     } });
   assert.equal(result.findings.length, 1); assert.match(result.findings[0]!.text, /Verified partial synthetic finding/);

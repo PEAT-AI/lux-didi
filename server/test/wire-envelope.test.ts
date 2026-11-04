@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -118,7 +119,7 @@ test('every host-note emitter in the shipped live host is registered and covered
   for (const row of EMITTERS) {
     assert.ok(row.covers.length > 0, `${row.expression} names the test that covers it`);
     for (const cover of row.covers) {
-      const source = readFileSync(new URL(`../../test/${cover.file}`, import.meta.url), 'utf8');
+      const source = readFileSync(process.env['DIDI_TEST_SOURCE_ROOT'] ? join(process.env['DIDI_TEST_SOURCE_ROOT'], cover.file) : new URL(`../../test/${cover.file}`, import.meta.url), 'utf8');
       assert.ok(source.includes(`test('${cover.title}'`) || source.includes('test(`' + cover.title + '`'), `${row.expression} is covered by ${cover.file}: ${cover.title}`);
     }
   }

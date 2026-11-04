@@ -136,7 +136,7 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
-  assert.equal(response['sourceVersion'], 'unknown'); assert.equal(JSON.stringify(response).includes('synthetic-token'), false);
+  assert.equal(response['sourceVersion'], undefined, 'host provenance is not a model-supplied source version'); assert.equal(JSON.stringify(response).includes('synthetic-token'), false);
   assert.equal(JSON.stringify(response).includes('private:synthetic-reference'), false);
   const again = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(again.status, 'uncertain'); assert.equal(f.calls.length, 1);
@@ -208,7 +208,7 @@ test('persisted disable survives reopen and stale projected registry grants cann
   // Even a stale external projection restored after revoke is not authority.
   f.registry.enable('endpoint'); f.registry.observed('endpoint', tools, f.registry.revision('endpoint'));
   f.registry.approve({ ...oldGrant, generation: 3 });
-  assert.throws(() => f.owner.journal.intent(f.intent()), /policy/);
+  await assert.rejects(f.execute(), /task_source_policy_denied/);
   assert.equal(f.calls.length, 1, 'stale dispatch did not add a connector invocation');
   const reopened = f.reopen();
   assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused');
@@ -283,23 +283,31 @@ test('result ref, execution/name/call/scope/hash binding and detached immutable 
   assert.equal(after.state, 'allowed'); if (after.state === 'allowed') assert.equal(after.results[0]!.response['text'], 'nonempty synthetic α insight');
 });
 
-test('search/get strict arguments, provenance and requested IDs remain unverified', async t => {
+test('task search/read strict arguments keep requested ids distinct from verified provenance', async t => {
   const f = await fixture(t);
   const search = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   assert.equal(search.parameters['additionalProperties'], false);
-  assert.equal(search.validate({ query: 'x', limit: 4 }), false); assert.equal(search.validate({ query: 'x', limit: 1, account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x', limit: 1 }), true);
-  const args = { ids: [13, 7] }; const call = { ...f.intent('run:1:1', 'get_insight', args as never), callId: 'get' };
-  f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(d => d.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
-  assert.equal(outcome.status, 'completed'); assert.deepEqual(f.calls[0]!.arguments, { ids: [13, 7], include_links: false });
-  if (outcome.status !== 'completed') return;
-  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
-  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') return;
-  const value = gate.results[0]!.response;
-  assert.deepEqual(value['requestedIds'], [13, 7]); assert.equal(value['requestedIdsVerified'], false);
-  assert.deepEqual(value['coverage'], { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' });
-  assert.equal((value['source'] as Record<string, unknown>)['account'], 'account');
+  assert.equal(search.validate({ query: 'x', limit: 4 }), false);
+  assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
+  assert.equal(search.validate({ query: 'x' }), true);
+  const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
+  assert.equal(read.validate({ ids: [13, 7] }), false, 'a task read opens one typed id, not a retired native batch schema');
+  assert.equal(read.validate({ id: '13', cursor: null, account: 'foreign' }), false);
+  for (const [index, id] of [13, 7].entries()) {
+    const args = { id: String(id), cursor: null };
+    const call = { ...f.intent(`run:read:${index}`, 'read_knowledge', args), callId: `read-${index}` };
+    f.owner.journal.intent(call);
+    const outcome = await read.execute(args, { ...call, signal: f.signal });
+    assert.equal(outcome.status, 'completed');
+    assert.deepEqual(f.calls[index]!.arguments, { ids: [id], include_links: false });
+    if (outcome.status !== 'completed') throw Error('typed read did not complete');
+    const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+    assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('typed read delivery refused');
+    const value = gate.results[0]!.response;
+    assert.notEqual(value['requestedIdsVerified'], true, 'the requested id is never evidence the source verified its identity');
+    assert.equal(typeof value['coverage'], 'string', 'the task result states its bounded coverage');
+    assert.equal(JSON.stringify(value).includes('private:synthetic-reference'), false);
+  }
 });
 
 for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} is not an executable connection approval`, async t => {
@@ -318,11 +326,13 @@ for (const [label, result, memoryBytes] of [
 ] as const) test(`honest bounded Lux ${label} outcome`, async t => {
   const f = await fixture(t, { result, memoryBytes }); f.owner.journal.intent(f.intent());
   const outcome = await f.execute();
-  assert.equal(outcome.status, label === 'empty-valid' ? 'completed' : 'failed');
-  if (outcome.status === 'completed') {
-    const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
+  assert.equal(outcome.status, 'completed', 'the task envelope completed, not necessarily the connector action');
+  const state = f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.state;
+  assert.equal(state, label === 'empty-valid' ? 'completed' : 'failed', 'failed source reads must remain failed durable calls');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
+  if (label === 'empty-valid') {
     assert.equal(gate.state, 'allowed'); if (gate.state === 'allowed') assert.equal(gate.results[0]!.response['text'], '');
-  }
+  } else assert.equal(gate.state, 'refused', 'an unsupported or unbounded source result is never delivered');
 });
 
 test('abort before dispatch is zero calls; forwarded abort after remote dispatch remains unknown and late completion denied', async t => {

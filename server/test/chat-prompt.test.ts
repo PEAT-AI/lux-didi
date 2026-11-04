@@ -105,7 +105,7 @@ test('C-CHAT: a missing capability remains a failure instead of a stock line to 
 });
 
 test('C-PROMPT 10.11: the helper picks the source that answers and stops, and leaves conversation to her', () => {
-  assert.match(WORKER_INSTRUCTIONS, /She says what you write in her own voice/);
+  assert.match(WORKER_INSTRUCTIONS, /She speaks what you write, so you decide what he hears/);
   assert.match(WORKER_INSTRUCTIONS, /returns no_action, so that she answers it herself/);
   assert.match(WORKER_INSTRUCTIONS, /start with the smallest set that can answer it/);
   assert.match(WORKER_INSTRUCTIONS, /Stop as soon as the answer or action is verified/);

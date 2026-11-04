@@ -3151,7 +3151,7 @@ export class LiveSessionOwner {
       // answer it already has in hand (a pending tool result, an answer still owed) is never ambient, however long
       // the filler it filed was: the pickup answers his ask and never reopens on a seed line.
       return muteRebuildTrigger({
-        owesAnswer: handle.awaitingAnswer || handle.unspoken !== undefined || handle.answerAt !== undefined,
+        owesAnswer: handle.awaitingAnswer || handle.answerAt !== undefined,
         ownerWordsSinceModelOutput: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
         ackAnsweredOwner: this.#ackAnsweredOwner(handle.liveSessionId),
       });
@@ -3249,7 +3249,6 @@ export class LiveSessionOwner {
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
-    const unspokenOpening = handle.unspoken !== undefined;
     // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
     // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
     const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
@@ -3268,9 +3267,7 @@ export class LiveSessionOwner {
     const base = structuredClone(handle.request);
     delete base.openingText;
     const request = path === 'fresh_seeded'
-      ? { ...base, history: seed.turns, ...(unspokenOpening
-        ? { opening: 'model_first' as const }
-        : handle.quietRebuild ? { opening: 'user_first' as const }
+      ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...base, resumptionHandle: savedHandle as string };
     const taskSeed = handle.tasks?.reconnectAnswer();
@@ -3281,11 +3278,11 @@ export class LiveSessionOwner {
     }
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
-    if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
+    if (handle.quietRebuild) delete request.openingText;
     // C-PICKUP: the recovery line names the pickup this request really opens with, never the one its reason
     // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
     handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
-      : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
+      : handle.quietRebuild ? 'quiet' : 'connection';
     // G3: this session opens on the host's own line, so its first speech is the opener and never the answer to
     // the owner's ask. The flag falls when the owner's own words arrive, which is the turn the ask really opens.
     handle.openingTurn = request.openingText !== undefined || request.opening === 'model_first';

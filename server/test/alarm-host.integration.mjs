@@ -165,9 +165,12 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   assert.match(await call('snooze_alarm', { id: String(due.id) }, staleSnooze), /failed/, 'replacement for snooze phrase expiry: stale revision cannot snooze');
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   await owner('snooze my alarm for five minutes');
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /"status":"ok"/);
-  assert.equal(rows().find(row => row.id === due.id).state, 'pending', 'task snooze reschedules the same alarm');
+  const snoozed = JSON.parse(await call('snooze_alarm', { id: String(due.id) }));
+  assert.equal(snoozed.status, 'ok');
+  assert.equal(rows().find(row => row.id === due.id).state, 'done', 'snooze finishes the rung occurrence');
   const next = rows().find(row => row.state === 'pending');
+  assert.notEqual(next.id, due.id, 'snooze creates a fresh occurrence for its speech attempt');
+  assert.equal(JSON.parse(snoozed.text).id, next.id, 'the task returns the new occurrence ID');
   assert.equal(next.fire_at_utc, now + 300000);
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {});
   peer.terminate();
@@ -275,6 +278,30 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   assert.ok(stopped.body.data.cancelled >= 2);
   assert.equal(rows().find(row => row.id === outageAlarm.id).state, 'cancelled', 'ringing stops outside a call');
   assert.equal(rows().find(row => row.id === 'operator-pending').state, 'cancelled');
+  await owner('wake me in one minute');
+  const followCreated = JSON.parse(await call('set_alarm'));
+  assert.equal(followCreated.status, 'ok');
+  const followId = JSON.parse(followCreated.text).id;
+  now += 60000;
+  await post('/api/v1/alarms/recheck', { reason: 'clock_changed' });
+  const { insertAlarmSeries, linkAlarmOccurrence } = await import(pathToFileURL(join(serviceRoot, 'dist/tools/alarm.js')));
+  host.store.transaction(tx => {
+    insertAlarmSeries(tx, { id: followId, rule: { kind: 'daily', hour: 8, minute: 0, tz: 'UTC' }, label: 'Synthetic repeat', createdJournalId: 'synthetic-repeat' });
+    linkAlarmOccurrence(tx, followId, followId);
+  });
+  await owner('snooze my alarm for five minutes');
+  const followSnooze = JSON.parse(await call('snooze_alarm', { id: followId }));
+  assert.equal(followSnooze.status, 'ok');
+  const followNextId = JSON.parse(followSnooze.text).id;
+  assert.notEqual(followNextId, followId);
+  assert.equal(host.store.transaction(tx => tx.get('SELECT series_id FROM alarm_occurrences WHERE alarm_id=?', [followNextId])).series_id, followId);
+  await owner('snooze my alarm for five minutes');
+  const pendingUpdate = JSON.parse(await call('snooze_alarm', { id: followNextId }));
+  assert.equal(pendingUpdate.status, 'ok');
+  assert.equal(JSON.parse(pendingUpdate.text).id, followNextId, 'a pending occurrence stays a plain update');
+  await owner('cancel my alarm');
+  assert.match(await call('cancel_alarm', { id: JSON.parse(pendingUpdate.text).id }), /cancelled/);
+  assert.equal(rows().find(row => row.id === followNextId).state, 'cancelled', 'the returned snooze ID supports later cancellation');
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   // #107: the alarm block reaching the provider is its own event, and each route names its mode.

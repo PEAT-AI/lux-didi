@@ -595,8 +595,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, zone, label!, context.identity!.task_id]);
             if (rule) linkAlarmOccurrence(tx, id, id);
           } else {
-            id = pendingOccurrenceOf(tx, id) ?? id;
-            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
+            const eligible = "SELECT * FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (?='update' AND state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)";
+            const occurrence = tx.get(eligible, [id, action, now]);
+            if (!occurrence) id = pendingOccurrenceOf(tx, id) ?? id;
+            const row = occurrence ?? tx.get(eligible, [id, action, now]);
             if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.', listPendingAlarms(tx));
             if (action === 'cancel') {
               tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
@@ -610,7 +612,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 if (series) tx.run('UPDATE alarm_series SET rule_kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
                 else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
               } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
+              if (at !== undefined && row.state !== 'pending') {
+                const previous = id;
+                const occurrenceSeries = alarmSeriesOfOccurrence(tx, previous);
+                id = `alarm_${createHash('sha256').update(`${context.identity!.task_id}:${context.identity!.operation_id}`).digest('hex')}`;
+                tx.run("UPDATE alarms SET state='done' WHERE id=?", [previous]);
+                tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at, rule?.tz ?? String(row.tz), label ?? String(row.label), context.identity!.task_id]);
+                tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [previous, id]);
+                if (occurrenceSeries) linkAlarmOccurrence(tx, id, occurrenceSeries.id);
+              } else {
               tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? (at === undefined ? String(row.tz) : zone), id]);
+              }
             }
           }
           const readBack = at === undefined ? undefined : alarmReadBack(at, zone);

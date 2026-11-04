@@ -135,7 +135,7 @@ export interface ToolsOwner {
   taskIntent(context: import('../adapters/model/types.js').ExecutionContext, name: string, args: JsonObject): ToolCallIntent;
   taskExecutors(sessionId: string): import('../tasks/connectors.js').ExistingExecutors;
   closeTaskCall(sessionId: string): void;
-  taskBindings(connectionIds: readonly string[]): { connector: string; reader: import('../connectors/index.js').ConnectorReader; policy: ConnectionPolicy }[];
+  taskBindings(connectionIds: readonly string[]): import('../tasks/connectors.js').BoundConnector[];
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;

@@ -136,7 +136,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (!finished) throw Error('no terminal snapshot');
     return { run: finished, events };
   };
-  return { ...f, dir, chat, owner, registry, sourceRequests, responseEntities, sourceProofs, exactMail: (id: string) => { mailId = id; }, canonicalSource: () => { canonicalSource = true; }, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
+  return { ...f, dir, chat, owner, registry, sourceRequests, sourceProofs, exactMail: (id: string) => { mailId = id; }, canonicalSource: () => { canonicalSource = true; }, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
     slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },

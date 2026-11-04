@@ -935,17 +935,24 @@ const firstSoundLine = (at: number) =>
 const responseLine = (at: number, responseKey: string, kind: 'first' | 'continuation', firstAudioAt: number) =>
   line(at, 'response_first_audio', { ...one, responseKey, kind, createdAt: at, firstAudioAt });
 
-/** One owner turn over two responses: the provider answers, then continues, and both segments play out. */
-function tracedTurn(store: Store, audibleAt: number, drainedAt: number): void {
+/**
+ * One owner turn over two responses, each with its own playback segment: the provider answers, then
+ * continues. A `null` drain leaves that segment still playing, so the turn's answer never finished.
+ */
+function tracedTurn(store: Store, audibleAt: number, drains: readonly [number | null, number | null]): void {
   turn(store, SESSION, 't1', 1, T0);
   for (const [responseKey, at] of [['r1', T0 + 1_000], ['r2', T0 + 4_000]] as const) {
     record(store, 'response.created', { liveSessionId: SESSION, turnId: 't1', responseKey },
       { createdAt: at, status: 'completed', providerResponseId: `resp-${responseKey}` });
   }
-  record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r2', playbackKey: 'play:2' },
-    { segmentSeq: 1, receivedAt: T0 + 5_000 });
+  const segments = [['r1', 'play:1', 1, T0 + 2_000, drains[0]], ['r2', 'play:2', 2, T0 + 5_000, drains[1]]] as const;
+  for (const [responseKey, playbackKey, segmentSeq, receivedAt, drainedAt] of segments) {
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey, playbackKey },
+      { segmentSeq, receivedAt });
+    if (drainedAt !== null) record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey }, { drainedAt });
+  }
+  // The app's audibility receipt is one per segment: the second segment's is the one this turn waits for.
   record(store, 'playback.audible', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:2' }, { audibleAt });
-  record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:2' }, { drainedAt });
 }
 
 const tracedScan = (finals: readonly number[], providerFirstSoundAt: number): string[] => [
@@ -957,21 +964,38 @@ const tracedScan = (finals: readonly number[], providerFirstSoundAt: number): st
 
 test('#1011: first sound and the completed answer are separate measures', () => {
   withStore(store => {
-    tracedTurn(store, T0 + 5_120, T0 + 9_000);
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, T0 + 9_000]);
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 800, T0 + 900], T0 + 2_500)));
     const row = audit.turns[0]!;
     assert.equal(row.ownerFinalAt, T0 + 900, 'the last final of a split utterance is the anchor');
     assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'the wait before her voice existed');
     assert.equal(row.finalToNativeFirstSoundMs, T0 + 5_120 - (T0 + 900), 'the wait until it reached his speaker');
-    assert.equal(row.finalToAnswerCompleteMs, T0 + 9_000 - (T0 + 900), 'the wait until the second response played out');
+    assert.equal(row.finalToAnswerCompleteMs, T0 + 9_000 - (T0 + 900),
+      'the answer is complete at the LAST drain of its two segments, not at the first');
     assert.deepEqual([...row.flags], [], 'no pair is inverted');
     assert.match(renderCallAudit(audit), /firstSoundProvider firstSoundNative answerComplete/u);
   });
 });
 
+test('#1011: an earlier segment drain is not the completed answer', () => {
+  withStore(store => {
+    // The first response drained; the continuation's segment is still playing when the call is read.
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, null]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.playbackSegments, 2, 'both segments join the turn');
+    assert.equal(row.finalToAnswerCompleteMs, null,
+      'one drained segment is not the finished answer: the completion time is missing, never the first drain');
+    assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'her first sound is still measured');
+    assert.deepEqual([...row.flags], []);
+    const printed = renderCallAudit(audit).split('\n').find(entry => entry.startsWith('t1 '))!;
+    assert.match(printed, /^t1 \S+ \S+ \S+ 1600ms \S+ missing 2 /u);
+  });
+});
+
 test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
   withStore(store => {
-    tracedTurn(store, T0 + 3_120, T0 + 4_000);
+    tracedTurn(store, T0 + 3_120, [T0 + 3_500, T0 + 4_000]);
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 6_000], T0 + 2_500)));
     const row = audit.turns[0]!;
     assert.deepEqual([row.finalToProviderFirstSoundMs, row.finalToNativeFirstSoundMs, row.finalToAnswerCompleteMs],
@@ -988,7 +1012,7 @@ test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
 
 test('#1011: the aggregate counts the turns behind each measure', () => {
   withStore(store => {
-    tracedTurn(store, T0 + 5_120, T0 + 9_000);
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, T0 + 9_000]);
     turn(store, SESSION, 't2', 2, T0 + 20_000);
     const scan = scanOf([
       ...tracedScan([T0 + 800, T0 + 900], T0 + 2_500),
@@ -999,7 +1023,7 @@ test('#1011: the aggregate counts the turns behind each measure', () => {
     assert.deepEqual(audit.aggregates.firstSound,
       { ownerTurns: 2, providerMeasured: 2, nativeMeasured: 1, answerCompleteMeasured: 1 },
       't2 heard her first sound but carries no native receipt and no drain');
-    assert.deepEqual(audit.aggregates.playbackSegments, { attributed: 1, unattributed: 0 });
+    assert.deepEqual(audit.aggregates.playbackSegments, { attributed: 2, unattributed: 0 });
     assert.equal(audit.turns[1]!.missingReason, 'no_native_receipt');
     assert.match(renderCallAudit(audit), /first sound coverage owner-turns=2 provider=2\/2 native=1\/2 answer-complete=1\/2/u);
   });

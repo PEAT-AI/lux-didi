@@ -789,16 +789,7 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
 });
 
 
-async function receivedOwnerFixture(t: TestContext) {
-  const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });
-  const f = await fixture(t, { result: { content: [{ type: 'text', text: raw }] } });
-  const definitions = f.definitions(), host = { ...f.host, grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
-  let step = 0; const seenIds = new Set<string>();
-  const dispatch = (calls: { name: string; args: JsonObject }[], signal = f.signal) => runToolCalls(f.owner, calls.map(call => ({ ...call, id: randomUUID() })), { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: ++step, contentIndex: 0, seenIds, authorize: true, baseClasses: ['ordinary'] });
-  const root = await dispatch([{ name: 'get_insight', args: { ids: [42] } }]); assert.equal(root.error, undefined); assert.equal(root.accepted.length, 1);
-  const cursor = (root.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.equal(typeof cursor, 'string');
-  return { ...f, raw, host, dispatch, root, cursor: cursor as string };
-}
+
 
 // #795: the model asked how long the block should be, so his one-word answer arrives as its own owner
 // final with no scheduling verb in it. The ask's own grant is what authorizes the one write, once.

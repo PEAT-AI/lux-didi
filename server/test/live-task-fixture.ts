@@ -50,7 +50,7 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
     for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve));
   };
   return { store, owner, voice, writes, chunks, session, attachment, context,
-    finalize(text: string) { pendingQuiet = true; voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); },
+    finalize(text: string) { pendingQuiet = true; voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); void flush(); },
     bind(id = 'synthetic-binding') { voice.emit({ type: 'delegation', delegationId: id }); },
     flush,
     async answer() { await flush(); await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer'); return voice.taskAnswers.at(-1)!; },

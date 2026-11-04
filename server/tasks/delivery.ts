@@ -29,7 +29,6 @@ interface Pending {
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
   #binding: string | null = null;
-  #generation: number | undefined;
   #ready = true;
   #quiet = true;
   #owner = false;
@@ -44,8 +43,8 @@ export class TaskDelivery implements Delivery {
     if (this.#pending && !this.ports.isCurrent(this.#pending.identity)) this.#pending = undefined;
     return this.#pending;
   }
-  socket(generation: number, ready = true): void {
-    this.#generation = generation; this.#binding = null; this.#ready = ready;
+  socket(_generation: number, ready = true): void {
+    this.#binding = null; this.#ready = ready;
     const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; }
     this.#drain();
   }

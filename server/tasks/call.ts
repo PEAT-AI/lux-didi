@@ -18,6 +18,7 @@ export class TaskCall {
   readonly delivery: TaskDelivery;
   #generation = 0;
   #delegation: string | undefined;
+  #latestDelegation: string | undefined;
   #functions: LiveToolCall[] = [];
   #answer: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   #closed = false;
@@ -48,7 +49,7 @@ export class TaskCall {
   }
   get running(): boolean { return this.runtime.controller.running; }
   socket(generation: number, ready = true): void {
-    this.#generation = generation; this.#delegation = undefined; this.#functions = [];
+    this.#generation = generation; this.#delegation = undefined; this.#latestDelegation = undefined; this.#functions = [];
     this.delivery.socket(generation, ready);
   }
   ownerWords(): void {
@@ -71,13 +72,13 @@ export class TaskCall {
   input(words: string, ownerTurn: number): Promise<WorkerResult> {
     this.#answer = undefined;
     const { revision, result } = this.runtime.finalize(words, this.#generation, ownerTurn);
-    if (this.#delegation) this.runtime.attach(revision.identity, this.#delegation);
+    if (this.#latestDelegation) this.runtime.attach(revision.identity, this.#latestDelegation);
     for (const call of this.#functions) this.runtime.attach(revision.identity, call.id);
     this.ports.working?.(true);
     return result.finally(() => { if (this.runtime.controller.isCurrent(revision.identity)) this.ports.working?.(false); });
   }
   delegation(id: string): void {
-    this.#delegation = id;
+    this.#delegation = id; this.#latestDelegation = id;
     const revision = this.runtime.controller.current;
     if (revision) this.runtime.attach(revision.identity, id);
   }

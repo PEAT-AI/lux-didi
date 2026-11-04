@@ -623,7 +623,7 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test('task delivery audit keeps closed identity/state fields and rejects owner or target text', () => {
-  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'heard' } as const;
+  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'accepted' } as const;
   assert.deepEqual(safeEvent(event), event);
   assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
   assert.equal(safeEvent({ ...event, target: 'https://synthetic.invalid/private' }), undefined);

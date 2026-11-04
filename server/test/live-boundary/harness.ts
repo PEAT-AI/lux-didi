@@ -120,7 +120,7 @@ export const cases: Record<string, () => Promise<void>> = {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
       equal(f.sent.length, 1); assert.notEqual(f.sent[0]?.text, text);
       for (let i = 0; i < f.sent.length; i++) {
-        const chunk = f.sent[i]!; f.call.delivery.accepted(`c${i + 1}`);
+        f.call.delivery.accepted(`c${i + 1}`);
       }
       assert.ok(f.sent.length > 1); equal(f.sent.map(s => s.text).join(' '), text);
       assert.ok(f.states.includes('accepted')); equal(f.call.reconnectAnswer(), undefined);

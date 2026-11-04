@@ -4195,18 +4195,6 @@ export class LiveSessionOwner {
     if (debt && debt.generation === handle.generation) this.#scheduleDebt(handle, debt.remaining, debt.step);
     if (watchdog && watchdog.generation === handle.generation) this.#scheduleWatchdog(handle, watchdog.remaining, watchdog.generation, watchdog.step);
   }
-  #paceTaskSilence(handle: ActiveSession, generation: number): void {
-    handle.taskSilenceTimer?.cancel();
-    const until = this.#now() + 20_000;
-    const pace = (): void => {
-      if (this.#settled(handle) || generation !== handle.generation || this.#now() >= until || handle.taskOwnerOpen || handle.taskOutputQuiet === false) return;
-      if (this.#now() - (handle.taskMicAt ?? 0) >= 40) {
-        try { handle.session.sendAudio({ pcm: new Uint8Array(640), dataClass: 'ordinary' }); } catch { return; }
-      }
-      handle.taskSilenceTimer = this.#schedule(pace, 20); handle.taskSilenceTimer.unref();
-    };
-    handle.taskSilenceTimer = this.#schedule(pace, 20); handle.taskSilenceTimer.unref();
-  }
   #settled(handle: ActiveSession): boolean { return handle.terminal || handle.invalidated; }
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {

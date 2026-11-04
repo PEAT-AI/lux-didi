@@ -8,12 +8,13 @@
 
 import { readFileSync } from 'node:fs';
 import { createLiveVoiceAdapter } from '../../adapters/live-voice/index.js';
-import type { LiveVoiceEvent, LiveVoiceSession } from '../../adapters/live-voice/types.js';
+import type { LiveVoiceClock, LiveVoiceEvent, LiveVoiceSession } from '../../adapters/live-voice/types.js';
 import { alarmWorld } from '../../eval/alarms.js';
 import type { EvalCase } from '../../eval/types.js';
 import { fakeWorld, type FakeWorld, type ToolMap } from '../../eval/world.js';
+import { synthUtterance } from './audio.js';
 import { unsupportedClaims, type Receipt } from './judge.js';
-import { replayServer, type Recording } from './replay.js';
+import { replayServer, type Recording, type Replay } from './replay.js';
 import type { ReleaseScenario, ScenarioTurn } from './plan.js';
 
 export function loadToolMap(path: string): ToolMap {
@@ -76,6 +77,8 @@ export interface ScenarioRun {
   readonly spoken: string;
   readonly receipts: readonly Receipt[];
   readonly events: number;
+  /** What teardown did to the fake provider, read off the handle itself rather than assumed. */
+  readonly release: { readonly replayClosed: boolean; readonly replayForced: boolean };
 }
 
 export interface RunScenarioOptions {
@@ -83,63 +86,141 @@ export interface RunScenarioOptions {
   readonly recording: Recording;
   /** A guard against a hung replay: the fake provider answers at once, so this never fires in practice. */
   readonly timeoutMs?: number;
+  /** A test seam: the timers every bound is measured with, so a bound is exercised without waiting it out. */
+  readonly bounds?: BoundTimers;
+  /** A test seam: the caller keeps the replay handle and can observe what teardown did to it. */
+  readonly replay?: Replay;
+}
+
+/** The timers a scenario's bounds are measured with. The default is the wall clock; a test supplies its own. */
+export interface BoundTimers {
+  readonly now: () => number;
+  /** One step of a polling wait: the wall clock sleeps a millisecond, a test seam advances its own time. */
+  readonly tick: () => Promise<void>;
+}
+
+const WALL_TIMERS: BoundTimers = {
+  now: () => Date.now(),
+  tick: () => new Promise(resolve => { setTimeout(resolve, 1); }),
+};
+
+/** 100 ms of synthetic tone per fragment: the owner's uplink, standing in for an ask nobody actually spoke. */
+const ASK_PCM = synthUtterance(2_400);
+
+/** The teardown's own bound: a socket close is milliseconds of work, never a scenario's worth of waiting. */
+const CLOSE_TIMEOUT_MS = 1_000;
+
+/**
+ * The adapter's own clock, driven by the runner: its turn windows are seconds long, so driving them costs no wall
+ * time and no test sleeps. `fireNext` runs the earliest armed timer, which is how a turn reaches its quiet window.
+ */
+function drivenClock(): LiveVoiceClock & { fireNext: () => boolean } {
+  let time = Date.now();
+  let next = 1;
+  const pending: { id: number; at: number; fire: () => void }[] = [];
+  return {
+    now: () => time,
+    setTimer: (ms, fire) => { const id = next; next += 1; pending.push({ id, at: time + Math.max(0, ms), fire }); return id; },
+    clearTimer: handle => { const at = pending.findIndex(timer => timer.id === handle); if (at >= 0) pending.splice(at, 1); },
+    fireNext: () => {
+      const due = [...pending].sort((a, b) => a.at - b.at || a.id - b.id)[0];
+      if (due === undefined) return false;
+      pending.splice(pending.indexOf(due), 1);
+      time = Math.max(time, due.at);
+      due.fire();
+      return true;
+    },
+  };
 }
 
 /** One scenario end to end. The caller owns nothing: the socket and the temp alarm store are closed here. */
 export async function runScenario(options: RunScenarioOptions): Promise<ScenarioRun> {
   const { scenario, recording } = options;
   const timeoutMs = options.timeoutMs ?? 20_000;
+  const bounds = options.bounds ?? WALL_TIMERS;
   const toolMap = loadToolMap(new URL('../../eval/tool-map.json', import.meta.url).pathname);
   const declared = declaredNames(toolMap);
   const t0 = Date.parse(scenario.clock_T0);
   const env = alarmWorld(t0);
   const world: FakeWorld = fakeWorld({ case: evalCaseOf(scenario), clock: { now: () => Date.now() }, alarms: env.world, toolMap });
-  const replay = await replayServer(recording);
-  const session: LiveVoiceSession = createLiveVoiceAdapter({
-    modelId: 'gpt-live-1', voice: 'marin', keyReference: 'eval-release-fake',
-    route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
-    credentials: { resolve: async () => 'synthetic-eval-key-never-sent-to-a-provider' },
-    limits: { handshakeMs: 4000, idleMs: 4000, sessionMs: 60_000, closeMs: 200 },
-    socketFactory: replay.socketFactory,
-  }).open({
-    system: { text: scenario.system, dataClass: 'ordinary' }, dataClasses: ['ordinary'],
-    tools: [...declared.entries()].map(([wire, worldName]) => ({ name: wire, description: toolMap.tools[worldName]?.didi ?? wire,
-      parameters: { type: 'object', properties: {} } })),
-  }, { signal: AbortSignal.timeout(timeoutMs), deadlineMs: Date.now() + timeoutMs });
-
+  const replay = options.replay ?? await replayServer(recording);
+  const clock = drivenClock();
   const receipts: Receipt[] = [];
   const reasons: string[] = [];
   const state = { spoken: '', finished: 0, events: 0 };
-  const dispatch = (calls: readonly { id: string; name: string; args: Record<string, unknown> }[]): void => {
-    session.sendToolResponse({ responses: calls.map(call => {
-      const name = declared.get(call.name) ?? call.name;
-      const result = world.call({ tool: name, args: call.args });
-      receipts.push(receiptFor(toolMap, name, result));
-      return { id: call.id, name: call.name, response: { ok: result.ok, ...result.data } };
-    }) });
-  };
-  const pump = (async () => {
-    for await (const event of session.events as AsyncIterable<LiveVoiceEvent>) {
-      state.events += 1;
-      if (event.type === 'outputTranscription') {
-        if (event.text.length > 0) state.spoken = `${state.spoken} ${event.text}`.trim();
-        if (event.finished) state.finished += 1;
+  let session: LiveVoiceSession | undefined;
+  let pump: Promise<void> | undefined;
+  // C-EVALS: the scenario's own teardown. Whatever leaves the driven part, the session, the event pump, the replay
+  // socket and the alarm store are released, so a fixture that never arrives fails the run instead of holding the
+  // event loop open and stalling the whole check. Every step is bounded and the last one always runs.
+  let released = false;
+  const release = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    try {
+      session?.close();
+      if (pump !== undefined) {
+        // Teardown is socket work, so its bound is the wall clock: the scenario bound is the one a test seam drives.
+        try { await settle(WALL_TIMERS, CLOSE_TIMEOUT_MS, pump, 'the event pump to end after close'); } catch { reasons.push('pump_never_ended'); }
       }
-      if (event.type === 'toolCall') dispatch(event.calls);
-      if (event.type === 'turnFailed') reasons.push(`turn_failed:${event.code}`);
+      try { await settle(WALL_TIMERS, CLOSE_TIMEOUT_MS, replay.close(), 'the replay socket to close'); } catch { reasons.push('replay_close_bounded'); }
+    } finally {
+      env.world.close();
     }
-  })();
+  };
 
-  await session.ready;
-  const turns: readonly ScenarioTurn[] = scenario.owner_turns;
-  for (const [at, turn] of turns.entries()) {
-    // A split final is one ask: the fragments go in the same synchronous burst, exactly as a transcript splits.
-    for (const fragment of turn.fragments) session.sendText({ text: fragment });
-    await waitFor(() => state.finished > at || reasons.length > 0, timeoutMs);
+  try {
+    session = createLiveVoiceAdapter({
+      modelId: 'gpt-live-1', voice: 'marin', keyReference: 'eval-release-fake',
+      route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
+      credentials: { resolve: async () => 'synthetic-eval-key-never-sent-to-a-provider' },
+      limits: { handshakeMs: 4000, idleMs: 4000, sessionMs: 60_000, closeMs: 200 },
+      socketFactory: replay.socketFactory,
+      clock,
+    }).open({
+      system: { text: scenario.system, dataClass: 'ordinary' }, dataClasses: ['ordinary'],
+      tools: [...declared.entries()].map(([wire, worldName]) => ({ name: wire, description: toolMap.tools[worldName]?.didi ?? wire,
+        parameters: { type: 'object', properties: {} } })),
+    }, { signal: AbortSignal.timeout(timeoutMs), deadlineMs: Date.now() + timeoutMs });
+    const live = session;
+    // The provider opens a delegation and the host's helper does the work: the recording stands in for the helper,
+    // so these rows prove the adapter and the fixture contract, never the helper's own choice of tool.
+    const answer = (delegationId: string): void => {
+      const work = replay.takeDelegation();
+      if (work === undefined) { reasons.push('delegation_unfixtured'); return; }
+      for (const call of work.calls) {
+        const result = world.call({ tool: call.tool, ...(call.args === undefined ? {} : { args: call.args }) });
+        receipts.push(receiptFor(toolMap, call.tool, result));
+      }
+      if (live.sendTaskAnswer?.({ delegationId, text: work.answer }) === undefined) reasons.push('answer_refused');
+    };
+    pump = (async () => {
+      for await (const event of live.events as AsyncIterable<LiveVoiceEvent>) {
+        state.events += 1;
+        if (event.type === 'outputTranscription') {
+          if (event.text.length > 0) state.spoken = `${state.spoken} ${event.text}`.trim();
+          if (event.finished) state.finished += 1;
+        }
+        if (event.type === 'delegation') answer(event.delegationId);
+        if (event.type === 'turnFailed') reasons.push(`turn_failed:${event.code}`);
+      }
+    })();
+
+    await settle(bounds, timeoutMs, live.ready, 'the session to be ready');
+    // The adapter is audio-only after readiness (`client mode is audio-only`, openai-live-voice.test.ts): a typed
+    // ask is refused, so each fragment goes up the same uplink a microphone uses. The scenario's text is the ask the
+    // synthetic tone stands for; what a row proves is the adapter and the fixture contract over that ask, not the
+    // words themselves reaching the model.
+    const turns: readonly ScenarioTurn[] = scenario.owner_turns;
+    for (const [at, turn] of turns.entries()) {
+      // A split final is one ask: every fragment goes up in the same synchronous burst, exactly as a transcript splits.
+      for (let fragment = 0; fragment < turn.fragments.length; fragment += 1) live.sendAudio({ pcm: ASK_PCM, dataClass: 'ordinary' });
+      if (!await waitFor(() => state.finished > at || reasons.length > 0, timeoutMs, clock, bounds)) reasons.push(`turn_not_answered:${at}`);
+    }
+    if (!await waitFor(() => replay.servedCount() >= replay.totalSteps(), timeoutMs, undefined, bounds)) reasons.push('recording_not_served');
+  } finally {
+    await release();
   }
-  await replay.served();
-  session.close();
-  await pump;
 
   const calls = world.calls.map(call => ({ tool: call.tool, args: call.args }));
   for (const [at, expected] of scenario.expect.tools.entries()) {
@@ -155,16 +236,36 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
   for (const mustNot of scenario.expect.spoken_must_not ?? []) if (state.spoken.toLowerCase().includes(mustNot.toLowerCase())) reasons.push(`spoken_forbidden:${mustNot}`);
   reasons.push(...unsupportedClaims({ spoken: state.spoken, receipts }));
 
-  await replay.close();
-  env.world.close();
-  return { id: scenario.id, pass: reasons.length === 0, reasons, calls, spoken: state.spoken, receipts, events: state.events };
+  return { id: scenario.id, pass: reasons.length === 0, reasons, calls, spoken: state.spoken, receipts, events: state.events,
+    release: { replayClosed: replay.closed(), replayForced: replay.forced() } };
 }
 
-/** Bounded wait on a condition the fake provider settles at once. No sleep on the happy path. */
-async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+/** Bounded wait on a condition the fake provider settles at once: every round drains the socket and fires the
+ * adapter's next timer, so a turn that never ends fails by name instead of hanging. */
+async function waitFor(
+  condition: () => boolean, timeoutMs: number, clock: { fireNext: () => boolean } | undefined, bounds: BoundTimers,
+): Promise<boolean> {
+  const deadline = bounds.now() + timeoutMs;
   while (!condition()) {
-    if (Date.now() > deadline) return;
-    await new Promise<void>(resolve => setTimeout(resolve, 2));
+    if (bounds.now() > deadline) return false;
+    await bounds.tick();
+    if (clock !== undefined && !condition()) clock.fireNext();
   }
+  return true;
+}
+
+/** A bounded await: a fixture that never settles fails the run by name instead of hanging the check. The wait polls
+ * the seam, so a test can reach the bound in a few steps and real I/O still progresses between steps. */
+async function settle<T>(bounds: BoundTimers, timeoutMs: number, pending: Promise<T>, what: string): Promise<T> {
+  let done = false;
+  let failure: { error: unknown } | undefined;
+  const tracked = pending.then(value => { done = true; return value; }, error => { done = true; failure = { error }; throw error; });
+  tracked.catch(() => {});
+  const deadline = bounds.now() + timeoutMs;
+  while (!done) {
+    if (bounds.now() > deadline) throw new Error(`eval timeout: waited ${timeoutMs} ms for ${what}`);
+    await bounds.tick();
+  }
+  if (failure !== undefined) throw failure.error;
+  return tracked;
 }

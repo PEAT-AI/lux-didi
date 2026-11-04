@@ -73,6 +73,8 @@ export class TaskRuntime {
     return revision;
   }
   async runTool(name: string, args: Record<string, unknown>, identity: OperationIdentity, signal: AbortSignal): Promise<ToolResult> {
+    if (signal.aborted || !this.#isCurrent() || !this.controller.isCurrentTask(identity.task_id, identity.task_revision)) return failed('Use the current task revision. This read or write was not dispatched.');
+    signal = AbortSignal.any([signal, this.controller.current!.signal]);
     const tool = this.registry.get(name); if (!tool) return failed('Use an available task tool.');
     this.recordOperation(identity, name, args, null);
     let result: ToolResult;

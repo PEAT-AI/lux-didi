@@ -189,7 +189,6 @@ interface ActiveSession {
   debtOutputs?: LiveToolResponse[] | undefined; debtBargeIn?: boolean | undefined;
   /** #660: the reply text of a result that returned but was never said, so a replaced session can still speak it,
    *  and whether the session now open has already been handed it. */
-  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined; unspokenResults?: number | undefined;
   /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
   hostStatusNote?: boolean | undefined;
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
@@ -717,7 +716,6 @@ const CONSUMER_CLOSED_MS = 1_000;
  *  invents a reason the provider did not give. */
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
-const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
 export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
@@ -2394,38 +2392,11 @@ export class LiveSessionOwner {
 
   #clearDebt(handle: ActiveSession, reason: 'audible' | 'owner_barge_in' | 'turn_end'): void {
     // #660: only her own audio proves the result was said, and only an ended turn retires an answer she never gave.
-    if (reason !== 'owner_barge_in') { handle.unspoken = undefined; handle.unspokenDelivered = false; }
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
     handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
-  }
-
-  /**
-   * #660: hand the unspoken result to the session that is open now. A session the host replaced cannot accept the
-   * retired call ids of the one it replaced, so the result travels as the one input a fresh session does accept: a
-   * bounded text item, sent once the session is ready. One retry, then the turn ends with its closed reason.
-   */
-  async #deliverUnspoken(handle: ActiveSession): Promise<boolean> {
-    if (handle.unspoken === undefined || handle.unspokenDelivered === true) return true;
-    const text = `${UNSPOKEN_DELIVERY_PREFIX}${handle.unspoken}`;
-    const session = handle.session;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await session.ready.catch(() => {});
-      if (this.#settled(handle) || handle.session !== session) return false;
-      try {
-        session.sendText({ text: hostNote(text) });
-        handle.unspokenDelivered = true;
-        // #667: the recreate names how many unspoken results reached the session that replaced the old one.
-        hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
-          generation: handle.generation, results: handle.unspokenResults ?? 1, attempt: attempt + 1 });
-        return true;
-      } catch { /* a refused send is the one retry: the next pass awaits readiness again, then gives up */ }
-    }
-    // #660: a result the host cannot put in front of the model is not swallowed, it ends the turn with its reason.
-    this.#turnFailed(handle, handle.generation, 'send_failed');
-    return false;
   }
 
   /** #538 R4: the held rung fires the moment the response that held it ends without audio. */
@@ -2526,18 +2497,6 @@ export class LiveSessionOwner {
     // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
     // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
     if (this.#profile.provider !== 'openai') {
-      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
-      return;
-    }
-    // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
-    // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
-    // the answer the owner asked for is not made to wait for two provider recreates.
-    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      // C-REBUILD B: a response in flight owns the wire, and a text handed over now would be a second create under
-      // the answer being spoken. The result waits for that response's own terminal, which is the continuation path
-      // that carries it, and if the response is torn down instead it travels in the new session's opening. The
-      // ladder keeps its timing either way: the rebuild rung still fires one recovery delay from here.
-      if (handle.responseInProgress !== true && !(await this.#deliverUnspoken(handle))) return;
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
@@ -2797,11 +2756,8 @@ export class LiveSessionOwner {
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
         if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
-        // C-DEADAIR: a response that ended after writing text and never made a sound is the 2026-10-27 shape (112
-        // response tokens, nothing above -120 dB on the Mac). The model has nothing more to say in that response, so
-        // the held result goes out now instead of waiting out the ladder.
-        else if (handle.debtTextSeen === true) void this.#deliverUnspoken(handle).catch(() => { /* the rung settles its own failure */ });
-        else this.#fireDeferredRung(handle);
+        // Preserve the text-only response's existing debt-rung gate; TaskDelivery owns waiting answers.
+        else if (handle.debtTextSeen !== true) this.#fireDeferredRung(handle);
       }
     }
     if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
@@ -3352,8 +3308,6 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
         instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
-      // #660: this session has not been handed the unspoken result yet; the recovery delivers it once ready.
-      handle.unspokenDelivered = false;
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
       // C-RECOVERY (c): the new session exists, so the old one can be closed without ever leaving the call open on none.
@@ -3468,7 +3422,6 @@ export class LiveSessionOwner {
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
       // #660: the session that replaced the one a result came back on cannot accept its retired call ids, so the
       // result goes to it as the one input a fresh session accepts. A refused delivery has already ended the turn.
-      await this.#deliverUnspoken(handle);
       return true;
     }
     // A call that ended while an attempt was waiting for its ready event owes no further attempt.
@@ -3518,8 +3471,7 @@ export class LiveSessionOwner {
       if (opened) {
         handle.recoveryRefusals = 0;
         this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, attempt);
-        await this.#deliverUnspoken(handle);
-        return true;
+          return true;
       }
       if (this.#settled(handle)) return false;
       // The receipt names what actually ended the attempt, so a dead socket is never written up as a refusal.

@@ -88,12 +88,7 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
     covers: [{ file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' }],
   },
 
-  {
-    expression: 'hostNote(text)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: '#660: a stalled delegation with nothing in flight delivers the unspoken result once' },
-    ],
-  },
+
   {
     expression: 'text', count: 1, channel: 'owner',
     covers: [

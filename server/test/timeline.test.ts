@@ -476,10 +476,10 @@ test('C-LOGS11: the audit names every tool call and every owner turn of one call
       ['t1', T0 + 800, T0 + 2_500, T0 + 3_120],
       ['t2', null, null, null],
     ]);
-    assert.equal(audit.turns[0]!.finalToProviderMs, 1_700);
-    assert.equal(audit.turns[0]!.finalToAudibleMs, T0 + 3_120 - (T0 + 800));
+    assert.equal(audit.turns[0]!.finalToProviderFirstSoundMs, 1_700);
+    assert.equal(audit.turns[0]!.finalToNativeFirstSoundMs, T0 + 3_120 - (T0 + 800));
     assert.equal(audit.turns[1]!.missingReason, 'no_owner_final');
-    assert.equal(audit.turns[1]!.finalToAudibleMs, null, 'a missing measurement is null, never zero');
+    assert.equal(audit.turns[1]!.finalToNativeFirstSoundMs, null, 'a missing measurement is null, never zero');
   });
 });
 
@@ -506,12 +506,12 @@ test('C-LOGS11: a turn with no native receipt says so, and never prints a zero',
     ]);
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scan);
     const row = audit.turns[0]!;
-    assert.equal(row.finalToProviderMs, 2_000);
-    assert.equal(row.finalToAudibleMs, null);
+    assert.equal(row.finalToProviderFirstSoundMs, 2_000);
+    assert.equal(row.finalToNativeFirstSoundMs, null);
     assert.equal(row.missingReason, 'no_native_receipt');
     const text = renderCallAudit(audit);
-    assert.match(text, /finalToProvider finalToAudible missing/);
-    assert.match(text, /t1 1792486800400 1792486802400 missing 2000ms missing no_native_receipt/);
+    assert.match(text, /firstSoundProvider firstSoundNative answerComplete/);
+    assert.match(text, /t1 1792486800400 1792486802400 missing 2000ms missing missing 0 no_native_receipt/);
   });
 });
 
@@ -528,11 +528,13 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
       // LAT-1022: the audit's per-turn segments are part of the stable shape: the speech end to the final, the
       // final to the first create, that create to its first audio, the last tool output to the continuation's
       // create, and every connector request the turn made.
-      ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
-        'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
+      ['connectorMs', 'createToFirstAudioMs', 'finalToAnswerCompleteMs', 'finalToCreateMs', 'finalToNativeFirstSoundMs',
+        'finalToProviderFirstSoundMs', 'flags', 'missingReason', 'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt',
+        'playbackSegments', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'noProviderAudioFinals', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
-    assert.equal(json['version'], 3);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'firstSound', 'noProviderAudioFinals', 'playbackSegments',
+        'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+    assert.equal(json['version'], 4);
   });
 });
 
@@ -604,13 +606,13 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     const audit = JSON.parse(execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--json', '--data-dir', dir], { encoding: 'utf8' })) as CallAudit;
     assert.equal(audit.liveSessionId, session);
     assert.deepEqual(audit.calls.map(row => [row.name, row.totalMs, row.outcome]), [['search_knowledge', 40, 'completed']]);
-    assert.deepEqual(audit.turns.map(row => row.finalToProviderMs), [2_000]);
+    assert.deepEqual(audit.turns.map(row => row.finalToProviderFirstSoundMs), [2_000]);
     const summary = JSON.parse(execFileSync(process.execPath, [cli, 'sessions', '--since', '2026-10-20', '--audit-summary', '--json', '--data-dir', dir], { encoding: 'utf8' })) as { sessions: number; callsPerTool: Record<string, number> };
     assert.equal(summary.sessions, 1);
     assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
-    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 3\)/);
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 4\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
     assert.match(text, /missing no_native_receipt/);
   } finally {
@@ -805,8 +807,8 @@ test('C-DIAG109: a final with no provider audio is a fragment only inside the fo
     ], 'a split sentence is a fragment, an unheard ask and the call-ending final are unanswered');
     assert.deepEqual(audit.aggregates.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });
     const text = renderCallAudit(audit);
-    assert.match(text, /f1 \S+ missing missing missing missing no_provider_audio fragment/u);
-    assert.match(text, /f5 \S+ missing missing missing missing no_provider_audio unanswered/u);
+    assert.match(text, /f1 \S+ missing missing missing missing missing 0 no_provider_audio fragment/u);
+    assert.match(text, /f5 \S+ missing missing missing missing missing 0 no_provider_audio unanswered/u);
   });
 });
 

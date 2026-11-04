@@ -2,7 +2,6 @@
 // didi-timeline: read the trace tables in state.sqlite and the day's logs and print one joinable timeline.
 // Read-only canonical SQLite timeline. See docs/diagnostic-store.md.
 const { DatabaseSync } = require('node:sqlite');
-const { spawnSync } = require('node:child_process');
 const { existsSync, readdirSync, readFileSync, statSync, mkdtempSync, copyFileSync, rmSync } = require('node:fs');
 const { homedir, tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -93,8 +92,8 @@ function logInputs() {
 }
 
 // #699: server/dist is a build artifact, never the checkout's authority. A dist left over from an older
-// source tree answered the read with yesterday's shape, so the newest source decides: when dist is missing
-// or older, the documented build runs first, and its own failure stops the read instead of hiding behind it.
+// source tree answered the read with yesterday's shape, so the newest source decides whether the read is
+// fresh enough to answer at all (#1011: it reports a stale dist, it never builds one).
 const SERVER = join(__dirname, '..', 'server');
 
 function newestMtime(directory, accept, skip) {
@@ -113,47 +112,44 @@ function newestMtime(directory, accept, skip) {
   return newest;
 }
 
-function buildDist(reason) {
-  const built = join(SERVER, 'dist', 'trace', 'timeline.js');
-  process.stderr.write(`didi-timeline: ${reason}; running: npm --prefix server run build\n`);
-  const run = spawnSync('npm', ['--prefix', SERVER, 'run', 'build'], { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
-  if (run.error || run.status !== 0) {
-    const detail = (run.error !== undefined && run.error !== null ? run.error.message : (run.stderr ?? '')).trim();
-    if (detail !== '') process.stderr.write(`${detail}\n`);
-    process.stderr.write(`didi-timeline: the build failed (${run.status === null ? 'not started' : `exit ${run.status}`}); the timeline would read a stale dist\n`);
-    process.exit(run.status === null || run.status === 0 ? 1 : run.status);
-  }
-  if (!existsSync(built)) fail('the build did not emit server/dist/trace/timeline.js; run: npm --prefix server run build');
+// #1011: this command only reads. It used to rebuild server/dist whenever the dist was missing or older
+// than its source, so a read wrote a build into a shared checkout and could still answer from an artifact
+// nobody asked for. A stale dist is now reported with the build command and the read stops.
+const BUILD_COMMAND = 'npm --prefix server run build';
+
+function refuseStale(reason) {
+  process.stderr.write(`didi-timeline: ${reason}\n`);
+  process.stderr.write(`didi-timeline: this command only reads, so it never builds; build first, run: ${BUILD_COMMAND}\n`);
+  process.exit(1);
 }
 
-function ensureBuilt() {
+/** The dist is only read: missing, older than its source, or an older build of the same module all refuse. */
+function freshDist() {
   const built = join(SERVER, 'dist', 'trace', 'timeline.js');
+  if (!existsSync(built)) refuseStale('server/dist/trace/timeline.js is missing');
   const source = newestMtime(SERVER, name => /\.(ts|json)$/.test(name), new Set(['node_modules', 'dist']));
-  const build = existsSync(built) ? newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules'])) : Number.NEGATIVE_INFINITY;
-  if (existsSync(built) && build >= source) return;
-  buildDist('server/dist is missing or older than its source');
+  const build = newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules']));
+  if (build < source) refuseStale('server/dist is older than its source');
 }
 
-// #1072: newest-source-by-mtime cannot see a dist that is NEWER than its source and still an older build,
-// such as a shipped artifact, a restored copy, or an emit that skipped a file. The view then dies on a
-// TypeError naming an internal symbol ("traceCallCarriesRefusalCode is not a function") instead of reading.
-// The module's own surface is the honest freshness test: rebuild once when a view's export is missing.
+// The module's own surface is the honest freshness test: a view's export missing from the dist refuses the read.
 const TIMELINE_EXPORTS = ['buildAuditSummary', 'buildCallAudit', 'buildCallStory', 'buildDistortionMarks', 'buildTimeline',
   'listCalls', 'logHealth', 'renderAuditSummary', 'renderCallAudit', 'renderCallList', 'renderCallStory',
   'renderDistortionMarks', 'renderLogHealth', 'resolveSession', 'scanLogs', 'traceCallCarriesRefusalCode'];
 
 async function traceModule() {
-  ensureBuilt();
+  freshDist();
+  // A query string gives the module its own instance: the plain URL is cached for this process.
   const built = new URL('../server/dist/trace/timeline.js', `file://${__filename}`);
-  const module = await import(built.href);
+  let module;
+  try {
+    module = await import(built.href);
+  } catch (error) {
+    refuseStale(`server/dist/trace/timeline.js did not load (${error instanceof Error ? error.message : String(error)})`);
+  }
   const missing = TIMELINE_EXPORTS.filter(name => typeof module[name] !== 'function');
-  if (missing.length === 0) return module;
-  buildDist(`server/dist/trace/timeline.js is missing ${missing.join(', ')}`);
-  // A query string gives the rebuilt file its own module instance: the plain URL is cached for this process.
-  const rebuilt = await import(`${built.href}?rebuilt=${Date.now()}`);
-  const stillMissing = TIMELINE_EXPORTS.filter(name => typeof rebuilt[name] !== 'function');
-  if (stillMissing.length > 0) fail(`server/dist/trace/timeline.js still lacks ${stillMissing.join(', ')} after a build; run: npm --prefix server run build`);
-  return rebuilt;
+  if (missing.length > 0) refuseStale(`server/dist/trace/timeline.js is missing ${missing.join(', ')}`);
+  return module;
 }
 
 function storeReader(database) {

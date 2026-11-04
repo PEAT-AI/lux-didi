@@ -1,3 +1,4 @@
+import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
 import './tasks-store.test.js';
@@ -54,7 +55,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -710,7 +711,7 @@ test('a session with a tool declaration carries the tools conduct; without one c
   const { session: withSession, attachment: withAttachment } = await attached(withTools);
   assertFrozenInstruction(withTools, withSession.liveSessionId, 0);
   assert.equal(withTools.requests.length, 1);
-  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
+  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_WORK_DELIVERY),
     'the authored tools conduct is in the attached system instruction');
   withAttachment.close(); await withAttachment.done;
 
@@ -3632,7 +3633,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await openAiAttachment.ready;
   const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
   assert.deepEqual(start.session['delegation'], { type: 'client' }, 'the helper owns inference, not a provider responses backend');
-  assert.equal(String(start.session['instructions']).includes(NAYA_BACKEND_PROCEDURE), false, 'the OpenAI voice instructions never carry the procedure');
+  assert.equal(String(start.session['instructions']).includes(WORKER_INSTRUCTIONS), false, 'the OpenAI voice instructions never carry the procedure');
 
   const gemini = await fixture(t);
   const geminiLive = composeLive(store, dir, {
@@ -3647,7 +3648,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await geminiAttachment.ready;
   const setup = (gemini.frames[0] as { setup: { systemInstruction: { parts: { text: string }[] }; delegation?: unknown } }).setup;
   assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_LIVE_BASE), 'the Gemini setup carries the shared voice instruction');
-  assert.equal(setup.systemInstruction.parts[0]!.text.includes(NAYA_BACKEND_PROCEDURE), false, 'the Gemini setup never carries the delegated procedure');
+  assert.equal(setup.systemInstruction.parts[0]!.text.includes(WORKER_INSTRUCTIONS), false, 'the Gemini setup never carries the delegated procedure');
   assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 
@@ -4937,7 +4938,7 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
 
 test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`, calendarDigest: {
+  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_WORK_DELIVERY}`, calendarDigest: {
     forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
   await h.owner.prepareCalendar();
   const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);

@@ -1018,7 +1018,10 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 /** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
  *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
 const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|laughter|chuckle|chuckles|giggle|giggles|smile|smiles|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
-export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
+export function stripNonLexicalTags(text: string): string {
+  // A cue-prefixed Markdown link label is literal owner evidence, not a performance cue.
+  return text.replace(NON_LEXICAL_TAG, (tag, offset: number) => tag.endsWith(']') && text[offset + tag.length] === '(' ? tag : '');
+}
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
 /** L8-11: how many owner words over her audible answer make an overlap worth a receipt. */

@@ -562,7 +562,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const project = (name: string, value: JsonObject) => value.ok === false
         ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
       const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
-        const alarmFailed = (message: string) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(store.transaction(tx => listPendingAlarms(tx)))}`);
+        const alarmFailed = (message: string, armed = store.transaction(tx => listPendingAlarms(tx))) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(armed)}`);
         if (!options.alarms || !context.identity) return alarmFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
         const now = options.alarms.now();
         const effect = authorizedTaskEffect.getStore();
@@ -597,7 +597,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           } else {
             id = pendingOccurrenceOf(tx, id) ?? id;
             const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
-            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
+            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.', listPendingAlarms(tx));
             if (action === 'cancel') {
               tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
               const series = alarmSeriesOfOccurrence(tx, id);

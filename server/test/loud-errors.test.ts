@@ -176,7 +176,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
     assert.equal(owner.journal.intent(intent), 'fresh');
     const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
-    const definition = task.tools.find(candidate => candidate.name === 'search_email');
+    const definition = task.tools.find(candidate => candidate.name === 'search_mail');
     assert.ok(definition?.execute);
     const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(outcome.status, 'completed', 'a classified failure is still a completed call (its text is the reason)');

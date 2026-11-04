@@ -1,6 +1,12 @@
 # Implementation status
 
-Release 10.10: Naya talks while a host-owned helper does the work. This describes source capabilities, not proof that an installed app or connected account works. See [releases.md](releases.md) for release and installation checks.
+Release 10.11: Naya answers on the open line, knows when nothing is coming, and has tools that explain failures. This describes source capabilities, not proof that an installed app or connected account works. See [releases.md](releases.md) for release and installation checks.
+
+## Release history
+
+| Release | Date (UTC) | What changed |
+| --- | --- | --- |
+| 10.11 | 2026-11-04 | Answers stay on the open line, idle listening is clear, saved memories stay selected, and tool failures explain what went wrong. |
 
 ## What changed for you
 

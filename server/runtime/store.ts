@@ -185,23 +185,25 @@ export class Store {
       tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status) VALUES (?,?,?,?,?)
         ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status`,
         [identity.task_id, now, now, identity.task_revision, 'running']);
+      const retained = tx.get('SELECT content_pruned_at FROM tasks WHERE task_id=?', [identity.task_id])?.content_pruned_at == null;
       tx.run('INSERT INTO task_revisions(task_id,task_revision,connection_generation,created_at,owner_words,evidence) VALUES (?,?,?,?,?,?)',
-        [identity.task_id, identity.task_revision, identity.connection_generation, now, JSON.stringify(ownerWords), taskResultMetadata(evidence)]);
+        [identity.task_id, identity.task_revision, identity.connection_generation, now, retained ? JSON.stringify(ownerWords) : null, taskResultMetadata(evidence)]);
     });
   }
   saveTaskOperation(operation: OperationRecord, now = Date.now()): void {
     this.transaction(tx => {
+      const retained = tx.get('SELECT content_pruned_at FROM tasks WHERE task_id=?', [operation.task_id])?.content_pruned_at == null;
       tx.run(`INSERT INTO task_operations(operation_id,task_id,task_revision,connection_generation,tool,effect,state,arguments,result,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,result=excluded.result,updated_at=excluded.updated_at`,
         [operation.operation_id, operation.task_id, operation.task_revision, operation.connection_generation, operation.tool, operation.effect, operation.state,
-          JSON.stringify(operation.args), taskResultMetadata(operation.result), now, now]);
+          retained ? JSON.stringify(operation.args) : null, taskResultMetadata(operation.result), now, now]);
       if (operation.effect !== 'none' && operation.state !== 'pending') tx.run(`INSERT INTO task_receipts(operation_id,state,receipt,created_at) VALUES (?,?,?,?)
         ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,receipt=excluded.receipt`,
         [operation.operation_id, operation.state, taskResultMetadata(operation.result), now]);
     });
   }
   finishTask(identity: TaskRecord, status: string, answer: unknown, now = Date.now()): boolean {
-    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=?,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
+    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=CASE WHEN content_pruned_at IS NULL THEN ? ELSE NULL END,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
       [status, JSON.stringify(typeof answer === 'string' ? answer : answer && typeof answer === 'object' && 'text' in answer && typeof answer.text === 'string' ? answer.text : ''), now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
   }
   saveTaskDelivery(identity: TaskRecord, attemptId: string, state: 'attached' | 'pending' | 'delivered' | 'closed' | 'failed', now = Date.now()): void {

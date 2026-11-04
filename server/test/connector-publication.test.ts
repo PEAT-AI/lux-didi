@@ -651,7 +651,9 @@ function movedChild(dir: string): string {
   copyFileSync(PEOPLE_CHILD, rebuiltChild);
   // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
   // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(PEOPLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const dependencyRoot = [2, 3].map(depth => join(dirname(PEOPLE_CHILD), ...Array<string>(depth).fill('..'), 'node_modules')).find(existsSync);
+  assert.ok(dependencyRoot, 'the fixture has installed SDK dependencies in source or compiled layout');
+  symlinkSync(dependencyRoot, join(dir, 'node_modules'), 'dir');
   return rebuiltChild;
 }
 

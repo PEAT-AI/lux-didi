@@ -30,7 +30,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, ownerAlarmZone, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, cancelAlarmSeries, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, ownerAlarmZone, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -603,7 +603,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (action === 'cancel') {
               tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
               const series = alarmSeriesOfOccurrence(tx, id);
-              if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') tx.run("UPDATE alarm_series SET state='cancelled' WHERE id=?", [series.id]);
+              if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') cancelAlarmSeries(tx, series.id);
               else if (series) materialiseSeriesOccurrence(tx, id, now);
             }
             else {

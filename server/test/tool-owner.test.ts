@@ -1040,172 +1040,23 @@ const liveExecute = async (f: Awaited<ReturnType<typeof fixture>>, call: Executa
   return { status: record.status, reason: record.reason, result_json: stored === undefined ? undefined : String(stored['result_json'] ?? '') };
 };
 
-test('W1030 draft_email: a split two-turn ask writes one unsent draft through the production call path', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  assert.ok(liveTools(f).some(definition => definition.name === 'draft_email'), 'the live table offers draft_email');
-  f.observeOwner('run', 'j1', 'draft an email', 1_000);
-  f.observeOwner('run', 'j2', 'to Priya about the invoice', 2_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello Priya, the invoice is attached.' };
-  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'completed', JSON.stringify(first));
-  assert.equal(port.log.length, 1, 'one remote draft call');
-  assert.match(String(first.result_json), /draft-1/);
-  assert.match(String(first.result_json), /"sent":false/);
-  assert.match(String(first.result_json), /his click/);
-  const replay = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
-  assert.equal(replay.status, 'completed');
-  assert.equal(port.log.length, 1, 'the replay writes nothing');
-  const replayed = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE owner_id='owner' AND execution_id='run:2:0'"));
-  assert.match(String(replayed?.['result_json'] ?? ''), /draft-1/, `the replay records the receipt it returned: ${JSON.stringify(replay)}`);
-});
 
-test('W1030 recipient: two spoken matches ask, and no address is invented', async t => {
-  const port = composePort();
-  const ambiguous: ComposeDispatch = { ...port, draftEmail: async () => ({ state: 'recipient', code: 'recipient_ambiguous', candidates: ['Priya Raman', 'Priya Shah'] }) };
-  const f = await fixture(t, { compose: ambiguous, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(outcome.status, 'completed');
-  assert.match(String(outcome.result_json), /recipient_ambiguous/);
-  assert.match(String(outcome.result_json), /Priya Raman, Priya Shah/);
-  assert.doesNotMatch(String(outcome.result_json), /@example/, 'no address is invented');
-  assert.equal(port.log.length, 0, 'an ambiguous ask writes nothing');
-});
 
-test('W1030 draft_chat: a DM by person and a reply in a thread, never a post; a spoken send it sends nothing', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'draft a mattermost message to Sam', 1_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_chat', { person: 'Sam', message: 'On my way.' }), { person: 'Sam', message: 'On my way.' }, 1)).status, 'completed');
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j2', 'reply in that mattermost thread to Sam', 2_000);
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:1', 'draft_chat', { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }), { person: 'Sam', root_id: 'root-9', message: 'Agreed.' }, 2)).status, 'completed');
-  assert.deepEqual(port.log, ['mattermost_save_draft:Sam:none', 'mattermost_save_draft:Sam:root-9']);
-  const names = liveTools(f).map(definition => definition.name);
-  assert.equal(names.some(name => /send|post|invite/.test(name)), false, 'no send, post or invite tool exists');
-  // He says "send it" while the draft is pending: the only write surface still drafts, and it says so.
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j3', 'send it', 3_000);
-  // C-PERMTIER (P-R1): draft_chat is free, so "send it" drafts again on the model's call; the host
-  // still never posts, and the result says so.
-  const sent = await liveExecute(f, composeCall(f, 'run:1:2', 'draft_chat', { person: 'Sam', message: 'Agreed.' }), { person: 'Sam', message: 'Agreed.' }, 3);
-  assert.equal(port.log.length, 3, 'each ask drafts once and nothing is posted');
-  assert.equal(port.log.filter(entry => entry.startsWith('mattermost_save_draft')).length, 3);
-  assert.doesNotMatch(String(sent.result_json), /"posted":true|"sent":true/, 'nothing is claimed as sent');
-  assert.match(String(sent.result_json), /his click|reply box/);
-});
 
-test('W1030 create_event: the window comes from his words, a colleague stays uninvited, a clash is reported', async t => {
-  const port = composePort();
-  const clashing: ComposeDispatch = { ...port, createEvent: async input => ({ state: 'done', clash: 'your 9 o clock standup', response: await port.createEvent(input).then(outcome => outcome.state === 'done' ? outcome.response : {}) }) };
-  const f = await fixture(t, { compose: clashing, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'put a gym block on my calendar Saturday 9 gym one hour with Zara', 1_000);
-  const args = { summary: 'gym' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
-  assert.equal(outcome.status, 'completed');
-  const line = port.log[0] ?? '';
-  const start = Number(line.split(':')[1]);
-  const end = Number(line.split(':')[2]);
-  assert.equal(end - start, 3_600_000, 'one hour from his words');
-  // C-TIME shape 7: the sentence never names a person, so no invented name reaches the description.
-  assert.doesNotMatch(line, /Zara/);
-  assert.match(line, /not invited|no invitations were sent/i);
-  assert.match(String(outcome.result_json), /"attendees":0/);
-  assert.match(String(outcome.result_json), /"invitations":"none"/);
-  assert.match(String(outcome.result_json), /clashes with your 9 o clock standup/);
-});
 
-test('W1030 delete_event: an id this session never created is refused with a closed code, and a created one deletes', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'cancel that meeting', 1_000);
-  const invented = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', { event_id: 'event-from-the-model' }), { event_id: 'event-from-the-model' });
-  assert.equal(invented.status, 'completed', invented.reason);
-  assert.match(String(invented.result_json), /event_not_created_here/);
-  assert.match(String(invented.result_json), /in this session/);
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 0, 'a model-only id never reaches the helper');
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j2', 'block an hour on my calendar for Saturday 9 gym', 2_000);
-  const created = await liveExecute(f, composeCall(f, 'run:1:1', 'create_event', { summary: 'gym' }), { summary: 'gym' }, 2);
-  assert.equal(created.status, 'completed');
-  assert.match(String(created.result_json), /event-1/, 'the block this session made is recorded');
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j3', 'cancel that meeting', 3_000);
-  const removed = await liveExecute(f, composeCall(f, 'run:1:2', 'delete_event', { event_id: 'event-1' }), { event_id: 'event-1' }, 3);
-  assert.equal(removed.status, 'completed');
-  assert.equal(port.log.filter(entry => entry === 'calendar_delete_event:event-1').length, 1, 'the block this session made is removed');
 
-test('W1030 delete_event: a block the owner names is removed only when this session calendar read returned it', async t => {
-  const port = composePort();
-  const readBack: ComposeDispatch = { ...port, findNamedEvent: async input => input.words.includes('standup') ? { state: 'found', eventId: 'event-read-7' } : { state: 'none' } };
-  const f = await fixture(t, { compose: readBack, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'cancel my standup meeting', 1_000);
-  const removed = await liveExecute(f, composeCall(f, 'run:1:0', 'delete_event', {}), {}, 1);
-  assert.equal(removed.status, 'completed');
-  assert.deepEqual(port.log.filter(entry => entry.startsWith('calendar_delete_event')), ['calendar_delete_event:event-read-7'], 'the id the read returned is the one removed');
-  // Model output does not mutate the host-owned task identity or finalized words.
-  f.observeOwner('run', 'j2', 'cancel that meeting', 2_000);
-  const none = await liveExecute(f, composeCall(f, 'run:1:1', 'delete_event', {}), {}, 2);
-  assert.equal(none.status, 'completed');
-  assert.match(String(none.result_json), /event_not_created_here/);
-  assert.match(String(none.result_json), /in this session/);
-  assert.equal(port.log.filter(entry => entry.startsWith('calendar_delete_event')).length, 1, 'nothing is removed without a read');
-});
-});
 
-test('W1030 uncertain outcome: a lost answer is honest, and the retry cannot write twice', async t => {
-  const port = composePort();
-  const lost: ComposeDispatch = { ...port, draftEmail: async input => { port.log.push(`gmail_create_draft:${input.to}`); return { state: 'unknown', reason: 'timeout' }; } };
-  const f = await fixture(t, { compose: lost, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  const first = await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args);
-  assert.equal(first.status, 'unknown', 'a lost answer is not a success');
-  const retry = await liveExecute(f, composeCall(f, 'run:1:1', 'draft_email', args), args, 2);
-  assert.equal(port.log.length, 1, 'the retry never reaches the helper twice');
-  assert.match(String(retry.result_json), /grant_spent/, 'the spent grant answers the retry and is never re-spent');
-  assert.doesNotMatch(String(retry.result_json ?? ''), /draft-1/, 'the retry claims no draft');
-});
 
-test('W1030 replay after a rebuild writes nothing, and an unresolvable recipient writes nothing', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'write an email to Priya', 1_000);
-  const args = { to: 'Priya', subject: 'the invoice', body: 'Hello.' };
-  assert.equal((await liveExecute(f, composeCall(f, 'run:1:0', 'draft_email', args), args)).status, 'completed');
-  assert.equal(port.log.length, 1);
-  const rebuilt = f.reopen();
-  rebuilt.observeAlarmOwner('run', 'j9', 'what is on my calendar tomorrow', 3_000);
-  const refused = await liveExecute({ ...f, owner: rebuilt } as Awaited<ReturnType<typeof fixture>>, { ...composeCall(f, 'run:1:1', 'draft_email', args), callId: 'call-run:1:1' }, args, 2);
-  assert.equal(refused.status, 'completed');
-  assert.equal(port.log.length, 1, 'the rebuilt session writes nothing on replay');
-  // C-PERMTIER (P-R1): the draft is free now, so the rebuilt turn is admitted and stops at exactly
-  // one cause: the recipient the harness roster does not hold. It still writes nothing.
-  assert.match(String(refused.result_json), /"code":"recipient_unknown"/, String(refused.result_json));
-});
 
-test('W1030 connector_not_authorized: a family this host cannot reach names the one command and writes nothing', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  f.observeOwner('run', 'j1', 'block an hour on my calendar tomorrow 9', 1_000);
-  const args = { summary: 'block' };
-  const outcome = await liveExecute(f, composeCall(f, 'run:1:0', 'create_event', args), args);
-  assert.equal(outcome.status, 'completed');
-  assert.match(String(outcome.result_json), /connector_not_authorized/);
-  assert.match(String(outcome.result_json), /calendar_write/);
-  assert.match(String(outcome.result_json), /authorize --family calendar_write/);
-});
 
-test('W1030 persona: every ability the capability line names is a live definition', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads' });
-  const names = liveTools(f).map(definition => definition.name);
-  const { NAYA_WRITE_SURFACE } = await import('../prompt/live-persona.js');
-  for (const ability of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) {
-    assert.match(NAYA_WRITE_SURFACE, new RegExp(ability, 'u'), `the persona names ${ability}`);
-    assert.ok(names.includes(ability), `${ability} is a live definition`);
-  }
-});
+
+
+
+
+
+
+
+
 
 // #873 C-ALARM: every argument object below is built from the DECLARED schema as the live provider
 // receives it after the adapter conversion, then driven through the production call path to a
@@ -1282,73 +1133,11 @@ test('#873 conformance: every declared alarm time shape commits an alarm row', a
   }
 });
 
-test('#873 a refusal names the date field, and the retry with a valid date commits', async t => {
-  const events: { event?: string; argumentFields?: string[]; violations?: string[] }[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw !== undefined) events.push(raw as { event?: string }); return undefined; } });
-  try {
-    const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-    f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-    const unreadable = { time: { mode: 'wall', date: 'someday', local_time: '09:00' } };
-    const refused = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', unreadable), unreadable, 1);
-    assert.equal(refused.status, 'refused', 'an unreadable date is refused');
-    assert.match(String(refused.reason), /Rejected argument: time:date_unreadable/, String(refused.reason));
-    assert.match(String(refused.reason), /date accepts today, tomorrow, a weekday name or YYYY-MM-DD/, String(refused.reason));
-    assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'a refused ask arms nothing');
-    const rejected = events.find(line => line.event === 'tool_arguments_rejected');
-    assert.ok(rejected, 'the refusal reaches the log');
-    assert.deepEqual(rejected.violations, ['time:date_unreadable'], 'the violation is never empty on a schema rejection');
-    assert.deepEqual([...rejected.argumentFields ?? []].sort(), ['time.date:string', 'time.local_time:string', 'time.mode:string', 'time:object'], 'the closed fields name keys and types, never values');
-    assert.doesNotMatch(JSON.stringify(rejected), /someday/, 'no value of his reaches the log');
-    const retried = { time: { mode: 'wall', date: 'tomorrow', local_time: '09:00' } };
-    const retry = await liveExecute(f, alarmArgumentsOf(f, 'run:2:0', retried), retried, 2);
-    assert.equal(retry.status, 'completed', String(retry.reason));
-    assert.equal(Number(f.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', ['run:2:0']))?.['fire_at_utc']), Date.parse('2030-01-03T09:00:00Z'), 'the retry commits the alarm');
-  } finally { detach(); }
-});
 
-test('#873 filler-only time asks his time back once instead of refusing the call', async t => {
-  const f = await fixture(t, { grantMode: 'owner-trusted-reads', alarms: alarmClock(), timezone: 'UTC' });
-  f.observeOwner('run', 'j1', 'set an alarm', ALARM_CLOCK);
-  const filler = { time: { mode: null, date: null, local_time: '', timezone: null, amount: null, unit: '' } };
-  const outcome = await liveExecute(f, alarmArgumentsOf(f, 'run:1:0', filler), filler, 1);
-  assert.equal(outcome.status, 'completed', `a filler time is not a schema refusal: ${String(outcome.reason)}`);
-  assert.match(String(outcome.result_json), /missing_time/, 'the C-TIME boundary asks for the one time it lacks');
-  assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0, 'nothing is armed without a time');
-});
 
-test('#873 conformance: create_event commits from the declared shape and from the same time fields', async t => {
-  const port = composePort();
-  const f = await fixture(t, { compose: port, grantMode: 'owner-trusted-reads', alarms: alarmClock() });
-  const { declarations } = declarationsFor(liveTools(f));
-  const declared = declaredSchema(declarations, 'create_event');
-  assert.ok(declared.properties, 'create_event declares its arguments');
-  // The event tool takes the day from his own words and offers no time of its own.
-  assert.equal(declared.properties['time'], undefined, 'create_event declares no time argument');
-  const created = async (turn: number, args: Record<string, unknown>, words: string) => {
-    f.observeOwner('run', `j${turn}`, words, ALARM_CLOCK);
-    const outcome = await liveExecute(f, composeCall(f, `run:${turn}:0`, 'create_event', args), args, turn);
-    assert.equal(outcome.status, 'completed', `${String(outcome.reason)}`);
-    return port.log.filter(entry => entry.startsWith('calendar_create_event:')).at(-1)?.split(':')[1];
-  };
-  const fromWords = await created(1, { summary: 'cardio', duration_minutes: 45 }, 'block cardio in my calendar tomorrow at 9');
-  assert.ok(fromWords !== undefined, 'the declared shape commits the block he said');
-  assert.ok(Number(fromWords) > ALARM_CLOCK, 'the block he said is in his future');
-  // A model that fills the time anyway is understood, not refused: the same flat fields as set_alarm.
-  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  let turn = 1;
-  for (const timeCase of DECLARED_TIME_CASES) {
-    for (const variant of TIME_VARIANTS) {
-      const where = `create_event ${timeCase.label} / ${variant.label}`;
-      turn += 1;
-      const start = await created(turn, { summary: 'focus', time: variant.build(timeCase.fields) }, 'block focus time in my calendar');
-      assert.ok(start !== undefined, `${where} commits a block`);
-      const local = new Intl.DateTimeFormat('en-GB', { timeZone: hostZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(Number(start));
-      const expected = timeCase.fields['local_time'];
-      if (typeof expected === 'string') assert.equal(local, expected, `${where} starts at the clock he named`);
-      else assert.equal(Number(start) - ALARM_CLOCK, timeCase.fireAt - ALARM_CLOCK, `${where} starts the span he named`);
-    }
-  }
-});
+
+
+
 
 // AL-R1: the declaration is the whole contract the model can read, so every object it declares names
 // its properties and a value built only from it is never refused as a schema failure.

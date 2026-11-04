@@ -853,7 +853,7 @@ test('task document pages reconstruct the complete source body and reject invali
   const first = await readTaskPage(f, '7', null, 'page-first');
   assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
   const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
-  assert.equal(String(first.text) + String(next.text), body, 'whole-body paging neither truncates nor duplicates content');
+  assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${body}`, 'whole-body paging neither truncates nor duplicates content');
   assert.equal(next.next_cursor, null);
   const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
   assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');

@@ -852,45 +852,11 @@ test('#796 a refused recurrence names the retry, and the retry without it sets t
   assert.doesNotMatch(String(set.result_json), /rule_mismatch/, String(set.result_json));
 });
 
-test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
-  const f = await receivedOwnerFixture(t);
-  f.store.transaction(tx => tx.run("CREATE TRIGGER fail_body_completion BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' AND json_extract(NEW.intent_json,'$.toolName')='read_received_body' BEGIN SELECT RAISE(ABORT,'synthetic body completion'); END"));
-  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.tools[0]?.status, 'failed');
-  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'failed');
-  f.store.transaction(tx => tx.run('DROP TRIGGER fail_body_completion'));
-  const retry = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(retry.error, undefined);
-  const response = retry.accepted[0]!.response, slice = (response['bodySlices'] as JsonObject[])[0]!;
-  assert.equal(slice['offset'], 0); assert.equal(slice['text'], f.raw.slice(0, Number(slice['end']))); assert.equal(response['alreadyPrepared'], undefined); assert.equal(f.calls.length, 1);
-});
 
-test('Text body owner integration: original policy, generation, source availability and expiry gate consumer-only delivery', async t => {
-  for (const mode of ['suspend', 'generation', 'class', 'expired', 'release'] as const) {
-    const f = await receivedOwnerFixture(t);
-    const body = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(body.accepted.length, 1);
-    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'allowed');
-    const first = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal), second = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal);
-    assert(first.state === 'allowed' && first.evidence.kind === 'remote-body'); assert.deepEqual(second, first, 'consumeEvidence detaches repeatable evidence, not a destructive single-use read');
-    if (mode === 'suspend') f.registry.suspend('endpoint');
-    if (mode === 'generation') f.owner.applyConnection(policy({ generation: 2 }));
-    if (mode === 'class') f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { id: 'synthetic-policy', revision: 2, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { identity: route.identity, allowedClasses: ['sensitive'] } }));
-    if (mode === 'release') f.owner.releaseEvidence('run');
-    const clock = mode === 'expired' ? t.mock.method(Date, 'now', () => first.evidence.kind === 'remote-body' ? first.evidence.expiresAt + 1 : 0) : undefined;
-    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'refused', mode);
-    clock?.mock.restore(); assert.equal(f.calls.length, 1);
-  }
-});
 
-test('Text body owner integration: independent parents, unknown and cross-run cursors preserve original identities', async t => {
-  const f = await receivedOwnerFixture(t);
-  const other = await f.dispatch([{ name: 'get_insight', args: { ids: [43] } }]); const otherCursor = (other.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.notEqual(otherCursor, f.cursor);
-  const two = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }, { name: 'read_received_body', args: { cursor: otherCursor } }]); assert.equal(two.accepted.length, 2);
-  assert(two.accepted.every(result => (result.response['bodySlices'] as JsonObject[])[0]!['offset'] === 0)); assert.equal(f.calls.length, 2);
-  const unknown = await f.dispatch([{ name: 'read_received_body', args: { cursor: 'unknown-synthetic-cursor' } }]); assert.equal(unknown.tools[0]!.status, 'refused'); assert.equal(unknown.error, undefined);
-  const accepted = { ...f.acceptance, runId: 'second-run' }, hash = f.store.transaction(tx => f.owner.snapshotRun(tx, accepted)); f.setLive({ ...accepted, acceptedRunHash: hash.sha256 });
-  const definitions = f.allDefinitions('second-run'), host = { ...f.host, runId: 'second-run', grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
-  const crossed = await runToolCalls(f.owner, [{ id: 'cross-run', name: 'read_received_body', args: { cursor: f.cursor } }], { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, step: 1, contentIndex: 0, seenIds: new Set(), authorize: true, baseClasses: ['ordinary'] });
-  assert.equal(crossed.tools[0]!.status, 'refused'); assert.equal(crossed.error, undefined); assert.equal(f.calls.length, 2);
-});
+
+
+
 
 for (const effect of ['read', 'write'] as const) {
   test(`a handler that throws outside its own catch writes one closed tool_handler_error line: ${effect}`, async t => {
@@ -913,6 +879,51 @@ for (const effect of ['read', 'write'] as const) {
     assert.equal(JSON.stringify(logged).includes('synthetic handler failure'), false, 'the exception message is not diagnostic payload');
   });
 }
+
+// Task document continuations are typed id plus character offset, not the
+// retired owner-only read_body capability tokens.
+async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
+  const p = policy(); p.bounds = { ...p.bounds, maxEntityBytes: 200_000, maxResultBytes: 200_000 };
+  return fixture(t, { policy: p, memoryBytes: 1_000_000, resultOf });
+}
+async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
+  const args = { id, cursor }, call = f.intent(executionId, 'read_knowledge', args);
+  f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
+  return gate.results[0]!.response;
+}
+test('task document pages reconstruct the complete body and reject an invalid continuation', async t => {
+  const body = 'A'.repeat(25_000) + 'synthetic-tail';
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: body }] }));
+  const first = await readTaskPage(f, '7', null, 'page-first');
+  assert.equal(first.status, 'partial'); assert.ok(typeof first.next_cursor === 'string');
+  const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
+  assert.equal(String(first.text) + String(next.text), body, 'whole-body paging neither truncates nor duplicates content');
+  assert.equal(next.next_cursor, null);
+  const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
+  assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');
+});
+test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
+  const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: current }] }));
+  const first = await readTaskPage(f, '7', null, 'version-first'); assert.ok(typeof first.next_cursor === 'string');
+  current = 'B'.repeat(25_000) + 'changed-tail';
+  const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
+  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), original, 'continue the captured version or explicitly refuse, never splice different documents');
+  else assert.ok(next.repair, 'a version change refusal tells the worker to restart');
+});
+test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: 'A'.repeat(25_000) }] }));
+  const args = { id: '7', cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
+  f.owner.applyConnection(policy({ generation: 2, enabled: false }));
+  const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
+  assert.equal(gate.state, 'refused', 'captured private document pages cannot survive explicit source revocation');
+});
 
 test('C-STEADY104: a rolled-back read completion still permits a failed terminal', async t => {
   const f = await fixture(t);

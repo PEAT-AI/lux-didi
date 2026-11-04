@@ -558,7 +558,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!effect) return alarmFailed('Alarm authority context is unavailable. Nothing changed.');
         let rule = args.recurrence as SeriesRule | null | undefined;
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
-        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
         if (at !== undefined) {
           const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
           const proposed = alarmReadBack(at, zone);
@@ -567,6 +567,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (interpreted.status === 'ready') { at = interpreted.fireAtUtc; rule = interpreted.series ?? rule; }
         }
         if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return alarmFailed('Invalid recurrence. Nothing changed.'); } }
+        if (at !== undefined && at <= now) return alarmFailed('The resolved alarm time is in the past. Nothing changed.');
         if (at !== undefined) at = Math.max(at, now + 60_000);
         const label = typeof args.text === 'string' ? args.text.trim() : undefined;
         if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return alarmFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');

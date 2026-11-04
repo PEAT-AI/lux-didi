@@ -180,3 +180,14 @@ test('C-FREEDOM: fake inference lists alarms then cancels the chosen exact id an
   assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'cancelled');
   assert.equal(alarmRow(h, first.references[0]!.id)!.state, 'pending');
 });
+
+
+test('owner time correction precedes past-proposal refusal, but an unresolved past time is refused', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const corrected = await h.call('alarm_create', { text: 'synthetic corrected', at: new Date(now - 3_600_000).toISOString() }, 'remind me in thirty minutes');
+  assert.equal(corrected.status, 'ok', corrected.repair ?? corrected.text);
+  assert.equal(Number(alarmRow(h, corrected.references[0]!.id)!.fire_at_utc), now + 1_800_000);
+  const refused = await h.call('alarm_create', { text: 'synthetic past', at: new Date(now - 3_600_000).toISOString() }, 'set this reminder');
+  assert.equal(refused.status, 'failed');
+  assert.match(refused.repair ?? refused.text, new RegExp(corrected.references[0]!.id));
+});

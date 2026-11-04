@@ -16,12 +16,12 @@ import { createModelPort } from '../server/dist/tasks/model.js';
 import { resolveTaskModels } from '../server/dist/config/tasks.js';
 import { documentResult } from '../server/dist/tasks/results.js';
 import { attachHostLogSink } from '../server/dist/tools/host-events.js';
-import { composeLiveInstruction, NAYA_LIVE_BASE } from '../server/dist/prompt/index.js';
+import { composeLiveInstruction, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, withToolsSection } from '../server/dist/prompt/index.js';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 if (args.includes('--help')) {
-  console.log('node scripts/probe-host-wire.mjs --env-file PATH --report PATH --transcripts PATH [--count 3] [--scenarios H,I,J]');
+  console.log('node scripts/probe-host-wire.mjs --env-file PATH --report PATH --transcripts PATH [--count 3] [--scenarios H,I,J] [--voice-only --work-delivery-file PATH --variant A --ask-index 0]');
   process.exit(0);
 }
 const envFile = option('--env-file');
@@ -29,6 +29,7 @@ const report = option('--report');
 const transcripts = option('--transcripts');
 if (!envFile || !report || !transcripts) throw Error('Required: --env-file, --report, --transcripts');
 const count = Number(option('--count', '3'));
+const voiceOnly = args.includes('--voice-only');
 const scenarios = option('--scenarios', 'H,I,J').split(',');
 if (!Number.isInteger(count) || count < 1 || count > 4 || scenarios.some(x => !/^(H|I|J)$/.test(x))) throw Error('Invalid trial selection');
 // Deliberately extract only the authorized key; never populate process.env or inspect other values.
@@ -210,6 +211,70 @@ async function trial(scenario, number) {
   note(`| ${scenario}-${number} | REVIEW | ${rebuild} | ${t.sessions} | ${t.commentary.length}/${t.acks.length} | ${t.helper.length} | ${latency.map(x => Number.isFinite(x.latencyMs) ? x.latencyMs : 'none').join(',')} | ${result.answerTimeMs} | ${spent.toFixed(4)} |`);
   console.log(JSON.stringify({ scenario, number, error: result.error, sessions: t.sessions, helper: t.helper.length, cost: spent, transcript: finalText }));
 }
+async function voiceTrial() {
+  const file = option('--work-delivery-file');
+  if (!file) throw Error('voice-only requires --work-delivery-file');
+  const variant = option('--variant', 'unknown');
+  const askIndex = Number(option('--ask-index', '0'));
+  const asks = ['What did Mira write to me about the harbour?', 'Check my mail, is there anything from Mira about the inspection?', 'What is on my calendar on Tuesday?', 'What did Mira say in chat yesterday?'];
+  if (!Number.isInteger(askIndex) || !asks[askIndex]) throw Error('Invalid ask index');
+  const base = withToolsSection(prompt, []);
+  if (base.split(NAYA_WORK_DELIVERY).length !== 2) throw Error('Expected exactly one work-delivery section');
+  const instruction = base.replace(NAYA_WORK_DELIVERY, () => readFileSync(file, 'utf8'));
+  guard(0.12);
+  writeFileSync(ledger, JSON.stringify({ spent: spent + 0.12, ceiling: cap, reserved: true }));
+  active = { start: Date.now(), textChars: 0, helperCost: 0 };
+  const t = active, events = [], wire = [];
+  let session, timer, stopped, ownerEnd;
+  const frames = [];
+  const adapter = new OpenAiLiveVoiceAdapter({ modelId: 'gpt-live-1', voice: 'marin', keyReference: 'synthetic', credentials, route,
+    socketFactory: (url, config) => {
+      const ws = new WebSocket(url, config);
+      const send = ws.send.bind(ws);
+      ws.send = (data, ...rest) => {
+        const e = JSON.parse(String(data));
+        if (e.type === 'session.start' || e.type === 'session.update') {
+          const chars = JSON.stringify(e).length; guard(chars * textRate); t.textChars += chars;
+          raw({ voiceInstruction: { variant, askIndex, composedChars: instruction.length, wireChars: e.session?.instructions?.length } });
+        }
+        return send(data, ...rest);
+      };
+      ws.on('message', data => { let e; try { e = JSON.parse(String(data)); } catch { return; }
+        if (/delegat|error/.test(e.type)) { const at = Date.now() - t.start; wire.push({ at, ...e }); raw({ variant, askIndex, at, wire: e }); }
+      });
+      return ws;
+    } });
+  raw({ voiceTrial: { variant, askIndex, ask: asks[askIndex], instruction, started: new Date().toISOString() } });
+  let reading;
+  try {
+    session = adapter.open({ opening: 'model_first', system: { text: instruction, dataClass: 'sensitive' }, dataClasses: ['ordinary', 'private', 'sensitive'], history: [] }, { signal: new AbortController().signal, deadlineMs: Date.now() + 90000 });
+    reading = (async () => { for await (const e of session.events) { const at = Date.now() - t.start; if (e.type !== 'audio') { const event = { at, ...clean(e) }; events.push(event); raw({ variant, askIndex, voice: event }); if (typeof e.text === 'string') t.textChars += e.text.length; } } })();
+    const until = async (test, ms) => { const end = Date.now() + ms; while (!test() && Date.now() < end) { if (stopped) throw Error(stopped); await pause(30); } return test(); };
+    await session.ready;
+    timer = setInterval(() => { try { guard(); session.sendAudio({ pcm: frames.shift() ?? Buffer.alloc(1440), dataClass: 'ordinary' }); } catch (error) { stopped = error.message; clearInterval(timer); session.close(); } }, 30);
+    if (!await until(() => events.some(e => e.type === 'turnComplete'), 20000)) throw Error('opening did not complete');
+    await pause(500);
+    const bytes = speech(asks[askIndex]);
+    raw({ variant, askIndex, owner: asks[askIndex], at: Date.now() - t.start });
+    for (let i = 0; i < bytes.length; i += 1440) frames.push(bytes.subarray(i, i + 1440));
+    if (!await until(() => frames.length === 0, 20000)) throw Error('input did not finish');
+    ownerEnd = Date.now() - t.start;
+    await until(() => false, 20000);
+  } catch (error) { stopped = error.message; process.exitCode = 1; }
+  finally {
+    clearInterval(timer); session?.close(); await session?.done; await reading;
+    const cost = estimate(); spent = cost; active = undefined;
+    writeFileSync(ledger, JSON.stringify({ spent, ceiling: cap, method: 'P1 socket/time/text; voice-only, no helper' }));
+    const result = { variant, askIndex, ask: asks[askIndex], error: stopped ?? null, ownerEnd, composedChars: instruction.length,
+      delegation: wire.filter(e => /delegat/.test(e.type)),
+      transcript15: events.filter(e => e.type === 'outputTranscription' && e.at >= ownerEnd && e.at <= ownerEnd + 15000).map(e => e.text ?? '').join(''),
+      events, cumulativeUsd: spent };
+    raw({ voiceResult: result }); console.log(JSON.stringify({ ...result, events: undefined }));
+  }
+}
+if (voiceOnly) {
+  try { await voiceTrial(); } finally { rmSync(dir, { recursive: true, force: true }); }
+} else {
 appendFileSync(transcripts, '\n# Synthetic host-wire event stream\n');
 note('\n## Host-wire measurements\n| Trial | Verdict pending semantic review | live_rebuild | Sessions | Commentary/acks | Helper calls | First audio latency ms | Answer span ms | Cumulative USD |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
 try {
@@ -219,3 +284,5 @@ try {
   }
 } catch (error) { note(`Probe stopped: ${error.message}`); if (error.message !== 'BUDGET_STOP') process.exitCode = 1; }
 finally { rmSync(dir, { recursive: true, force: true }); }
+
+}

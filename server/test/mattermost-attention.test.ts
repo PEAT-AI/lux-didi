@@ -1,3 +1,6 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { Authority } from '../tasks/authority.js';
+import { Store } from '../runtime/store.js';
 import { taskChatReader } from './fixtures/task-chat-reader.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -298,4 +301,24 @@ test('R29 attention rejects an invalid native window before SDK IO', async t => 
   const before = f.calls().length;
   assert.equal((await task.call('chat_attention', { days: 31 })).status, 'failed');
   assert.equal(f.calls().length, before);
+});
+
+
+test('R29 an actual native attention read advances task exposure, while invalid arguments do not', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
+  const store = new Store(join(f.dir, 'task-state'));
+  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {} }),
+    infer: async () => { throw Error('No inference in an explicit read fixture'); }, contentAllowed: () => false,
+    delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
+  });
+  t.after(() => { runtime.close(); store.close(); });
+  const revision = runtime.begin('Read what is waiting for me', 1, 1);
+  const invalid = await runtime.runTool('chat_attention', { days: 31, limit: null }, { ...revision.identity, operation_id: 'invalid' }, new AbortController().signal);
+  assert.equal(invalid.status, 'failed');
+  assert.deepEqual(runtime.taskContext(revision.identity.task_id)?.exposures, []);
+  const result = await runtime.runTool('chat_attention', { days: 7, limit: 5 }, { ...revision.identity, operation_id: 'native-read' }, new AbortController().signal);
+  assert.notEqual(result.status, 'failed', JSON.stringify(result));
+  assert.ok(runtime.taskContext(revision.identity.task_id)?.exposures.includes('company'));
 });

@@ -19,7 +19,7 @@ export function taskChatReader(port: McpPort, registry: McpRegistry, endpoint: C
   const reader = descriptor.createReader({ port, registry, endpoint, schemaDigest, generation: 1, policy });
   const execute = connectorExecutor([{ connector: 'mattermost', reader, policy, project: evidence => descriptor.project(evidence, port, policy) }]);
   const tools = createRegistry({ execute, authority: new FakeAuthority() });
-  return { tools, policy, async call(name: string, args: Record<string, unknown>) {
+  return { tools, policy, execute, async call(name: string, args: Record<string, unknown>) {
     const tool = tools.get(name)!;
     const fields = tool.parameters.properties as Record<string, unknown>;
     const normalized = Object.fromEntries(Object.keys(fields).map(key => [key, args[key] ?? null]));

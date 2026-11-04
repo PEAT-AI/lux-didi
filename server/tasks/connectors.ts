@@ -136,7 +136,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         const hostRepair = connectorFailures.get(result);
         if (hostRepair) {
           const shaped = failure(hostRepair.repair, hostRepair.code);
-          const repair = `${hostRepair.repair} ${shaped.repair ?? ''}`;
+          const repair = name.startsWith('read_') ? `${hostRepair.repair} ${shaped.repair ?? ''}` : hostRepair.repair;
           return { ...shaped, repair, [TASK_CONNECTOR_FAILURE]: repair };
         }
         if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');

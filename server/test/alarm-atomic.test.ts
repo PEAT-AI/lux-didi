@@ -1,3 +1,4 @@
+import { AlarmScheduler } from '../host/alarm-scheduler.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -186,3 +187,38 @@ for (const action of ['update', 'cancel'] as const) {
     if (action === 'update') assert.equal(active?.label, 'Updated synthetic reminder');
   });
 }
+
+
+test('cancelling an acknowledged and snoozed recurring alarm settles every outstanding occurrence', async t => {
+  let now = Date.UTC(2030, 0, 1, 8);
+  let scheduler: AlarmScheduler | undefined;
+  const h = alarmHarness(t, () => scheduler?.recheck('mutation'), () => now);
+  const due: string[] = [];
+  scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => now, setTimeout: () => 1, clearTimeout() {} }, emit: alarm => due.push(alarm.id) });
+  t.after(() => scheduler?.stop());
+  const created = await h.call('alarm_create', { text: 'Synthetic recurring reminder', at: new Date(now + 60_000).toISOString(), recurrence: { kind: 'daily', localTime: '08:01', tz: 'UTC' } }, 'remind me every day at 08:01');
+  assert.equal(created.status, 'ok', created.repair ?? created.text);
+  const originalId = created.references[0]!.id;
+  now += 60_000;
+  scheduler.recheck('mutation');
+  assert.deepEqual(due, [originalId]);
+  assert.equal(scheduler.acknowledge(originalId), true, 'actual acknowledgment materializes the next occurrence');
+  const seriesId = h.store.transaction(tx => String(tx.get('SELECT series_id FROM alarm_occurrences WHERE alarm_id=?', [originalId])!.series_id));
+  const outstanding = () => h.store.transaction(tx => tx.all("SELECT a.id,a.fire_at_utc,a.state FROM alarms a JOIN alarm_occurrences o ON o.alarm_id=a.id WHERE o.series_id=? AND a.state IN ('pending','ringing')", [seriesId]));
+  assert.equal(outstanding().length, 1, 'acknowledgment has really materialized the next daily occurrence');
+  const snoozed = await h.call('alarm_update', { id: originalId, at: new Date(now + 5 * 60_000).toISOString() }, 'snooze this alarm for five minutes');
+  assert.equal(snoozed.status, 'ok', snoozed.repair ?? snoozed.text);
+  const snoozedId = snoozed.references[0]!.id;
+  assert.notEqual(snoozedId, originalId);
+  const pending = outstanding();
+  assert.equal(pending.length, 2, 'the snooze and materialized daily occurrence both belong to the real series');
+  const cancelled = await h.call('alarm_cancel', { id: snoozedId, scope: 'series' }, 'cancel the entire recurring alarm series');
+  assert.equal(cancelled.status, 'ok', cancelled.repair ?? cancelled.text);
+  assert.equal(cancelled.receipt?.state, 'committed');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarm_series WHERE id=?', [seriesId])!.state), 'cancelled');
+  assert.deepEqual(outstanding(), [], 'successful series cancellation leaves no occurrence that can ring');
+  for (const row of pending) assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', [row.id])!.state), 'cancelled');
+  now = Math.max(...pending.map(row => Number(row.fire_at_utc))) + 1;
+  scheduler.recheck('mutation');
+  assert.deepEqual(due, [originalId], 'neither cancelled occurrence emits alarm_due after both deadlines');
+});

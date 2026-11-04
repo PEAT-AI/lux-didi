@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
+import { createSourceFile, SyntaxKind, transpileModule, ModuleKind, ScriptTarget, type FunctionDeclaration } from 'typescript';
 import { memoryDeleteControl, deleteMemoryAndReload, memoryListMarkup, filterMemoryItems, memoryItemKind, memoryItemOrigin } from '../src/memory-list.ts';
 import type { MemoryListItem } from '../src/memory-list.ts';
 
@@ -134,3 +137,49 @@ for (const retained of [true, false]) {
       : 'Memory deleted.']);
   });
 }
+
+// #883 / MEMUI-R1: Memory shows saved entries with no conversation open, so a deletion there has to
+// reload the same saved-entry read. The two functions under test are transpiled from the real
+// main.ts, so a change that drops the branch is red here rather than only visible in a browser.
+const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+const mainParsed = createSourceFile('main.ts', mainSource, ScriptTarget.Latest, true);
+const underTest = ['loadEntries', 'deleteMemory', 'mutate', 'writable'];
+const memoryDeletion = transpileModule(mainParsed.statements
+  .filter((node): node is FunctionDeclaration => node.kind === SyntaxKind.FunctionDeclaration && underTest.includes(node.name?.text ?? ''))
+  .map(node => node.getText(mainParsed)).join('\n'), { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+
+function memoryDeletionHarness(state: Record<string, unknown>, request: (path: string) => Promise<unknown>) {
+  const signal = new AbortController().signal, calls: string[] = [];
+  const sandbox: any = {
+    AbortController, AbortSignal, clearTimeout, setTimeout,
+    authorityVersion: () => signal,
+    assertAuthority: (version: AbortSignal) => { if (version !== signal) throw new Error('synthetic stale authority'); },
+    render() {}, notify(message: string) { sandbox.notice = message; }, failure: (error: unknown) => `synthetic failure: ${String(error)}`,
+    connectedView: { active: false, reset() {}, async refresh() {} }, deleteMemoryAndReload,
+    request: async (path: string) => { calls.push(path); return request(path); },
+    listMemorySummaries: async () => ({ items: [] }),
+    deleteMemoryEntry: async () => ({ deletedIds: ['synthetic-entry'] }), deleteMemorySummary: async () => ({ deletedIds: [] }),
+    connection: 'Connected', busy: false, entriesMore: false, notice: '', error: '', recall: undefined, queryDraft: '', status: undefined,
+    ...state,
+  };
+  runInContext(memoryDeletion, createContext(sandbox));
+  return { context: sandbox, calls };
+}
+
+test('memory deletion with no conversation open reloads the saved entries it was showing', async () => {
+  const harness = memoryDeletionHarness({ tab: 'Memory', session: undefined, entries: [], memorySummaries: [], summaryIds: new Set() },
+    async path => path === '/sessions' ? { items: [{ id: 'capture-note' }], nextCursor: null } : { entries: [{ id: 'kept', text: 'kept note' }] });
+  await harness.context.deleteMemory('synthetic-entry');
+  assert.deepEqual(harness.calls, ['/sessions', '/sessions/capture-note'], 'the reload reads the saved entries, not a conversation');
+  assert.deepEqual(Array.from(harness.context.entries, (entry: { text: string }) => entry.text), ['kept note'], 'the kept note survives and the deleted one is gone from the list');
+  assert.equal(harness.context.error, '', 'the reload reports no failure');
+});
+
+test('memory deletion with a conversation open never reads the saved-entry list', async () => {
+  const harness = memoryDeletionHarness({ tab: 'Conversation', session: { id: 'old-session' }, entries: [], memorySummaries: [], summaryIds: new Set() },
+    async () => ({ session: { id: 'old-session' }, entries: [{ id: 'kept', text: 'kept note' }], nextCursor: 'more' }));
+  await harness.context.deleteMemory('synthetic-entry');
+  assert.deepEqual(harness.calls, ['/sessions/old-session'], 'only the open conversation is read');
+  assert.equal(harness.context.entries.length, 1, 'the open conversation still supplies the list');
+  assert.equal(harness.context.entriesMore, true, 'the conversation paging flag is untouched');
+});

@@ -196,7 +196,7 @@ test('cancelling an acknowledged and snoozed recurring alarm settles every outst
   const due: string[] = [];
   scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => now, setTimeout: () => 1, clearTimeout() {} }, emit: alarm => due.push(alarm.id) });
   t.after(() => scheduler?.stop());
-  const created = await h.call('alarm_create', { text: 'Synthetic recurring reminder', at: new Date(now + 60_000).toISOString(), recurrence: { kind: 'daily', localTime: '08:01', tz: 'UTC' } }, 'remind me every day at 08:01');
+  const created = await h.call('alarm_create', { text: 'Synthetic recurring reminder', at: new Date(now + 60_000).toISOString(), recurrence: { kind: 'daily', weekdays: [], hour: 8, minute: 1, tz: 'UTC' } }, 'remind me every day at 08:01');
   assert.equal(created.status, 'ok', created.repair ?? created.text);
   const originalId = created.references[0]!.id;
   now += 60_000;

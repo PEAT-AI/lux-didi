@@ -9,11 +9,11 @@ import WebSocket from '../server/node_modules/ws/index.js';
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 if (args.includes('--help')) {
-  console.log('node scripts/probe-client-delegation.mjs --env-file PATH --scenario A1..A8|B1..B5|C1..C4 --report PATH --frames PATH [--count N] [--length 2000|5000] [--pace quiet] [--variant NAME]');
+  console.log('node scripts/probe-client-delegation.mjs --env-file PATH --scenario A1..A8|B1..B5|C1..C4|N1..N3|T1..T3|S1|R1 --report PATH --frames PATH [--count N] [--length 2000|5000] [--pace quiet] [--variant NAME]');
   process.exit(0);
 }
 const scenario = option('--scenario');
-if (!/^(A[1-8]|B[1-5]|C[1-4])$/.test(scenario ?? '')) throw Error('Expected --scenario A1..A8, B1..B5 or C1..C4');
+if (!/^(A[1-8]|B[1-5]|C[1-4]|N[1-3]|T[1-3]|S1|R1)$/.test(scenario ?? '')) throw Error('Expected --scenario A1..A8, B1..B5 or C1..C4');
 const report = option('--report');
 const frames = option('--frames');
 if (!report || !frames) throw Error('--report and --frames required');
@@ -41,7 +41,7 @@ let serial = 0;
 let active;
 const sockets = new Set();
 const textRate = 30 / 1_000_000 / 3;
-const cap = scenario.startsWith('C') ? 4 : 3;
+const cap = 3;
 const budgetError = () => Error(`BUDGET_STOP: cumulative second/third pass USD ${cap} estimate ceiling`);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const note = text => { appendFileSync(frames, `${text}\n`); };
@@ -165,7 +165,7 @@ async function open(run, seed = [], voiceInstructions = instructions) {
     model: 'gpt-live-1', instructions: voiceInstructions,
     audio: { format: { type: 'audio/pcm', rate: 24000 }, output: { voice: 'marin' } },
     ...(seed.length ? { input: seed } : {}),
-    delegation: isResponses ? { type: 'responses', responses: { model: 'gpt-6-luna', instructions: backend, tools: [tool], tool_choice: 'auto', parallel_tool_calls: true, ...(scenario === 'B5' ? { service_tier: 'priority' } : {}) } } : { type: 'client' },
+    delegation: isResponses ? { type: 'responses', responses: { model: 'gpt-6-luna', instructions: backend, tools: [tool], tool_choice: 'auto', parallel_tool_calls: true, ...(scenario === 'B5' ? { service_tier: 'priority' } : {}) } } : { type: 'client', ...(scenario === 'T3' ? { acknowledgement_delay_ms: 800 } : {}) },
   } });
   await until(s, () => s.live, 5000);
   return s;
@@ -224,9 +224,64 @@ function summary(s, details) {
 }
 note(`\n## WIRE-R2 ${scenario} length=${length} variant=${variant} pace=${paced ? 'quiet' : 'back-to-back'}\n| run | ms | direction | frame |\n| --- | --- | --- | --- |`);
 appendFileSync(report, `\n## WIRE-R2 ${scenario}, ${length} chars, ${variant}, ${paced ? 'quiet-gap pacing' : 'back-to-back'}\n| run | ask / delegation ms from socket | delegation ids | append or output ms / next audio delta ms | OUTPUT TRANSCRIPT after append | rejection |\n| --- | --- | --- | --- | --- | --- |\n`);
+async function night(run) {
+  const history = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'The synthetic moon garden gate code is amber forty seven.' }] }];
+  const initial = scenario === 'R1' && variant === 'say-first' ? `${instructions} Say first: The synthetic delivery has arrived.` : instructions;
+  const s = await open(run, scenario === 'R1' ? history : [], initial);
+  if (!s.live) { summary(s, { note: 'session failed to start' }); s.close(); return; }
+  const details = { variant }; let retained = null;
+  const append = (kind, text, id = null) => {
+    const at = s.ms();
+    s.send({ type: `session.${kind}.append`, delegation_id: id, content: text });
+    return at;
+  };
+  if (['N2', 'T2', 'T3'].includes(scenario)) {
+    const request = await ask(s, scenario === 'T2' ? 'Look up why the sky appears blue in the host lookup service.' : prompts[0]);
+    retained = request.id;
+    if (!retained) { summary(s, { note: 'missing prerequisite delegation' }); s.close(); return; }
+    if (scenario === 'T3') details.appendAt = append('thinking', '', retained);
+    else if (scenario === 'T2') details.appendAt = append('commentary', 'No source lookup is needed. Answer the original question from your own general knowledge in your own words.', retained);
+    else { append('commentary', openingResult, retained); await pause(12000); }
+  }
+  if (scenario === 'N1' || scenario === 'N2') details.appendAt = append('commentary', 'The synthetic garden gate code is violet forty two. Tell the listener now.', variant === 'retained' ? retained : null);
+  if (scenario === 'N3') {
+    if (variant === 'story') {
+      const before = s.audio.length;
+      await ask(s, 'Tell a long synthetic story about a robot exploring a crystal garden.', false);
+      await until(s, () => s.audio.length > before, 10000);
+      details.lastAudioBeforeAppend = s.lastAudio;
+    } else {
+      s.input = speech('Here is a synthetic story about a robot exploring a crystal garden. The robot walks slowly past seven violet trees and stops to count every shining leaf.');
+      s.offset = 0; await pause(1500);
+      details.ownerAudioRemainingBytes = Math.max(0, s.input.length - s.offset);
+    }
+    details.appendAt = append('commentary', 'Important synthetic update: the garden gate code is violet forty two. Tell the listener.');
+  }
+  if (scenario === 'T1') {
+    details.appendAt = append('thinking', 'The synthetic moon garden gate code is amber forty seven.');
+    await pause(15000);
+    details.quietWindowAudioCount = s.audio.filter(at => at >= details.appendAt).length;
+    details.followUp = await ask(s, 'What is the synthetic moon garden gate code I gave you?', false);
+  }
+  if (scenario === 'S1') {
+    const text = resultText(1500); details.payload = text;
+    for (const part of variant === 'chunks' ? chunks(text) : [text]) {
+      details.appendAt ??= s.ms(); append('commentary', part);
+      if (variant === 'chunks') await pause(300);
+    }
+  }
+  if (scenario === 'R1') {
+    await pause(15000); details.openingAudioCount = s.audio.length;
+    details.openingTranscript = s.transcripts.map(t => t.text).join('');
+    details.followUp = await ask(s, 'What is the synthetic moon garden gate code I gave you?', false);
+  }
+  await pause(scenario === 'S1' ? 35000 : 18000);
+  summary(s, details); s.close();
+}
 try {
   for (let index = 1; index <= count; index++) {
     const run = index + Number(option('--run-offset', 0));
+    if (/^[NTSR]/.test(scenario)) { await night(run); continue; }
     const opening = scenario === 'C1' || scenario === 'C2';
     let s = await open(run, opening && variant === 'seed' ? seedItems(openingResult) : [], opening ? openingInstructions : scenario === 'C3' ? naturalInstructions : instructions); let details = {};
     if (!s.live) { summary(s, { note: 'session failed to start' }); s.close(); continue; }

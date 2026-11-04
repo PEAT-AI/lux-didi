@@ -207,7 +207,7 @@ for (const text of ['', 'Synthetic late answer.']) test(`C-SILENCE: late delegat
   f.call.spoke(); await f.call.input('Synthetic late ask', 1);
   assert.equal(f.sent.length, 0);
   f.call.delegation('late'); assert.equal(f.sent.length, 1);
-  f.call.accepted('c1'); f.call.delegation('again'); assert.equal(f.sent.length, 1);
+  f.call.delivery.accepted('c1'); f.call.delegation('again'); assert.equal(f.sent.length, 1);
 });
 for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank terminal with delegation ${JSON.stringify(text)}`, async t => {
   const pending = deferred(), f = fixture(t, async () => pending.promise);
@@ -220,13 +220,13 @@ test('C-SILENCE: no action survives unready replacement and late delegation', as
   const running = f.call.input('Synthetic rebuild ask', 1);
   f.call.socket(2, false); pending.resolve({ text: '', calls: [], no_action: true }); await running;
   f.call.delegation('late'); assert.equal(f.sent.length, 0);
-  f.call.ready(); assert.equal(f.sent.length, 1);
+  f.call.delivery.ready(); assert.equal(f.sent.length, 1);
 });
 test('C-SILENCE: twice rejected remainder stays owed until socket ready', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic retained answer.', calls: [] }));
   await f.call.input('Synthetic ask', 1);
-  f.call.rejected('c1'); f.call.rejected('c2'); assert.equal(f.sent.length, 2);
+  f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); assert.equal(f.sent.length, 2);
   assert.ok(f.call.delivery.waitingAnswer());
   f.call.socket(2); assert.equal(f.sent.length, 3);
-  f.call.accepted('c3'); f.call.ready(); assert.equal(f.sent.length, 3);
+  f.call.delivery.accepted('c3'); f.call.delivery.ready(); assert.equal(f.sent.length, 3);
 });

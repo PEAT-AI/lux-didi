@@ -169,5 +169,11 @@ test('task review content is stored and pruned while source results never enter 
     assert.equal(store.transaction(tx => tx.get('SELECT arguments FROM task_operations'))?.arguments, null);
     assert.equal(store.transaction(tx => tx.get('SELECT final_answer,content_pruned_at FROM tasks'))?.final_answer, null);
     assert.equal(store.transaction(tx => tx.get('SELECT content_pruned_at FROM tasks'))?.content_pruned_at, now + 31 * 86400000);
+    store.finishTask(identity, 'incomplete', { text: 'DO_NOT_RESURRECT' }, now + 32 * 86400000);
+    assert.equal(store.transaction(tx => tx.get('SELECT final_answer FROM tasks'))?.final_answer, null);
+    store.saveTaskRevision({ ...identity, task_revision: 2 }, ['DO_NOT_RESURRECT'], [], now + 32 * 86400000);
+    assert.equal(store.transaction(tx => tx.get('SELECT owner_words FROM task_revisions WHERE task_revision=2'))?.owner_words, null);
+    store.saveTaskOperation({ ...identity, task_revision: 2, operation_id: 'post-prune-operation', tool: 'read_mail', effect: 'none', state: 'pending', args: { id: 'DO_NOT_RESURRECT' }, result: null }, now + 32 * 86400000);
+    assert.equal(store.transaction(tx => tx.get("SELECT arguments FROM task_operations WHERE operation_id='post-prune-operation'"))?.arguments, null);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });

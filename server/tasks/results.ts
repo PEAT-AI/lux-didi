@@ -7,7 +7,7 @@ export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** Host-classified connector failures, never raw connector text or a model field. */
 export const TASK_CONNECTOR_FAILURE = Symbol('task-connector-failure');
 export const TASK_CONNECTOR_FAILURE_CODE = Symbol('task-connector-outcome');
-export const connectorFailures = new WeakMap<object, string>();
+export const connectorFailures = new WeakMap<object, { code: ToolFailureCode; repair: string }>();
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }

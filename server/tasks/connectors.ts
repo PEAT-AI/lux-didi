@@ -1,4 +1,4 @@
-import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
@@ -122,9 +122,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
     const hostRepair = connectorFailures.get(result);
-    if (hostRepair) return { ...failed(hostRepair), [TASK_CONNECTOR_FAILURE]: hostRepair };
+    if (hostRepair) return { ...failed(hostRepair.repair), [TASK_CONNECTOR_FAILURE]: hostRepair.repair, [TASK_CONNECTOR_FAILURE_CODE]: hostRepair.code };
     if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
-      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(result.reason) ? result.reason : 'connector_error' };
+      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error' };
     if (binding.project) {
       try {
         const snapshot = binding.project(result);

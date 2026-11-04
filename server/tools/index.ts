@@ -15,7 +15,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { isToolFailureCode, MCP_FAILURE_STAGES } from '../adapters/model/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
@@ -650,11 +650,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               if (status.log) options.log?.(status.log);
             }
           }
-          if ('reason' in evidence && isToolFailureCode(evidence.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
+          if ('reason' in evidence && isToolFailureCode(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);
-            if (status) connectorFailures.set(evidence, status.reason);
+            if (status) connectorFailures.set(evidence, { repair: status.reason, code: isToolFailureCode(status.code) ? status.code : 'connector_error' });
             if (status?.log) options.log?.(status.log);
           }
           return evidence;

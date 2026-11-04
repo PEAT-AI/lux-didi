@@ -34,7 +34,7 @@ const mappings: Record<string, Mapping> = {
   search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: (parameters.properties as { limit: { maximum: number } }).limit.maximum }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: [Number(a.id)] }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
-  read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref }) },
+  read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
@@ -77,12 +77,18 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
     const body = typeof data === 'string' ? data : thread || text(root.body ?? root.text ?? root.content);
     if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.');
+    if (name === 'read_company') {
+      const cursor = text(root.next_cursor) || null;
+      const complete = record(root.coverage).complete;
+      return { status: cursor || complete === false ? 'partial' : 'ok', text: body, references: [{ id }], next_cursor: cursor,
+        coverage: cursor || complete === false ? 'Remote read is incomplete; continue with the returned native cursor when available.' : 'Remote page returned; only the supplied source content is verified.', repair: cursor ? 'Continue read_company with the same ref and depth and the returned cursor verbatim.' : null };
+    }
     return documentResult(name === 'read_mail' ? cleanMailBody(body) : body, id, text(args.cursor) || '0');
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
   if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');
   const items: RankedItem[] = list.flatMap(raw => {
-    const item = record(raw), itemId = String(item.id ?? item.ref ?? item.file_id ?? '');
+    const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
     return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });

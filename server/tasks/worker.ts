@@ -7,6 +7,8 @@ import type { OwnerProfileSnapshot } from '../prompt/types.js';
 export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
+export const FINAL_INFERENCE_DEADLINE_MS = 24000;
+const pendingReads = new WeakMap<Map<string, ToolResult>, Map<string, Promise<ToolResult>>>();
 import { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export interface ToolCall { id: string; name: string; args: unknown }
@@ -50,7 +52,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
   const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
-  const pending = new Map<string, Promise<ToolResult>>();
+  let pending = pendingReads.get(reads);
+  if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
   const receipts: ToolResult[] = [];
   const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
@@ -58,6 +61,32 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const partialText = (): string => findings.map(item => item.text).filter(Boolean).join('\n');
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join('\n'), findings, receipts });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
+  async function compose(): Promise<WorkerResult> {
+    if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
+    const finalAbort = new AbortController();
+    const stopped = new Promise<never>((_, reject) => {
+      finalAbort.signal.addEventListener('abort', () => reject(new Error('Final inference stopped')), { once: true });
+    });
+    const cancel = (): void => finalAbort.abort();
+    options.signal.addEventListener('abort', cancel, { once: true });
+    const clear = clock.timer(cancel, FINAL_INFERENCE_DEADLINE_MS);
+    try {
+      const answer = await Promise.race([options.infer({ instructions: workerInstructions(options.profile),
+        input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
+        outputs: [...outputs], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
+      if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
+      return { status: 'incomplete', text: answer.text || incomplete().text, findings, receipts };
+    } catch { return options.signal.aborted ? finish() : incomplete(); }
+    finally { clear(); options.signal.removeEventListener('abort', cancel); }
+  }
+  async function readBounded(body: (signal: AbortSignal) => Promise<ToolResult>): Promise<ToolResult> {
+    const local = new AbortController();
+    let rejectTimeout!: (reason: Error) => void;
+    const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
+    const clear = clock.timer(() => { local.abort(); rejectTimeout(new Error('Read deadline')); if (current()) expire(); }, CONNECTOR_DEADLINE_MS);
+    try { return await Promise.race([body(local.signal), timeout]); }
+    finally { clear(); }
+  }
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
     const local = new AbortController();
@@ -80,7 +109,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const identity = { ...options.identity, operation_id: randomUUID() };
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
-      try { result = await bounded(signal => tool.run(call.args as Record<string, unknown>, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
+      try { result = tool.effect === 'none'
+        ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
+        : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch {
         result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
@@ -99,8 +130,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (cached) { options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
       else {
         let work = pending.get(key);
-        if (!work) { work = execute(); pending.set(key, work); }
+        if (!work) { work = execute(); pending!.set(key, work); void work.finally(() => { pending!.delete(key); }); }
         result = await work;
+        if (result.status !== 'failed' && !findings.includes(result)) findings.push(result);
       }
     } else result = await execute();
     return { id: call.id, name: call.name, result };
@@ -111,15 +143,30 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch { return expired || options.signal.aborted ? finish() : incomplete(); }
+      } catch { return options.signal.aborted ? finish() : compose(); }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
-      const completed = await Promise.all(inference.calls.map(call));
-      if (completed.some(output => output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text)) outsideTextSeen = true;
-      outputs.push(...completed);
+      const outstanding = new Map(inference.calls.map(item => [item.id, item]));
+      let stopCalls!: () => void;
+      const stopped = new Promise<void>(resolve => { stopCalls = resolve; });
+      abort.signal.addEventListener('abort', stopCalls, { once: true });
+      if (abort.signal.aborted) stopCalls();
+      try {
+        await Promise.race([Promise.all(inference.calls.map(async item => {
+          const output = await call(item);
+          if (!current()) return;
+          outstanding.delete(item.id);
+          outputs.push(output);
+          if (output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text) outsideTextSeen = true;
+        })), stopped]);
+      } finally { abort.signal.removeEventListener('abort', stopCalls); }
+      if (!current()) {
+        for (const item of outstanding.values()) outputs.push({ id: item.id, name: item.name, result: failed('This tool did not finish; no result is available. Do not infer absence.') });
+        return options.signal.aborted ? finish() : compose();
+      }
     }
-    return finish();
+    return options.signal.aborted ? finish() : compose();
   } finally { clearRevision(); options.signal.removeEventListener('abort', stop); }
 }

@@ -72,7 +72,9 @@ test(failure === 'success' ? '40 settled owner projections release a one-entry s
       if (failure === 'success') assert.equal(outcome.status, 'completed');
       else {
         assert.equal(outcome.status, 'completed');
-        assert.equal(outcome.result.code, `result_store_${failure}`);
+        const terminal = JSON.parse(String(store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId])).result_json));
+        assert.equal(terminal.response.status, 'failed');
+        assert.equal(terminal.response.reason, `result_store_${failure}`);
       }
     }
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && raw.event === 'tool_classified_failure');

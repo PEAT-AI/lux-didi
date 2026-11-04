@@ -49,9 +49,10 @@ const DELEGATION = (helper?: unknown) => ({
 const ANSWER = { trigger: 'answer', audio_ms: 600, frames: [{ type: 'session.output_transcript.delta', delta: 'Tomorrow you have the design review at 3.' }] };
 const HELPER = { calls: [{ tool: 'calendar.read' }], answer: 'Tomorrow you have the design review at 3.' };
 
-test('readiness that never settles fails on the runner bound, by name, without waiting it out', async () => {
-  // No `session.started`: readiness never settles, which is the wall the old runner waited on forever.
-  const recording = recordingFor([{ trigger: 'start', frames: [{ type: 'session.usage.updated' }] }, DELEGATION(HELPER), ANSWER]);
+test('a provider that says nothing at all fails readiness on the runner bound, by name', async () => {
+  // The only step waits on a trigger that never comes, so the provider sends no frame: this is the wall the old
+  // runner waited on forever, and the row proves the runner's own bound reaches it.
+  const recording = recordingFor([{ trigger: 'continuation', frames: [STARTED.frames[0]] }]);
   const at = Date.now();
   await assert.rejects(
     runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds() }),
@@ -59,6 +60,14 @@ test('readiness that never settles fails on the runner bound, by name, without w
   );
   const wall = Date.now() - at;
   assert.ok(wall < 300, `the bound took ${wall} ms of wall clock, so the seam did not reach it`);
+});
+
+test('a provider that speaks before it starts is refused loudly, not waited on', async () => {
+  const recording = recordingFor([{ trigger: 'start', frames: [{ type: 'session.usage.updated' }] }]);
+  await assert.rejects(
+    runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300, bounds: drivenBounds() }),
+    /^LiveVoiceError: protocol_error$/,
+  );
 });
 
 test('a recording that never serves its answer ends red, by name, without waiting it out', async () => {

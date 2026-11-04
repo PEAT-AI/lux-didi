@@ -16,6 +16,13 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
+  chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
+  chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
+  chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
+  chat_group: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'group' }) },
+  chat_overview: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'overview' }) },
+  chat_person_topics: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'topics' }) },
+  chat_channel_topics: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'topics' }) },
   search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
   calendar_events: { connector: 'google', tool: 'calendar_list_events', args: a => ({ timeMin: a.start, timeMax: a.end }) },

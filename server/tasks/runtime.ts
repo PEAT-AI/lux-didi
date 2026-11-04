@@ -31,7 +31,7 @@ export class TaskRuntime {
   #capture(taskId: string, result: ToolResult, tool?: TaskTool): void {
     let context = this.#contexts.get(taskId);
     if (!context) { context = { exposures: new Set(), urls: new Set() }; this.#contexts.set(taskId, context); }
-    const exposures = result.exposures ?? (tool?.outside_text ? ['company' as const] : []);
+    const exposures = result.exposures ?? (tool?.outside_text && result.status !== 'failed' ? ['company' as const] : []);
     for (const source of exposures) context.exposures.add(source);
     result.exposures = [...exposures];
     const visit = (value: unknown): void => {

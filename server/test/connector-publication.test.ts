@@ -655,6 +655,7 @@ function movedChild(dir: string): string {
   const modules = createRequire(import.meta.url).resolve.paths('@modelcontextprotocol/server')?.find(path => existsSync(join(path, '@modelcontextprotocol', 'server')));
   assert.ok(modules, 'the relocated fixture requires the installed MCP SDK');
   symlinkSync(modules, join(dir, 'node_modules'), 'dir');
+
   return rebuiltChild;
 }
 

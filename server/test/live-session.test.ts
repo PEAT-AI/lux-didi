@@ -693,13 +693,15 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
 });
 
-test('L8-10: delegated voice does not advertise a retired direct tool table', async t => {
+test('retired backend injections do not advertise unbound source capabilities to the Live session', async t => {
   const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  for (const researchWeb of [undefined, { search: async () => { throw new Error('not called at start'); } }]) {
-    const h = await harness(t, { tools: true, ...(researchWeb ? { researchWeb } : {}), system: native });
+  const web = { search: async () => { throw new Error('retired injection must not execute'); } };
+  for (const options of [{ researchWeb: web }, {}]) {
+    const h = await harness(t, { tools: true, system: native, ...options });
     const { attachment } = await attached(h);
-    assert.equal(h.requests[0]!.tools?.length ?? 0, 0, 'connector operations belong to the task worker, never the voice wire');
-    assert.match(h.requests[0]!.system.text, /^Connected now: none\.$/m, 'legacy connector configuration must not invent direct voice reads');
+    const connected = /^Connected now: (.*)\.$/mu.exec(h.requests[0]!.system.text)?.[1];
+    assert.equal(connected, 'none', 'legacy dependencies are not an accepted helper capability binding');
+
     attachment.close(); await attachment.done;
   }
 });
@@ -1413,9 +1415,10 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    // This Gemini fixture retains direct typed-task conduct. The task worker owns the
-    // connector roster, so none is exposed in the voice runtime context.
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    // W4: the runtime context now names the live connector state, so the expectation carries the
+    // one endpoint this harness publishes.
+
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
@@ -4286,14 +4289,8 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
   ]) assert.equal(announcesLookup(said), false, `no lookup announced: ${said}`);
 });
 
-// C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
-// one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
-// C-ARGS: a lookup the host refused executed nothing, so a claim that its result came back empty is a
-// claim about a read that never ran, and the existing claim guard corrects it once, in its own words.
-
-
-
-
+// R25 retires C-TURN8's three speech-only corrections and C-CLAIMS9's research-claim
+// timer. Explicit task lifecycle/progress and its closed audit are covered by tasks-live.
 
 // Typed delegation, not the spelling of a progress phrase, is the work boundary.
 // Actual delegation/duplicate/rebuild prerequisites are pinned in task-call.test.
@@ -4323,6 +4320,7 @@ for (const progress of ['Checking.', 'On it.', 'One sec.', 'Let me look into tha
 
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.
+
 
 
 

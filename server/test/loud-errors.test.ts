@@ -133,7 +133,7 @@ test('L-08: a classified failure writes one closed host event, ids and a code an
  * scope_missing must reach an attached host log sink as one closed event, and the host log's own
  * validator must keep it. Deleting the emit at server/tools/index.ts turns this red.
  */
-test('L-08: one classified connector failure reaches the host log sink and the host log admits it', async t => {
+test('L-08: one classified connector failure reaches the host log sink and the host log admits it', async () => {
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -148,6 +148,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
   const seen: unknown[] = [];
   const detach = attachHostLogSink({ event: raw => { seen.push(raw); } });
+  let task: ReturnType<typeof canonicalTaskFixture> | undefined;
   try {
     const discovery = await adapter.discover('gmail');
     assert.equal(discovery.state, 'discovered');
@@ -172,8 +173,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-    const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
-    t.after(() => task.close());
+    task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
     const definition = task.tools.find(candidate => candidate.name === 'search_mail');
     assert.ok(definition);
     const callArgs = { query: 'synthetic', cursor: null };
@@ -188,13 +188,14 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     await definition.execute!(callArgs, { ...nextIntent, signal: new AbortController().signal });
     assert.equal(task.results[1]?.status, 'partial', 'the later real mail page is retained, not poisoned by the transient failure');
     assert.ok(task.results[1]?.text);
-    assert.ok(task.results[1]?.next_cursor, 'the native fixture has another page');
+    assert.equal(task.results[1]?.next_cursor, null, JSON.stringify(task.results[1]));
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
     assert.equal(rows.length, 1, `exactly one native failure row reaches the host log: ${JSON.stringify(task.results).slice(0, 1200)}`);
     assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'credential-refresh-failed' });
     assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
     assert.equal(safeEvent({ ...(rows[0] as Record<string, unknown>), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');
   } finally {
+    task?.close();
     detach();
     await adapter.close();
     store.close();

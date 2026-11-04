@@ -257,3 +257,22 @@ test('task model roles default independently to Terra low and support Gemini exp
   assert.throws(() => resolveTaskModels({ worker: { effort: 'unbounded' } }));
   assert.throws(() => resolveTaskModels({ worker: { tools: ['send'] } }));
 });
+
+test('R29 native chat capabilities have distinct outside-read schemas, not action-dependent modes', () => {
+  const registry = createRegistry({ execute: async () => documentResult('native result', 'fixture'), authority: new FakeAuthority() });
+  for (const [name, selector] of [
+    ['chat_attention', 'days'], ['chat_person', 'person'], ['chat_channel', 'channel'],
+    ['chat_group', 'people'], ['chat_overview', 'person'],
+    ['chat_person_topics', 'person'], ['chat_channel_topics', 'channel'],
+  ]) {
+    const tool = registry.get(name!);
+    assert.ok(tool, `the helper can select ${name}`);
+    assert.equal(tool.outside_text, true);
+    assert.equal(tool.effect, 'none');
+    const fields = tool.parameters.properties as Record<string, unknown>;
+    assert.ok(Object.hasOwn(fields, selector!));
+    assert.equal(Object.hasOwn(fields, 'mode'), false);
+    assert.equal(Object.hasOwn(fields, 'intent'), false);
+    if (selector === 'person' || selector === 'channel') assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false);
+  }
+});

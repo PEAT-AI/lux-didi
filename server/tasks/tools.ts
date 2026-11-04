@@ -1,3 +1,4 @@
+import { MATTERMOST_ATTENTION_PARAMETERS, MATTERMOST_CHAT_PARAMETERS } from '../connectors/index.js';
 import { redactTaskResult } from './results.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from '../tools/trello.js';
@@ -49,7 +50,18 @@ export function validateArguments(tool: TaskTool, value: unknown): { ok: true; a
   return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: structuredClone(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
 export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
+// Reuse native field bounds and nullable normal form, but keep each capability's schema distinct.
+const chatFields = strictSchema({ type: 'object', ...MATTERMOST_CHAT_PARAMETERS }).properties as Record<string, Schema>;
+const chatPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit', 'order'].map(key => [key, chatFields[key]!]));
+const topicPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit'].map(key => [key, chatFields[key]!]));
 const definitions: Definition[] = [
+  { outside: true, name: 'chat_attention', description: 'Read what is waiting for the owner: mentions, direct/group messages and open threads awaiting a reply, newest first within the requested days.', fields: strictSchema({ type: 'object', ...MATTERMOST_ATTENTION_PARAMETERS }).properties as Record<string, Schema> },
+  { outside: true, name: 'chat_person', description: 'Read a named person or username and their direct conversation. Choose both sides or only their messages, with explicit dates and paging.', fields: { person: string, sides: chatFields.sides!, ...chatPage } },
+  { outside: true, name: 'chat_channel', description: 'Read a named channel chronologically, with explicit dates and paging. This is not a relevance search.', fields: { channel: string, ...chatPage } },
+  { outside: true, name: 'chat_group', description: 'Read the group conversation containing the named people, with explicit dates and paging.', fields: { people: { ...chatFields.people!, type: 'array' }, ...chatPage } },
+  { outside: true, name: 'chat_overview', description: 'Read a person overview across direct, group and shared-channel conversations, without substituting a relevance search.', fields: { person: string, from_date: chatFields.from_date!, to_date: chatFields.to_date! } },
+  { outside: true, name: 'chat_person_topics', description: 'List a person direct conversation threads with counts and latest activity. Use the returned root ids with read_thread.', fields: { person: string, ...topicPage } },
+  { outside: true, name: 'chat_channel_topics', description: 'List a channel threads with counts and latest activity. Use the returned root ids with read_thread.', fields: { channel: string, ...topicPage } },
   { outside: true, name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
   { name: 'trello_write', description: 'Write the configured board.', fields: strictSchema(TRELLO_WRITE_PARAMETERS).properties as Record<string, Schema>, effect: 'external', outside: false, validate: validateTrelloWrite },
   { outside: true, name: 'search_mail', description: 'Search mail with time operators inside query. Use null cursor for the first page, then the returned next_cursor to continue the same query.', fields: { query: string, cursor: optionalString } },
@@ -85,7 +97,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: { ...object(definition.fields), required: Object.keys(definition.fields).filter(key => !(['alarm_create', 'alarm_update', 'alarm_cancel'].includes(definition.name) && ['recurrence', 'scope'].includes(key))) }, effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
+      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) {

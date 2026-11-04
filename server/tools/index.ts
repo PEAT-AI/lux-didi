@@ -633,6 +633,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           } : {}) }), id), references: [{ id }] };
         });
         if (result.status === 'ok') {
+          if (action !== 'cancel') {
+            const alarmId = result.references[0]?.id ?? id;
+            const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [alarmId]));
+            if (alarm) hostLogEvent({ event: 'alarm_set', alarmId, scheduledMs: Number(alarm.fire_at_utc), actualMs: options.alarms.now(), reason: 'owner_request' });
+          }
           try { options.alarms.recheck(); } catch {
             // The durable scheduler rows survive notification failure and restart. Retry once.
             try { options.alarms.recheck(); } catch { /* Scheduler recovery reads committed rows. */ }

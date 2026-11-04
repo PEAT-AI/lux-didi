@@ -1217,7 +1217,7 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
   const updated = await call('alarm_update', { id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() });
   assert.equal(updated.status, 'ok');
   const missing = await call('alarm_cancel', { id: 'missing' }); assert.equal(missing.status, 'failed');
-  const cancelled = await call('alarm_cancel', { id }); assert.equal(cancelled.status, 'ok');
+  const cancelled = await call('alarm_cancel', { id }); assert.equal(cancelled.status, 'ok', JSON.stringify(cancelled));
   assert.equal(rechecks, 3);
   const row = f.store.transaction(tx => tx.get('SELECT state,label,fire_at_utc FROM alarms WHERE id=?', [id]));
   assert.equal(row?.state, 'cancelled'); assert.equal(row?.label, 'Updated reminder'); assert.equal(row?.fire_at_utc, now + 7200000);

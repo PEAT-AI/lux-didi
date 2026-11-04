@@ -30,7 +30,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack, readTimeSpec,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -613,7 +613,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? String(row.tz), id]);
             }
           }
-          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString(), localTime: alarmReadBack(at, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone).spoken }) }), id), references: [{ id }] };
+          const readBack = at === undefined ? undefined : alarmReadBack(at, zone);
+          const distance = at === undefined ? undefined : alarmDistance(at, zone, now);
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(readBack && distance ? {
+            at: new Date(at!).toISOString(), localTime: readBack.spoken, now_local_time: distance.nowLocalTime,
+            minutes_from_now: distance.minutesAway, confirmation: `Alarm ${action === 'create' ? 'set' : 'updated'} for ${readBack.spoken}.`,
+          } : {}) }), id), references: [{ id }] };
         });
         if (result.status === 'ok') {
           try { options.alarms.recheck(); } catch {

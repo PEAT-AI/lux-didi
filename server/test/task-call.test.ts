@@ -230,3 +230,28 @@ test('C-SILENCE: twice rejected remainder stays owed until socket ready', async 
   f.call.socket(2); assert.equal(f.sent.length, 3);
   f.call.delivery.accepted('c3'); f.call.delivery.ready(); assert.equal(f.sent.length, 3);
 });
+for (const rejected of [false, true]) test(`C-SILENCE: newer revision retires terminal debt rejected=${rejected}`, async t => {
+  let runs = 0;
+  const f = fixture(t, async () => ++runs === 1 ? { text: rejected ? 'Synthetic old.' : '', calls: [], ...(!rejected ? { no_action: true } : {}) } : { text: '', calls: [], no_action: true });
+  await f.call.input('Synthetic old ask', 1);
+  if (rejected) { f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); }
+  await f.call.input('Synthetic new ask', 2); const count = f.sent.length;
+  f.call.delegation('new'); assert.equal(f.sent.length, count + 1);
+  assert.match(f.sent.at(-1)!.text, /No lookup is needed/);
+});
+for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank composition keeps findings and coverage ${JSON.stringify(text)}`, async t => {
+  let runs = 0;
+  const f = fixture(t, async () => ++runs === 1 ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] } : { text, calls: [] }, 'openai', undefined,
+    async () => ({ status: 'ok', text: 'Synthetic findings.', references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
+  await f.call.input('Synthetic findings ask', 1);
+  assert.match(f.sent[0]!.text, /Synthetic findings/);
+  assert.match(f.sent[0]!.text, /coverage/i);
+});
+test('C-SILENCE: recovery rejection waits for another event, not activity', async t => {
+  const f = fixture(t, async () => ({ text: 'Synthetic retained.', calls: [] }));
+  await f.call.input('Synthetic retry ask', 1);
+  f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2');
+  f.call.socket(2); f.call.delivery.rejected('c3'); assert.equal(f.sent.length, 3);
+  f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sent.length, 3);
+  f.call.delegation('retry'); assert.equal(f.sent.length, 4);
+});

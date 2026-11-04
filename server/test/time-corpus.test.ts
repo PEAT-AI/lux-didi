@@ -52,7 +52,7 @@ test('C-TIME corpus: all owner interpretations and task ISO commits', async t =>
     assert.equal(committed.state, 'pending');
     assert.equal(Number(committed.fire_at_utc), parsed.fireAtUtc);
     assert.equal(committed.tz, parsed.tz);
-    assert.equal(committed.label, row.expects.label ?? text);
+    assert.equal(committed.label, row.expects.label || text);
   });
 });
 
@@ -161,12 +161,44 @@ test('C-FREEDOM: a day with no clock names no time of day', () => {
   if (stated.status === 'ready') assert.equal(stated.localTime, '18:00');
 });
 
-test('SOURCE DEFECT C-FREEDOM: cancel that one resolves the most recently armed alarm', async t => {
+test('C-FREEDOM: fake inference lists alarms then cancels the chosen exact id and refuses a wrong id', async t => {
   const h = alarmHarness(t, () => {}, () => now);
   const first = await h.call('alarm_create', { text: 'synthetic first', at: '2026-03-05T10:00:00Z' }, 'wake me in thirty minutes');
   const second = await h.call('alarm_create', { text: 'synthetic second', at: '2026-03-05T10:30:00Z' }, 'also in one hour');
-  const result = await h.call('alarm_cancel', {}, 'cancel that one');
+  // Fake inference resolves the reference from tool data, never by host speech matching.
+  const fakeInference = async () => {
+    const listed = await h.call('alarm_list', {}, 'cancel that one');
+    assert.equal(listed.status, 'ok');
+    const candidates = JSON.parse(listed.text) as Array<{ id: string; label: string }>;
+    const selected = candidates.find(candidate => candidate.label === 'synthetic second');
+    assert.ok(selected);
+    assert.equal(selected.id, second.references[0]!.id);
+    const refused = await h.call('alarm_cancel', { id: 'synthetic-wrong-id' }, 'cancel that one');
+    assert.equal(refused.status, 'failed');
+    assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'pending');
+    return h.call('alarm_cancel', { id: selected.id }, 'cancel that one');
+  };
+  const result = await fakeInference();
   assert.equal(result.status, 'ok', result.repair ?? result.text);
   assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'cancelled');
   assert.equal(alarmRow(h, first.references[0]!.id)!.state, 'pending');
+});
+
+
+test('owner time correction precedes past-proposal refusal, but an unresolved past time is refused', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const corrected = await h.call('alarm_create', { text: 'synthetic corrected', at: new Date(now - 3_600_000).toISOString() }, 'remind me in thirty minutes');
+  assert.equal(corrected.status, 'ok', corrected.repair ?? corrected.text);
+  assert.equal(Number(alarmRow(h, corrected.references[0]!.id)!.fire_at_utc), now + 1_800_000);
+  const refused = await h.call('alarm_create', { text: 'synthetic past', at: new Date(now - 3_600_000).toISOString() }, 'set this reminder');
+  assert.equal(refused.status, 'failed');
+  assert.match(refused.repair ?? refused.text, new RegExp(corrected.references[0]!.id));
+});
+
+
+test('a near-future ISO proposal retains seconds before applying the sixty-second floor', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const result = await h.call('alarm_create', { text: 'synthetic short alarm', at: new Date(now + 1000).toISOString() }, 'set an alarm for one second from now');
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(Number(alarmRow(h, result.references[0]!.id)!.fire_at_utc), now + 60000);
 });

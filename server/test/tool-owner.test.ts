@@ -1315,17 +1315,26 @@ test('task bindings use configured validated connector readers without the resea
 test('task alarm executors keep the existing scheduler and refuse invalid writes', async t => {
   const now = Date.UTC(2030, 0, 1); let rechecks = 0;
   const f = await fixture(t, { alarms: { now: () => now, recheck: () => { rechecks++; }, health: () => ({ degraded: false, reasons: [] }) }, timezone: 'UTC' });
-  const executors = f.owner.taskExecutors('synthetic-call'), signal = new AbortController().signal;
-  const context = { identity: { task_id: 'synthetic-task', task_revision: 1, operation_id: 'alarm', connection_generation: 1 }, outsideTextSeen: false };
-  const bad = await executors.alarm_create!({ text: 'Synthetic reminder', at: 'not a time' }, signal, context);
+  const runtime = new TaskRuntime({ store: f.store, now: () => now, timeZone: 'UTC',
+    execute: connectorExecutor([], f.owner.taskExecutors('synthetic-call')),
+    authority: new Authority({ journal: f.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+  try {
+  const revision = runtime.begin('synthetic reminder task', 1);
+  let operation = 0;
+  const call = (name: string, args: Record<string, unknown>) => runtime.runTool(name, args,
+    { ...revision.identity, operation_id: `synthetic-alarm-${++operation}` }, revision.signal);
+  const bad = await call('alarm_create', { text: 'Synthetic reminder', at: 'not a time' });
   assert.equal(bad.status, 'failed'); assert.equal(rechecks, 0);
-  const created = await executors.alarm_create!({ text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() }, signal, context);
+  const created = await call('alarm_create', { text: 'Synthetic reminder', at: new Date(now + 3600000).toISOString() });
   assert.equal(created.status, 'ok'); const id = created.references[0]?.id; assert.ok(id);
-  const updated = await executors.alarm_update!({ id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() }, signal, context);
+  const updated = await call('alarm_update', { id, text: 'Updated reminder', at: new Date(now + 7200000).toISOString() });
   assert.equal(updated.status, 'ok');
-  const missing = await executors.alarm_cancel!({ id: 'missing' }, signal, context); assert.equal(missing.status, 'failed');
-  const cancelled = await executors.alarm_cancel!({ id }, signal, context); assert.equal(cancelled.status, 'ok');
+  const missing = await call('alarm_cancel', { id: 'missing' }); assert.equal(missing.status, 'failed');
+  const cancelled = await call('alarm_cancel', { id }); assert.equal(cancelled.status, 'ok');
   assert.equal(rechecks, 3);
   const row = f.store.transaction(tx => tx.get('SELECT state,label,fire_at_utc FROM alarms WHERE id=?', [id]));
   assert.equal(row?.state, 'cancelled'); assert.equal(row?.label, 'Updated reminder'); assert.equal(row?.fire_at_utc, now + 7200000);
+  } finally { runtime.close(); }
 });

@@ -1,3 +1,5 @@
+import { TaskRuntime } from '../tasks/runtime.js';
+import { connectorExecutor } from '../tasks/connectors.js';
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
@@ -163,7 +165,18 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
     assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
     if (parsed.status !== 'ready') throw new Error('Expected a resolved owner corpus time');
     assert.equal(parsed.fireAtUtc, row.fire_at_utc);
-    const result = await h.call('alarm_create', { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString() }, words);
+    const args = { text: 'synthetic corpus reminder', at: new Date(parsed.fireAtUtc).toISOString() };
+    let result;
+    if (row.id === 'turn-time-not-dispatch-time') {
+      const runtime = new TaskRuntime({ store: h.store, now: () => now, timeZone: 'UTC',
+        execute: connectorExecutor([], h.owner.taskExecutors('synthetic-corpus-task')),
+        authority: new Authority({ journal: h.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
+        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+      const revision = runtime.begin(words, 1);
+      try { result = await runtime.runTool('alarm_create', args, { ...revision.identity, operation_id: 'synthetic-alarm-create' }, revision.signal); }
+      finally { runtime.close(); }
+    } else result = await h.call('alarm_create', args, words);
     assert.equal(result.status, 'ok', result.repair ?? result.text);
     assert.equal(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [result.references[0]!.id])?.fire_at_utc), row.fire_at_utc);
   });

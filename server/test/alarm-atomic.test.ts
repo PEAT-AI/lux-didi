@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../runtime/store.js';
+import { Store, commitAlarmEffect } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/index.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
@@ -37,7 +37,7 @@ export function alarmHarness(t: TestContext, recheck: () => void = () => {}, now
     const tool = tools.get(name); assert.ok(tool);
     return tool.run(args, { task_id: task.id, task_revision: task.revision, operation_id: randomUUID(), connection_generation: 1 }, new AbortController().signal);
   };
-  return { store, directory, migrations, call, task, tools };
+  return { store, directory, migrations, call, task, tools, owner };
 }
 
 test('alarm atomicity: lost confirmation replays one alarm and a durable task receipt', async t => {
@@ -103,7 +103,7 @@ async function cancelHarness(t: TestContext) {
 
 test('SOURCE DEFECT C-RECUR M2: skip this Saturday with a series id cancels only that occurrence', async t => {
   const h = await cancelHarness(t);
-  await h.cancel({ id: h.seriesId }, 'synthetic-skip-journal', 'skip this Saturday');
+  await h.cancel({ id: h.seriesId, scope: 'occurrence' }, 'synthetic-skip-journal', 'skip this Saturday');
   assert.equal(h.series().state, 'active', 'the owner said one Saturday, so the series stays');
   assert.equal(h.series().pending, 1, 'the next occurrence is materialised at once');
   assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', [h.occurrenceId])?.state), 'cancelled');
@@ -113,8 +113,47 @@ test('SOURCE DEFECT C-RECUR M2: skip this Saturday with a series id cancels only
 
 test('SOURCE DEFECT C-RECUR M2: stop the Saturday cardio reminders with an occurrence id cancels the series', async t => {
   const h = await cancelHarness(t);
-  await h.cancel({ id: h.occurrenceId }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
+  await h.cancel({ id: h.occurrenceId, scope: 'series' }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
   assert.equal(h.series().state, 'cancelled', 'the owner said the reminders, so the series is cancelled, not deleted');
   assert.equal(h.series().pending, 0, 'no occurrence is left behind');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1, 'the cancelled series row is kept');
+});
+
+test('task recurrence tools accept an explicit rule and update the durable series, not a one-shot substitute', async t => {
+  const now = Date.UTC(2030, 0, 1);
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const rule = { kind: 'daily' as const, weekdays: [], hour: 12, minute: 0, tz: 'UTC' };
+  const created = await h.call('alarm_create', { text: 'synthetic daily', at: new Date(now + 3_600_000).toISOString(), recurrence: rule }, 'set this repeating reminder');
+  assert.equal(created.status, 'ok', created.repair ?? created.text);
+  const id = created.references[0]!.id;
+  assert.equal(h.store.transaction(tx => tx.get('SELECT rule_kind FROM alarm_series WHERE id=?', [id])?.rule_kind), 'daily');
+  const weekly = { ...rule, kind: 'weekly' as const, weekdays: [6], hour: 10 };
+  const updated = await h.call('alarm_update', { id, text: null, at: null, recurrence: weekly }, 'change the repeating rule');
+  assert.equal(updated.status, 'ok', updated.repair ?? updated.text);
+  const persisted = h.store.transaction(tx => tx.get('SELECT rule_kind,weekdays,local_time FROM alarm_series WHERE id=?', [id]));
+  assert.equal(persisted?.rule_kind, 'weekly');
+  assert.equal(persisted?.weekdays, '6');
+  assert.equal(persisted?.local_time, '10:00');
+  assert.equal(Number(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [id])?.fire_at_utc)), seriesNextFireAt(weekly, now));
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences WHERE series_id=?', [id])?.n), 1);
+});
+
+
+test('atomic alarm receipt rolls back with the alarm and respects disabled content retention', t => {
+  const h = alarmHarness(t);
+  const identity = 'synthetic-atomic-policy';
+  const value = { status: 'ok' as const, text: 'synthetic receipt content', references: [], next_cursor: null, coverage: '', repair: null };
+  assert.throws(() => commitAlarmEffect(h.store, identity, tx => {
+    tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES('synthetic-rollback',?,'UTC','synthetic','pending','synthetic')", [Date.now() + 60000]);
+    throw Error('synthetic-rollback');
+  }), /synthetic-rollback/);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM task_effect_journal')?.n), 0);
+  const journal = h.store.taskEffectJournal(() => false);
+  commitAlarmEffect(h.store, identity, () => value);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT value FROM task_effect_journal')?.value), null);
+  return journal.get(identity).then(record => {
+    assert.equal(record?.status, 'succeeded');
+    assert.doesNotMatch(JSON.stringify(record), /synthetic receipt content/);
+  });
 });

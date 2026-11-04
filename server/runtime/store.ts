@@ -73,6 +73,8 @@ const runtimeSchema = [
   'CREATE TABLE IF NOT EXISTS runtime_requests(assistant_id TEXT NOT NULL, client_id TEXT NOT NULL, request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(assistant_id,client_id,request_key))',
   'CREATE TABLE IF NOT EXISTS runtime_sessions(token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, csrf_token TEXT NOT NULL, expires_at INTEGER NOT NULL)',
 ];
+const alarmReceiptContentPolicy = new WeakMap<object, () => boolean>();
+
 export class Store {
   #db: DatabaseSync | undefined;
   #lock: DatabaseSync | undefined;
@@ -202,6 +204,7 @@ export class Store {
   }
   /** Sole durable writer for permission commits; argument-bearing identity strings are hashed at entry. */
   taskEffectJournal(contentAllowed: () => boolean): import('../tasks/authority.js').AuthorityPorts['journal'] {
+    alarmReceiptContentPolicy.set(this, contentAllowed);
     const key = (identity: string): string => createHash('sha256').update(identity).digest('hex');
     const redacted = { status: 'ok', text: '', references: [], next_cursor: null, coverage: 'Previously committed; content not retained.', repair: null };
     return {
@@ -241,3 +244,13 @@ export function scrubDeletedMemoryResponses(tx: Transaction, assistantId: string
         assistantId, String(row.client_id), String(row.request_key)]);
   }
 }
+
+  /** The alarm mutation and successful replay receipt share the same SQLite commit. */
+export function commitAlarmEffect(store: import('../contracts/storage.js').StorePort, identity: string, mutate: (tx: Transaction) => import('../tasks/results.js').ToolResult): import('../tasks/results.js').ToolResult {
+    return store.transaction(tx => {
+      const value = mutate(tx);
+      tx.run("INSERT INTO task_effect_journal(identity_hash,status,value,updated_at) VALUES (?,'succeeded',?,?) ON CONFLICT(identity_hash) DO UPDATE SET status=excluded.status,value=excluded.value,updated_at=excluded.updated_at",
+        [createHash('sha256').update(identity).digest('hex'), alarmReceiptContentPolicy.get(store)?.() ? JSON.stringify(value) : null, Date.now()]);
+      return value;
+    });
+  }

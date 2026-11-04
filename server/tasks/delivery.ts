@@ -55,6 +55,8 @@ export class TaskDelivery implements Delivery {
   progress(_identity: RevisionIdentity): void {}
   deliver(identity: RevisionIdentity, answer: WorkerResult, requiresDelegation = false): void {
     if (!this.ports.isCurrent(identity) || answer.status === 'cancelled') return;
+    const pending = this.#current();
+    if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) return;
     const noLookup = answer.status === 'no_action' || !answer.text.trim();
     const text = noLookup ? NO_LOOKUP_COMMENTARY : answer.text;
     if (!text.trim()) return;

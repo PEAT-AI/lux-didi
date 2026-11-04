@@ -24,6 +24,8 @@ printf 'NATIVE-LIVE source=%s UTC=%s\n' "$(git rev-parse HEAD)" "$(date -u '+%Y-
 # Committed locks, offline only; canonical web/dist is intentionally separate from all fixture state.
 bash scripts/npm-ci-offline.sh server
 npm --prefix server run build
+# The copied Google stdio fake opens this recording relative to its own module.
+cp server/test/fixtures/google-tools-list.json server/dist/test/fixtures/google-tools-list.json
 # tasks-contract imports the synthetic replay fixture relative to compiled tests.
 mkdir -p server/dist/scripts
 cp scripts/eval-worker-replay.mjs server/dist/scripts/eval-worker-replay.mjs

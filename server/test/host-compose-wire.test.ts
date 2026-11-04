@@ -58,7 +58,7 @@ const callsOf = (pidFile: string): { tool: string; args: Record<string, unknown>
   });
 };
 const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => call.tool);
-/** The owner's tool table for one accepted synthetic run: the same call the Live host makes. */
+/** The accepted task registry, not a model-facing live-voice tool table. */
 const taskRuntime = (h: Host, connectionIds: readonly string[] = [...h.mcp.connectionIds()]) => hostTaskFactory({
   store: h.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
   bindings: () => h.mcp.owner.taskBindings(connectionIds), contentAllowed: () => false, timeZone: 'UTC',
@@ -84,7 +84,7 @@ const configured = (pid: (id: string) => string, googleMode = 'ok', mattermostMo
   endpoint({ id: 'mattermost', connector: 'mattermost', file: mattermostChild, argv: [pid('mattermost'), mattermostMode] }),
 ];
 
-test('W1030: the real host composition offers the four write tools when the families are configured', async t => {
+test('W1030: the accepted task registry offers four typed write operations and keeps connector verbs private', async t => {
   const h = await host(t, pid => configured(pid));
   const names = ownerTools(h);
   for (const name of ['draft_email', 'draft_chat', 'create_event', 'delete_event']) assert.ok(names.includes(name), `${name} is offered`);

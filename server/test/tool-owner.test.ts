@@ -212,7 +212,7 @@ test('SOURCE DEFECT task read delivery: persisted disable survives reopen and st
   await assert.rejects(f.execute(staleCall), /task_source_policy_denied/);
   assert.equal(f.calls.length, 1, 'stale dispatch did not add a connector invocation');
   const reopened = f.reopen();
-  assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused', JSON.stringify(f.store.transaction(tx => tx.get("SELECT state, json_extract(result_json, '$.sourceDispatchRefs') AS refs FROM tool_calls WHERE execution_id=?", [initialCall.executionId]))));
   assert.throws(() => reopened.projectConnection('lux'), /disabled/);
 });
 

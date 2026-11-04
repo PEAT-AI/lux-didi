@@ -1784,7 +1784,11 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       try {
         assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
-        assert.equal(Boolean(read), recoveredAt !== Infinity, 'the frozen canonical read capability follows recovered native publication');
+        assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
+        if (recoveredAt === Infinity) {
+          const unavailable = await task.runtime.runTool('read_knowledge', { id: '1', cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
+        }
         if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string', minLength: 1 });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));

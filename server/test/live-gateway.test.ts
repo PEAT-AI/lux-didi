@@ -129,7 +129,11 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     }
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }
-  const { service: live } = composeLive(store, config, { createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
+  const { service: live } = composeLive(store, config, { ...(options.infer ? { schedule: (callback: () => void, ms: number) => {
+    // Drive helper quiet-window completion without waiting out the real debounce.
+    if (ms === 1_200) { const timer = setImmediate(callback); return { cancel: () => clearImmediate(timer) }; }
+    const timer = setTimeout(callback, ms); return { cancel: () => clearTimeout(timer) };
+  } } : {}), createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();

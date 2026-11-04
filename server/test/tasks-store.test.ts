@@ -112,7 +112,8 @@ test('R24 EF4: effect executor output is redacted before the durable journal and
     const rows = store.transaction(tx => tx.all('SELECT status,value FROM task_effect_journal'));
     assert.equal(rows.length, 1); assert.equal(rows[0]!.status, 'succeeded');
     assert(!JSON.stringify(rows).includes(secret), 'no executor secret reaches the retained effect journal');
-    assert.match(JSON.stringify(rows), /Ordinary receipt/); assert.match(JSON.stringify(rows), /\[redacted\]/);
+    assert.doesNotMatch(JSON.stringify(rows), /Ordinary receipt/);
+    assert.deepEqual(Object.keys(JSON.parse(String(rows[0]!.value))).sort(), ['category', 'size_bytes']);
     assert.deepEqual(result[TASK_DISCLOSURE]?.sourceDispatchRefs, ['synthetic-dispatch'], 'host-only disclosure proof survives pre-journal redaction');
     const replay = await runtime.runTool('remember_note', { text: 'ordinary note' }, identity, signal);
     assert.equal(calls, 1); assert(!JSON.stringify([result, replay]).includes(secret));

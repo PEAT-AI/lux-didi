@@ -31,10 +31,14 @@ export function failed(repair: string): ToolResult {
   return { status: 'failed', text: '', references: [], next_cursor: null, coverage: 'No verified result.', repair };
 }
 export function documentResult(text: string, id: string, cursor = '0'): ToolResult {
-  if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)) || Number(cursor) > text.length) return failed('Use the next_cursor returned by this document, or null to start again.');
-  const start = Number(cursor), end = Math.min(start + DOCUMENT_CHARS, text.length);
+  const version = createHash('sha256').update(id).update('\0').update(text).digest('hex');
+  const continuation = /^v1:([a-f0-9]{64}):(\d+)$/.exec(cursor);
+  if (cursor !== '0' && (!continuation || continuation[1] !== version)) return failed('The document or continuation changed. Restart with cursor null; never combine pages from different versions.');
+  const start = cursor === '0' ? 0 : Number(continuation![2]);
+  if (!Number.isSafeInteger(start) || start > text.length) return failed('Use the next_cursor returned by this document, or null to restart.');
+  const end = Math.min(start + DOCUMENT_CHARS, text.length);
   return { status: end < text.length ? 'partial' : text.length ? 'ok' : 'empty', text: text.slice(start, end), references: [{ id }],
-    next_cursor: end < text.length ? String(end) : null, coverage: `Characters ${start} to ${end} of ${text.length}; ${end < text.length ? 'continue with next_cursor' : 'complete'}.`, repair: null };
+    next_cursor: end < text.length ? `v1:${version}:${end}` : null, coverage: `Characters ${start} to ${end} of ${text.length}; ${end < text.length ? 'continue with next_cursor' : 'complete'}.`, repair: null };
 }
 export interface RankedItem { id: string; title: string; text?: string; url?: string }
 const normalize = (text: string): string => text.normalize('NFKC').toLocaleLowerCase('en').trim().replace(/\s+/g, ' ');

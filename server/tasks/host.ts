@@ -1,3 +1,4 @@
+import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
@@ -71,8 +72,10 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
         if (name === 'read_memory') {
-          const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
-          return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
+          try {
+            const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
+            return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
+          } catch { return readerFailure(name, 'not_found'); }
         }
         const bound = bindings();
         const writes: Record<string, { tool: string; arguments: Record<string, unknown> }> = {

@@ -1,6 +1,7 @@
+import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
-import { failed, type ToolResult } from './results.js';
+import { failed, readerFailure, type ToolResult } from './results.js';
 import { validateArguments, type TaskTool } from './tools.js';
 import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -106,15 +107,20 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     if (!validation.ok) return { id: call.id, name: call.name, result: failed(validation.repair) };
     if (!current()) return { id: call.id, name: call.name, result: failed('This revision has stopped; use verified findings only.') };
     const key = canonical([tool.name, validation.args]);
+    const operationId = randomUUID(), toolStart = clock.now();
+    let cache: 'miss' | 'hit' | 'join' = 'miss';
+    const telemetry = (result: ToolResult): void => hostLogEvent({ event: 'task_tool', taskId: options.identity.task_id,
+      revision: options.identity.task_revision, operationId, tool: tool.name, durationMs: Math.max(0, Math.round(clock.now() - toolStart)),
+      category: result.status === 'failed' ? result.failure_category ?? 'upstream_error' : result.status, cache });
     const execute = async (): Promise<ToolResult> => {
-      const identity = { ...options.identity, operation_id: randomUUID() };
+      const identity = { ...options.identity, operation_id: operationId };
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
       try { result = tool.effect === 'none'
         ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
         : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch {
-        result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.');
+        result = tool.effect === 'none' ? readerFailure(tool.name, 'timeout') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
       if (result.receipt) receipts.push(result);
@@ -128,14 +134,16 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     let result: ToolResult;
     if (tool.effect === 'none') {
       const cached = reads.get(key);
-      if (cached) { options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
+      if (cached) { cache = 'hit'; options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
       else {
         let work = pending!.get(key);
         if (!work) { work = execute(); pending!.set(key, work); void work.finally(() => { pending!.delete(key); }); }
+        else cache = 'join';
         result = await work;
         if (result.status !== 'failed' && !findings.includes(result)) findings.push(result);
       }
     } else result = await execute();
+    telemetry(result);
     return { id: call.id, name: call.name, result };
   }
   try {

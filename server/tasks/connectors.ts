@@ -7,7 +7,7 @@ import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
-import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
+import { documentResult, failed, readerFailure, failureCategory, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
@@ -126,15 +126,15 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
-    if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
+    if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
     const scope = createResultScope();
     try {
       return await scope.run(async () => {
         const result = await binding.reader.call(mapping.tool, mapped, signal);
-        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: repair }; };
+        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
-        if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
+        if (hostRepair) return failure(hostRepair.repair, hostRepair.code);
         if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
         if (binding.project) {
           try {
@@ -146,6 +146,6 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         }
         return projectTaskPayload(name, result.decodedResult, args);
       });
-    } finally { scope.release(); }
+    } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error'); } finally { scope.release(); }
   };
 }

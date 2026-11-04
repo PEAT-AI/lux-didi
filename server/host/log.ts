@@ -1,3 +1,4 @@
+import { FAILURE_CATEGORIES } from '../tasks/results.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
@@ -259,6 +260,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));
     if (typeof value.reason !== 'string' || !reasons.includes(value.reason) || !identity(value.runId) || !identity(value.executionId)) return;
     return {event:'tool_diagnostic_capture',reason:value.reason,runId:value.runId,executionId:value.executionId};
+  }
+  if (value.event === 'task_tool') {
+    const token = (v: unknown): boolean => typeof v === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(v);
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'operationId', 'tool', 'durationMs', 'category', 'cache']) ||
+      !token(value.taskId) || !token(value.operationId) || !token(value.tool) || !isSafeCount(value.revision) || !isSafeCount(value.durationMs) ||
+      !['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES].includes(String(value.category)) || !['miss', 'hit', 'join'].includes(String(value.cache))) return;
+    return { event: 'task_tool', taskId: value.taskId, revision: value.revision, operationId: value.operationId, tool: value.tool, durationMs: value.durationMs, category: value.category, cache: value.cache };
+  }
+  if (value.event === 'tool_failure' && 'category' in value) {
+    if (!closedKeys(value, ['event', 'tool', 'category']) || typeof value.tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value.tool) ||
+      !FAILURE_CATEGORIES.includes(value.category as typeof FAILURE_CATEGORIES[number])) return;
+    return { event: 'tool_failure', tool: value.tool, category: value.category };
   }
   if (value.event === 'tool_failure') {
     const codes: readonly string[] = TOOL_FAILURE_CODES;

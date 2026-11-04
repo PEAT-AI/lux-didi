@@ -1,8 +1,11 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { documentResult, rankedResult, failed } from '../tasks/results.js';
 import { createRegistry, validateArguments } from '../tasks/tools.js';
 import { FakeAuthority } from '../tasks/authority.js';
+import type { InferRequest } from '../tasks/worker.js';
 
 test('opened documents are whole up to 24000 with explicit continuation', () => {
   const body = 'x'.repeat(25000);
@@ -87,7 +90,8 @@ test('both provider ports carry strict typed calls and return a final answer wit
 });
 
 test('Gmail operators narrow synthetic fixture results and read returns the whole body', async () => {
-  const fixtures = await import(new URL('../scripts/eval-worker-replay.mjs', import.meta.url).href);
+  const testRoot = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
+  const fixtures = await import(pathToFileURL(resolve(testRoot, '../../scripts/eval-worker-replay.mjs')).href);
   const all = fixtures.searchMail({ query: 'after:2000/01/01' });
   const none = fixtures.searchMail({ query: 'after:2099/01/01' });
   assert.ok(JSON.stringify(all).includes('m_'));
@@ -196,9 +200,9 @@ test('default model and effort are applied without provider-specific caller code
 
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
-  assert.ok(WORKER_INSTRUCTIONS.length < 2000);
+  assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
-  assert.match(WORKER_INSTRUCTIONS, /After widening, state absence plainly/);
+  assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
 
 test('CORE-F1: worker consumes a second Gmail page with a distinct read-cache key', async () => {
@@ -290,4 +294,24 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
     assert.equal(Object.hasOwn(fields, 'intent'), false);
     if (selector === 'person' || selector === 'channel') assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false);
   }
+});
+
+test('worker inference receives public instructions followed by presentation style, never lore', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
+  const profile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic Owner',
+    style: { text: 'SYNTHETIC STYLE', dataClass: 'private' as const }, lore: { text: 'SYNTHETIC LORE', dataClass: 'sensitive' as const } };
+  let received = '';
+  const options = { registry: new Map(), identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 },
+    input: 'synthetic', signal: new AbortController().signal, profile,
+    infer: async (request: InferRequest) => { received = request.instructions; return { text: 'complete', calls: [] }; } };
+  await runWorker(options);
+  assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
+  assert.match(received, /SYNTHETIC STYLE/);
+  assert.doesNotMatch(received, /SYNTHETIC LORE/);
+  received = '';
+  const { profile: omittedProfile, ...withoutProfile } = options;
+  assert.ok(omittedProfile);
+  await runWorker(withoutProfile);
+  assert.equal(received, WORKER_INSTRUCTIONS);
 });

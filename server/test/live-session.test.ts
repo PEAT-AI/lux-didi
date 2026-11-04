@@ -1,3 +1,4 @@
+import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
 import './tasks-store.test.js';
@@ -54,7 +55,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -706,19 +707,19 @@ test('retired backend injections do not advertise unbound source capabilities to
   }
 });
 
-test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
+test('both declared-tool and client-delegated sessions carry the exact master handoff conduct', async t => {
   const withTools = await harness(t, { tools: true });
   const { session: withSession, attachment: withAttachment } = await attached(withTools);
   assertFrozenInstruction(withTools, withSession.liveSessionId, 0);
   assert.equal(withTools.requests.length, 1);
-  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
+  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_WORK_DELIVERY),
     'the authored tools conduct is in the attached system instruction');
   withAttachment.close(); await withAttachment.done;
 
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
-  assert.equal(withoutTools.requests[0]!.system.text, 'Synthetic system', 'no declarations compose exactly as before');
+  assert.equal(withoutTools.requests[0]!.system.text, `Synthetic system\n\n${NAYA_WORK_DELIVERY}`, 'client delegation needs the same authored handoff even without direct voice tools');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
   withoutAttachment.close(); await withoutAttachment.done;
 });
@@ -1997,9 +1998,9 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, memory: { status: 'empty', selectedIds: [], omitted: [] } });
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
-  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`);
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);
@@ -2035,7 +2036,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
+  assert.equal(frame.setup.systemInstruction.parts[0].text, `SYNTHETIC exact wire A\n\n${NAYA_WORK_DELIVERY}`);
   attachment.close();
 });
 
@@ -3634,7 +3635,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await openAiAttachment.ready;
   const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
   assert.deepEqual(start.session['delegation'], { type: 'client' }, 'the helper owns inference, not a provider responses backend');
-  assert.equal(String(start.session['instructions']).includes(NAYA_BACKEND_PROCEDURE), false, 'the OpenAI voice instructions never carry the procedure');
+  assert.equal(String(start.session['instructions']).includes(WORKER_INSTRUCTIONS), false, 'the OpenAI voice instructions never carry the procedure');
 
   const gemini = await fixture(t);
   const geminiLive = composeLive(store, dir, {
@@ -3649,7 +3650,7 @@ test('composeLive uses client delegation and keeps worker procedure out of both 
   await geminiAttachment.ready;
   const setup = (gemini.frames[0] as { setup: { systemInstruction: { parts: { text: string }[] }; delegation?: unknown } }).setup;
   assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_LIVE_BASE), 'the Gemini setup carries the shared voice instruction');
-  assert.equal(setup.systemInstruction.parts[0]!.text.includes(NAYA_BACKEND_PROCEDURE), false, 'the Gemini setup never carries the delegated procedure');
+  assert.equal(setup.systemInstruction.parts[0]!.text.includes(WORKER_INSTRUCTIONS), false, 'the Gemini setup never carries the delegated procedure');
   assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 
@@ -4972,7 +4973,7 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
 
 test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`, calendarDigest: {
+  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_WORK_DELIVERY}`, calendarDigest: {
     forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
   await h.owner.prepareCalendar();
   const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);

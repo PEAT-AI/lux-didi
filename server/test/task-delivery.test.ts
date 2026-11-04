@@ -99,3 +99,32 @@ test('VOICE-R15: every delivery state and lifecycle identity survives closed saf
   assert.equal(safeEvent({ ...lifecycle, text: 'Synthetic forbidden payload' }), undefined);
   assert.equal(safeEvent({ event: 'task_delivery', taskId: 'synthetic-task', revision: 2, state: 'unknown' }), undefined);
 });
+
+test('C-DELIVERY: a generation without delegation appends on the open line', () => {
+  const f = fixture(); f.delivery.socket(1);
+  f.delivery.deliver(identity, answer('Synthetic open line answer.'));
+  assert.equal(f.reconnects(), 0);
+  assert.equal(f.sends.length, 1);
+  assert.equal(f.sends[0]?.id, null);
+});
+test('C-DELIVERY: acceptance advances chunks without transcript and never replays accepted text', () => {
+  const f = fixture(); f.delivery.socket(1); f.delivery.attach(identity, 'd1');
+  f.delivery.deliver(identity, answer('Synthetic sentence. '.repeat(40)));
+  assert.equal(f.sends.length, 1);
+  f.delivery.accepted(f.sends[0]!.command);
+  assert.equal(f.sends.length, 2);
+  f.delivery.accepted(f.sends[1]!.command);
+  const count = f.sends.length;
+  f.delivery.socket(2); f.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
+  assert.equal(f.sends.length, count);
+  assert.equal(f.reconnects(), 0);
+});
+test('C-DELIVERY: a rejection retries once on the same line and then fails', () => {
+  const f = fixture(); f.delivery.socket(1); f.delivery.attach(identity, 'd1');
+  f.delivery.deliver(identity, answer('Synthetic rejected answer.'));
+  f.delivery.rejected(f.sends[0]!.command);
+  f.delivery.rejected(f.sends[1]!.command);
+  assert.equal(f.sends.length, 2);
+  assert.equal(f.reconnects(), 0);
+  assert.equal(f.states.at(-1), 'undelivered');
+});

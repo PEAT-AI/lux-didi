@@ -36,7 +36,7 @@ export class TaskDelivery implements Delivery {
   constructor(readonly ports: DeliveryPorts) {}
   waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     const pending = this.#current();
-    return pending ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
+    return pending && !pending.requiresDelegation ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
   }
   #current(): Pending | undefined {
     if (this.#pending && !this.ports.isCurrent(this.#pending.identity)) this.#pending = undefined;

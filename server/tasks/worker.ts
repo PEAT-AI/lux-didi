@@ -162,7 +162,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       } catch { return options.signal.aborted ? finish() : compose(); }
       if (!current()) return finish();
       turns.push(inference);
-      if (!inference.calls.length && !inference.text.trim() && findings.length) return compose();
+      if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const outstanding = new Map(inference.calls.map(item => [item.id, item]));

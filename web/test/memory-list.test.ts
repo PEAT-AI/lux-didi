@@ -198,3 +198,18 @@ test('memory deletion keeps the saved-note list after an earlier conversation wa
   assert.deepEqual(Array.from(harness.context.entries, (entry: { text: string }) => entry.text), ['kept note'], 'the other saved notes stay on the page');
   assert.equal(harness.context.error, '', 'the reload reports no failure');
 });
+
+// Review finding 2: no saved note may be dropped from Memory. A note kept in the oldest session still
+// belongs on the page, so the read must not stop after a fixed number of newer sessions.
+test('a saved note older than a dozen newer sessions is still listed', async () => {
+  const sessions = Array.from({ length: 13 }, (_unused, index) => ({ id: `session-${index}` }));
+  const harness = memoryDeletionHarness({ tab: 'Memory', session: undefined, entries: [], memorySummaries: [], summaryIds: new Set() },
+    async path => path === '/sessions'
+      ? { items: sessions, nextCursor: null }
+      : { entries: path === '/sessions/session-12' ? [{ id: 'old-note', text: 'the old saved note' }] : [] });
+  await harness.context.deleteMemory('synthetic-entry');
+  assert.equal(harness.calls.length, sessions.length + 1, 'every session is read, so no note is silently skipped');
+  assert.equal(harness.calls.includes('/sessions/session-12'), true, 'the oldest session is read');
+  assert.deepEqual(Array.from(harness.context.entries, (entry: { text: string }) => entry.text), ['the old saved note'], 'the old note is on the Memory page');
+  assert.equal(harness.context.error, '');
+});

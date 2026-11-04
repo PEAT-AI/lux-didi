@@ -504,18 +504,16 @@ async function loadSummaries(): Promise<void> {
   summaryIds = new Set(data.items.map(item => item.id));
 }
 // A saved note is its own capture session (the native Save note path appends one entry to a session it
-// creates), so the saved-entry surface is the session read the conversation already uses: the newest
-// sessions first, bounded so a long-lived install never fans out without limit. The bounds are
-// parameters so the function stays self-contained for the unit harness.
-async function loadEntries(sessionsToRead = 12, entriesToRead = 200): Promise<Entry[]> {
+// creates), so the saved-entry surface is the session read the conversation already uses: every session,
+// newest first, so a note kept long ago is never silently dropped from the page.
+async function loadEntries(): Promise<Entry[]> {
   const list = await request<{items:Session[];nextCursor:string|null}>('/sessions');
   const saved: Entry[] = [];
-  for (const item of list.items.slice(0, sessionsToRead)) {
+  for (const item of list.items) {
     const detail = await request<{entries:Entry[]}>(`/sessions/${encodeURIComponent(item.id)}`);
     saved.push(...detail.entries);
-    if (saved.length >= entriesToRead) break;
   }
-  return saved.slice(0, entriesToRead);
+  return saved;
 }
 async function loadTab() {
   if(connection!=='Connected')return;

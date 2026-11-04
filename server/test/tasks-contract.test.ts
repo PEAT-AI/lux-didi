@@ -407,7 +407,7 @@ test('deadline composes completed evidence without tools and gives composition 2
     } });
   await Promise.all([localDone.promise, webStarted.promise]);
   clock.advance(36000);
-  await composing.promise;
+  await Promise.race([composing.promise, work.then(() => { throw new Error('Worker returned without composing completed evidence'); })]);
   clock.advance(13000);
   composition.resolve({ text: 'Synthetic local finding. Web did not finish.', calls: [] });
   const answer = await work;

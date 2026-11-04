@@ -37,9 +37,35 @@ questions and actions are handed off in the same turn. The voice waits for an
 actual result rather than inventing progress or claiming a lookup happened.
 General explanation and plain conversation can be answered directly.
 
-### A silent text response never outlives its own end (C-DEADAIR)
 
-A post-tool continuation asks the provider for a response with a bare `response.create`: no output modalities, no instructions, no voice. The delegated backend can answer that request with text and no audio at all (2026-10-27 07:02:59Z: 112 response tokens, `delegation_closed`, `playback_level` at -120 dB, and no `session.output_audio.delta`), and the adapter has no path for a delegated response's text, so the answer is generated and never spoken. The host cannot make the provider speak, so it notices the shape: when a response ends after writing text for an owed answer and no audible frame arrived, `#deliverUnspoken` hands the result to the live session at that end, exactly once, with no ladder wait. `live_response_latency` records the provider's share of the wait separately (owner final words, response announced, first audio). The audible-debt rung stays at 8 s, and a response the owner cannot hear buys it `DEAD_AIR_RESPONSE_GRACE_MS` (500 ms) instead of the seven seconds that made the 2026-10-27 calls wait 15 s.
+### Open-line task delivery (10.11)
+
+Finalized owner speech starts or revises the helper after 1,200 ms without new owner transcript.
+New words restart this host-owned quiet; there is no lexical hesitation classifier. Stop commands,
+mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
+
+OpenAI results use commentary on the current provider generation with its latest delegation id,
+or null when there is none. The host waits for owner speech and output quiet, then appends ordered
+chunks of at most 450 characters. Provider timeline acknowledgement settles each chunk, not exact
+transcription or proven playback. An explicit rejection retries once on the same line and then logs
+failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
+heard deadline. Store records pending sends and only records delivered after provider acknowledgement.
+
+A real socket rebuild retains the bounded transcript through rebuildSeed. Unacknowledged remainder
+is appended as commentary after ready, with a null id until this generation has a delegation.
+Accepted chunks are not replayed; no say-first instructions replace conversation history.
+Recovery timing is unchanged. Verified helper status names whether a rebuild happened and its closed
+cause; live_rebuild metadata names running_task, finished_answer_pending or nothing_owed.
+
+A no_action result releases an open delegation with situation-only commentary: no lookup is needed,
+and the voice should answer from its own mind and the conversation. Without an open delegation it
+sends nothing. A no-tool complete or incomplete result is suppressed if the voice already spoke and
+no delegation is open. Tool evidence is always delivered; failure and incomplete text is not rewritten.
+Stale revisions never deliver. Gemini retains its tool-response route apart from the shared input quiet.
+
+Synthetic providers prove routing, ordering, acknowledgement state, holds and bounded rejection handling.
+They cannot prove audibility, exact wording, model weaving, or remembered meaning. Real-wire trials
+established null-id commentary and retained history; transcript matches are not delivery receipts.
 
 ### Fewer rebuilds, by holding them rather than shortening anything (C-REBUILD)
 

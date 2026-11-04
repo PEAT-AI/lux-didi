@@ -18,7 +18,7 @@ import { fixtureUntil } from './live-voice-fixture.js';
 export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   clock?: boolean; approved?: boolean; outcome?: 'inserted' | 'unknown'; executors?: ExistingExecutors;
 } = {}) {
-  if (options.clock) t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   const dir = mkdtempSync(join(tmpdir(), 'synthetic-live-task-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const voice = fakeLiveVoicePort({ provider: 'openai', supportsGoAway: true, supportsInterruption: true });
@@ -43,10 +43,16 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   const drained = (async () => { for await (const chunk of attachment.output) chunks.push(chunk); })();
   t.after(() => drained);
   await attachment.ready;
+  let pendingQuiet = false;
+  const flush = async () => {
+    for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve));
+    if (pendingQuiet) { pendingQuiet = false; t.mock.timers.tick(1_200); }
+    for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  };
   return { store, owner, voice, writes, chunks, session, attachment, context,
-    finalize(text: string) { voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); },
+    finalize(text: string) { pendingQuiet = true; voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); },
     bind(id = 'synthetic-binding') { voice.emit({ type: 'delegation', delegationId: id }); },
-    async flush() { for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve)); },
-    async answer() { await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer'); return voice.taskAnswers.at(-1)!; },
+    flush,
+    async answer() { await flush(); await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer'); return voice.taskAnswers.at(-1)!; },
   };
 }

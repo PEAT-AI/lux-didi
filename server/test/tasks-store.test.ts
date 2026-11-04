@@ -27,6 +27,10 @@ test('task content gating, receipts, final answer, delivery and pruning use Stor
     assert.equal(store.finishTask({ ...second, connection_generation: 99 }, 'complete', 'stale generation', true, now), false);
     assert.equal(store.finishTask(second, 'complete', 'synthetic answer', true, now), true);
     store.saveTaskDelivery(second, 'binding', 'delivered', now);
+    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries')), undefined, 'no transport acceptance is invented by runtime completion');
+    runtime.deliveryState(revision.identity, 'sent', 0);
+    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'pending');
+    runtime.deliveryState(revision.identity, 'accepted', 0);
     assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'delivered');
     store.pruneTasks(now + 31 * 86400000);
     assert.equal(store.transaction(tx => tx.get('SELECT result FROM task_operations'))?.result, null);
@@ -49,10 +53,14 @@ test('host runtime persists a real synthetic worker revision and delivery attemp
   const store = new Store(directory), delivery = new FakeDelivery();
   try {
     const runtime = new TaskRuntime({ store, delivery, execute: async () => { throw new Error('unexpected tool'); }, authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: { get: async () => undefined, put: async () => {} } }), contentAllowed: () => true, infer: async () => ({ text: 'synthetic final', calls: [] }) });
-    const { result } = runtime.finalize('synthetic input', 1);
+    const { revision, result } = runtime.finalize('synthetic input', 1);
     assert.equal((await result).status, 'complete');
     assert.equal(delivery.answers.length, 1);
     assert.match(String(store.transaction(tx => tx.get('SELECT final_answer FROM tasks'))?.final_answer), /synthetic final/);
+    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries')), undefined, 'no transport acceptance is invented by runtime completion');
+    runtime.deliveryState(revision.identity, 'sent', 0);
+    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'pending');
+    runtime.deliveryState(revision.identity, 'accepted', 0);
     assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'delivered');
     runtime.close();
   } finally { store.close(); rmSync(directory, { recursive: true }); }

@@ -86,25 +86,24 @@ const audible = (live: Live): Promise<void> => live.emit({ type: 'audio', pcm: n
 const heard = (live: Live): Record<string, unknown>[] => live.receipts.filter(record => record.event === 'live_heard_silence');
 const deadAir = (live: Live): Record<string, unknown>[] => live.receipts.filter(record => record.event === 'live_dead_air');
 
-test('task heard deadline: provider acceptance alone times out to a retained-result seed', async t => {
-let calls = 0;
-const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
-f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
-t.mock.timers.tick(14_999); await f.flush(); assert.equal(f.voice.sessionsOpened, 1);
-t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
-assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
-t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'accepted but unheard task timeout');
-assert.match(f.voice.requests[1]!.system.text, /The synthetic task answer/); assert.equal(calls, 1);
+test('task delivery: provider acceptance settles without transcript and never retries', async t => {
+  let calls = 0;
+  const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+  f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM task_deliveries WHERE state != ?', ['attached']))?.state, 'pending');
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+  t.mock.timers.tick(30_000); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1); assert.equal(calls, 1);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM task_deliveries WHERE state != ?', ['attached']))?.state, 'delivered');
 });
 
-test('task heard deadline: matching output transcription prevents retry', async t => {
+test('task delivery: transcription does not replay an acknowledged answer', async t => {
 let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
 f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
 f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); await f.flush();
 t.mock.timers.tick(15_000); await f.flush(); assert.equal(f.voice.sessionsOpened, 1); assert.equal(calls, 1);
-assert.equal(f.voice.taskAnswers.length, 1, 'matching output, not acceptance alone, closes the delivery timer');
+assert.equal(f.voice.taskAnswers.length, 1, 'acceptance already settled delivery');
 });
 
 test('L-05: three fragments of one utterance produce one measurement, not three', async t => {
@@ -127,12 +126,10 @@ test('L-05: three fragments of one utterance produce one measurement, not three'
   assert.equal(events[0]!['silence'], 'owner', 'the wait followed the owner\'s own utterance, not a tool and not the provider');
 });
 
-test('task heard deadline: prior idle silence does not shorten the delivery window', async t => {
-const f = await liveTaskFixture(t, async () => ({ text: 'The synthetic task answer.', calls: [] }), { clock: true });
-t.mock.timers.tick(10_000); f.bind(); f.finalize('Give the synthetic task answer.'); const answer = await f.answer();
-f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
-t.mock.timers.tick(14_999); await f.flush(); assert.equal(f.voice.sessionsOpened, 1, 'old silence cannot consume the new result deadline');
-t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
-assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
-t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'task deadline from its own append');
+test('task delivery: prior idle silence cannot create an acknowledgement deadline', async t => {
+  const f = await liveTaskFixture(t, async () => ({ text: 'The synthetic task answer.', calls: [] }), { clock: true });
+  t.mock.timers.tick(10_000); f.bind(); f.finalize('Give the synthetic task answer.'); const answer = await f.answer();
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+  t.mock.timers.tick(30_000); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1);
 });

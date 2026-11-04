@@ -39,7 +39,7 @@ test('VOICE-R12 paired valid: a current speech-held answer is released and heard
   assert.deepEqual(f.appended, ['Synthetic current answer.']);
   await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
   await f.emit({ type: 'outputTranscription', text: 'Synthetic current answer.', finished: true });
-  assert.ok(f.receipts.some(event => event.event === 'task_delivery' && event.state === 'heard'));
+  assert.ok(f.receipts.some(event => event.event === 'task_delivery' && event.state === 'accepted'));
 });
 
 for (const status of ['waiting', 'heard', 'stale'] as const) test(`VOICE-R14: ordinary provider rebuild seeds only a waiting current answer (${status})`, async t => {
@@ -56,9 +56,9 @@ for (const status of ['waiting', 'heard', 'stale'] as const) test(`VOICE-R14: or
   await f.emit({ type: 'goAway', timeLeftMs: 10000 });
   assert.equal(f.requests.length, 2, 'the provider recovery must open a fresh actual session request');
   const request = f.requests[1]!;
-  if (status === 'waiting') {
-    assert.match(request.system.text, /Synthetic waiting rebuild answer/);
-    assert.match(request.system.text, /first spoken output must be exactly/);
-    assert.equal(request.opening, 'user_first'); assert.equal(request.openingText, undefined);
-  } else assert.doesNotMatch(request.system.text, /Synthetic waiting rebuild answer/);
+  assert.doesNotMatch(request.system.text, /first spoken output must be exactly/);
+  assert.ok(request.history?.some(turn => turn.text.includes('Synthetic rebuild request')), 'rebuild keeps owner transcript seed');
+  assert.doesNotMatch(request.system.text, /Synthetic waiting rebuild answer/);
+  assert.equal(f.appended.length, status === 'waiting' ? 2 : 1);
+  if (status === 'waiting') assert.equal(f.appended[1], 'Synthetic waiting rebuild answer.');
 });

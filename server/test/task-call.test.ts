@@ -18,10 +18,10 @@ import { Authority } from '../tasks/authority.js';
 import { TaskRuntime } from '../tasks/runtime.js';
 import { TaskCall } from '../tasks/call.js';
 import type { Infer, Inference } from '../tasks/worker.js';
-function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai') {
+function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = 'openai', after?: (ms: number, callback: () => void) => () => void) {
   const directory = mkdtempSync(join(tmpdir(), 'task-call-synthetic-')), store = new Store(directory);
   const sent: { id: string | null; text: string }[] = [], responses: unknown[] = []; let reconnects = 0;
-  const call = new TaskCall({ provider,
+  const call = new TaskCall({ provider, ...(after ? { after } : {}),
     createRuntime: delivery => new TaskRuntime({ store, delivery, infer, contentAllowed: () => true,
       authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => true) }), execute: async () => { throw new Error('unexpected fixture tool'); } }),
     append: (_generation, id, text) => { sent.push({ id, text }); return `c${sent.length}`; },
@@ -53,9 +53,9 @@ test('a correction suppresses the stale worker answer', async t => {
   await f.call.input('Correction', 2); first.resolve({ text: 'Stale answer.', calls: [] }); await stale;
   assert.deepEqual(f.sent, [{ id: 'd1', text: 'Corrected answer.' }]);
 });
-test('no delegation still executes finalized input and uses the finished-result reconnect', async t => {
+test('no delegation still executes finalized input and appends on the open line', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic answer.', calls: [] }));
-  await f.call.input('Synthetic request', 1); assert.equal(f.reconnects(), 1);
+  await f.call.input('Synthetic request', 1); assert.equal(f.reconnects(), 0);
   assert.equal(f.call.reconnectAnswer()?.text, 'Synthetic answer.');
 });
 test('Gemini delegate attaches to the finalized task and carries its spoken answer', async t => {
@@ -107,4 +107,50 @@ test('R28 cue cleanup preserves nested, reference and escaped literal labels whi
   }
   assert.equal(stripNonLexicalTags(String.raw`\\[inhale]`), String.raw`\\`);
   assert.equal(stripNonLexicalTags('[music playing] words [inhale'), ' words ');
+});
+
+function quietClock() {
+  let now = 0;
+  const timers = new Set<{ at: number; callback: () => void }>();
+  return {
+    after: (ms: number, callback: () => void) => { const timer = { at: now + ms, callback }; timers.add(timer); return () => { timers.delete(timer); }; },
+    advance: (ms: number) => { now += ms; for (const timer of [...timers]) if (timer.at <= now) { timers.delete(timer); timer.callback(); } },
+  };
+}
+for (const gap of [600, 1_000, 1_600, 8_000]) test(`C-DELIVERY: fragment gap ${gap} ms merges or revises at host quiet`, async t => {
+  const clock = quietClock(); const inputs: string[] = [];
+  const f = fixture(t, async request => { inputs.push(JSON.stringify(request)); return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  f.call.ownerWords(); f.call.finalized('Synthetic first fragment', 1);
+  clock.advance(gap); await Promise.resolve();
+  assert.equal(inputs.length, gap < 1_200 ? 0 : 1);
+  f.call.ownerWords(); f.call.finalized('Synthetic second fragment', 2);
+  clock.advance(1_199); assert.equal(inputs.length, gap < 1_200 ? 0 : 1);
+  clock.advance(1); await Promise.resolve();
+  assert.equal(inputs.length, gap < 1_200 ? 1 : 2);
+  assert.match(inputs.at(-1)!, /Synthetic second fragment/);
+  if (gap < 1_200) assert.match(inputs[0]!, /Synthetic first fragment/);
+});
+test('C-DELIVERY: distinct completed asks each start work after quiet', async t => {
+  const clock = quietClock(); let runs = 0;
+  const f = fixture(t, async () => { runs++; return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  for (let turn = 1; turn <= 2; turn++) {
+    f.call.ownerWords(); f.call.finalized(`Synthetic separate ask ${turn}`, turn); clock.advance(1_200);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(runs, turn);
+  }
+});
+for (const spoken of [false, true]) test(`C-DELIVERY: no-tool result after prior voice speech=${spoken}`, async t => {
+  const pending = deferred(); const f = fixture(t, async () => pending.promise);
+  const result = f.call.input('Synthetic general question', 1);
+  if (spoken) f.call.spoke();
+  pending.resolve({ text: 'Synthetic own answer.', calls: [] }); await result;
+  assert.equal(f.sent.length, spoken ? 0 : 1);
+});
+for (const bound of [false, true]) test(`C-DELIVERY: no-action terminal fact with open delegation=${bound}`, async t => {
+  const pending = deferred(); const f = fixture(t, async () => pending.promise);
+  const result = f.call.input('Synthetic general question', 1);
+  if (bound) f.call.delegation('open');
+  pending.resolve({ text: '', calls: [] }); await result;
+  assert.equal(f.sent.length, bound ? 1 : 0);
+  if (bound) assert.match(f.sent[0]!.text, /No lookup is needed/);
 });

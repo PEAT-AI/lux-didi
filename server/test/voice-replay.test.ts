@@ -72,23 +72,23 @@ test('task replay: the worker result does not wait for a provider inference term
   assert.equal(f.voice.toolResponses.length, 0); assert.equal(f.voice.texts.length, 0);
 });
 
-test('task replay: repeated rejection and stale acknowledgements permit one result reconnect, never worker rerun', async t => {
+test('task replay: repeated rejection fails on the same line; stale acknowledgements never rerun work', async t => {
   let calls = 0;
   const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic retained answer.', calls: [] }; }, { clock: true });
   f.bind('old'); f.finalize('Give the synthetic retained answer.'); const answer = await f.answer();
   f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); await fixtureUntil(() => f.voice.taskAnswers.length === 2, 'one bounded append retry');
-  f.voice.emit({ type: 'commentaryRejected', commandId: f.voice.taskAnswers[1]!.commandId }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'rejected-result seed');
+  f.voice.emit({ type: 'commentaryRejected', commandId: f.voice.taskAnswers[1]!.commandId }); await f.flush();
   f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(15_000); await f.flush();
-  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 2); assert.equal(f.voice.taskAnswers.length, 2);
+  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 for (const noAction of [false, true]) {
-  test(`task replay: worker failure is explicit and no-action stays silent; noAction=${noAction}`, async t => {
+  test(`task replay: worker failure is explicit and no-action releases an open delegation; noAction=${noAction}`, async t => {
     let calls = 0;
     const f = await liveTaskFixture(t, async () => { calls++; if (!noAction) throw new Error('SYNTHETIC_RAW_PROVIDER_ERROR'); return { text: '', calls: [], no_action: true }; });
     f.bind(); f.finalize('Handle the synthetic request.');
-    if (noAction) { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0); }
+    if (noAction) { await f.flush(); f.bind('terminal-binding'); await f.flush(); await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0); }
     else { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'incomplete', 'failed worker terminal disposition'); const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
     assert.equal(calls, 1);
     assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'incomplete');

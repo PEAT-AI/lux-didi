@@ -63,6 +63,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
   async function compose(): Promise<WorkerResult> {
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
+    if (!findings.length) return incomplete();
     const finalAbort = new AbortController();
     const stopped = new Promise<never>((_, reject) => {
       finalAbort.signal.addEventListener('abort', () => reject(new Error('Final inference stopped')), { once: true });
@@ -73,7 +74,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     try {
       const answer = await Promise.race([options.infer({ instructions: workerInstructions(options.profile),
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
-        outputs: [...outputs], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
+        outputs: [...outputs, ...findings.filter(result => !outputs.some(output => output.result === result)).map((result, index) => ({ id: `completed-${index}`, name: 'completed_read', result }))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text || incomplete().text, findings, receipts };
     } catch { return options.signal.aborted ? finish() : incomplete(); }

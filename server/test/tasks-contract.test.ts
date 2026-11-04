@@ -393,11 +393,13 @@ test('deadline composes completed evidence without tools and gives composition 2
   const clock = new TaskTestClock(), localDone = taskDeferred<void>(), webStarted = taskDeferred<void>(), composing = taskDeferred<void>();
   const composition = taskDeferred<import('../tasks/worker.js').Inference>();
   const registry = createRegistry({ authority: new FakeAuthority(), execute: async name => {
-    if (name === 'search_memory') { localDone.resolve(); return documentResult('Synthetic local finding', 'memory:1'); }
+    if (name === 'search_memory') return documentResult('Synthetic local finding', 'memory:1');
     webStarted.resolve(); return new Promise(() => {});
   } });
+  const reads = new Map<string, import('../tasks/results.js').ToolResult>();
+  reads.set = (key, value) => { Map.prototype.set.call(reads, key, value); localDone.resolve(); return reads; };
   let hop = 0;
-  const work = runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: new AbortController().signal,
+  const work = runWorker({ registry, reads, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: new AbortController().signal,
     infer: async request => {
       if (++hop === 1) return { text: '', calls: [{ id: 'local', name: 'search_memory', args: { query: 'synthetic' } }, { id: 'web', name: 'search_web', args: { query: 'synthetic' } }] };
       assert.equal(request.tools.length, 0);

@@ -101,7 +101,14 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
     if (result.status === 'ok') task.controller.complete(identity, { status: 'complete', text: result.text, findings: [result] });
     return JSON.stringify(result);
   }
-  const owner = async text => {
+  const owner = async (text, acknowledgeId) => {
+    if (acknowledgeId) {
+      let index = f.frames.length;
+      f.send({ serverContent: { turnComplete: true } });
+      f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+      while (!f.frames.slice(index).some(frame => JSON.stringify(frame).includes('This alarm is acknowledged'))) await f.frame(++index);
+      assert.equal(rows().find(row => row.id === acknowledgeId).state, 'done', 'owner speech acknowledges only the announced occurrence');
+    }
     runtime(); workerWords = text;
     revision = matrixRuntime.begin(text, 1, calls + 1);
   };
@@ -160,10 +167,10 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
-  await owner('snooze my alarm for five minutes'); const staleSnooze = revision.identity;
+  await owner('snooze my alarm for five minutes', due.id); const staleSnooze = revision.identity;
   await owner('show my alarms');
   assert.match(await call('snooze_alarm', { id: String(due.id) }, staleSnooze), /failed/, 'replacement for snooze phrase expiry: stale revision cannot snooze');
-  assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
+  assert.equal(rows().find(row => row.id === due.id).state, 'done', 'a stale task cannot change the acknowledged occurrence');
   await owner('snooze my alarm for five minutes');
   const snoozed = JSON.parse(await call('snooze_alarm', { id: String(due.id) }));
   assert.equal(snoozed.status, 'ok');
@@ -284,10 +291,7 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const followId = JSON.parse(followCreated.text).id;
   now += 60000;
   await post('/api/v1/alarms/recheck', { reason: 'clock_changed' });
-  // Seed the recently acknowledged snapshot, retaining the real scheduler's ringing deadline.
-  assert.equal(rows().find(row => row.id === followId).state, 'ringing');
-  host.store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=?", [followId]));
-  assert.equal(rows().find(row => row.id === followId).state, 'done', 'a recently acknowledged occurrence is still eligible for snooze');
+  assert.equal(rows().find(row => row.id === followId).state, 'ringing', 'the second regression snoozes an actively ringing occurrence');
   const { insertAlarmSeries, linkAlarmOccurrence } = await import(pathToFileURL(join(serviceRoot, 'dist/tools/alarm.js')));
   host.store.transaction(tx => {
     insertAlarmSeries(tx, { id: followId, rule: { kind: 'daily', hour: 8, minute: 0, tz: 'UTC' }, label: 'Synthetic repeat', createdJournalId: 'synthetic-repeat' });

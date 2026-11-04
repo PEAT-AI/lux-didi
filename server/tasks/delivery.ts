@@ -24,7 +24,7 @@ export function splitSpokenText(text: string): string[] {
 }
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
-  command?: string; attempt: number;
+  command?: string | undefined; attempt: number;
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;

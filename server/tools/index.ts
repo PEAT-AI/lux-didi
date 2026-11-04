@@ -551,13 +551,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const project = (name: string, value: JsonObject) => value.ok === false
         ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
       const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
-        if (!options.alarms || !context.identity) return taskFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
+        const alarmFailed = (message: string) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(store.transaction(tx => listPendingAlarms(tx)))}`);
+        if (!options.alarms || !context.identity) return alarmFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
         const now = options.alarms.now();
         const effect = authorizedTaskEffect.getStore();
-        if (!effect) return taskFailed('Alarm authority context is unavailable. Nothing changed.');
+        if (!effect) return alarmFailed('Alarm authority context is unavailable. Nothing changed.');
         let rule = args.recurrence as SeriesRule | null | undefined;
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
-        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
         if (at !== undefined) {
           const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
           const proposed = alarmReadBack(at, zone);
@@ -565,11 +566,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const interpreted = parseAlarmTime(effect.ownerWords, now, zone, time.state === 'read' ? time.spec : undefined);
           if (interpreted.status === 'ready') { at = interpreted.fireAtUtc; rule = interpreted.series ?? rule; }
         }
-        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return taskFailed('Invalid recurrence. Nothing changed.'); } }
+        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return alarmFailed('Invalid recurrence. Nothing changed.'); } }
         if (at !== undefined) at = Math.max(at, now + 60_000);
         const label = typeof args.text === 'string' ? args.text.trim() : undefined;
-        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
-        if (action === 'update' && at === undefined && label === undefined && !rule) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return alarmFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined && !rule) return alarmFailed('Supply the new reminder text or timestamp. Nothing changed.');
         let id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
         const result = commitAlarmEffect(store, effect.identity, tx => {
           if (action === 'create') {
@@ -579,7 +580,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           } else {
             id = pendingOccurrenceOf(tx, id) ?? id;
             const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
-            if (!row) return taskFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
+            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
             if (action === 'cancel') {
               tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
               const series = alarmSeriesOfOccurrence(tx, id);

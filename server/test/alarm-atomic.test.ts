@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../runtime/store.js';
+import { Store, commitAlarmEffect } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/index.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
@@ -136,4 +136,24 @@ test('task recurrence tools accept an explicit rule and update the durable serie
   assert.equal(persisted?.local_time, '10:00');
   assert.equal(Number(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [id])?.fire_at_utc)), seriesNextFireAt(weekly, now));
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences WHERE series_id=?', [id])?.n), 1);
+});
+
+
+test('atomic alarm receipt rolls back with the alarm and respects disabled content retention', t => {
+  const h = alarmHarness(t);
+  const identity = 'synthetic-atomic-policy';
+  const value = { status: 'ok' as const, text: 'synthetic receipt content', references: [], next_cursor: null, coverage: '', repair: null };
+  assert.throws(() => commitAlarmEffect(h.store, identity, tx => {
+    tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES('synthetic-rollback',?,'UTC','synthetic','pending','synthetic')", [Date.now() + 60000]);
+    throw Error('synthetic-rollback');
+  }), /synthetic-rollback/);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM task_effect_journal')?.n), 0);
+  const journal = h.store.taskEffectJournal(() => false);
+  commitAlarmEffect(h.store, identity, () => value);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT value FROM task_effect_journal')?.value), null);
+  return journal.get(identity).then(record => {
+    assert.equal(record?.status, 'succeeded');
+    assert.doesNotMatch(JSON.stringify(record), /synthetic receipt content/);
+  });
 });

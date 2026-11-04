@@ -133,7 +133,7 @@ test('L-08: a classified failure writes one closed host event, ids and a code an
  * scope_missing must reach an attached host log sink as one closed event, and the host log's own
  * validator must keep it. Deleting the emit at server/tools/index.ts turns this red.
  */
-test('L-08: one classified connector failure reaches the host log sink and the host log admits it', async () => {
+test('L-08: one classified connector failure reaches the host log sink and the host log admits it', async t => {
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -172,11 +172,13 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-    const callArgs = { query: 'synthetic' };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
-    assert.equal(owner.journal.intent(intent), 'fresh');
     const task = canonicalTaskFixture(store, owner, 'run', 'Read the synthetic mail', ['gmail']);
+    t.after(() => task.close());
     const definition = task.tools.find(candidate => candidate.name === 'search_mail');
+    assert.ok(definition);
+    const callArgs = { query: 'synthetic', cursor: null };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'search_mail', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: definition.accountId, resourceId: definition.resourceId };
+    assert.equal(owner.journal.intent(intent), 'fresh');
     assert.ok(definition?.execute);
     const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(outcome.status, 'completed', 'a classified failure is still a completed call (its text is the reason)');

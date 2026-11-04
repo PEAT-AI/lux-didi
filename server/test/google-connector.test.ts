@@ -21,7 +21,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
-import { composeResult, notAuthorizedFor } from '../tools/compose.js';
+import { composeResult, eventWindow, notAuthorizedFor } from '../tools/compose.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, GOOGLE_DEFAULTS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
@@ -1261,4 +1261,15 @@ test('W1030: a missing compose or calendar_write token answers with its own fami
   assert.match(String(event['say']), /auth needed: run .* --family calendar_write/);
   const chat = composeResult(notAuthorizedFor('draft_chat'));
   assert.match(String(chat['say']), /mattermost_login/);
+});
+
+// #807: a follow-up edit to a block reused the first length word in the accumulated asks, so
+// "one hour" followed by "make it two hours" kept an hour. The latest length he gave wins.
+test('#807: an amended block keeps the length he gave last', () => {
+  const now = Date.UTC(2026, 10, 4, 8, 0);
+  const said = 'put a block on my calendar at 3 pm for one hour, actually make it two hours';
+  const amended = eventWindow(said, now, 'Europe/Berlin');
+  assert.equal(amended.status, 'ready');
+  if (amended.status !== 'ready') return;
+  assert.equal(amended.endUtc - amended.startUtc, 120 * 60000, 'the later length wins');
 });

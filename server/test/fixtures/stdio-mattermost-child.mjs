@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Synthetic stdio MCP child for check-company-connectors.sh (Mattermost connector).
 // No real accounts, network access, credentials, sessions or application files are touched.
-// argv[2] = mode (ok | auth-needed | empty | unknown-channel | no-thread).
+// argv[2] = mode (ok | auth-needed | empty | unknown-channel | no-thread | stale).
 // The child never reads ~/.local/share/mattermost-mcp.
 // Envelopes are literal copies of the installed child's shapes (mattermost-mcp src/search/serialize.ts):
 // search and channel history answer {total, returned, results}, a thread answers {root, replies},
@@ -28,16 +28,19 @@ const READ_SCHEMAS = {
   mattermost_list_channels: { type: 'object' },
 };
 
+// #437: a synthetic stale archive. In `stale` mode the child synced in July and everything it holds
+// is from then, so the archive's own newest sync date is the only honest freshness it can report.
+const at = iso => mode === 'stale' ? iso.replace('2026-10-11', '2026-07-02') : iso;
 const CHANNELS = [
-  { id: 'chanTownSquare', name: 'town-square', display_name: 'Town Square', type: 'O' },
-  { id: 'chanDogcation', name: 'dogcation', display_name: 'Dogcation', type: 'O' },
+  { id: 'chanTownSquare', name: 'town-square', display_name: 'Town Square', type: 'O', lastSyncAt: mode === 'stale' ? '2026-07-01T00:00:00.000Z' : '2026-10-11T10:02:00.000Z' },
+  { id: 'chanDogcation', name: 'dogcation', display_name: 'Dogcation', type: 'O', lastSyncAt: mode === 'stale' ? '2026-07-01T00:00:00.000Z' : '2026-10-11T10:02:00.000Z' },
 ];
 
 const posts = [
-  { id: 'postStandup', username: 'rob', channel: 'town-square', timestamp: '2026-10-11T10:00:00.000Z', message: 'Standup at ten', url: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' },
-  { id: 'postOnIt', username: 'dana', channel: 'town-square', timestamp: '2026-10-11T10:01:00.000Z', message: 'On it', url: 'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321' },
+  { id: 'postStandup', username: 'rob', channel: 'town-square', timestamp: at('2026-10-11T10:00:00.000Z'), message: 'Standup at ten', url: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' },
+  { id: 'postOnIt', username: 'dana', channel: 'town-square', timestamp: at('2026-10-11T10:01:00.000Z'), message: 'On it', url: 'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321' },
   // Longer than the 600-character per-field bound so the projection clip is exercised.
-  { id: 'postLongBody', username: 'rob', channel: 'town-square', timestamp: '2026-10-11T10:02:00.000Z', message: 'L'.repeat(700), url: 'https://chat.peat-cloud.com/team/pl/longbody0000000000000000000000' },
+  { id: 'postLongBody', username: 'rob', channel: 'town-square', timestamp: at('2026-10-11T10:02:00.000Z'), message: 'L'.repeat(700), url: 'https://chat.peat-cloud.com/team/pl/longbody0000000000000000000000' },
 ];
 const envelope = list => ({ total: list.length, returned: list.length, results: list });
 

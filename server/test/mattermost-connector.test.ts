@@ -13,7 +13,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
-import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
+import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_CHAT_TOOL, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { Store } from '../runtime/store.js';
@@ -47,8 +47,8 @@ async function approve(adapter: McpPort, registry: McpRegistry, names: readonly 
   return discovery.schemaDigest;
 }
 
-function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string) {
-  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } });
+function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string, names?: readonly string[]) {
+  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 60, queryChars: 200, ...(names === undefined ? {} : { names }) } });
 }
 
 // #661: a fake channel child whose list_channels declares its own page size, and whose paging
@@ -476,3 +476,30 @@ async function canonicalMattermostRun(t: TestContext) {
   return { f, store, owner, task, host: live! };
 }
 
+
+// #437: a "latest" question was answered from the synced archive, so an item months old was spoken as
+// the newest. The chat read now carries the archive's own newest sync date, so its coverage says how
+// fresh that archive is instead of letting an old post pass as current.
+test('#437: a recency chat read over a stale archive reports the archive\'s newest sync date', async t => {
+  const f = setup('stale'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const result = await reader(f.adapter, f.registry, digest, [...MATTERMOST_TOOLS, MATTERMOST_CHAT_TOOL]).chat({ intent: 'channel', channel: 'Town Square', query: 'latest messages' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  const read = result.decodedResult as { read: string; archiveSyncedAt?: string };
+  assert.equal(read.archiveSyncedAt, '2026-07-01T00:00:00.000Z', 'the archive newest sync is the day the child last synced');
+  assert.match(read.read, /the chat archive's newest sync is 2026-07-01T00:00:00\.000Z/);
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /the chat archive's newest sync is 2026-07-01T00:00:00\.000Z/, 'the helper that reads the result can say the age');
+});
+
+test('#437: a fresh archive reports its real newest sync date, never a fixed one', async t => {
+  const f = setup('ok'); t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const result = await reader(f.adapter, f.registry, digest, [...MATTERMOST_TOOLS, MATTERMOST_CHAT_TOOL]).chat({ intent: 'channel', channel: 'Town Square', query: 'latest' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  assert.equal((result.decodedResult as { archiveSyncedAt?: string }).archiveSyncedAt, '2026-10-11T10:02:00.000Z');
+});

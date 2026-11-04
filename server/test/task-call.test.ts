@@ -182,3 +182,22 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
   for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(reads, 1); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, 'Synthetic corrected result.');
 });
+
+for (const failedRead of [false, true]) test(`review F1: prior voice speech cannot suppress an attempted read, failed=${failedRead}`, async t => {
+  const first = deferred(); let inferences = 0; let reads = 0;
+  const f = fixture(t, async () => {
+    if (++inferences === 1) return first.promise;
+    if (failedRead) throw new Error('Synthetic final inference unavailable.');
+    return { text: 'Synthetic successful read answer.', calls: [] };
+  }, 'openai', undefined, async () => {
+    reads++; if (failedRead) throw new Error('Synthetic read unavailable.');
+    return { status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null };
+  });
+  const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
+  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] });
+  const result = await running; assert.equal(reads, 1);
+  assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
+  assert.equal(result.findings.length, failedRead ? 0 : 1);
+  assert.ok(result.text.trim()); assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0]!.text, result.text);
+});

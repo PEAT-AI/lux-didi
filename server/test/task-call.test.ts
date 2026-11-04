@@ -1,3 +1,4 @@
+import { stripNonLexicalTags } from '../live/index.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
 import './task-context.test.js';
@@ -79,4 +80,12 @@ test('R24 EF5: a final inference answer is redacted in Store, delivery and recov
   const seed = f.call.reconnectAnswer(); assert(seed);
   assert.match(seed.text, /Ordinary verified answer/); assert(!JSON.stringify(seed).includes(secret));
   assert.match(seed.text, /\[redacted\]/);
+});
+
+
+test('R25 EF8: performance cues are stripped but cue-prefixed Markdown citations stay byte-identical', () => {
+  for (const citation of ['[Music study](https://example.test/paper)', '[Noise report](https://example.test/noise)', '[Silence](https://example.test/silence)', '[Music Überblick 🌱](https://example.test/unicode)']) {
+    assert.equal(stripNonLexicalTags(`[laughter] ${citation} [breath]`), ` ${citation} `);
+  }
+  assert.equal(stripNonLexicalTags('ordinary [chuckle] words [inhale'), 'ordinary  words ');
 });

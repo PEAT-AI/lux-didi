@@ -38,11 +38,11 @@ bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applicat
 
 The installer validates the app, preserves the previous app as a uniquely named rollback sibling, swaps the new bundle and restores the old bundle if post-swap validation fails. It does not delete or reseed the owner's state. It does not configure providers, install connector helpers or sign in to accounts.
 
-## Build the checkout before the installer runs its own checks
+## Build the checkout before running one installed check by itself
 
-The installer then runs every `scripts/check-installed-*.sh` against the app it just installed, and one failure puts the previous app back. Two of those checks read compiled files from your checkout, not only from the installed bundle: `scripts/check-installed-open-web.sh` imports `server/dist/test/live-voice-fixture.js`, and `scripts/check-installed-connectors.sh` builds `server/dist` itself when it is missing or older than the sources. The alarm and open-web checks build only when they stage their own package, which is not what the installer asks them to do.
+The installer then runs every `scripts/check-installed-*.sh` against the app it just installed, and one failure puts the previous app back. That sequence runs in file name order, so `scripts/check-installed-connectors.sh` runs before `scripts/check-installed-open-web.sh`, and the connectors check builds `server/dist` itself when `server/dist/host/mcp.js` is missing or older than the sources. A fresh checkout therefore reaches the compiled files before the check that imports them runs, so the installer does not need you to build first.
 
-On a fresh checkout, build once before installing, so a compiled file is present when the installer runs:
+Running one of those checks by itself is different. `scripts/check-installed-open-web.sh <target>` imports `server/dist/test/live-voice-fixture.js` from your checkout, and in target mode it does not build. Build once first:
 
 ```sh
 npm --prefix server ci
@@ -50,7 +50,7 @@ npm --prefix web ci
 bash scripts/run-local.sh --build-only
 ```
 
-Without that build the open-web check fails on the missing compiled fixture, and the installer reports a failed installed check while restoring your old app.
+Without that build the open-web check fails on the missing compiled fixture when you run it on its own. The same build also skips the slower automatic build the connectors check would otherwise do during an install.
 
 Do not clear quarantine or use a force-install workaround to turn a failed validation into apparent success. Read the installer error and [debugging.md](debugging.md).
 

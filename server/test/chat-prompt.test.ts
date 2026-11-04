@@ -47,7 +47,7 @@ test('C-CHAT: a typed ambiguous-person repair is preserved without a scripted as
 });
 
 test('C-CHAT: an unconfigured reader yields an explicit repair, not a fabricated empty conversation', async () => {
-  const tools = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor({ read: new Map() }) });
+  const tools = createRegistry({ authority: new FakeAuthority(), execute: connectorExecutor([]) });
   const result = await tools.get('chat_person')!.run(personArgs(), identity, signal());
   assert.equal(result.status, 'failed');
   assert.match(result.repair ?? '', /not configured/);

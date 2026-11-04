@@ -993,6 +993,26 @@ test('#1011: an earlier segment drain is not the completed answer', () => {
   });
 });
 
+test('#1011: a response with audio and no playback receipt is no completion evidence', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    for (const [responseKey, at] of [['r1', T0 + 1_000], ['r2', T0 + 4_000]] as const) {
+      record(store, 'response.created', { liveSessionId: SESSION, turnId: 't1', responseKey },
+        { createdAt: at, status: 'completed', providerResponseId: `resp-${responseKey}` });
+    }
+    // The scan knows both responses made audio; only r1's playback segment reached the store and drained.
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', playbackKey: 'play:1' },
+      { segmentSeq: 1, receivedAt: T0 + 2_000 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:1' }, { drainedAt: T0 + 3_000 });
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.playbackSegments, 1, 'the continuation owns no segment of its own');
+    assert.equal(row.finalToAnswerCompleteMs, null,
+      'r2 is known audio with no playback receipt, so the answer has no completion evidence');
+    assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'her first sound is still measured');
+  });
+});
+
 test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
   withStore(store => {
     tracedTurn(store, T0 + 3_120, [T0 + 3_500, T0 + 4_000]);

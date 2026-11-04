@@ -23,6 +23,8 @@ export class TaskRuntime {
   readonly registry: Map<string, TaskTool>;
   #isCurrent: () => boolean = () => true;
   bindCurrent(check: () => boolean): void { this.#isCurrent = check; }
+  readonly #toolsUsed = new Set<string>();
+  usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
   readonly #contexts = new Map<string, { exposures: Set<Exposure>; urls: Set<string> }>();
   taskContext(taskId: string) {
     const task = this.controller.taskContext(taskId);
@@ -88,6 +90,8 @@ export class TaskRuntime {
     this.recordOperation(identity, name, args, result); return result;
   }
   recordOperation(operation: OperationIdentity, tool: string, args: Record<string, unknown>, output: ToolResult | null): void {
+    // Failed reads have no successful findings, but an admitted tool still owns an outcome.
+    if (output === null) this.#toolsUsed.add(operation.task_id);
     const effect = this.registry.get(tool)!.effect;
     const state = output === null ? 'pending' : effect === 'none' ? output.status === 'failed' ? 'failed' : 'committed' : output.receipt?.state ?? 'unknown';
     this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output }, this.options.contentAllowed());

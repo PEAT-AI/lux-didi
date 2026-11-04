@@ -40,7 +40,7 @@ export class TaskCall {
         this.#answer = { identity, answer };
         if (ports.provider === 'openai') {
           if (answer.status === 'no_action' && !this.#delegation) return;
-          if ((answer.status === 'complete' || answer.status === 'incomplete') && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation) return;
+          if ((answer.status === 'complete' || answer.status === 'incomplete') && !this.runtime.usedTool(identity) && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation) return;
           this.delivery.deliver(identity, answer);
         }
         else this.#respond();

@@ -18,7 +18,7 @@
       ]
     },
     {
-      "trigger": "owner",
+      "trigger": "audio",
       "frames": [
         {
           "type": "response.event",

@@ -18,7 +18,7 @@
       ]
     },
     {
-      "trigger": "owner",
+      "trigger": "audio",
       "frames": [
         {
           "type": "response.event",
@@ -49,7 +49,7 @@
       ]
     },
     {
-      "trigger": "owner",
+      "trigger": "audio",
       "frames": [
         {
           "type": "response.event",

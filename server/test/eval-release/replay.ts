@@ -3,21 +3,21 @@
  * the real adapter's own `socketFactory` seam points at. Nothing leaves the machine, no key is read, and the
  * adapter cannot tell the difference between this and the provider's wire.
  *
- * A recording is a list of steps, each with the trigger that serves it: `start` on connect, `owner` on an owner
- * ask, `continuation` on the `response.create` that follows a tool answer. Frames are provider frames, verbatim.
+ * A recording is a list of steps, each with the trigger that serves it: `start` on connect, `audio` on the owner's
+ * uplink, `continuation` on the `response.create` that follows a tool answer. Frames are provider frames, verbatim.
  */
 
 import { readFileSync } from 'node:fs';
 import WebSocket, { WebSocketServer } from 'ws';
 import type { LiveSocketFactory } from '../../adapters/live-voice/types.js';
 
-export type ReplayTrigger = 'start' | 'owner' | 'continuation' | 'audio';
+export type ReplayTrigger = 'start' | 'continuation' | 'audio';
 
 export interface ReplayStep { readonly trigger: ReplayTrigger; readonly frames: readonly Record<string, unknown>[] }
 
 export interface Recording { readonly provenance?: Readonly<Record<string, unknown>>; readonly steps: readonly ReplayStep[] }
 
-const TRIGGERS: readonly string[] = ['start', 'owner', 'continuation', 'audio'];
+const TRIGGERS: readonly string[] = ['start', 'continuation', 'audio'];
 
 export function loadRecording(path: string): Recording {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -42,6 +42,9 @@ export interface Replay {
   readonly frames: Record<string, unknown>[];
   /** Resolves once every step has been served and its frames handed to the socket. */
   readonly served: () => Promise<void>;
+  /** How many steps have been served, and how many the recording holds: a bounded wait reads these. */
+  readonly servedCount: () => number;
+  readonly totalSteps: () => number;
   readonly close: () => Promise<void>;
 }
 
@@ -77,11 +80,10 @@ export async function replayServer(recording: Recording): Promise<Replay> {
       frames.push(frame);
       // The adapter opens the session with its own create frame: the provider greets only after it, as it does live.
       if (!started) { started = true; next('start'); return; }
-      // An owner ask reaches the wire as `response.item.create`, its audio as `session.input_audio.append`, and the
-      // answer's continuation as `response.create`. Each one serves the next step recorded with that trigger.
-      const trigger = frame['type'] === 'response.item.create' ? 'owner'
-        : frame['type'] === 'session.input_audio.append' ? 'audio'
-          : frame['type'] === 'response.create' ? 'continuation' : undefined;
+      // An owner ask reaches the wire as `session.input_audio.append` (the adapter is audio-only), and the answer's
+      // continuation as `response.create`. Each one serves the next step recorded with that trigger.
+      const trigger = frame['type'] === 'session.input_audio.append' ? 'audio'
+        : frame['type'] === 'response.create' ? 'continuation' : undefined;
       if (trigger !== undefined) next(trigger);
     });
   });
@@ -91,6 +93,8 @@ export async function replayServer(recording: Recording): Promise<Replay> {
     connections: () => counters.connections,
     frames,
     served: () => settled,
+    servedCount: () => served,
+    totalSteps: () => total,
     close: async () => {
       peer?.close(1000, 'replay done');
       await new Promise<void>(resolve => server.close(() => resolve()));

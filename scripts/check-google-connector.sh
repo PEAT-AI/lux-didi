@@ -36,7 +36,7 @@ cp "$root/server/host/events.ts" "$out/source/host/"
 # W15: tools, connectors and the live persona resolve people through the host snapshot, so the
 # harness compiles that module and its import closure too.
 cp "$root"/server/people/*.ts "$out/source/people/"
-cp "$root"/server/prompt/{types,backend-procedure,live-persona}.ts "$out/source/prompt/"
+cp "$root"/server/prompt/{types,live-persona}.ts "$out/source/prompt/"
 cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
 cp "$root/server/http/routes.ts" "$out/source/http/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"

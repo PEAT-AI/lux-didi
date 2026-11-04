@@ -1,3 +1,4 @@
+import type { ConnectionPolicy } from '../tools/types.js';
 import { taskChatReader } from './fixtures/task-chat-reader.js';
 // C-CHAT (W2b): Naya reads the team chat by person, direct message, group and channel. Every test runs
 // against the synthetic stdio child (fixtures/stdio-mattermost-people-child.mjs): no account, no network.

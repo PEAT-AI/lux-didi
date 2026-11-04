@@ -89,7 +89,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // stands on, so the policy can never widen the envelope one composed name at a time.
   const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
   // W1030: a write family's own names are grantable, but never as reads: they ride beside the family's
-  // read-only consent probe and are never model-facing tool declarations (see liveDefinitions below).
+  // read-only consent probe and are never model-facing tool declarations (separate from the canonical task facade).
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];

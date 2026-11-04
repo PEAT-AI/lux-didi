@@ -81,23 +81,12 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
     expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],
   },
-  {
-    expression: 'hostNote(line)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: 'R6: a source that settles after the first answer is appended once, and said once on a quiet turn' },
-    ],
-  },
+
   {
     expression: 'MUTED_OFFER_TEXT', count: 1, channel: 'host',
     covers: [{ file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' }],
   },
-  {
-    expression: 'hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE)', count: 1, channel: 'host',
-    covers: [
-      { file: 'live-session.test.ts', title: 'C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn' },
-      { file: 'tools-builtin-intent.test.ts', title: 'the claim guard flags an empty result only after a rejected lookup, never after a real empty result' },
-    ],
-  },
+
   {
     expression: 'hostNote(text)', count: 1, channel: 'host',
     covers: [

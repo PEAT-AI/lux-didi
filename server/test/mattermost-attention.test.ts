@@ -34,7 +34,7 @@ function setup(mode: string) {
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
   const calls = (): { name: string; arguments: Record<string, unknown>; at?: number }[] =>
     existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown>; at?: number }) : [];
-  return { dir, log, registry, adapter, calls, endpoint };
+  return { dir, log, registry, adapter, calls, endpoint: config };
 }
 
 async function approveWithout(registry: McpRegistry, adapter: ReturnType<typeof createMcpAdapter>, toolNames: readonly string[]) {

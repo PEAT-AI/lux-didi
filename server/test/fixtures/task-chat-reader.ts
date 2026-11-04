@@ -11,8 +11,8 @@ export function taskChatReader(port: McpPort, registry: McpRegistry, endpoint: C
   const policy: ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'synthetic-owner', connectionId: endpoint.id, generation: 1, enabled: true,
     connector: 'mattermost', endpoint, schemaDigest, toolNames, composedGrantedNames,
-    sourcePolicy: { id: 'synthetic-chat', revision: 1, unknownClass: 'private', allowedClasses: ['private', 'company'] },
-    route: { identity: 'voice', allowedClasses: ['private', 'company'] },
+    sourcePolicy: { id: 'synthetic-chat', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'voice', allowedClasses: ['private'] },
     bounds: { maxQueryChars: 1000, maxSearchLimit: 50, maxGetIds: 50, maxEntityBytes: 1000000, maxResultBytes: 1000000 },
   };
   const descriptor = connectorDescriptor('mattermost')!;

@@ -61,7 +61,8 @@ const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => ca
 /** The accepted task registry, not a model-facing live-voice tool table. */
 const taskRuntime = (h: Host, connectionIds: readonly string[] = [...h.mcp.connectionIds()]) => hostTaskFactory({
   store: h.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-  bindings: () => h.mcp.owner.taskBindings(connectionIds), contentAllowed: () => false, timeZone: 'UTC',
+  bindings: () => h.mcp.owner.taskBindings(connectionIds), executors: sessionId => h.mcp.owner.taskExecutors(sessionId),
+  contentAllowed: () => false, timeZone: 'UTC',
   effectCheck: async () => true,
   ...(h.mcp.draftChat ? { draftChat: (input, scope) => h.mcp.draftChat!(input, scope) } satisfies Pick<import('../tasks/host.js').HostTaskOptions, 'draftChat'> : {}),
 })('synthetic-compose-task', new FakeDelivery(), connectionIds);
@@ -272,4 +273,19 @@ test('the host task draft_chat reaches the real scoped compose bridge and native
   assert.deepEqual(calls[0]!.args, { message: 'Synthetic task reply', dm_username: 'Sam' });
   assert.equal(callsOf(h.pid('mattermost')).some(call => /send|publish|post_message/.test(call.tool)), false, 'saving a draft never posts to a human');
   } finally { runtime.close(); }
+});
+
+// These cross the same task factory/executor seam as the live host. Direct
+// compose-port tests above cannot prove a worker operation is wired to a child.
+for (const scenario of [
+  { name: 'draft_email', words: 'Draft a synthetic email to fixture@example.invalid about the invoice.', args: { to: ['fixture@example.invalid'], subject: 'Synthetic invoice', body: 'Synthetic body.' }, family: 'gmail_draft', native: 'gmail_create_draft' },
+  { name: 'create_event', words: 'Create a synthetic calendar event tomorrow at nine for half an hour.', args: { title: 'Synthetic block', start: '2030-01-02T09:00:00Z', end: '2030-01-02T09:30:00Z', calendar_id: null }, family: 'calendar_write', native: 'calendar_create_event' },
+]) test(`SOURCE DEFECT task wiring: ${scenario.name} reaches its configured write child`, async t => {
+  const h = await host(t, pid => configured(pid));
+  ownerTools(h); // Establish the accepted connection snapshot before task work.
+  const runtime = taskRuntime(h); t.after(() => runtime.close());
+  const revision = runtime.begin(scenario.words, 1);
+  const result = await runtime.runTool(scenario.name, scenario.args, { ...revision.identity, operation_id: 'synthetic-write-operation' }, new AbortController().signal);
+  assert.equal(result.status, 'ok', `The configured ${scenario.name} must execute, not merely appear in the registry: ${result.repair ?? ''}`);
+  assert.equal(toolNames(h.pid(scenario.family)).filter(name => name === scenario.native).length, 1, 'one task operation produces exactly one native write');
 });

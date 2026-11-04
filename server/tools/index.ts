@@ -564,7 +564,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
           const proposed = alarmReadBack(at, zone);
           const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
-          const interpreted = parseAlarmTime(effect.ownerWords, now, zone, time.state === 'read' ? time.spec : undefined);
+          const interpreted = parseAlarmTime(effect.ownerWords, effect.askAtUtc ?? now, zone, time.state === 'read' ? time.spec : undefined);
           if (interpreted.status === 'ready' && interpreted.source !== 'model'
             && (interpreted.fireAtUtc > now || checkOwnerTime(effect.ownerWords).status === 'unique')) {
             // Combining a day constraint with the proposed clock must not erase its seconds.

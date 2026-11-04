@@ -37,7 +37,7 @@ export function alarmHarness(t: TestContext, recheck: () => void = () => {}, now
     const tool = tools.get(name); assert.ok(tool);
     return tool.run(args, { task_id: task.id, task_revision: task.revision, operation_id: randomUUID(), connection_generation: 1 }, new AbortController().signal);
   };
-  return { store, directory, migrations, call, task, tools };
+  return { store, directory, migrations, call, task, tools, owner };
 }
 
 test('alarm atomicity: lost confirmation replays one alarm and a durable task receipt', async t => {

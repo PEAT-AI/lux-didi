@@ -414,7 +414,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, page.parent); } catch { return undefined; }
     }
     if (row.state !== 'refused') { const selected = target(snapshot, call, tx); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return undefined; }
-    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean }; classSet(value.dataClasses);
+    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean; sourceDispatchRefs?: string[] }; classSet(value.dataClasses);
+    if (row.state === 'completed') for (const id of value.sourceDispatchRefs ?? []) {
+      const source = tx.get("SELECT connection_id, policy_sha256 FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed'", [id, ownerId]);
+      if (!source || typeof source.connection_id !== 'string' || snapshot.connections.find(bound => bound.connectionId === source.connection_id)?.sha256 !== source.policy_sha256
+        || !currentPolicies(tx, snapshot, source.connection_id) || !currentProjection(snapshot, source.connection_id)) return undefined;
+    }
     const reference = retained.get(binding.result.id);
     if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return undefined;
     if (reference?.evidence.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, reference.evidence.parent)?.dataClasses.some(c => !value.dataClasses.includes(c))) return undefined;

@@ -1743,11 +1743,9 @@ test('input episode finalization uses the same quiet for fragments and sentences
   for (const words of ['Synthetic words with', 'Synthetic sentence.']) {
     const clock = new FakeClock(); const opened = await fakeReady(t, { clock });
     opened.socket.deliver({ type: 'session.input_transcript.delta', delta: words });
-    const starts = opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length;
-    clock.advance(699);
-    assert.equal(opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length, starts);
-    clock.advance(1);
-    assert.equal(opened.socket.sent.filter(value => JSON.parse(value).type === 'session.input_audio_buffer.stop').length, starts + 1);
+    const starts = () => opened.captured.events.filter(event => event.type === 'modelTurnStarted').length;
+    clock.advance(699); await quiet(); assert.equal(starts(), 0);
+    clock.advance(1); await quiet(); assert.equal(starts(), 1);
   }
 });
 

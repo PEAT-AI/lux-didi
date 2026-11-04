@@ -56,7 +56,7 @@ test('a correction suppresses the stale worker answer', async t => {
 test('no delegation still executes finalized input and appends on the open line', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic answer.', calls: [] }));
   await f.call.input('Synthetic request', 1); assert.equal(f.reconnects(), 0);
-  assert.equal(f.call.reconnectAnswer()?.text, 'Synthetic answer.');
+  assert.equal(f.call.pendingAnswer()?.text, 'Synthetic answer.');
 });
 test('Gemini delegate attaches to the finalized task and carries its spoken answer', async t => {
   let inference = 0; const f = fixture(t, async () => { inference++; return { text: 'Synthetic spoken answer.', calls: [] }; }, 'gemini');
@@ -77,7 +77,7 @@ test('R24 EF5: a final inference answer is redacted in Store, delivery and recov
   assert(!JSON.stringify(rows).includes(secret), 'retained final answer contains no secret');
   assert.equal(f.sent.length, 1); assert.match(f.sent[0]!.text, /Ordinary verified answer/);
   assert(!JSON.stringify(f.sent).includes(secret)); assert.match(f.sent[0]!.text, /\[redacted\]/);
-  const seed = f.call.reconnectAnswer(); assert(seed);
+  const seed = f.call.pendingAnswer(); assert(seed);
   assert.match(seed.text, /Ordinary verified answer/); assert(!JSON.stringify(seed).includes(secret));
   assert.match(seed.text, /\[redacted\]/);
 });
@@ -150,7 +150,7 @@ for (const bound of [false, true]) test(`C-DELIVERY: no-action terminal fact wit
   const pending = deferred(); const f = fixture(t, async () => pending.promise);
   const result = f.call.input('Synthetic general question', 1);
   if (bound) f.call.delegation('open');
-  pending.resolve({ text: '', calls: [] }); await result;
+  pending.resolve({ text: '', calls: [], no_action: true }); await result;
   assert.equal(f.sent.length, bound ? 1 : 0);
   if (bound) assert.match(f.sent[0]!.text, /No lookup is needed/);
 });

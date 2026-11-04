@@ -94,7 +94,7 @@ export class TaskCall {
     this.#outputQuiet = input.outputQuiet;
     this.delivery.activity({ ...input, ownerSpeaking: input.ownerSpeaking || this.#inputPending });
   }
-  reconnectAnswer(): { identity: RevisionIdentity; text: string } | undefined {
+  pendingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     return this.delivery.waitingAnswer();
   }
   #respond(): void {

@@ -84,7 +84,7 @@ export const cases: Record<string, () => Promise<void>> = {
   },
   async 'no-delegation'() {
     const f = fixture(async () => ({ text: 'Synthetic answer.', calls: [] }));
-    try { await f.call.input('Synthetic request', 1); equal(f.reconnects(), 0); equal(f.sent[0]?.id, null); equal(f.call.reconnectAnswer()?.text, 'Synthetic answer.'); }
+    try { await f.call.input('Synthetic request', 1); equal(f.reconnects(), 0); equal(f.sent[0]?.id, null); equal(f.call.pendingAnswer()?.text, 'Synthetic answer.'); }
     finally { f.call.close(); }
   },
   async 'correction-during-wait'() {
@@ -123,7 +123,7 @@ export const cases: Record<string, () => Promise<void>> = {
         f.call.delivery.accepted(`c${i + 1}`);
       }
       assert.ok(f.sent.length > 1); equal(f.sent.map(s => s.text).join(' '), text);
-      assert.ok(f.states.includes('accepted')); equal(f.call.reconnectAnswer(), undefined);
+      assert.ok(f.states.includes('accepted')); equal(f.call.pendingAnswer(), undefined);
     } finally { f.call.close(); }
   },
   async 'mic-pause'() {

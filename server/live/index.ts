@@ -3165,7 +3165,6 @@ export class LiveSessionOwner {
         ackAnsweredOwner: this.#ackAnsweredOwner(handle.liveSessionId),
       });
     }
-    if (reason === 'task_delivery') return 'task_delivery';
     if (reason === 'research_context') return 'research_context';
     if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
       || reason === 'handshake_timeout') return 'session_window';
@@ -3183,7 +3182,7 @@ export class LiveSessionOwner {
    * otherwise, which is what a mute is.
    */
   #upstreamCause(handle: ActiveSession, reason: string | null): 'host' | 'network' | 'provider' {
-    if (reason === 'task_delivery' || reason === 'research_context') return 'host';
+    if (reason === 'research_context') return 'host';
     return handle.adapterOutcome?.upstream === undefined ? 'provider' : 'network';
   }
 
@@ -3226,7 +3225,7 @@ export class LiveSessionOwner {
     const upstream = handle.adapterOutcome?.upstream;
     const cause = this.#upstreamCause(handle, reason);
     handle.quietRebuild = trigger === 'no_output_after_ambient';
-    hostLogEvent({ event: 'live_rebuild', trigger, cause, owed: handle.tasks?.running ? 'running_task' : handle.tasks?.reconnectAnswer() ? 'finished_answer_pending' : 'nothing_owed', liveSessionId: handle.liveSessionId, generation: handle.generation,
+    hostLogEvent({ event: 'live_rebuild', trigger, cause, owed: handle.tasks?.running ? 'running_task' : handle.tasks?.pendingAnswer() ? 'finished_answer_pending' : 'nothing_owed', liveSessionId: handle.liveSessionId, generation: handle.generation,
       ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }),
       ...this.#stallFacts(handle) });
     this.#cancelSpeakingHold(handle);

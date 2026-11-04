@@ -89,3 +89,22 @@ test('R25 EF8: performance cues are stripped but cue-prefixed Markdown citations
   }
   assert.equal(stripNonLexicalTags('ordinary [chuckle] words [inhale'), 'ordinary  words ');
 });
+
+
+test('R28 cue cleanup preserves nested, reference and escaped literal labels while removing real cues', () => {
+  const literals = [
+    '[Music [study]](https://example.test/paper)',
+    '[Music study][paper]',
+    '[Music study][]',
+    '[[Noise report]](https://example.test/noise)',
+    String.raw`\[Music study]`,
+    String.raw`[Music \[study\]](https://example.test/paper)`,
+    String.raw`[Music study\] notes](https://example.test/paper)`,
+    String.raw`\[Noise report][paper]`,
+  ];
+  for (const literal of literals) {
+    assert.equal(stripNonLexicalTags(`[laughter] ${literal} [breath]`), ` ${literal} `);
+  }
+  assert.equal(stripNonLexicalTags(String.raw`\\[inhale]`), String.raw`\\`);
+  assert.equal(stripNonLexicalTags('[music playing] words [inhale'), ' words ');
+});

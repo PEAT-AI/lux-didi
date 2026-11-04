@@ -127,9 +127,8 @@ test('host memory reader distinguishes unknown ids and returns valid local entri
   const { domainMigrations } = await import('../domain/schema.js');
   const memory = await import('../domain/memory.js');
   const directory = mkdtempSync(join(tmpdir(), 'task-memory-fixture-'));
-  const store = new Store(directory);
+  const store = new Store(directory, domainMigrations);
   try {
-    store.applyMigrations(domainMigrations);
     const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [], contentAllowed: () => false, timeZone: 'UTC' })('synthetic-session', new FakeDelivery());
     const identity = { task_id: 'fixture', task_revision: 1, connection_generation: 1, operation_id: 'operation' };
     const missing = await runtime.registry.get('read_memory')!.run({ ref: 'unknown-synthetic-entry', cursor: null }, identity, new AbortController().signal);

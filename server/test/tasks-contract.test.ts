@@ -323,3 +323,95 @@ test('company search preserves the native ref rather than a numeric record id', 
   const plain = projectTaskPayload('search_company', { results: [{ id: 'ticket:64', title: 'Synthetic' }] }, { query: 'Synthetic' });
   assert.equal(plain.references[0]?.id, 'ticket:64');
 });
+
+test('company continuation sends native cursor and depth and preserves remote coverage', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'mongoose:knowledge', credentialRef: null },
+    toolNames: ['read'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const seen: Record<string, unknown>[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (_name, args) => {
+    seen.push(args);
+    return { state: 'completed', decodedResult: args.cursor ? { text: 'second page', coverage: { complete: true } } : { text: 'first page', next_cursor: 'native-page-2', coverage: { complete: false } } } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  const execute = connectorExecutor([{ connector: 'mongoose', policy, reader }]);
+  const first = await execute('read_company', { ref: 'ticket:63', depth: 'all' }, new AbortController().signal);
+  assert.equal(first.status, 'partial');
+  assert.equal(first.next_cursor, 'native-page-2');
+  const next = await execute('read_company', { ref: 'ticket:63', depth: 'all', cursor: first.next_cursor }, new AbortController().signal);
+  assert.deepEqual(seen[1], { ref: 'ticket:63', depth: 'all', cursor: 'native-page-2' });
+  assert.equal(next.text, 'second page');
+  assert.equal(next.next_cursor, null);
+});
+
+class TaskTestClock {
+  time = 0;
+  callbacks = new Map<() => void, number>();
+  now = (): number => this.time;
+  timer = (callback: () => void, ms: number): (() => void) => { this.callbacks.set(callback, this.time + ms); return () => { this.callbacks.delete(callback); }; };
+  advance(ms: number): void {
+    this.time += ms;
+    for (const [callback, due] of [...this.callbacks]) if (due <= this.time) { this.callbacks.delete(callback); callback(); }
+  }
+}
+function taskDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('revision joins a still-running read without aborting it', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const reads = new Map<string, import('../tasks/results.js').ToolResult>();
+  const started = taskDeferred<void>(), response = taskDeferred<import('../tasks/results.js').ToolResult>();
+  let executions = 0, readAborted = false;
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async (_name, _args, signal) => {
+    executions++; signal.addEventListener('abort', () => { readAborted = true; }); started.resolve(); return response.promise;
+  } });
+  const firstAbort = new AbortController();
+  const clock = new TaskTestClock();
+  const makeInfer = (): import('../tasks/worker.js').Infer => { let hop = 0; return async () => ++hop === 1 ? { text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] } : { text: 'Local evidence', calls: [] }; };
+  const common = { registry, reads, clock, input: 'synthetic' };
+  const first = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, signal: firstAbort.signal, infer: makeInfer() });
+  await started.promise;
+  firstAbort.abort();
+  const second = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 2, connection_generation: 1 }, signal: new AbortController().signal, infer: makeInfer() });
+  response.resolve(documentResult('Synthetic finding', 'memory:1'));
+  assert.equal((await first).status, 'cancelled');
+  const answer = await second;
+  assert.equal(executions, 1);
+  assert.equal(readAborted, false);
+  assert.equal(answer.findings[0]?.text, 'Synthetic finding');
+});
+
+test('deadline composes completed evidence without tools and gives composition 24 seconds', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const clock = new TaskTestClock(), localDone = taskDeferred<void>(), webStarted = taskDeferred<void>(), composing = taskDeferred<void>();
+  const composition = taskDeferred<import('../tasks/worker.js').Inference>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async name => {
+    if (name === 'search_memory') { localDone.resolve(); return documentResult('Synthetic local finding', 'memory:1'); }
+    webStarted.resolve(); return new Promise(() => {});
+  } });
+  let hop = 0;
+  const work = runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: new AbortController().signal,
+    infer: async request => {
+      if (++hop === 1) return { text: '', calls: [{ id: 'local', name: 'search_memory', args: { query: 'synthetic' } }, { id: 'web', name: 'search_web', args: { query: 'synthetic' } }] };
+      assert.equal(request.tools.length, 0);
+      assert.ok(request.outputs.some(output => output.result.text === 'Synthetic local finding'));
+      assert.ok(request.outputs.some(output => output.name === 'search_web' && output.result.status === 'failed'));
+      composing.resolve(); return composition.promise;
+    } });
+  await Promise.all([localDone.promise, webStarted.promise]);
+  clock.advance(36000);
+  await composing.promise;
+  clock.advance(13000);
+  composition.resolve({ text: 'Synthetic local finding. Web did not finish.', calls: [] });
+  const answer = await work;
+  assert.equal(answer.status, 'incomplete');
+  assert.equal(answer.text, 'Synthetic local finding. Web did not finish.');
+  assert.equal(answer.findings.length, 1);
+});

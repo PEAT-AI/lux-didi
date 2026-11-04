@@ -120,3 +120,25 @@ test('R24 EF4: effect executor output is redacted before the durable journal and
     assert.match(result.text, /Ordinary receipt/); assert.match(replay.text, /\[redacted\]/);
   } finally { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('host memory reader distinguishes unknown ids and returns valid local entries', async () => {
+  const { hostTaskFactory } = await import('../tasks/host.js');
+  const { resolveTaskModels } = await import('../config/tasks.js');
+  const { domainMigrations } = await import('../domain/schema.js');
+  const memory = await import('../domain/memory.js');
+  const directory = mkdtempSync(join(tmpdir(), 'task-memory-fixture-'));
+  const store = new Store(directory);
+  try {
+    store.applyMigrations(domainMigrations);
+    const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [], contentAllowed: () => false, timeZone: 'UTC' })('synthetic-session', new FakeDelivery());
+    const identity = { task_id: 'fixture', task_revision: 1, connection_generation: 1, operation_id: 'operation' };
+    const missing = await runtime.registry.get('read_memory')!.run({ ref: 'unknown-synthetic-entry', cursor: null }, identity, new AbortController().signal);
+    assert.equal(missing.failure_category, 'not_found');
+    assert.match(missing.repair!, /search_memory/);
+    assert.doesNotMatch(JSON.stringify(missing), /unknown-synthetic-entry/);
+    const session = store.transaction(tx => memory.createSession(tx, { title: 'synthetic', startedAt: 1800000000000, timeZone: 'UTC' }, { now: () => 1800000000000 }));
+    const entry = store.transaction(tx => memory.appendEntry(tx, { sessionId: session.id, role: 'user', text: 'synthetic local fact', capturedAt: 1800000000000, timeZone: 'UTC' }, { now: () => 1800000000000 }));
+    const valid = await runtime.registry.get('read_memory')!.run({ ref: entry.id, cursor: null }, identity, new AbortController().signal);
+    assert.equal(valid.text, 'synthetic local fact');
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

@@ -205,7 +205,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
-    contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
   const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });

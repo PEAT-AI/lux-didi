@@ -28,7 +28,7 @@ export function alarmHarness(t: TestContext, recheck: () => void = () => {}, now
     lookupAuthority: async () => null, timezone, alarms: { now, recheck, health: () => ({ degraded: false, reasons: [] }) } });
   const task = { id: 'synthetic-task', revision: 1, ownerWords: '', ownerTurn: 1, exposures: [] };
   let tools: Map<string, TaskTool>;
-  const authority = createTaskAuthority(new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }), {
+  const authority = createTaskAuthority(new Authority({ journal: store.taskEffectJournal(), checkEffect: async () => true, log() {} }), {
     isCurrent: (id, revision) => id === task.id && revision === task.revision,
     taskContext: id => id === task.id ? task : undefined, hostUrls: () => [], registry: () => tools,
   });
@@ -151,7 +151,7 @@ test('atomic alarm receipt rolls back with the alarm and respects disabled conte
   }), /synthetic-rollback/);
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 0);
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM task_effect_journal')?.n), 0);
-  const journal = h.store.taskEffectJournal(() => false);
+  const journal = h.store.taskEffectJournal();
   commitAlarmEffect(h.store, identity, () => value);
   assert.equal(h.store.transaction(tx => tx.get('SELECT value FROM task_effect_journal')?.value), null);
   return journal.get(identity).then(record => {

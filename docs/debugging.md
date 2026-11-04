@@ -234,3 +234,9 @@ between the output going out and the provider opening the response that carries 
 A playback segment's `audible` instant is the native device's first audible chunk, which is the same
 chunk `received` names, so the timeline prints `same-chunk` there instead of a second stamp that would
 read as a 0 ms audio path.
+
+## Helper tool execution (10.11)
+
+Use `task_tool` events to identify the task, revision, operation id, tool, duration in milliseconds, terminal category, and cache disposition (`miss`, `hit`, or `join`). These are closed metadata fields: arguments, results, owner words, and exception messages are not admitted. Reader `tool_failure` events contain only the tool and closed failure category. Existing connector-level diagnostics retain their own approved schema.
+
+A revised task may join a read started by its previous revision. That read is not a cancelled failure merely because speech continued. An actual task cancellation still aborts it. A final answer marked `incomplete` may contain useful evidence: inspect unfinished-tool coverage instead of treating it as either a complete answer or an empty search. The final no-tool composition budget is separate from the tool-phase deadline.

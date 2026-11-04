@@ -12,8 +12,6 @@ import type { ToolResult } from './results.js';
 export interface TaskRuntimeOptions {
   nativeSessionId?: string;
   store: Store; execute: ToolPorts["execute"]; authority: Authority; configuredTools?: Definition[]; infer: Infer; delivery: Delivery;
-  /** Host's existing content capture gate, evaluated at each write. */
-  contentAllowed(): boolean;
   timeZone?: string; now?: () => number;
   log?(event: Record<string, unknown>): void;
 }
@@ -69,7 +67,7 @@ export class TaskRuntime {
     const revision = this.controller.finalize(words, generation, ownerTurn), { identity } = revision;
     revision.askAtUtc = (this.options.now ?? Date.now)();
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
-    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, this.options.contentAllowed());
+    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence });
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     return revision;
   }
@@ -86,7 +84,7 @@ export class TaskRuntime {
   recordOperation(operation: OperationIdentity, tool: string, args: Record<string, unknown>, output: ToolResult | null): void {
     const effect = this.registry.get(tool)!.effect;
     const state = output === null ? 'pending' : effect === 'none' ? output.status === 'failed' ? 'failed' : 'committed' : output.receipt?.state ?? 'unknown';
-    this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output }, this.options.contentAllowed());
+    this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output });
     if (output) this.#capture(operation.task_id, output, this.registry.get(tool));
     if (output?.receipt) this.controller.recordReceipt(output);
   }
@@ -94,7 +92,7 @@ export class TaskRuntime {
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
     if (this.controller.isCurrent(identity)) {
-      this.options.store.finishTask(identity, answer.status, answer, this.options.contentAllowed());
+      this.options.store.finishTask(identity, answer.status, answer);
       this.controller.complete(identity, answer);
       this.log('complete', identity.task_revision, answer.findings.length, 0, identity);
     } else this.log('stale', identity.task_revision, 0, 0, identity);

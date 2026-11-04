@@ -63,3 +63,10 @@ Legacy local memories remain available for recall. Closing a call never automati
 `open(kind, target)` opens a web address or named site, an installed application, a readable local path or a shown source handle. There is no destination allowlist or home-folder restriction. URLs carrying credentials are refused. A missing file or application returns `not_found`; native failures never imply success. Opening never types, clicks, sends or edits. Host task authority still applies.
 
 `find_file(query)` uses Spotlight without a shell. It returns paths, names and modification dates, not file bodies. Content-only matches are outside text; name matches are not. Empty results and unavailable Spotlight are distinct outcomes.
+
+
+## Helper task review content (10.11)
+
+The owner-only local Store captures task owner words, tool arguments and the spoken final answer unconditionally, matching local transcript capture. There is no separate task content-consent option. Existing task retention nulls this content in place at 30 days, with `content_pruned_at`, and removes metadata at 90 days; host startup applies this pruning alongside transcript pruning.
+
+Tool results are not retained as content: mail, chat and other source bodies must not enter task revision evidence, operation results, receipt payloads or the effect journal. Those fields retain only byte size and a closed terminal category. The final-answer field contains spoken text only, not the WorkerResult findings. Logs continue to reject task words, arguments, results and answers; the new per-tool telemetry is closed metadata only. Pruned content is not reconstructed from results or replayed receipts.

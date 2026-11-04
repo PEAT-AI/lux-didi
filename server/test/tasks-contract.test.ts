@@ -315,3 +315,221 @@ test('worker inference receives public instructions followed by presentation sty
   await runWorker(withoutProfile);
   assert.equal(received, WORKER_INSTRUCTIONS);
 });
+
+test('company search preserves the native ref rather than a numeric record id', async () => {
+  const { projectTaskPayload } = await import('../tasks/connectors.js');
+  const result = projectTaskPayload('search_company', { results: [{ id: 63, ref: 'ticket:63', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  assert.equal(result.references[0]?.id, 'ticket:63');
+  const plain = projectTaskPayload('search_company', { results: [{ id: 'ticket:64', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  assert.equal(plain.references[0]?.id, 'ticket:64');
+});
+
+test('company continuation sends native cursor and depth and preserves remote coverage', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'mongoose:knowledge', credentialRef: null },
+    toolNames: ['read'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const seen: Record<string, unknown>[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (_name, args) => {
+    seen.push(args);
+    return { state: 'completed', decodedResult: args.cursor ? { text: 'second page', coverage: { complete: true } } : { text: 'first page', next_cursor: 'native-page-2', coverage: { complete: false } } } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  const execute = connectorExecutor([{ connector: 'mongoose', policy, reader }]);
+  const first = await execute('read_company', { ref: 'ticket:63', depth: 'all' }, new AbortController().signal);
+  assert.equal(first.status, 'partial');
+  assert.equal(first.next_cursor, 'native-page-2');
+  const next = await execute('read_company', { ref: 'ticket:63', depth: 'all', cursor: first.next_cursor }, new AbortController().signal);
+  assert.deepEqual(seen[1], { ref: 'ticket:63', depth: 'all', cursor: 'native-page-2' });
+  assert.equal(next.text, 'second page');
+  assert.equal(next.next_cursor, null);
+});
+
+class TaskTestClock {
+  time = 0;
+  callbacks = new Map<() => void, number>();
+  now = (): number => this.time;
+  timer = (callback: () => void, ms: number): (() => void) => { this.callbacks.set(callback, this.time + ms); return () => { this.callbacks.delete(callback); }; };
+  advance(ms: number): void {
+    this.time += ms;
+    for (const [callback, due] of [...this.callbacks]) if (due <= this.time) { this.callbacks.delete(callback); callback(); }
+  }
+}
+function taskDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('revision joins a still-running read without aborting it', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const reads = new Map<string, import('../tasks/results.js').ToolResult>();
+  const started = taskDeferred<void>(), response = taskDeferred<import('../tasks/results.js').ToolResult>();
+  let executions = 0, readAborted = false;
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async (_name, _args, signal) => {
+    executions++; signal.addEventListener('abort', () => { readAborted = true; }); started.resolve(); return response.promise;
+  } });
+  const { TaskController, FakeDelivery } = await import('../tasks/controller.js');
+  const controller = new TaskController(new FakeDelivery());
+  const old = controller.finalize('synthetic first fragment', 1);
+  const clock = new TaskTestClock();
+  const makeInfer = (): import('../tasks/worker.js').Infer => { let hop = 0; return async () => ++hop === 1 ? { text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] } : { text: 'Local evidence', calls: [] }; };
+  const common = { registry, reads, clock, input: 'synthetic' };
+  const first = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, signal: old.signal, infer: makeInfer() });
+  await started.promise;
+  const next = controller.finalize('synthetic continuation', 1);
+  const second = runWorker({ ...common, identity: { task_id: 'fixture', task_revision: 2, connection_generation: 1 }, signal: next.signal, infer: makeInfer() });
+  response.resolve(documentResult('Synthetic finding', 'memory:1'));
+  assert.equal((await first).status, 'cancelled');
+  const answer = await second;
+  assert.equal(executions, 1);
+  assert.equal(readAborted, false);
+  assert.equal(answer.findings[0]?.text, 'Synthetic finding');
+});
+
+test('deadline composes completed evidence without tools and gives composition 24 seconds', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const clock = new TaskTestClock(), localDone = taskDeferred<void>(), webStarted = taskDeferred<void>(), composing = taskDeferred<void>();
+  const composition = taskDeferred<import('../tasks/worker.js').Inference>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async name => {
+    if (name === 'search_memory') return documentResult('Synthetic local finding', 'memory:1');
+    webStarted.resolve(); return new Promise(() => {});
+  } });
+  const reads = new Map<string, import('../tasks/results.js').ToolResult>();
+  reads.set = (key, value) => { Map.prototype.set.call(reads, key, value); localDone.resolve(); return reads; };
+  let hop = 0;
+  const work = runWorker({ registry, reads, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: new AbortController().signal,
+    infer: async request => {
+      if (++hop === 1) return { text: '', calls: [{ id: 'local', name: 'search_memory', args: { query: 'synthetic' } }, { id: 'web', name: 'search_web', args: { query: 'synthetic' } }] };
+      assert.equal(request.tools.length, 0);
+      assert.ok(request.outputs.some(output => output.result.text === 'Synthetic local finding'));
+      assert.ok(request.outputs.some(output => output.name === 'search_web' && output.result.status === 'failed'));
+      composing.resolve(); return composition.promise;
+    } });
+  await Promise.all([localDone.promise, webStarted.promise]);
+  clock.advance(36000);
+  await Promise.race([composing.promise, work.then(() => { throw new Error('Worker returned without composing completed evidence'); })]);
+  clock.advance(13000);
+  composition.resolve({ text: 'Synthetic local finding. Web did not finish.', calls: [] });
+  const answer = await work;
+  assert.equal(answer.status, 'incomplete');
+  assert.equal(answer.text, 'Synthetic local finding. Web did not finish.');
+  assert.equal(answer.findings.length, 1);
+});
+
+
+test('reader failures carry actionable closed categories without exception text', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const events: unknown[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe) events.push(safe); } });
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'mongoose:knowledge', credentialRef: null },
+    toolNames: ['read'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  let throws = false;
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async () => {
+    if (throws) throw new Error('SECRET_SENTINEL_763');
+    return { state: 'refused', reason: 'not_found' } as unknown as import('../connectors/index.js').ConnectorEvidence;
+  } };
+  try {
+    const execute = connectorExecutor([{ connector: 'mongoose', policy, reader }]);
+    const missing = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
+    assert.equal(Reflect.get(missing, 'failure_category'), 'not_found');
+    assert.match(missing.repair!, /search_company/);
+    assert.match(missing.repair!, /ref.*verbatim/i);
+    throws = true;
+    const secret = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
+    assert.equal(Reflect.get(secret, 'failure_category'), 'upstream_error');
+    assert.ok(events.some(event => Reflect.get(event as object, 'category') === 'not_found'));
+    assert.doesNotMatch(JSON.stringify([missing, secret, events]), /SECRET_SENTINEL_763/);
+  } finally { detach(); }
+});
+
+test('tool execution telemetry is closed and includes duration and cache joins', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const clock = new TaskTestClock();
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe?.event === 'task_tool') events.push(safe); } });
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => { clock.advance(7); return documentResult('PRIVATE_RESULT', 'local'); } });
+  let hop = 0;
+  try {
+    await runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'PRIVATE_WORDS', signal: new AbortController().signal,
+      infer: async () => ++hop === 1 ? { text: '', calls: ['a', 'b'].map(id => ({ id, name: 'search_memory', args: { query: 'PRIVATE_QUERY' } })) } : { text: 'done', calls: [] } });
+    assert.equal(events.length, 2);
+    assert.equal(events[0]?.tool, 'search_memory');
+    assert.equal(events[0]?.durationMs, 7);
+    assert.ok(events.some(event => event.cache === 'join'));
+    assert.doesNotMatch(JSON.stringify(events), /PRIVATE_/);
+    assert.equal(safeEvent({ ...events[0], args: { secret: 'PRIVATE_QUERY' } }), undefined);
+  } finally { detach(); }
+});
+
+test('task cancellation still aborts reads and emits a cancelled terminal event', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { safeEvent } = await import('../host/log.js');
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe?.event === 'task_tool') events.push(safe); } });
+  const started = taskDeferred<AbortSignal>(), reply = taskDeferred<import('../tasks/results.js').ToolResult>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async (_name, _args, signal) => { started.resolve(signal); return reply.promise; } });
+  const abort = new AbortController(), clock = new TaskTestClock();
+  const work = runWorker({ registry, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: abort.signal,
+    infer: async () => ({ text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] }) });
+  try {
+    const signal = await started.promise;
+    abort.abort();
+    assert.equal(signal.aborted, true);
+    assert.equal((await work).status, 'cancelled');
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    assert.ok(events.some(event => event.category === 'cancelled'));
+  } finally { reply.resolve(documentResult('synthetic', 'entry:1')); await work; detach(); }
+});
+
+test('invalid insight identifiers name search_knowledge and valid insight ids reach the reader', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    toolNames: ['get_insight'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const seen: Record<string, unknown>[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (_name, args) => { seen.push(args); return { state: 'completed', decodedResult: { text: 'synthetic insight' } } as unknown as import('../connectors/index.js').ConnectorEvidence; } };
+  const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
+  const invalid = await execute('read_knowledge', { id: 'memory:synthetic' }, new AbortController().signal);
+  assert.equal(invalid.failure_category, 'invalid_argument');
+  assert.match(invalid.repair!, /search_knowledge/);
+  assert.equal(seen.length, 0);
+  const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
+  assert.equal(valid.text, 'synthetic insight');
+  assert.deepEqual(seen[0], { ids: [63] });
+});
+
+test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const clock = new TaskTestClock();
+  const response = taskDeferred<import('../tasks/worker.js').Inference>();
+  const entered = taskDeferred<AbortSignal>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => { throw new Error('No tool should run'); } });
+  const work = runWorker({ registry, clock, identity: { task_id: 'long-answer', task_revision: 1, connection_generation: 1 }, input: 'synthetic long composition', signal: new AbortController().signal,
+    infer: async (_request, signal) => { entered.resolve(signal); return response.promise; } });
+  const signal = await entered.promise;
+  clock.advance(13000);
+  response.resolve({ text: 'Synthetic long answer without source reads.', calls: [] });
+  const answer = await work;
+  assert.equal(signal.aborted, false);
+  assert.equal(answer.status, 'complete');
+  assert.equal(answer.text, 'Synthetic long answer without source reads.');
+  assert.deepEqual(answer.findings, []);
+});

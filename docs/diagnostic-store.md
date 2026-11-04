@@ -55,4 +55,10 @@ For the operational sequence and content-free logs, use [debugging.md](debugging
 
 ## Helper task records
 
-Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; task arguments and results remain private content, not a safe support attachment.
+Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; retained task arguments are private content, not a safe support attachment. In 10.11, task result bodies are not retained, only their closed category and byte size.
+
+## Helper task diagnostics (10.11)
+
+`task_tool` logs contain only task/revision/operation identifiers, tool name, duration, terminal category and cache disposition. Failure repairs are helper-facing content, not log messages. No task arguments, results, final answers or owner speech are added to these events.
+
+Task owner words, tool arguments and the spoken final answer are captured unconditionally in the same owner-only local database as transcripts. There is no task capture flag. Existing task pruning nulls this content in place after 30 days and records `content_pruned_at`; metadata retention remains 90 days. Revision evidence, tool results and effect-journal responses retain only byte size and a closed terminal category, never source bodies or result references. A final answer stores only its spoken text, not the helper's findings or receipts. Pruning is also applied at host startup alongside transcript retention.

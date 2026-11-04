@@ -103,9 +103,8 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     let task = taskRuns.get(runId);
     if (!task) {
       const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)),
-        authority: new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
-        infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
-        delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+        authority: new Authority({ journal: store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
+        infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
       task = { runtime, identity: runtime.begin(ownerWords.get(runId)?.join(' ') ?? 'Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
     }
     return taskDefinitions(task.runtime, task.identity, owner, runId);
@@ -1219,9 +1218,8 @@ test('task alarm executors keep the existing scheduler and refuse invalid writes
   const f = await fixture(t, { alarms: { now: () => now, recheck: () => { rechecks++; }, health: () => ({ degraded: false, reasons: [] }) }, timezone: 'UTC' });
   const runtime = new TaskRuntime({ store: f.store, now: () => now, timeZone: 'UTC',
     execute: connectorExecutor([], f.owner.taskExecutors('synthetic-call')),
-    authority: new Authority({ journal: f.store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }),
-    infer: async () => ({ text: '', calls: [], no_action: true }), contentAllowed: () => true,
-    delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
+    authority: new Authority({ journal: f.store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
+    infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
   try {
   const revision = runtime.begin('synthetic reminder task', 1);
   let operation = 0;

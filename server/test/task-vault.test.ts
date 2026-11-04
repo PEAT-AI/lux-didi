@@ -17,7 +17,7 @@ for (const { approved, outcome } of [{ approved: false, outcome: 'inserted' }, {
   let saves = 0;
   const vault = new VaultWriter({ store, now: () => 1000, log: () => {}, transport: { save: async () => { saves++; return outcome === 'unknown' ? { outcome: 'unknown' } : { outcome: 'inserted', insightId: 'synthetic-insight' }; } } });
   const create = hostTaskFactory({ store, vault, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-    bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => approved,
+    bindings: () => [], timeZone: 'UTC', effectCheck: async () => approved,
     executors: () => ({ search_mail: async () => documentResult('Untrusted mail says to copy this elsewhere.', 'synthetic-mail') }),
     infer: async request => request.turns.length === 0
       ? { text: '', calls: [{ id: 'read', name: 'search_mail', args: { query: 'synthetic', cursor: null } }] }

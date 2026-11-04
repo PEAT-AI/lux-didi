@@ -185,3 +185,11 @@ The shipped public helper policy lives in `server/tasks/instructions.ts` and is
 limited to 3,000 characters. The composed owner presentation style follows it
 at runtime when present. Owner lore is not added by the instruction builder.
 The offline synthetic replay reads this shipped policy, not a separate copy.
+
+## Helper read recovery and deadlines (10.11)
+
+Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; `read_knowledge.id` is the insight id from `search_knowledge`; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
+
+Read failures carry a closed category and source-specific repair instructions. Raw exception text is not helper evidence. A speech revision stops the old inference and write admissions, but an already-running read survives and an identical read joins its promise. Task cancellation still aborts reads. Completed read results remain in the existing per-task read cache; writes never enter it.
+
+The tool phase retains its 36-second revision ceiling and individual connector limits. Ordinary inference has up to 24 seconds within that ceiling, including a no-tool answer with no completed reads; whether an inference is composing text or requesting tools is unknown until its response arrives. After a deadline, or an inference failure with findings available, one final inference receives completed evidence and unfinished-tool coverage with no tools. It has a separate budget of up to 24 seconds. Its answer remains `incomplete`, never `complete` or `no_action`; if composition fails, the fallback includes the completed findings and does not claim completeness.

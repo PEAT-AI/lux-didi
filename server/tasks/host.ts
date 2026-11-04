@@ -1,3 +1,5 @@
+import { ServiceError } from '../contracts/errors.js';
+import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
@@ -18,7 +20,6 @@ export interface HostTaskOptions {
   store: Store; credentials: Credentials; models: RoleModels;
   bindings(): readonly BoundConnector[];
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
-  contentAllowed(): boolean;
   timeZone: string;
   executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
@@ -34,10 +35,10 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
   const checkEffect = options.effectCheck ?? createEffectRole({ role: options.models.effect_check, credentials: options.credentials });
   return (sessionId, delivery, connectionIds) => {
     const bindings = () => options.bindings().filter(binding => !connectionIds || connectionIds.includes(binding.policy.connectionId));
-    const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(options.contentAllowed),
+    const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
-    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer, contentAllowed: options.contentAllowed,
+    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer,
       timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
@@ -71,8 +72,10 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
         if (name === 'read_memory') {
-          const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
-          return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
+          try {
+            const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
+            return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
+          } catch (error) { return readerFailure(name, error instanceof ServiceError && error.code === 'NOT_FOUND' ? 'not_found' : 'upstream_error'); }
         }
         const bound = bindings();
         const writes: Record<string, { tool: string; arguments: Record<string, unknown> }> = {

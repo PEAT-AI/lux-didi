@@ -30,7 +30,7 @@ export async function taskLiveFixture(t: TestContext, infer?: Infer, timeContext
     limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
   const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC',
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],
-      contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true,
+      timeZone: 'UTC', effectCheck: async () => true,
       infer: infer ?? (async () => new Promise<Inference>(resolve => { inference.push(resolve); })), ...timeContext,
     }),
   });

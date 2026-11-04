@@ -1,12 +1,18 @@
+import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
-import { failed, type ToolResult } from './results.js';
+import { failed, readerFailure, type ToolResult } from './results.js';
 import { validateArguments, type TaskTool } from './tools.js';
 import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
+export const REVISION_ABORT = Symbol('task-revision');
 export const CONNECTOR_DEADLINE_MS = 12000;
-export const INFERENCE_DEADLINE_MS = 12000;
+// A response is not known to be a tool call or spoken composition until it arrives.
+export const INFERENCE_DEADLINE_MS = 24000;
 export const REVISION_DEADLINE_MS = 36000;
+export const FINAL_INFERENCE_DEADLINE_MS = 24000;
+class ReadStopped extends Error { constructor(readonly category: 'cancelled' | 'timeout') { super(category); } }
+const pendingReads = new WeakMap<Map<string, ToolResult>, Map<string, Promise<ToolResult>>>();
 import { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export interface ToolCall { id: string; name: string; args: unknown }
@@ -50,14 +56,45 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
   const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
-  const pending = new Map<string, Promise<ToolResult>>();
+  let pending = pendingReads.get(reads);
+  if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
   const receipts: ToolResult[] = [];
-  const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
+  const findings: ToolResult[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
   const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
   const partialText = (): string => findings.map(item => item.text).filter(Boolean).join('\n');
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join('\n'), findings, receipts });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
+  async function compose(): Promise<WorkerResult> {
+    if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
+    if (!findings.length) return incomplete();
+    const finalAbort = new AbortController();
+    const stopped = new Promise<never>((_, reject) => {
+      finalAbort.signal.addEventListener('abort', () => reject(new Error('Final inference stopped')), { once: true });
+    });
+    const cancel = (): void => finalAbort.abort();
+    options.signal.addEventListener('abort', cancel, { once: true });
+    const clear = clock.timer(cancel, FINAL_INFERENCE_DEADLINE_MS);
+    try {
+      const answer = await Promise.race([options.infer({ instructions: workerInstructions(options.profile),
+        input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
+        outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
+      if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
+      return { status: 'incomplete', text: answer.text || incomplete().text, findings, receipts };
+    } catch { return options.signal.aborted ? finish() : incomplete(); }
+    finally { clear(); options.signal.removeEventListener('abort', cancel); }
+  }
+  async function readBounded(body: (signal: AbortSignal) => Promise<ToolResult>): Promise<ToolResult> {
+    const local = new AbortController();
+    let rejectTimeout!: (reason: Error) => void;
+    const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
+    const stopRead = (): void => { if (options.signal.reason !== REVISION_ABORT) { local.abort(); rejectTimeout(new ReadStopped('cancelled')); } };
+    options.signal.addEventListener('abort', stopRead, { once: true });
+    if (options.signal.aborted) stopRead();
+    const clear = clock.timer(() => { local.abort(); rejectTimeout(new ReadStopped('timeout')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - start)));
+    try { return await Promise.race([body(local.signal), timeout]); }
+    finally { clear(); options.signal.removeEventListener('abort', stopRead); }
+  }
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
     const local = new AbortController();
@@ -76,13 +113,20 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     if (!validation.ok) return { id: call.id, name: call.name, result: failed(validation.repair) };
     if (!current()) return { id: call.id, name: call.name, result: failed('This revision has stopped; use verified findings only.') };
     const key = canonical([tool.name, validation.args]);
+    const operationId = randomUUID(), toolStart = clock.now();
+    let cache: 'miss' | 'hit' | 'join' = 'miss';
+    const telemetry = (result: ToolResult): void => hostLogEvent({ event: 'task_tool', taskId: options.identity.task_id,
+      revision: options.identity.task_revision, operationId, tool: tool.name, durationMs: Math.max(0, Math.round(clock.now() - toolStart)),
+      category: result.status === 'failed' ? result.failure_category ?? 'upstream_error' : result.status, cache });
     const execute = async (): Promise<ToolResult> => {
-      const identity = { ...options.identity, operation_id: randomUUID() };
+      const identity = { ...options.identity, operation_id: operationId };
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
-      try { result = await bounded(signal => tool.run(call.args as Record<string, unknown>, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
-      catch {
-        result = failed(tool.effect === 'none' ? 'Read did not complete. Retry in a current revision or use other verified findings.' : 'Write outcome is unverified. Reconcile its operation receipt before any retry.');
+      try { result = tool.effect === 'none'
+        ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
+        : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
+      catch (error) {
+        result = tool.effect === 'none' ? readerFailure(tool.name, error instanceof ReadStopped ? error.category : 'upstream_error') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
       if (result.receipt) receipts.push(result);
@@ -96,13 +140,17 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     let result: ToolResult;
     if (tool.effect === 'none') {
       const cached = reads.get(key);
-      if (cached) { options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
+      if (cached) { cache = 'hit'; options.event?.('dedupe', 1, clock.now() - start); result = cached; if (!findings.includes(cached)) findings.push(cached); }
       else {
-        let work = pending.get(key);
-        if (!work) { work = execute(); pending.set(key, work); }
+        let work = pending!.get(key);
+        if (!work) { work = execute(); pending!.set(key, work); void work.finally(() => { pending!.delete(key); }); }
+        else cache = 'join';
         result = await work;
+        if (result.status !== 'failed' && !findings.includes(result)) findings.push(result);
       }
     } else result = await execute();
+    telemetry(result);
+    completedOutputs.push({ id: call.id, name: call.name, result });
     return { id: call.id, name: call.name, result };
   }
   try {
@@ -111,15 +159,30 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch { return expired || options.signal.aborted ? finish() : incomplete(); }
+      } catch { return options.signal.aborted ? finish() : compose(); }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
-      const completed = await Promise.all(inference.calls.map(call));
-      if (completed.some(output => output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text)) outsideTextSeen = true;
-      outputs.push(...completed);
+      const outstanding = new Map(inference.calls.map(item => [item.id, item]));
+      let stopCalls!: () => void;
+      const stopped = new Promise<void>(resolve => { stopCalls = resolve; });
+      abort.signal.addEventListener('abort', stopCalls, { once: true });
+      if (abort.signal.aborted) stopCalls();
+      try {
+        await Promise.race([Promise.all(inference.calls.map(async item => {
+          const output = await call(item);
+          if (!current()) return;
+          outstanding.delete(item.id);
+          outputs.push(output);
+          if (output.result.status !== 'failed' && options.registry.get(output.name)?.outside_text) outsideTextSeen = true;
+        })), stopped]);
+      } finally { abort.signal.removeEventListener('abort', stopCalls); }
+      if (!current()) {
+        for (const item of outstanding.values()) outputs.push({ id: item.id, name: item.name, result: failed('This tool did not finish; no result is available. Do not infer absence.') });
+        return options.signal.aborted ? finish() : compose();
+      }
     }
-    return finish();
+    return options.signal.aborted ? finish() : compose();
   } finally { clearRevision(); options.signal.removeEventListener('abort', stop); }
 }

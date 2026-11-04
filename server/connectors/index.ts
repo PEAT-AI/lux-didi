@@ -525,7 +525,7 @@ function chatRejection(args: Record<string, unknown>): string | undefined {
   const keys = ['intent', 'person', 'people', 'channel', 'query', 'post_id', 'order', 'from_date', 'to_date', 'sides', 'offset', 'limit'];
   if (!Object.keys(args).every(key => keys.includes(key))) return 'arguments:unknown_key';
   const intent = String(args['intent']);
-  if (!['person', 'overview', 'channel', 'group', 'thread'].includes(intent)) return 'intent:unknown';
+  if (!['person', 'overview', 'channel', 'group', 'thread', 'topics'].includes(intent)) return 'intent:unknown';
   // F3: an empty string is not a value. A key the intent does not take, or one sent empty, is refused
   // with its own token instead of being silently dropped.
   for (const key of ['person', 'channel', 'query', 'post_id'] as const) {

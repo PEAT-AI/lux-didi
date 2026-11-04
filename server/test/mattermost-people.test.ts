@@ -768,3 +768,12 @@ for (const [name, args] of [
     assert.equal(f.calls().some(call => call.name === 'mattermost_chat'), false, 'the composite is not sent as a fictional child API');
   });
 }
+
+
+test('R29 the native topics validator agrees with its published schema and still requires a conversation', () => {
+  const declaration = connectorDescriptor('mattermost')!.declarations({} as ConnectionPolicy).find(tool => tool.name === 'mattermost_chat')!;
+  assert.equal(declaration.validate({ intent: 'topics', person: 'Ada' }), true);
+  assert.equal(declaration.validate({ intent: 'topics', channel: 'AI AI AI' }), true);
+  assert.equal(declaration.validate({ intent: 'topics' }), false);
+  assert.equal(declaration.validate({ intent: 'not-a-chat-capability', person: 'Ada' }), false);
+});

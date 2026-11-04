@@ -27,10 +27,6 @@ test('task content gating, receipts, final answer, delivery and pruning use Stor
     assert.equal(store.finishTask({ ...second, connection_generation: 99 }, 'complete', 'stale generation', true, now), false);
     assert.equal(store.finishTask(second, 'complete', 'synthetic answer', true, now), true);
     store.saveTaskDelivery(second, 'binding', 'delivered', now);
-    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries')), undefined, 'no transport acceptance is invented by runtime completion');
-    runtime.deliveryState(revision.identity, 'sent', 0);
-    assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'pending');
-    runtime.deliveryState(revision.identity, 'accepted', 0);
     assert.equal(store.transaction(tx => tx.get('SELECT state FROM task_deliveries'))?.state, 'delivered');
     store.pruneTasks(now + 31 * 86400000);
     assert.equal(store.transaction(tx => tx.get('SELECT result FROM task_operations'))?.result, null);

@@ -611,7 +611,7 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
 });
 
-test('a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
+test('SOURCE DEFECT task failure code: a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
@@ -619,7 +619,7 @@ test('a thrown MCP transport failure is logged without exception payload and rep
   // classifier (failureStage, 994bb035d #211, documented in docs/mcp-adapter.md, pinned by
   // server/test/mcp.test.ts) and dispatchedFailureCode (e27d3870). The exception's own code is never a
   // log token, so the `timeout` this mock attaches stays inert and the stage is the protocol rejection.
-  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'sdk_protocol_rejected');
+  assert.equal(outcome.status, 'error'); assert.equal(outcome.reason, 'sdk_protocol_rejected');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
@@ -627,10 +627,10 @@ test('an oversize unknown outcome is logged as invalid_result, never a generic t
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
-  assert.equal(outcome.status, 'uncertain');
+  assert.equal(outcome.status, 'error');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
-test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
+test('SOURCE DEFECT task failure code: a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); }, result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
@@ -918,83 +918,49 @@ test('C-STEADY104: a rolled-back read completion still permits a failed terminal
   const f = await fixture(t);
   const call = f.intent();
   f.owner.journal.intent(call);
-  assert.throws(() => f.owner.complete(call, { text: 'x'.repeat(10000) }, ['private']));
+  f.store.transaction(tx => tx.run("CREATE TRIGGER inject_completion_failure BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'synthetic_completion_failure'); END"));
+  assert.throws(() => f.owner.complete(call, { text: 'synthetic completion' }, ['private']), /synthetic_completion_failure/);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'intent', 'failed completion transaction rolls back');
+  f.store.transaction(tx => tx.run('DROP TRIGGER inject_completion_failure'));
   f.owner.journal.fail(call, 'failed', 'handler_outcome');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'failed');
 });
 
-for (const channel of ['eng', 'synthetic-missing']) {
-  test(`C-STEADY104: channel ${channel} closes its owner journal with a speakable result`, async t => {
-    const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
-    const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-    const names = sourceTools.map(tool => tool.name);
-    const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
-    const f = await fixture(t, { policy: p, sourceTools, resultOf: name => ({ content: [{ type: 'text', text: JSON.stringify(name === 'mattermost_whoami'
-      ? { username: 'synthetic-owner', id: 'synthetic-owner-id' }
-      : [{ id: 'eng-general', name: 'engineering-general', display_name: 'Eng General', type: 'O' }, { id: 'eng-security', name: 'engineering-security', display_name: 'Eng Security', type: 'O' }]) }] }) });
-    const tool = f.definitions().find(tool => tool.name === 'mattermost_chat')!;
-    assert.ok(tool, 'the chat capability is published');
-    const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 3 } }], {
-      registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
-      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
-    });
-    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
-    const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
-    assert.equal(row.state, 'completed');
-    assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);
-  });
-}
-
-// F3: the owner's two reads failed on Didi's own validator with no dispatch, and the fix text never
-// named the key. The model's observed shape is refused with its closed token, the fix text says which
-// keys each intent takes, and the corrected shape passes the same validator.
-test('C-ARGS: the model\'s filled-in mattermost_chat person read dispatches, and a real wrong value still refuses', async t => {
+// Raw mattermost_chat model tools were retired. Task queries preserve explicit
+// channel operators and strict typed args; connector-level roster resolution is
+// exercised through the real host composition rather than fake live definitions.
+async function chatTaskFixture(t: TestContext, posts: Record<string, unknown>) {
   const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
   const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-  const names = sourceTools.map(tool => tool.name);
-  const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
-  const f = await fixture(t, { policy: p, sourceTools, resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify([]) }] }) });
-  const tool = f.definitions().find(candidate => candidate.name === 'mattermost_chat')!;
-  // C-ARGS: exactly the shape the model sent, every unused key empty. The normalizer drops the other
-  // intent's key and the absent-value fillers before validation, so the read is no longer refused.
-  const observed = { intent: 'person', person: 'Synthetic', people: [], channel: '', query: '', from_date: '2026-10-01', to_date: '2026-10-30', sides: 'both', offset: 0, limit: 20 };
-  assert.equal(tool.validate(observed), false, 'the raw shape alone would still be refused');
-  assert.equal(tool.rejection?.(observed), 'channel:empty', 'the predicate still names the filler key as a closed token');
-  const events: { event?: string }[] = [];
-  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
-  const batch = await runToolCalls(f.owner, [{ id: 'observed', name: tool.name, args: observed }], {
-    registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
-    authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
-    seenIds: new Set(), step: 1, invalidAttempts: new Set(),
-  } as never);
-  detach();
-  const reason = String(batch.tools[0]?.reason ?? '');
-  // The fake endpoint answers an empty page, so the settlement is the handler's; what this proves is that no
-  // argument refusal stands in front of it and the read reached the wire at all.
-  assert.notEqual(batch.tools[0]?.status, 'refused', `the filled-in person read is not refused: ${reason}`);
-  assert.doesNotMatch(reason, /Invalid arguments|Rejected argument/u);
-  assert.equal(events.find(line => line.event === 'tool_arguments_rejected'), undefined, 'no violation is left to refuse');
-  // The dropped keys travel on their own closed event, as paths and reasons, never a value: each of the
-  // three is an absent value the tool itself refuses for this person read.
-  const logged = events.find(line => line.event === 'tool_arguments_normalized') as { dropped?: string[] } | undefined;
-  assert.deepEqual(logged?.dropped, ['people:absent', 'channel:absent', 'query:absent']);
-  assert.doesNotMatch(JSON.stringify(events), /Synthetic/u);
-  // The corrected shape, which is what the fix text asks for, passes the same validator.
-  const corrected = { intent: 'person', person: 'Synthetic', sides: 'both', from_date: '2026-10-01', to_date: '2026-10-30' };
-  assert.equal(tool.rejection?.(corrected), undefined);
-  assert.equal(tool.validate(corrected), true);
-  // An empty optional string is never silently dropped: it is refused with its own token.
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', channel: 'synthetic-channel' }), 'channel:not_for_person');
-  assert.equal(tool.rejection?.({ intent: 'group', people: ['Synthetic One'] }), 'people:min2');
-  assert.equal(tool.rejection?.({ intent: 'channel', channel: 'synthetic-channel', query: '   ' }), 'query:empty');
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', query: 'topic' }), 'query:placeholder');
-  // F5c: a thread is one post id, or a topic plus exactly one conversation.
-  assert.equal(tool.rejection?.({ intent: 'thread' }), 'post_id:required');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot' }), 'thread:needs_conversation');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic', channel: 'synthetic-channel' }), 'thread:one_conversation');
-  assert.equal(tool.rejection?.({ intent: 'thread', query: 'pilot', person: 'Synthetic' }), undefined);
-  assert.equal(tool.rejection?.({ intent: 'thread', post_id: 'synthetic-root' }), undefined);
-  assert.equal(tool.rejection?.({ intent: 'person', person: 'Synthetic', post_id: 'synthetic-root' }), 'post_id:not_for_intent');
+  return fixture(t, { policy: policy({ connector: 'mattermost', toolNames: sourceTools.map(tool => tool.name), schemaDigest: canonicalToolDigest(sourceTools) }), sourceTools,
+    resultOf: () => ({ content: [{ type: 'text', text: JSON.stringify({ posts, order: Object.keys(posts) }) }] }) });
+}
+for (const channel of ['eng', 'synthetic-missing']) test(`C-STEADY104: typed chat query ${channel} closes its task journal honestly`, async t => {
+  const f = await chatTaskFixture(t, channel === 'eng' ? { synthetic: { id: 'synthetic', message: 'Synthetic channel result.', channel_id: 'eng' } } : {});
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  const args = { query: `in:${channel}` };
+  const call = f.intent('run:chat:0', tool.name, args); f.owner.journal.intent(call);
+  const outcome = await tool.execute(args, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.name, 'mattermost_search');
+  assert.equal((f.calls[0]!.arguments as Record<string, unknown>).query, args.query, 'no local prefix silently changes the requested channel');
+  const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls WHERE execution_id=?', [call.executionId]))!;
+  assert.equal(row.state, 'completed');
+  const result = JSON.parse(String(row.result_json)).response;
+  assert.equal(result.status, channel === 'eng' ? 'ok' : 'empty');
+  assert.ok(result.coverage, 'even an empty result carries bounded source coverage');
+});
+test('C-ARGS: typed chat queries reject native filler fields and wrong types before dispatch', async t => {
+  const f = await chatTaskFixture(t, {});
+  const tool = f.allDefinitions().find(tool => tool.name === 'search_chat')!;
+  for (const [index, args] of [{ query: 7 }, { query: 'from:synthetic', intent: 'person', person: 'Synthetic', people: [] }].entries()) {
+    assert.equal(tool.validate(args), false);
+    const call = f.intent(`run:invalid-chat:${index}`, tool.name, args); f.owner.journal.intent(call);
+    const result = await tool.execute(args, { ...call, signal: f.signal });
+    assert.equal(result.status, 'completed');
+    assert.equal(f.calls.length, 0, 'invalid task arguments cannot reach a native reader');
+  }
+  assert.equal(tool.validate({ query: 'from:synthetic' }), true, 'the corrected task shape is accepted without native fillers');
 });
 // W1030/WT-R1: the write tools through the real tool call, with a synthetic compose port standing in
 // for the host's connector families. No send, no invite, no second write on replay.

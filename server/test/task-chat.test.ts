@@ -35,3 +35,21 @@ test('chat declarations execute one read and one write through the shared task r
   assert.equal(reads, 1); assert.equal(writes, 1); assert.equal(results.length, 2);
   assert.equal((results[1]?.receipt as JsonObject)?.state, 'committed');
 });
+
+
+test('text chat open without a native peer fails honestly with the existing repair', async t => {
+  const { hostTaskFactory } = await import('../tasks/host.js');
+  const { resolveTaskModels } = await import('../config/tasks.js');
+  const directory = mkdtempSync(join(tmpdir(), 'task-chat-no-peer-')), store = new Store(directory);
+  const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+    bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true,
+    infer: async () => { throw Error('No provider call in native-peer regression'); }
+  })('synthetic-text-chat-with-no-native-peer', { attach() {}, progress() {}, deliver() {}, closed() {} });
+  t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const revision = runtime.begin('Open https://example.invalid/', 1, 1);
+  const result = await runtime.runTool('open', { kind: 'web', target: 'https://example.invalid/' },
+    { ...revision.identity, operation_id: 'synthetic-no-native-peer' }, new AbortController().signal);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.repair, 'Opening failed: failed.');
+  assert.equal(result.receipt?.state, 'failed');
+});

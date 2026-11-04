@@ -13,6 +13,7 @@ export interface TaskTool {
   run(args: Record<string, unknown>, identity: Identity, signal: AbortSignal, outsideTextSeen?: boolean): Promise<ToolResult>;
 }
 export interface ToolPorts {
+  nativeSessionId?: string;
   execute(name: string, args: Record<string, unknown>, signal: AbortSignal, outsideTextSeen?: boolean, identity?: Identity): Promise<ToolResult>;
   authority: AuthorityPort;
 }
@@ -110,7 +111,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
         if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
         const execute = async (): Promise<ToolResult> => {
           if (tool.name === OPEN_SCHEMA.name) {
-            const result = await executeOpen(nativeActions, identity.task_id, validation.args);
+            const result = await executeOpen(nativeActions, ports.nativeSessionId ?? '', validation.args);
             return result.code === 'opened' ? { status: 'ok', text: 'Opened.', references: [], next_cursor: null, coverage: 'Native open acknowledged.', repair: null } : failed(`Opening failed: ${result.code}.`);
           }
           if (tool.name === FIND_FILE_SCHEMA.name) {

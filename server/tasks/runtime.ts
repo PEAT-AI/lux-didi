@@ -10,6 +10,7 @@ import { createRegistry, type TaskTool, type ToolPorts, type Definition } from '
 import { Authority, createTaskAuthority, type Exposure } from './authority.js';
 import type { ToolResult } from './results.js';
 export interface TaskRuntimeOptions {
+  nativeSessionId?: string;
   store: Store; execute: ToolPorts["execute"]; authority: Authority; configuredTools?: Definition[]; infer: Infer; delivery: Delivery;
   /** Host's existing content capture gate, evaluated at each write. */
   contentAllowed(): boolean;
@@ -58,7 +59,7 @@ export class TaskRuntime {
       isCurrent: (id, revision) => this.#isCurrent() && this.controller.isCurrentTask(id, revision),
       taskContext: id => this.taskContext(id), hostUrls: id => this.hostUrls(id), registry: () => this.registry,
     });
-    this.registry = createRegistry({ execute: options.execute, authority }, options.configuredTools);
+    this.registry = createRegistry({ execute: options.execute, authority, ...(options.nativeSessionId ? { nativeSessionId: options.nativeSessionId } : {}) }, options.configuredTools);
   }
   log(phase: string, revision: number, count = 0, ms = 0, identity = this.controller.current?.identity): void {
     const event = safeEvent({ event: 'task_lifecycle', phase, taskId: identity?.task_id, generation: identity?.connection_generation, revision, count, ms });

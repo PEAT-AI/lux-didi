@@ -95,9 +95,19 @@ function modelRelative(time: TimeSpec | undefined): number | undefined {
  * words of this ask may override or complete it, and a time nobody settled is asked back once.
  * The model never does the UTC arithmetic.
  */
+/** An explicit IANA zone or canonical city followed by 'time' belongs to the owner, not the helper. */
+export function ownerAlarmZone(words: string, fallback: string): string {
+  const normalized = ` ${words.toLowerCase().replace(/[^a-z/]+/g, ' ').trim()} `;
+  const zones = Intl.supportedValuesOf('timeZone').filter(zone => {
+    const name = zone.toLowerCase().replaceAll('_', ' '), city = name.slice(name.lastIndexOf('/') + 1);
+    return normalized.includes(` ${name} `) || normalized.includes(` ${city} time `) || normalized.includes(` time in ${city} `);
+  });
+  return zones.length === 1 ? zones[0]! : fallback;
+}
+
 export function parseAlarmTime(words: string, now: number, tz: string, time?: TimeSpec): AlarmTime {
   const checked = checkOwnerTime(words);
-  const zone = time?.mode === 'wall' && isZone(time.timezone) ? time.timezone : tz;
+  const zone = ownerAlarmZone(words, time?.mode === 'wall' && isZone(time.timezone) ? time.timezone : tz);
   const clock = modelClock(time);
   const relative = modelRelative(time);
   const series = parseSeriesRule(words);

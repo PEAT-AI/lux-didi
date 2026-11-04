@@ -30,7 +30,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, ownerAlarmZone, alarmReadBack, alarmDistance, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -570,7 +570,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         let rule = args.recurrence as SeriesRule | null | undefined;
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
         if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
-        const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const zone = ownerAlarmZone(effect.ownerWords, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
         if (at !== undefined) {
           const proposed = alarmReadBack(at, zone);
           const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
@@ -592,7 +592,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const result = commitAlarmEffect(store, effect.identity, tx => {
           if (action === 'create') {
             if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, zone, label!, context.identity!.task_id]);
             if (rule) linkAlarmOccurrence(tx, id, id);
           } else {
             id = pendingOccurrenceOf(tx, id) ?? id;
@@ -610,7 +610,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 if (series) tx.run('UPDATE alarm_series SET rule_kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
                 else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
               } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
-              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? String(row.tz), id]);
+              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? (at === undefined ? String(row.tz) : zone), id]);
             }
           }
           const readBack = at === undefined ? undefined : alarmReadBack(at, zone);

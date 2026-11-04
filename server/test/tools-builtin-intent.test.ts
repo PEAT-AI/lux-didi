@@ -27,7 +27,7 @@ import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } fro
 import { fixture } from './live-voice-fixture.js';
 import { createRegistry } from '../tasks/tools.js';
 import { documentResult } from '../tasks/results.js';
-import { parseAlarmTime, readTimeSpec } from '../tools/alarm.js';
+import { parseAlarmTime, readTimeSpec, alarmReadBack } from '../tools/alarm.js';
 import { alarmHarness } from './alarm-atomic.test.js';
 import { Authority, FakeAuthority, type JournalRecord } from '../tasks/authority.js';
 import { CONNECTOR_COMPOSED_TOOLS } from '../connectors/index.js';
@@ -170,7 +170,9 @@ test('A2 owner corpus: alarm interpretation and real task persistence', async t 
       return;
     }
     const proposedAt = corpusAlarmProposals[row.id];
-    const proposal = proposedAt === undefined ? undefined : readTimeSpec({ mode: 'wall', date: proposedAt.slice(0, 10), local_time: proposedAt.slice(11, 16), timezone: 'UTC' });
+    const proposalZone = row.id === 'AL-3' || row.id.startsWith('AL-3-part-') ? 'Asia/Singapore' : 'UTC';
+    const proposalClock = proposedAt === undefined ? undefined : alarmReadBack(Date.parse(proposedAt), proposalZone);
+    const proposal = proposalClock === undefined ? undefined : readTimeSpec({ mode: 'wall', date: proposalClock.date, local_time: proposalClock.localTime, timezone: proposalZone });
     if (proposal) assert.equal(proposal.state, 'read', 'the helper proposed a valid typed time');
     const parsed = parseAlarmTime(words, now + (row.finalOffsetsMs?.at(-1) ?? 0), 'UTC', proposal?.state === 'read' ? proposal.spec : undefined);
     if (row.code !== 'ready') {

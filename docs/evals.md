@@ -178,20 +178,27 @@ C-EVALS lane and has its own document.
 | Tier | Script | What it catches | Cost |
 | --- | --- | --- | --- |
 | 0 | `scripts/check-evals.sh` | the scorer, the fake world, the gates, the recording sink | nothing |
-| 2 | `scripts/eval-release.sh` | the real adapter in text mode: tool calls, arguments, claims against receipts | nothing in dry or fake mode, gated otherwise |
+| 2 | `scripts/eval-release.sh` | the real adapter over its own socket seam: one uplink turn, a delegation, the fixture helper's calls and answer, the spoken transcript, and claims against receipts | nothing in dry or fake mode, gated otherwise |
 | 2b | `scripts/eval-audio-probe.sh` | the adapter's upload path and its dropped output | nothing in dry or fake mode |
 | 3 | `scripts/didi-postcall-review` | what a finished call did wrong, from metadata only | nothing, no model |
 
 ## Tier 2: the release runner
 
-`scripts/eval-release.sh` drives the production realtime adapter (`server/adapters/live-voice/openai.ts`) in text
-mode against the same fake world and fake connectors the scripted harness uses, with synthetic owner turns from a
-scenario file.
+`scripts/eval-release.sh` drives the production realtime adapter (`server/adapters/live-voice/openai.ts`) over the
+adapter's own socket seam against the same fake world and fake connectors the scripted harness uses, with synthetic
+owner turns from a scenario file.
+
+Since the 10.11 rebuild the adapter is audio-only after readiness and the model delegates instead of calling tools:
+one owner turn goes up the audio uplink, the provider opens a delegation, the host's helper does the work and hands
+back one commentary turn, and the provider speaks the answer. The free runner plays both fakes honestly. The fake
+provider speaks a recorded delegation and the recorded spoken answer; the fixture's `helper` block stands in for the
+helper, naming the tool calls and the answer text. Nothing in this tier decides which tool is right: that choice is
+the helper's, and it is covered by the live-session tests, not here.
 
 | Mode | What it does | Cost |
 | --- | --- | --- |
 | `--dry-run` | prints the call plan, the token estimate per scenario and the total price; opens no socket | nothing |
-| `--fake-model` | replays the committed synthetic model turns through the real adapter over a loopback socket | nothing |
+| `--fake-model` | replays the committed synthetic provider steps (delegation, helper work, spoken answer) through the real adapter over a loopback socket | nothing |
 | `--real --confirm-price <usd>` | the owner's priced run against the provider | real money, gated |
 
 A scenario is one conversation: `server/test/eval-release/scenarios/release.jsonl`, one JSON line each, with the
@@ -311,7 +318,9 @@ without a `provenance.ruling` line fails the eval check, in `server/test/eval-re
 Simulated, faithfully:
 
 - The provider wire. The fake provider speaks the provider's own frames over a loopback socket into the production
-  adapter, so tool calls, continuations, transcript deltas and turn-taking are the real ones.
+  adapter, so delegations, the commentary append the host answers with, transcript deltas, output audio and the
+  adapter's own turn-taking windows are the real ones. The turn-taking clock is the adapter's own seam, driven by the
+  runner, so a two second quiet window costs no wall time.
 - The world, as the section above describes it, with the alarm path on a virtual clock.
 - Time. Scenarios pin `clock_T0` and a timezone, so "tomorrow" means one thing.
 
@@ -324,6 +333,11 @@ Unsupported, and never claimed:
 - Real network conditions. Latency, packet loss and provider rate limits are not modelled.
 - Model quality. The free modes prove the harness, the gates and the scoring. They say nothing about how well the
   model answers, which is what the priced run and tier 1 are for.
+- The owner ask to helper to spoken result path. The free tiers prove the adapter and fixture contract: the wire
+  frames the production adapter accepts, the turn-taking it derives from them, the fake world's answer to the calls a
+  fixture names, and the scorer's refusal of a claim no receipt covers. They do not prove that the owner's words reach
+  a provider, that the provider delegates to the helper the product actually runs, or that a real helper picks the
+  same tools; each of those has its own tier or its own test.
 
 ## Running the tiers
 

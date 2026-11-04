@@ -341,9 +341,10 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
   const { createHash } = await import('node:crypto');
-  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), 'cfc4f1706de32f5cd2f993df78781469ccd3f26b5ca80a6d096408458c6c2350', 'Architect-authored voice text stays exact');
-  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '016aaf730e5a47748127cd7e6d230442421eca2575542aba29f616b301a2a344', 'Architect-authored worker text stays exact');
-  assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
+  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '4905f66db1a6fb0195abc0255a4ef19b0f35c2b8546299399139cd9f4d6f4a17', 'Architect-authored voice text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'db33c104127272baa2c9af366975fe7fb88733ed2ea44df670f54bb1e0c07fee', 'Architect-authored worker text stays exact');
+  // 10.11: the mandated scope, searching and speech rules re-pin the worker block to its measured size (TR-R5).
+  assert.ok(WORKER_INSTRUCTIONS.length <= 4103);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
     assert.doesNotMatch(text, /["“][^"”]+["”]/);

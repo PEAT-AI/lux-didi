@@ -62,7 +62,7 @@ const toolNames = (pidFile: string): string[] => callsOf(pidFile).map(call => ca
 const taskRuntime = (h: Host, connectionIds: readonly string[] = [...h.mcp.connectionIds()]) => hostTaskFactory({
   store: h.store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
   bindings: () => h.mcp.owner.taskBindings(connectionIds), executors: sessionId => h.mcp.owner.taskExecutors(sessionId),
-  contentAllowed: () => false, timeZone: 'UTC',
+  timeZone: 'UTC',
   effectCheck: async () => true,
   ...(h.mcp.draftChat ? { draftChat: (input, scope) => h.mcp.draftChat!(input, scope) } satisfies Pick<import('../tasks/host.js').HostTaskOptions, 'draftChat'> : {}),
 })('synthetic-compose-task', new FakeDelivery(), connectionIds);

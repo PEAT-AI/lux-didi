@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
   installMiniVisuals, isMiniRoute, miniAriaLabel, miniMarkup,
-  miniModeButtonMarkup, miniState, pillMuted, pillState, startMiniOrbVisuals, visualState,
+  miniModeButtonMarkup, miniState, pillMuted, pillState, startMiniOrbVisuals, visualState, IDLE_FRAME_MS,
   type MiniState, type PillVisualHost,
 } from '../src/mini.ts';
 import { ORB_VISUALS, TRANSITION_MS, DEBOUNCE_MS, type OrbVisual } from '../src/orb-states.ts';
@@ -157,6 +157,9 @@ test('the mini boot functions in main.ts reach no audio, microphone or Live path
 /// M3: a pill stage and its one canvas, enough of the DOM for the loop to read and paint.
 function fakePill(state: MiniState, bars = [0, 1, 2, 3, 4].map(() => ({ style: { height: '' } }))) {
   const style = { vars: new Map<string, string>(), setProperty(name: string, value: string) { this.vars.set(name, value); } };
+  // #865: one canvas, as a real querySelector returns: the loop compares the element it wrote
+  // to against the one on the stage now, so a fresh object per call would look like a rebuild.
+  const canvas = { canvas: true };
   const stage = {
     style,
     attributes: new Map([['data-mini-state', state]]),
@@ -164,7 +167,7 @@ function fakePill(state: MiniState, bars = [0, 1, 2, 3, 4].map(() => ({ style: {
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
     classList: { add: () => undefined },
     querySelectorAll: () => bars,
-    querySelector: (selector: string) => (selector === 'canvas' ? { canvas: true } : null),
+    querySelector: (selector: string) => (selector === 'canvas' ? canvas : null),
   };
   // The pill is the chrome around the stage: the wash and the bars live there.
   const pillStyle = { vars: new Map<string, string>(), setProperty(name: string, value: string) { this.vars.set(name, value); } };
@@ -236,9 +239,14 @@ test('the pill loop keeps a tick while hidden and the native re-assert resumes p
     globals.didiNativeSurfaceVisible = true;
     listeners.get('didi-surface-visibility')?.();
     assert.equal(published.length, 1, 'the native re-assert paints on the spot');
+    tick(TRANSITION_MS); // the re-asserted state's blend finishes, then nothing moves
+    const settled = published.length;
     tick(16);
     tick(16);
-    assert.equal(published.length, 3, 'and the loop keeps painting frame after frame');
+    // #865: those two frames change nothing, so the settled pill writes nothing; what ORB-107
+    // needs here is that the loop is still alive and holding the next frame.
+    assert.equal(published.length, settled, 'a settled pill does not repaint an unchanged frame');
+    assert.ok(queued.length >= 1, 'and the loop still holds the next tick');
   } finally {
     stop();
     globals.window = savedWindow;
@@ -347,4 +355,106 @@ test('the presence row says she is muted and purple, which outlives the session 
   assert.doesNotMatch(muted, /quiet until a Right Command tap/, 'a muted Naya is not described as merely quiet');
   const idle = presenceRow(presenceState({ alwaysShow: true, state: 'cold' }));
   assert.match(idle, /quiet until a Right Command tap/, 'without the mute the row reads as it always did');
+});
+
+// #865: the pill used to hand the surface sixty identical style writes and one renderer
+// refresh a second while nothing had changed. The loop now reads the state on every display
+// frame and writes the visual only when it moved, plus one heartbeat per idle budget window.
+
+function startLoop(state: MiniState, reducedMotion = false) {
+  const fake = fakePill(state);
+  const published: OrbVisual[] = [];
+  const queued: Array<() => void> = [];
+  const listeners = new Map<string, () => void>();
+  const globals = globalThis as { window?: unknown; document?: unknown };
+  const savedWindow = globals.window;
+  const savedDocument = globals.document;
+  let clock = 0;
+  let writes = 0;
+  const setProperty = fake.style.setProperty.bind(fake.style);
+  fake.style.setProperty = (name: string, value: string) => { writes += 1; setProperty(name, value); };
+  globals.window = {
+    addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+    removeEventListener: (name: string) => listeners.delete(name),
+  };
+  const page = { hidden: false, addEventListener: () => undefined, removeEventListener: () => undefined };
+  globals.document = page;
+  const stop = startMiniOrbVisuals({
+    doc: {
+      querySelector: (selector: string) => (selector === '.mini-pill' ? fake.pill : fake.stage) as unknown as Element,
+    },
+    now: () => clock,
+    reducedMotion: () => reducedMotion,
+    frame: (tick) => { queued.push(tick); return queued.length; },
+    cancel: () => undefined,
+    publish: (_canvas, visual) => published.push(visual),
+  });
+  const tick = (ms = 16) => {
+    clock += ms;
+    const next = queued.shift();
+    assert.ok(next, 'the loop keeps a frame queued');
+    next();
+  };
+  const finish = () => {
+    stop();
+    globals.window = savedWindow;
+    globals.document = savedDocument;
+  };
+  return { ...fake, published, queued, tick, finish, page, listeners, writes: () => writes };
+}
+
+test('#865: an idle pill paints on its frame budget, not on every display frame', () => {
+  // The budget the pill promises, pinned here so a raised constant cannot quietly pass: the test
+  // below measures the loop against this same number, not against a copy of it.
+  assert.equal(IDLE_FRAME_MS, 250, 'the idle budget is a quarter second, four writes a second');
+  const loop = startLoop('idle');
+  try {
+    loop.tick();
+    assert.equal(loop.published.length, 1, 'the first frame paints');
+    const writesAfterFirst = loop.writes();
+    // Two seconds of display frames at 16 ms: no state change, so nothing has moved.
+    for (let paint = 0; paint < 125; paint += 1) loop.tick();
+    const span = 125 * 16;
+    assert.ok(loop.published.length <= 1 + Math.floor(span / IDLE_FRAME_MS),
+      `an idle pill paints at most once per budget window, got ${loop.published.length} paints in ${span} ms`);
+    assert.ok(loop.published.length < 125 / 4, `it is not painting every display frame (${loop.published.length} of 126)`);
+    assert.equal(loop.writes(), writesAfterFirst + (loop.published.length - 1) * 4,
+      'a skipped frame writes no style property at all');
+    assert.equal(loop.queued.length, 1, 'the loop still holds a frame, so a change is read on the next one');
+    assert.equal(loop.published.at(-1)?.state, 'cold', 'and the pill is still the cold orb it was');
+  } finally {
+    loop.finish();
+  }
+});
+
+test('#865: a state change reaches the surface within two display frames and a transition keeps full cadence', () => {
+  const loop = startLoop('idle');
+  try {
+    loop.tick();
+    for (const state of ['speaking', 'listening', 'connecting'] as MiniState[]) {
+      loop.stage.setAttribute('data-mini-state', state);
+      loop.tick();
+      loop.tick();
+      assert.equal(loop.published.at(-1)?.state, visualState(state),
+        `${state} is painted within two display frames, far inside the idle budget`);
+      const before = loop.published.length;
+      for (let paint = 0; paint < 12; paint += 1) loop.tick();
+      assert.ok(loop.published.length - before >= 12,
+        `${state}'s transition paints every frame it moves, got ${loop.published.length - before} of 12`);
+      loop.tick(TRANSITION_MS);
+    }
+  } finally {
+    loop.finish();
+  }
+});
+
+test('#865: reduced motion keeps one still frame and schedules nothing', () => {
+  const loop = startLoop('listening', true);
+  try {
+    loop.tick();
+    assert.equal(loop.published.length, 1, 'a reduced-motion pill paints its one still frame');
+    assert.equal(loop.queued.length, 0, 'and queues no further frame');
+  } finally {
+    loop.finish();
+  }
 });

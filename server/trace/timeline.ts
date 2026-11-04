@@ -728,11 +728,19 @@ export function renderCallList(rows: readonly CallRow[]): string {
 // the host log's turn and call keys, and prints a missing measurement as missing, never as zero.
 
 /** The audit's own schema number. A field added or a meaning changed bumps it, so a reader pins a shape. */
-export const CALL_AUDIT_SCHEMA_VERSION = 3;
+export const CALL_AUDIT_SCHEMA_VERSION = 4;
 
 /** Why one measurement is absent. Closed, so "missing" is a reason and never a duration of zero. */
 export const AUDIT_MISSING_REASONS = ['no_owner_final', 'no_provider_audio', 'no_native_receipt'] as const;
 export type AuditMissingReason = (typeof AUDIT_MISSING_REASONS)[number];
+
+/**
+ * #1011: an interval whose end receipt is stamped before the final it is measured from. The clocks can order
+ * two receipts wrongly, so the audit names the pair and leaves the measurement missing instead of clamping
+ * the interval to a zero nobody measured.
+ */
+export const AUDIT_TURN_FLAGS = ['final_after_provider_audio', 'final_after_native_audible', 'final_after_answer_complete'] as const;
+export type AuditTurnFlag = (typeof AUDIT_TURN_FLAGS)[number];
 
 /**
  * C-DIAG109: how soon after a silent owner final another owner final must arrive for the first to be a
@@ -753,7 +761,10 @@ export interface AuditCallRow {
 }
 export interface AuditTurnRow {
   turnId: string; ownerFinalAt: number | null; providerFirstAudioAt: number | null; nativeFirstAudibleAt: number | null;
-  finalToProviderMs: number | null; finalToAudibleMs: number | null; missingReason: AuditMissingReason | null;
+  finalToProviderFirstSoundMs: number | null; finalToNativeFirstSoundMs: number | null; finalToAnswerCompleteMs: number | null;
+  /** #1011: the inverted pairs of this turn, and the playback segments the store joined to it. */
+  flags: AuditTurnFlag[]; playbackSegments: number;
+  missingReason: AuditMissingReason | null;
   /** C-DIAG109: for a turn with no provider audio, whether it was a fragment of a split sentence or an ask that
    *  went unanswered. Null for every other turn: a turn that was answered is neither. */
   noAudioClass: AuditNoAudioClass | null;
@@ -777,6 +788,10 @@ export interface AuditAggregates {
   refusalsMeasured: boolean;
   failuresByToolAndCode: AuditToolFailure[];
   turnsOver4s: number;
+  /** #1011: how many owner turns carry each measure, so a percentile is never read as full coverage. */
+  firstSound: { ownerTurns: number; providerMeasured: number; nativeMeasured: number; answerCompleteMeasured: number };
+  /** #1011: the playback segments the store joined to a turn, and the ones it could not. */
+  playbackSegments: { attributed: number; unattributed: number };
   claimsWithoutCall: number;
   deadAirEvents: number;
   /** C-DIAG109: the owner finals with no provider audio, split into the two things they can mean, and the
@@ -801,7 +816,8 @@ export interface AuditSummary {
   refusalsByCode: Record<string, number>;
   refusalsMeasured: boolean;
   failuresByToolAndCode: AuditToolFailure[];
-  finalToAudio: AuditToolLatency;
+  /** #1011: the first-sound wait, across sessions. The completed answer is not aggregated: see each call. */
+  firstSoundProvider: AuditToolLatency;
   /** C-DIAG109: every session's silent owner finals, both readings, with the bound the fragment one uses. */
   noProviderAudioFinals: { boundMs: number; fragments: number; unanswered: number };
 }
@@ -848,8 +864,39 @@ function auditCallRow(call: CallView, lines: readonly LogLine[]): AuditCallRow {
   };
 }
 
-/** One owner turn's row: the log's owner final and first audio, the store's native audibility receipt. */
-function auditTurnRow(turn: TurnView, lines: readonly LogLine[]): AuditTurnRow {
+/**
+ * #1011: one interval, measured only when both stamps exist, and a reversed pair recorded as a flag instead of
+ * being clamped to a zero nobody measured.
+ */
+function intervalSince(from: number | null, to: number | null, flag: AuditTurnFlag, flags: AuditTurnFlag[]): number | null {
+  if (from === null || to === null) return null;
+  if (to < from) { flags.push(flag); return null; }
+  return to - from;
+}
+
+/**
+ * #1011: when the answer finished playing, or nothing when the record cannot say. Two things must hold.
+ * First, the segments: the turn needs at least one, and every segment must have drained without interruption,
+ * because `trace_turn.playback_drained_at` is the EARLIEST drain (record.ts keeps the smaller stamp) and cannot
+ * stand for completion. Second, the responses: every response the log heard produce audio must own one of those
+ * drained segments, or a continuation whose playback receipt never reached the store would be hidden behind the
+ * first response's drain. Either gap leaves the measure missing instead of naming an earlier response.
+ */
+function answerCompleteAt(track: TurnTrack, lines: readonly LogLine[]): number | null {
+  const segments = track.playback;
+  if (segments.length === 0) return null;
+  if (segments.some(segment => segment.drainedAt === null || segment.interruptedAt !== null)) return null;
+  const drainedKeys = new Set(segments.map(segment => segment.responseKey));
+  for (const line of lines) {
+    if (line.event !== 'response_first_audio' || line.turnId !== track.turn.turnId) continue;
+    if (count(line.record.firstAudioAt) === null) continue;
+    if (!drainedKeys.has(String(line.record.responseKey))) return null;
+  }
+  return Math.max(...segments.map(segment => segment.drainedAt!));
+}
+
+function auditTurnRow(track: TurnTrack, lines: readonly LogLine[]): AuditTurnRow {
+  const turn = track.turn;
   const finals = lines.filter(line => line.event === 'owner_final' && line.turnId === turn.turnId);
   // A split utterance writes one final per fragment; the turn's latency runs from his last word, so the last
   // final of the turn is the anchor, and one turn still yields one row.
@@ -858,8 +905,10 @@ function auditTurnRow(turn: TurnView, lines: readonly LogLine[]): AuditTurnRow {
   const firstAudio = lines.find(line => (line.event === 'live_first_audio' || line.event === 'live_answer_audio') && line.turnId === turn.turnId);
   const providerFirstAudioAt = firstAudio?.at ?? null;
   const nativeFirstAudibleAt = turn.firstAudibleAt;
-  const finalToProviderMs = ownerFinalAt === null || providerFirstAudioAt === null ? null : Math.max(0, providerFirstAudioAt - ownerFinalAt);
-  const finalToAudibleMs = ownerFinalAt === null || nativeFirstAudibleAt === null ? null : Math.max(0, nativeFirstAudibleAt - ownerFinalAt);
+  const flags: AuditTurnFlag[] = [];
+  const finalToProviderFirstSoundMs = intervalSince(ownerFinalAt, providerFirstAudioAt, 'final_after_provider_audio', flags);
+  const finalToNativeFirstSoundMs = intervalSince(ownerFinalAt, nativeFirstAudibleAt, 'final_after_native_audible', flags);
+  const finalToAnswerCompleteMs = intervalSince(ownerFinalAt, answerCompleteAt(track, lines), 'final_after_answer_complete', flags);
   const missingReason: AuditMissingReason | null = ownerFinalAt === null ? 'no_owner_final'
     : providerFirstAudioAt === null && nativeFirstAudibleAt === null ? 'no_provider_audio'
     : nativeFirstAudibleAt === null ? 'no_native_receipt'
@@ -879,7 +928,9 @@ function auditTurnRow(turn: TurnView, lines: readonly LogLine[]): AuditTurnRow {
     : [...lines].reverse().find(line => line.event === 'tool_output_sent' && line.turnId === turn.turnId && line.at !== null && line.at <= continuationCreatedAt)?.at ?? null;
   const connectorMs = lines.filter(line => line.event === 'connector_request' && line.turnId === turn.turnId)
     .map(line => count(line.record.ms)).filter((ms): ms is number => ms !== null);
-  return { turnId: turn.turnId, ownerFinalAt, providerFirstAudioAt, nativeFirstAudibleAt, finalToProviderMs, finalToAudibleMs, missingReason,
+  return { turnId: turn.turnId, ownerFinalAt, providerFirstAudioAt, nativeFirstAudibleAt,
+    finalToProviderFirstSoundMs, finalToNativeFirstSoundMs, finalToAnswerCompleteMs,
+    flags, playbackSegments: track.playback.length, missingReason,
     noAudioClass: null,
     speechEndToFinalMs: speechEndAt === null || ownerFinalAt === null ? null : Math.max(0, ownerFinalAt - speechEndAt),
     finalToCreateMs: ownerFinalAt === null || firstCreatedAt === null ? null : Math.max(0, firstCreatedAt - ownerFinalAt),
@@ -929,7 +980,7 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan, refusalsCo
   // unattributed calls carry no turn id by definition, so their table row prints turn -.
   const calls = [...report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines))),
     ...report.unattributedCalls.map(call => auditCallRow(call, lines))];
-  const rows = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
+  const rows = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track, lines));
   // C-DIAG109: one spoken sentence split by the turn splitter yields several finals and one answer, so a
   // silent final is read against the final that follows it. The store's turns arrive in the call's own order.
   const turns = rows.map((row, index) => ({ ...row, noAudioClass: noAudioClassOf(rows, index) }));
@@ -963,7 +1014,18 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan, refusalsCo
       refusalsByCode,
       refusalsMeasured,
       failuresByToolAndCode,
-      turnsOver4s: turns.filter(turn => turn.finalToProviderMs !== null && turn.finalToProviderMs > AUDIT_TURN_ALERT_MS).length,
+      turnsOver4s: turns.filter(turn => turn.finalToProviderFirstSoundMs !== null
+        && turn.finalToProviderFirstSoundMs > AUDIT_TURN_ALERT_MS).length,
+      firstSound: {
+        ownerTurns: turns.length,
+        providerMeasured: turns.filter(turn => turn.finalToProviderFirstSoundMs !== null).length,
+        nativeMeasured: turns.filter(turn => turn.finalToNativeFirstSoundMs !== null).length,
+        answerCompleteMeasured: turns.filter(turn => turn.finalToAnswerCompleteMs !== null).length,
+      },
+      playbackSegments: {
+        attributed: report.turns.reduce((sum, track) => sum + track.playback.length, 0),
+        unattributed: report.unattributedPlayback.length,
+      },
       claimsWithoutCall: Math.max(report.announcedClaimsWithoutCall ?? 0, lines.filter(line => line.event === 'live_claim_without_call').length),
       deadAirEvents: lines.filter(line => line.event === 'live_dead_air').length,
       noProviderAudioFinals: {
@@ -1005,7 +1067,7 @@ export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number)
   const refusalsByCode: Record<string, number> = {};
   const failures = new Map<string, AuditToolFailure>();
   const latencyByTool = new Map<string, number[]>();
-  const finalToAudio: number[] = [];
+  const firstSoundProvider: number[] = [];
   let callCount = 0;
   let fragments = 0;
   let unanswered = 0;
@@ -1024,7 +1086,7 @@ export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number)
       if (seen === undefined) failures.set(key, { ...failure });
       else seen.count += failure.count;
     }
-    finalToAudio.push(...sortedNumbers(audit.turns.map(turn => turn.finalToProviderMs)));
+    firstSoundProvider.push(...sortedNumbers(audit.turns.map(turn => turn.finalToProviderFirstSoundMs)));
     // C-DIAG109: both readings of a silent final across every session, so a split sentence is never counted
     // as a miss. Unanswered keeps the bound the call audit applied.
     fragments += audit.aggregates.noProviderAudioFinals.fragments;
@@ -1037,7 +1099,7 @@ export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number)
     outcomes, callsPerTool, latencyPerTool, refusalsByCode,
     refusalsMeasured: refusalsColumn && callCount > 0,
     failuresByToolAndCode: [...failures.values()].sort((left, right) => `${left.tool}\u0000${left.outcome}\u0000${left.refusalCode ?? ''}`.localeCompare(`${right.tool}\u0000${right.outcome}\u0000${right.refusalCode ?? ''}`)),
-    finalToAudio: latencyOf(finalToAudio),
+    firstSoundProvider: latencyOf(firstSoundProvider),
     noProviderAudioFinals: { boundMs: FRAGMENT_FOLLOW_MS, fragments, unanswered },
   };
 }
@@ -1062,9 +1124,14 @@ export function renderCallAudit(audit: CallAudit): string {
   out.push(`after rebuild, no turn calls=${orphanCalls.length}`);
   for (const call of orphanCalls) out.push(`${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   out.push('');
-  out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');
+  // #1011: the first sound she made and the answer she finished are two waits, never one number, and the
+  // segments the store tied to the turn sit beside them so "no receipt" can be read against what arrived.
+  out.push('turns turn ownerFinal providerFirstSound nativeFirstSound firstSoundProvider firstSoundNative answerComplete segments missing flags');
   for (const turn of audit.turns) {
-    out.push(`${turn.turnId} ${auditNumber(turn.ownerFinalAt)} ${auditNumber(turn.providerFirstAudioAt)} ${auditNumber(turn.nativeFirstAudibleAt)} ${auditMs(turn.finalToProviderMs)} ${auditMs(turn.finalToAudibleMs)} ${turn.missingReason ?? '-'}${turn.noAudioClass === null ? '' : ` ${turn.noAudioClass}`}`);
+    out.push(`${turn.turnId} ${auditNumber(turn.ownerFinalAt)} ${auditNumber(turn.providerFirstAudioAt)} ${auditNumber(turn.nativeFirstAudibleAt)}` +
+      ` ${auditMs(turn.finalToProviderFirstSoundMs)} ${auditMs(turn.finalToNativeFirstSoundMs)} ${auditMs(turn.finalToAnswerCompleteMs)}` +
+      ` ${turn.playbackSegments} ${turn.missingReason ?? '-'}${turn.noAudioClass === null ? '' : ` ${turn.noAudioClass}`}` +
+      `${turn.flags.length === 0 ? '' : ` ${turn.flags.join(' ')}`}`);
   }
   out.push('');
   // LAT-1022: where the turn's time went, one row per measured segment. A step the turn did not take prints a
@@ -1082,7 +1149,11 @@ export function renderCallAudit(audit: CallAudit): string {
   out.push('tool failures by tool and code');
   for (const failure of audit.aggregates.failuresByToolAndCode) out.push(`${failure.tool} ${failure.outcome} ${failure.refusalCode ?? UNCODED} ${failure.count}`);
   if (audit.aggregates.failuresByToolAndCode.length === 0) out.push(audit.aggregates.refusalsMeasured ? 'none' : MISSING);
-  out.push(`turns over 4s final to audio ${audit.aggregates.turnsOver4s}`);
+  out.push(`turns over 4s first sound ${audit.aggregates.turnsOver4s}`);
+  out.push(`first sound coverage owner-turns=${audit.aggregates.firstSound.ownerTurns} provider=${audit.aggregates.firstSound.providerMeasured}/${audit.aggregates.firstSound.ownerTurns}` +
+    ` native=${audit.aggregates.firstSound.nativeMeasured}/${audit.aggregates.firstSound.ownerTurns}` +
+    ` answer-complete=${audit.aggregates.firstSound.answerCompleteMeasured}/${audit.aggregates.firstSound.ownerTurns}`);
+  out.push(`playback segments attributed=${audit.aggregates.playbackSegments.attributed} unattributed=${audit.aggregates.playbackSegments.unattributed}`);
   out.push(`announced claims with no call ${audit.aggregates.claimsWithoutCall}`);
   out.push(`dead-air events ${audit.aggregates.deadAirEvents}`);
   out.push(`owner finals with no provider audio unanswered=${audit.aggregates.noProviderAudioFinals.unanswered} fragment=${audit.aggregates.noProviderAudioFinals.fragments} fragmentBound=${audit.aggregates.noProviderAudioFinals.boundMs}ms`);
@@ -1103,7 +1174,7 @@ export function renderAuditSummary(summary: AuditSummary): string {
   out.push('tool failures by tool and code');
   for (const failure of summary.failuresByToolAndCode) out.push(`${failure.tool} ${failure.outcome} ${failure.refusalCode ?? UNCODED} ${failure.count}`);
   if (summary.failuresByToolAndCode.length === 0) out.push(summary.refusalsMeasured ? 'none' : MISSING);
-  out.push(`final to audio n=${summary.finalToAudio.count} p50=${auditMs(summary.finalToAudio.p50)} p90=${auditMs(summary.finalToAudio.p90)}`);
+  out.push(`first sound provider n=${summary.firstSoundProvider.count} p50=${auditMs(summary.firstSoundProvider.p50)} p90=${auditMs(summary.firstSoundProvider.p90)}`);
   out.push(`owner finals with no provider audio unanswered=${summary.noProviderAudioFinals.unanswered} fragment=${summary.noProviderAudioFinals.fragments} fragmentBound=${summary.noProviderAudioFinals.boundMs}ms`);
   return `${out.join('\n')}\n`;
 }

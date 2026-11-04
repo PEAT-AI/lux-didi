@@ -37,9 +37,36 @@ questions and actions are handed off in the same turn. The voice waits for an
 actual result rather than inventing progress or claiming a lookup happened.
 General explanation and plain conversation can be answered directly.
 
-### A silent text response never outlives its own end (C-DEADAIR)
 
-A post-tool continuation asks the provider for a response with a bare `response.create`: no output modalities, no instructions, no voice. The delegated backend can answer that request with text and no audio at all (2026-10-27 07:02:59Z: 112 response tokens, `delegation_closed`, `playback_level` at -120 dB, and no `session.output_audio.delta`), and the adapter has no path for a delegated response's text, so the answer is generated and never spoken. The host cannot make the provider speak, so it notices the shape: when a response ends after writing text for an owed answer and no audible frame arrived, `#deliverUnspoken` hands the result to the live session at that end, exactly once, with no ladder wait. `live_response_latency` records the provider's share of the wait separately (owner final words, response announced, first audio). The audible-debt rung stays at 8 s, and a response the owner cannot hear buys it `DEAD_AIR_RESPONSE_GRACE_MS` (500 ms) instead of the seven seconds that made the 2026-10-27 calls wait 15 s.
+### Open-line task delivery (10.11)
+
+Finalized owner speech starts or revises the helper after 1,200 ms without new owner transcript.
+New words restart this host-owned quiet; adapter finalization consumes the same interval, not an extra delay.
+There is no lexical hesitation classifier. Stop commands,
+mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
+
+OpenAI results use commentary on the current provider generation with its latest delegation id,
+or null when there is none. The host waits for owner speech and output quiet, then appends ordered
+chunks of at most 450 characters. Provider timeline acknowledgement settles each chunk, not exact
+transcription or proven playback. An explicit rejection retries once on the same line and then logs
+failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
+heard deadline. Store records pending sends and only records delivered after provider acknowledgement.
+
+A real socket rebuild retains the bounded transcript through rebuildSeed. Unacknowledged remainder
+is appended as commentary after ready, with a null id until this generation has a delegation.
+Accepted chunks are not replayed; no say-first instructions replace conversation history.
+Recovery timing is unchanged. Verified helper status names whether a rebuild happened and its closed
+cause; live_rebuild metadata names running_task, finished_answer_pending or nothing_owed.
+
+A no_action result releases an open delegation with situation-only commentary: no lookup is needed,
+and the voice should answer from its own mind and the conversation. Without an open delegation it
+sends nothing. A no-tool complete or incomplete result is suppressed if the voice already spoke and
+no delegation is open. Tool evidence is always delivered; failure and incomplete text is not rewritten.
+Stale revisions never deliver. Gemini retains its tool-response route apart from the shared input quiet.
+
+Synthetic providers prove routing, ordering, acknowledgement state, holds and bounded rejection handling.
+They cannot prove audibility, exact wording, model weaving, or remembered meaning. Real-wire trials
+established null-id commentary and retained history; transcript matches are not delivery receipts.
 
 ### Fewer rebuilds, by holding them rather than shortening anything (C-REBUILD)
 
@@ -127,13 +154,13 @@ Deleting a local memory can scrub later accepted/rebuilt context, but cannot rem
 
 ## Truth about her own state
 
-The runtime context carries one compact line of live connector state per family, connected or not signed in or needs approval, rebuilt at every call start and after any sign-in, and Naya may deny or claim a sign-in or a capability only from that line or a live tool check. An open loop older than 24 hours, or one a later summary records as finished, is never an opening option, and an opener never credits a past failure to the owner. When the owner says her voice or accent changed she believes him, says she cannot hear her own output and offers to keep going, never that she is still the same. A line from an earlier conversation's summary is spoken only when it answers what he just asked, and the "okay?" tag is limited to once in a few answers. The summary prompt records a failed request, an unanswered ask and a complaint about Naya herself as open loops.
+The runtime context carries one compact line of live connector state per family, connected or not signed in or needs approval, rebuilt at every call start and after any sign-in, and Naya may deny or claim a sign-in or a capability only from that line or a live tool check. An open loop older than 24 hours, or one a later summary records as finished, is never an opening option, and an opener never credits a past failure to the owner. When the owner says her voice or accent changed she believes him, says she cannot hear her own output and offers to keep going, never that she is still the same. A line from an earlier conversation's summary is spoken only when it answers what he just asked, and no answer ends on a reflex tag such as "okay?". The summary prompt records a failed request, an unanswered ask and a complaint about Naya herself as open loops.
 
 ## Helper results and recovery context
 
 The Live voice receives speech-ready results from the host-owned helper rather than calling source tools itself. The helper performs the typed tool work; the voice reads its result completely, retaining names, numbers, dates and qualifications. A partial result, a gap or a failure must remain explicit rather than becoming a claim that the work succeeded.
 
-The 3,000-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
+The 4,103-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
 
 Fresh session recovery uses the call transcript seed built by `LiveSessionOwner.#rebuildSeed` and `#seedHistory`. The current seed contains transcript turns only; it adds no separate helper-result ledger. Session recovery and a helper's follow-up tool reads are distinct operations, and recovery does not grant authority to replay an uncertain remote write.
 

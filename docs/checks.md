@@ -213,8 +213,8 @@ filtered on read, so removing them is an owner decision and never a check or a m
 
 | Script | Covers |
 | --- | --- |
-| `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Release pull requests only. |
-| `eval-release.sh` | Tier 2 (`docs/evals.md`): the real realtime adapter in text mode over a loopback fake provider. `--dry-run` prints the plan and the price, `--fake-model` replays recorded synthetic turns, `--real` refuses without a matching `--confirm-price`. |
+| `check-evals.sh` | The eval harness self-test in scripted mode only (`docs/evals.md`): the tool catalogue, the fake world, the real alarm scheduler on a virtual clock, the recording sink, the guards, and the deterministic scorer. All 118 public cases either `PASS` or report `EXPECTED_RED` with their reason, and a deliberately broken answer fails. No model call, no network, no audio. Every step is walled with `timeout`, so a step that hangs names itself and fails the check instead of stalling a release (issue #884). Release pull requests only. |
+| `eval-release.sh` | Tier 2 (`docs/evals.md`): the real realtime adapter over a loopback fake provider. `--dry-run` prints the plan and the price, `--fake-model` replays recorded synthetic steps (an owner uplink, a delegation, the fixture helper's answer, the spoken transcript), `--real` refuses without a matching `--confirm-price`. |
 | `eval-audio-probe.sh` | Tier 2b: a synthetic utterance through the adapter's upload path, provider audio counted and dropped, no audio device. |
 | `eval-mutation-probe.sh` | Honesty probe (a): each known mutation of the guarded eval code makes the self-test fail. |
 | `check-test-sensitivity.sh` | Honesty probe (b): each sidecar in `server/test/sensitivity/` mutates one production file in a copy of the tree and proves the named test fails under it. Skipped sidecars whose test is absent from this tree are reported, never counted as passes (`--require-all` refuses). `--selftest` covers the runner with a test that cannot fail and one that can. See `docs/evals.md`. |
@@ -289,14 +289,17 @@ The opt-in file is **outside this public repository** at `~/.lux/didi-canary/ask
 Never commit it, its real names, or its results. Start from the synthetic
 [`scripts/fixtures/canary-asks.example.json`](../scripts/fixtures/canary-asks.example.json),
 replace the placeholders locally, and choose the actual canonical tool names exposed by
-your configured connectors. The example is not a real account corpus. The format is:
+your configured connectors. That file is a shape, not a list of current names: where it
+still shows an older voice-tool name, use the name from the helper registry in
+[tool-owner.md](tool-owner.md) instead, for example `alarm_create` for an alarm ask.
+The example is not a real account corpus. The format is:
 
 ```json
 [
   {
     "id": "alarm-split",
     "finals": ["Set an alarm", "in two minutes"],
-    "expect": {"tool": "set_alarm", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
+    "expect": {"tool": "alarm_create", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
   }
 ]
 ```
@@ -305,7 +308,9 @@ your configured connectors. The example is not a real account corpus. The format
   including speech-recognition splits. Finals are injected unchanged through the existing
   typed-owner-text path, with `finalOrigin === 'typed'`; they are not a prompt quoting an ask.
 - `expect.tool` names the actual tool, including a source tool called by the helper,
-  not just the model's prose or a guessed connector name. `codeClass` is `success`.
+  not just the model's prose or a guessed connector name. A canary ask whose
+  `expect.tool` names a tool this release no longer calls fails with `wrong_tool`, so
+  every name comes from the current helper registry. `codeClass` is `success`.
   `nonEmpty` requires data in the tool's own reply. Successful typed read-data envelopes
   report `code=data`; explicit error/refusal fields always fail. A stored `completed`
   outcome never converts a refusal into a pass.

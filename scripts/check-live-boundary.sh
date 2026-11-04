@@ -2,6 +2,7 @@
 # Synthetic task runtime and delivery boundaries. No app, network, audio or owner database.
 # Every scenario also runs with an inverted concrete expectation to prove it detects red.
 # A fake provider does not prove the real wire. Any source defect fails this gate.
+# The fake boundary verifies timeline acknowledgements and same-line retry, not audible playback.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"

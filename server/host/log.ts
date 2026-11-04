@@ -1,3 +1,4 @@
+import { FAILURE_CATEGORIES } from '../tasks/results.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
@@ -35,7 +36,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
   'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
-export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context', 'task_delivery'] as const;
+export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context'] as const;
 /** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */
@@ -183,7 +184,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'task_delivery') {
     if (!closedKeys(value, ['event', 'taskId', 'revision', 'state']) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
-      !['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered'].includes(String(value.state))) return;
+      !['sent', 'accepted', 'retry', 'undelivered'].includes(String(value.state))) return;
     return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
   }
   if (value.event === 'task_lifecycle') {
@@ -259,6 +260,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));
     if (typeof value.reason !== 'string' || !reasons.includes(value.reason) || !identity(value.runId) || !identity(value.executionId)) return;
     return {event:'tool_diagnostic_capture',reason:value.reason,runId:value.runId,executionId:value.executionId};
+  }
+  if (value.event === 'task_tool') {
+    const token = (v: unknown): boolean => typeof v === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(v);
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'operationId', 'tool', 'durationMs', 'category', 'cache']) ||
+      !token(value.taskId) || !token(value.operationId) || !token(value.tool) || !isSafeCount(value.revision) || !isSafeCount(value.durationMs) ||
+      !['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES].includes(String(value.category)) || !['miss', 'hit', 'join'].includes(String(value.cache))) return;
+    return { event: 'task_tool', taskId: value.taskId, revision: value.revision, operationId: value.operationId, tool: value.tool, durationMs: value.durationMs, category: value.category, cache: value.cache };
+  }
+  if (value.event === 'tool_failure' && 'category' in value) {
+    if (!closedKeys(value, ['event', 'tool', 'category']) || typeof value.tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value.tool) ||
+      !FAILURE_CATEGORIES.includes(value.category as typeof FAILURE_CATEGORIES[number])) return;
+    return { event: 'tool_failure', tool: value.tool, category: value.category };
   }
   if (value.event === 'tool_failure') {
     const codes: readonly string[] = TOOL_FAILURE_CODES;
@@ -1287,6 +1300,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
     // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
     const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
+    const owed = value.owed === undefined ? {} : { owed: value.owed };
+    if (value.owed !== undefined) {
+      keys.push('owed');
+      if (!['running_task', 'finished_answer_pending', 'nothing_owed'].includes(String(value.owed))) return;
+    }
     const response = responsePair(value);
     if (response === undefined) return;
     const base = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
@@ -1297,10 +1315,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation)) return;
     if (Object.hasOwn(value, 'closeCode')) {
       if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
-      return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
+      return { ...owed, event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
         generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason, ...response };
     }
-    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
+    return { ...owed, event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation, ...response };
   }
   if (value.event === 'research_context_rebuild') {
     // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the

@@ -192,7 +192,7 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.equal(older.terminal, null);
 });
 
-test('#699: a stale server/dist is rebuilt before the read, and a failed build stops the CLI (#752)', () => {
+test('#1011: a stale server/dist is reported with the build command, and the read never builds (#699, #752)', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-build-')));
   try {
     const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
@@ -205,7 +205,7 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     chmodSync(join(tree, 'scripts', 'didi-timeline'), 0o755);
     writeFileSync(join(tree, 'server', 'package.json'), '{ "name": "synthetic-server", "private": true }\n');
     writeFileSync(join(tree, 'server', 'settings.ts'), 'export const settings = 1;\n');
-    // The built module is the real one, so a skipped rebuild still answers and the assertion cannot pass by crashing.
+    // The built module is the real one, so a refused read cannot pass by crashing on a missing import.
     writeFileSync(join(dist, 'timeline.js'), `export * from ${JSON.stringify(timelineModule)};\n`);
     const older = new Date(Date.now() - 3600000);
     const newer = new Date();
@@ -213,20 +213,21 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     mkdirSync(bin);
     const calls = join(root, 'npm-calls');
     const npm = join(bin, 'npm');
-    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(calls)}\nprintf 'tsc: synthetic compile error\\n' >&2\nexit 7\n`);
+    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(calls)}\nexit 0\n`);
     chmodSync(npm, 0o755);
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
     const cli = join(tree, 'scripts', 'didi-timeline');
     const dataDir = join(root, 'data');
-    // A checkout that fetched a newer source over an older build.
+    // A checkout that fetched a newer source over an older build: a read must not repair it.
     utimesSync(join(dist, 'timeline.js'), older, older);
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), newer, newer);
-    const failed = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
-    assert.equal(failed.status, 7, 'the build exit status is the CLI status');
-    assert.match(failed.stderr, /tsc: synthetic compile error/, "the build's own error is shown");
-    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build'], 'the documented build ran');
-    // A fresh dist is authority: no build runs and the real module answers.
-    rmSync(calls, { force: true });
+    const stale = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
+    assert.equal(stale.status, 1, stale.stderr);
+    assert.match(stale.stderr, /server\/dist is older than its source/u);
+    assert.match(stale.stderr, /run: npm --prefix server run build/u);
+    assert.equal(stale.stdout, '', 'a stale dist answers nothing');
+    assert.equal(existsSync(calls), false, 'the read ran no build in the shared checkout');
+    // A fresh dist is authority: no build runs, and the real module answers.
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
     utimesSync(join(dist, 'timeline.js'), newer, newer);
     const fresh = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
@@ -476,10 +477,10 @@ test('C-LOGS11: the audit names every tool call and every owner turn of one call
       ['t1', T0 + 800, T0 + 2_500, T0 + 3_120],
       ['t2', null, null, null],
     ]);
-    assert.equal(audit.turns[0]!.finalToProviderMs, 1_700);
-    assert.equal(audit.turns[0]!.finalToAudibleMs, T0 + 3_120 - (T0 + 800));
+    assert.equal(audit.turns[0]!.finalToProviderFirstSoundMs, 1_700);
+    assert.equal(audit.turns[0]!.finalToNativeFirstSoundMs, T0 + 3_120 - (T0 + 800));
     assert.equal(audit.turns[1]!.missingReason, 'no_owner_final');
-    assert.equal(audit.turns[1]!.finalToAudibleMs, null, 'a missing measurement is null, never zero');
+    assert.equal(audit.turns[1]!.finalToNativeFirstSoundMs, null, 'a missing measurement is null, never zero');
   });
 });
 
@@ -506,12 +507,12 @@ test('C-LOGS11: a turn with no native receipt says so, and never prints a zero',
     ]);
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scan);
     const row = audit.turns[0]!;
-    assert.equal(row.finalToProviderMs, 2_000);
-    assert.equal(row.finalToAudibleMs, null);
+    assert.equal(row.finalToProviderFirstSoundMs, 2_000);
+    assert.equal(row.finalToNativeFirstSoundMs, null);
     assert.equal(row.missingReason, 'no_native_receipt');
     const text = renderCallAudit(audit);
-    assert.match(text, /finalToProvider finalToAudible missing/);
-    assert.match(text, /t1 1792486800400 1792486802400 missing 2000ms missing no_native_receipt/);
+    assert.match(text, /firstSoundProvider firstSoundNative answerComplete/);
+    assert.match(text, /t1 1792486800400 1792486802400 missing 2000ms missing missing 0 no_native_receipt/);
   });
 });
 
@@ -528,11 +529,13 @@ test('C-LOGS11: the audit JSON is a stable, versioned shape', () => {
       // LAT-1022: the audit's per-turn segments are part of the stable shape: the speech end to the final, the
       // final to the first create, that create to its first audio, the last tool output to the continuation's
       // create, and every connector request the turn made.
-      ['connectorMs', 'createToFirstAudioMs', 'finalToAudibleMs', 'finalToCreateMs', 'finalToProviderMs', 'missingReason',
-        'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
+      ['connectorMs', 'createToFirstAudioMs', 'finalToAnswerCompleteMs', 'finalToCreateMs', 'finalToNativeFirstSoundMs',
+        'finalToProviderFirstSoundMs', 'flags', 'missingReason', 'nativeFirstAudibleAt', 'noAudioClass', 'ownerFinalAt',
+        'playbackSegments', 'providerFirstAudioAt', 'speechEndToFinalMs', 'toolOutputToCreateMs', 'turnId']);
     assert.deepEqual(Object.keys(json['aggregates'] as object).sort(),
-      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'noProviderAudioFinals', 'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
-    assert.equal(json['version'], 3);
+      ['claimsWithoutCall', 'deadAirEvents', 'failuresByToolAndCode', 'firstSound', 'noProviderAudioFinals', 'playbackSegments',
+        'refusalsByCode', 'refusalsMeasured', 'slowestCalls', 'turnsOver4s']);
+    assert.equal(json['version'], 4);
   });
 });
 
@@ -568,8 +571,8 @@ test('C-LOGS11: the across-sessions summary reports counts per tool and p50/p90 
     assert.deepEqual(summary.latencyPerTool['gmail_search_messages'], { count: 3, p50: 60, p90: 80 });
     assert.deepEqual(summary.latencyPerTool['research'], { count: 1, p50: 6100, p90: 6100 });
     assert.deepEqual(summary.refusalsByCode, { grant_not_permitted: 1 });
-    // Both sessions' owner-final-to-audio waits: 1700 in session A, 5000 in session B.
-    assert.deepEqual(summary.finalToAudio, { count: 2, p50: 1700, p90: 5000 });
+    // Both sessions' owner-final-to-first-sound waits: 1700 in session A, 5000 in session B.
+    assert.deepEqual(summary.firstSoundProvider, { count: 2, p50: 1700, p90: 5000 });
   });
 });
 
@@ -579,7 +582,7 @@ test('C-LOGS11: a summary with no session since the date is empty, not a zeroed 
     const summary = buildAuditSummary(readOf(store), scanOf([]), T0 + 10_000_000);
     assert.equal(summary.sessions, 0);
     assert.deepEqual(summary.callsPerTool, {});
-    assert.deepEqual(summary.finalToAudio, { count: 0, p50: null, p90: null });
+    assert.deepEqual(summary.firstSoundProvider, { count: 0, p50: null, p90: null });
   });
 });
 
@@ -604,15 +607,15 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     const audit = JSON.parse(execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--json', '--data-dir', dir], { encoding: 'utf8' })) as CallAudit;
     assert.equal(audit.liveSessionId, session);
     assert.deepEqual(audit.calls.map(row => [row.name, row.totalMs, row.outcome]), [['search_knowledge', 40, 'completed']]);
-    assert.deepEqual(audit.turns.map(row => row.finalToProviderMs), [2_000]);
+    assert.deepEqual(audit.turns.map(row => row.finalToProviderFirstSoundMs), [2_000]);
     const summary = JSON.parse(execFileSync(process.execPath, [cli, 'sessions', '--since', '2026-10-20', '--audit-summary', '--json', '--data-dir', dir], { encoding: 'utf8' })) as { sessions: number; callsPerTool: Record<string, number> };
     assert.equal(summary.sessions, 1);
     assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
-    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 3\)/);
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 4\)/);
     assert.match(text, /search_knowledge \d+ms 40ms completed/);
-    assert.match(text, /missing no_native_receipt/);
+    assert.match(text, /missing 0 no_native_receipt/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -715,8 +718,8 @@ test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source d
   }
 });
 
-test('#1072: a dist newer than its source that lacks the refusal probe is rebuilt, and a refused call with no turn is audited with its code', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-refusal-')));
+test('#1011: a stale dist is reported with the build command, and never rebuilt', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-stale-')));
   const data = join(root, 'data');
   try {
     // The store half: one turn and two refusals, one of them on a call that never carried a turn at all.
@@ -725,6 +728,12 @@ test('#1072: a dist newer than its source that lacks the refusal probe is rebuil
       turn(store, SESSION, 't1', 1, T0);
       call(store, SESSION, 't1', 'k-1', 'search_knowledge', 'refused', 60, T0 + 100, 'policy_denied');
       call(store, SESSION, null, 'k-2', 'send_message', 'refused', 5, T0 + 2000, 'owner_only');
+      // A current module still reads both codes, and the call with no turn stays a row of the table.
+      const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([]));
+      assert.deepEqual(audit.calls.map(row => [row.turnId, row.callKey, row.refusalCode]),
+        [['t1', 'k-1', 'policy_denied'], [null, 'k-2', 'owner_only']]);
+      assert.equal(audit.aggregates.refusalsByCode['owner_only'], 1);
+      assert.match(renderCallAudit(audit), /after rebuild, no turn calls=1/);
     } finally { store.close(); }
     mkdirSync(join(data, 'logs'));
     writeFileSync(join(data, 'logs', 'host.log'), [
@@ -744,28 +753,25 @@ test('#1072: a dist newer than its source that lacks the refusal probe is rebuil
     // An older build of the same module: every export the views read except the refusal-code probe.
     const surface = Object.keys(timelineSurface).filter(name => name !== 'traceCallCarriesRefusalCode');
     writeFileSync(join(dist, 'timeline.js'), `export { ${surface.join(', ')} } from ${JSON.stringify(module)};\n`);
-    const rebuilt = join(root, 'rebuilt.js');
-    writeFileSync(rebuilt, `export * from ${JSON.stringify(module)};\n`);
     const older = new Date(Date.now() - 3600000);
     const newer = new Date();
     // The dist this install shipped is newer than the sources it was made from, so mtime alone calls it fresh.
     utimesSync(join(dist, 'timeline.js'), newer, newer);
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
+    // An npm that records its argv: a read command must never reach it.
     const bin = join(root, 'bin');
     mkdirSync(bin);
     const npmCalls = join(root, 'npm-calls');
     const npm = join(bin, 'npm');
-    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(npmCalls)}\ncp ${JSON.stringify(rebuilt)} ${JSON.stringify(join(dist, 'timeline.js'))}\nexit 0\n`);
+    writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(npmCalls)}\nexit 0\n`);
     chmodSync(npm, 0o755);
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
     const audit = spawnSync(process.execPath, [join(tree, 'scripts', 'didi-timeline'), 'call', 'latest', '--audit', '--data-dir', data], { encoding: 'utf8', env });
-    assert.equal(audit.status, 0, audit.stderr);
-    assert.match(audit.stderr, /server\/dist\/trace\/timeline\.js is missing traceCallCarriesRefusalCode; running: npm --prefix server run build/);
-    assert.deepEqual(readFileSync(npmCalls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build']);
-    assert.match(audit.stdout, /refusals by code .*owner_only=1/);
-    assert.match(audit.stdout, /refusals by code .*policy_denied=1/);
-    assert.match(audit.stdout, /after rebuild, no turn calls=1/);
-    assert.match(audit.stdout, /^- k-2 send_message \S+ 5ms refused owner_only$/m);
+    assert.equal(audit.status, 1, audit.stderr);
+    assert.equal(audit.stdout, '', 'a refused read prints no report');
+    assert.match(audit.stderr, /server\/dist\/trace\/timeline\.js is missing traceCallCarriesRefusalCode/);
+    assert.match(audit.stderr, /run: npm --prefix server run build/);
+    assert.equal(existsSync(npmCalls), false, 'the read ran no build in a shared checkout');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -802,8 +808,8 @@ test('C-DIAG109: a final with no provider audio is a fragment only inside the fo
     ], 'a split sentence is a fragment, an unheard ask and the call-ending final are unanswered');
     assert.deepEqual(audit.aggregates.noProviderAudioFinals, { boundMs: FRAGMENT_FOLLOW_MS, fragments: 1, unanswered: 2 });
     const text = renderCallAudit(audit);
-    assert.match(text, /f1 \S+ missing missing missing missing no_provider_audio fragment/u);
-    assert.match(text, /f5 \S+ missing missing missing missing no_provider_audio unanswered/u);
+    assert.match(text, /f1 \S+ missing missing missing missing missing 0 no_provider_audio fragment/u);
+    assert.match(text, /f5 \S+ missing missing missing missing missing 0 no_provider_audio unanswered/u);
   });
 });
 
@@ -915,4 +921,149 @@ test('task audit CLI refuses malformed logs without echoing content', async () =
   assert.equal(result.status, 2); assert.equal(result.stdout, '');
   assert.match(result.stderr, /content omitted/);
   assert.equal(result.stderr.includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
+});
+
+//
+// #1011: a call review separates "she made a first sound" from "the answer was finished", counts the
+// coverage behind each measure, and flags an impossible order instead of printing a zero.
+//
+
+const one = { liveSessionId: SESSION, turnId: 't1' };
+const finalLine = (at: number) => line(at, 'owner_final', { ...one, ownerFinalAt: at });
+const firstSoundLine = (at: number) =>
+  line(at, 'live_first_audio', { ...one, msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 0, missingReason: null });
+const responseLine = (at: number, responseKey: string, kind: 'first' | 'continuation', firstAudioAt: number) =>
+  line(at, 'response_first_audio', { ...one, responseKey, kind, createdAt: at, firstAudioAt });
+
+/**
+ * One owner turn over two responses, each with its own playback segment: the provider answers, then
+ * continues. A `null` drain leaves that segment still playing, so the turn's answer never finished.
+ */
+function tracedTurn(store: Store, audibleAt: number, drains: readonly [number | null, number | null]): void {
+  turn(store, SESSION, 't1', 1, T0);
+  for (const [responseKey, at] of [['r1', T0 + 1_000], ['r2', T0 + 4_000]] as const) {
+    record(store, 'response.created', { liveSessionId: SESSION, turnId: 't1', responseKey },
+      { createdAt: at, status: 'completed', providerResponseId: `resp-${responseKey}` });
+  }
+  const segments = [['r1', 'play:1', 1, T0 + 2_000, drains[0]], ['r2', 'play:2', 2, T0 + 5_000, drains[1]]] as const;
+  for (const [responseKey, playbackKey, segmentSeq, receivedAt, drainedAt] of segments) {
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey, playbackKey },
+      { segmentSeq, receivedAt });
+    if (drainedAt !== null) record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey }, { drainedAt });
+  }
+  // The app's audibility receipt is one per segment: the second segment's is the one this turn waits for.
+  record(store, 'playback.audible', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:2' }, { audibleAt });
+}
+
+const tracedScan = (finals: readonly number[], providerFirstSoundAt: number): string[] => [
+  ...finals.map(finalLine),
+  firstSoundLine(providerFirstSoundAt),
+  responseLine(T0 + 1_000, 'r1', 'first', T0 + 2_500),
+  responseLine(T0 + 4_000, 'r2', 'continuation', T0 + 5_000),
+];
+
+test('#1011: first sound and the completed answer are separate measures', () => {
+  withStore(store => {
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, T0 + 9_000]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 800, T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.ownerFinalAt, T0 + 900, 'the last final of a split utterance is the anchor');
+    assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'the wait before her voice existed');
+    assert.equal(row.finalToNativeFirstSoundMs, T0 + 5_120 - (T0 + 900), 'the wait until it reached his speaker');
+    assert.equal(row.finalToAnswerCompleteMs, T0 + 9_000 - (T0 + 900),
+      'the answer is complete at the LAST drain of its two segments, not at the first');
+    assert.deepEqual([...row.flags], [], 'no pair is inverted');
+    assert.match(renderCallAudit(audit), /firstSoundProvider firstSoundNative answerComplete/u);
+  });
+});
+
+test('#1011: an earlier segment drain is not the completed answer', () => {
+  withStore(store => {
+    // The first response drained; the continuation's segment is still playing when the call is read.
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, null]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.playbackSegments, 2, 'both segments join the turn');
+    assert.equal(row.finalToAnswerCompleteMs, null,
+      'one drained segment is not the finished answer: the completion time is missing, never the first drain');
+    assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'her first sound is still measured');
+    assert.deepEqual([...row.flags], []);
+    const printed = renderCallAudit(audit).split('\n').find(entry => entry.startsWith('t1 '))!;
+    assert.match(printed, /^t1 \S+ \S+ \S+ 1600ms \S+ missing 2 /u);
+  });
+});
+
+test('#1011: a response with audio and no playback receipt is no completion evidence', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    for (const [responseKey, at] of [['r1', T0 + 1_000], ['r2', T0 + 4_000]] as const) {
+      record(store, 'response.created', { liveSessionId: SESSION, turnId: 't1', responseKey },
+        { createdAt: at, status: 'completed', providerResponseId: `resp-${responseKey}` });
+    }
+    // The scan knows both responses made audio; only r1's playback segment reached the store and drained.
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', playbackKey: 'play:1' },
+      { segmentSeq: 1, receivedAt: T0 + 2_000 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'play:1' }, { drainedAt: T0 + 3_000 });
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.playbackSegments, 1, 'the continuation owns no segment of its own');
+    assert.equal(row.finalToAnswerCompleteMs, null,
+      'r2 is known audio with no playback receipt, so the answer has no completion evidence');
+    assert.equal(row.finalToProviderFirstSoundMs, T0 + 2_500 - (T0 + 900), 'her first sound is still measured');
+  });
+});
+
+test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
+  withStore(store => {
+    tracedTurn(store, T0 + 3_120, [T0 + 3_500, T0 + 4_000]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 6_000], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.deepEqual([row.finalToProviderFirstSoundMs, row.finalToNativeFirstSoundMs, row.finalToAnswerCompleteMs],
+      [null, null, null], 'an interval that runs backwards is not a measurement');
+    assert.deepEqual([...row.flags].sort(), ['final_after_answer_complete', 'final_after_native_audible', 'final_after_provider_audio']);
+    // The row itself: three missing measures, the segments the store holds, and the three flags in order.
+    const lines = renderCallAudit(audit).split('\n');
+    const printed = lines[lines.findIndex(entry => entry.startsWith('turns turn ')) + 1]!;
+    assert.match(printed, /^t1 \S+ \S+ \S+ missing missing missing 2 /u);
+    assert.match(printed, /final_after_provider_audio final_after_native_audible final_after_answer_complete$/u);
+    assert.equal(/\b0ms\b/u.test(printed), false, 'an impossible interval is never printed as zero');
+  });
+});
+
+test('#1011: the aggregate counts the turns behind each measure', () => {
+  withStore(store => {
+    tracedTurn(store, T0 + 5_120, [T0 + 3_000, T0 + 9_000]);
+    turn(store, SESSION, 't2', 2, T0 + 20_000);
+    const scan = scanOf([
+      ...tracedScan([T0 + 800, T0 + 900], T0 + 2_500),
+      line(T0 + 20_800, 'owner_final', { liveSessionId: SESSION, turnId: 't2', ownerFinalAt: T0 + 20_800 }),
+      line(T0 + 22_500, 'live_first_audio', { liveSessionId: SESSION, turnId: 't2', msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 0, missingReason: null }),
+    ]);
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scan);
+    assert.deepEqual(audit.aggregates.firstSound,
+      { ownerTurns: 2, providerMeasured: 2, nativeMeasured: 1, answerCompleteMeasured: 1 },
+      't2 heard her first sound but carries no native receipt and no drain');
+    assert.deepEqual(audit.aggregates.playbackSegments, { attributed: 2, unattributed: 0 });
+    assert.equal(audit.turns[1]!.missingReason, 'no_native_receipt');
+    assert.match(renderCallAudit(audit), /first sound coverage owner-turns=2 provider=2\/2 native=1\/2 answer-complete=1\/2/u);
+  });
+});
+
+test('#878: a receipt that joined no turn is named, not left as a bare missing', () => {
+  withStore(store => {
+    turn(store, SESSION, 't1', 1, T0);
+    record(store, 'response.created', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1' },
+      { createdAt: T0 + 1_000, status: 'completed', providerResponseId: 'resp-r1' });
+    // The host had no turn to name when this segment arrived, so the receipt recorded outside every turn.
+    record(store, 'playback.received', { liveSessionId: SESSION, playbackKey: 'play:9' }, { segmentSeq: 9, receivedAt: T0 + 5_000 });
+    record(store, 'playback.audible', { liveSessionId: SESSION, playbackKey: 'play:9' }, { audibleAt: T0 + 5_120 });
+    const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(tracedScan([T0 + 900], T0 + 2_500)));
+    const row = audit.turns[0]!;
+    assert.equal(row.finalToNativeFirstSoundMs, null);
+    assert.equal(row.missingReason, 'no_native_receipt');
+    assert.equal(row.playbackSegments, 0, 'no playback segment joins the turn');
+    assert.deepEqual(audit.aggregates.playbackSegments, { attributed: 0, unattributed: 1 },
+      'the audit says the receipts exist and joined no turn');
+    assert.match(renderCallAudit(audit), /unattributed=1/u);
+  });
 });

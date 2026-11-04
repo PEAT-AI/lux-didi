@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { fixtureUntil } from './live-voice-fixture.js';
+import { NO_LOOKUP_COMMENTARY } from '../tasks/delivery.js';
 
 for (const call of ['save_to_vault', 'remember_note'] as const) {
   test(`natural finalized words reach ${call} through task inference and persist the full note`, async t => {
@@ -31,7 +32,8 @@ test('plain conversation still runs one task inference but no action or fabricat
   f.bind(); f.finalize('That was a pleasant synthetic conversation.');
   await fixtureUntil(() => calls === 1, 'no-action inference');
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(f.voice.taskAnswers.length, 0);
+  assert.equal(f.voice.taskAnswers.length, 1);
+  assert.equal(f.voice.taskAnswers[0]!.text, NO_LOOKUP_COMMENTARY);
   assert.equal(f.writes.length, 0);
   assert.equal(f.store.transaction(tx => tx.all('SELECT * FROM entries')).length, 0);
   assert.equal(f.owner.get(f.session.liveSessionId).terminal, null);

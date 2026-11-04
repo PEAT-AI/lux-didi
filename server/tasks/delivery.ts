@@ -1,14 +1,12 @@
 import type { Delivery, RevisionIdentity } from './controller.js';
 import type { WorkerResult } from './worker.js';
-/** A delivery receipt is not audibility. Only matching output transcription proves heard. */
-export const DELIVERY_HEARD_MS = 15_000;
-export type DeliveryState = 'sent' | 'accepted' | 'heard' | 'retry' | 'reconnect' | 'undelivered';
+/** Acceptance confirms timeline receipt, not wording or audibility. */
+export type DeliveryState = 'sent' | 'accepted' | 'retry' | 'undelivered';
+export const NO_LOOKUP_COMMENTARY = 'No lookup is needed. This is yours to answer from your own mind and the conversation.';
 export interface DeliveryPorts {
   isCurrent(identity: RevisionIdentity): boolean;
-  append(delegationId: string, text: string): string | undefined;
-  reconnect(text: string, identity: RevisionIdentity): boolean;
+  append(delegationId: string | null, text: string): string | undefined;
   state(identity: RevisionIdentity, state: DeliveryState, chunk: number): void;
-  after?(ms: number, callback: () => void): () => void;
 }
 export function splitSpokenText(text: string): string[] {
   const chunks: string[] = [];
@@ -24,125 +22,82 @@ export function splitSpokenText(text: string): string[] {
   }
   return chunks;
 }
-const normalized = (text: string): string => text.normalize('NFKC').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
-  command: string | undefined; attempt: number; reconnect: boolean; seeded: boolean; seededText?: string; transcript: string;
+  command?: string | undefined; attempt: number; started: boolean; requiresDelegation: boolean; blocked: boolean;
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
-  #binding: { generation: number; id: string } | undefined;
-  #deferredFallback = false;
-  #generation: number | undefined;
+  #binding: string | null = null;
+  #delegated: RevisionIdentity | undefined;
+  #ready = true;
   #quiet = true;
   #owner = false;
-  #cancel: (() => void) | undefined;
-  #undelivered: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   constructor(readonly ports: DeliveryPorts) {}
-  get undelivered() { return this.#undelivered; }
   waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     const pending = this.#current();
-    return pending ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
-  }
-  seedReconnect(): void {
-    const pending = this.#current(); if (!pending) return;
-    if (!pending.reconnect) this.ports.state(pending.identity, 'reconnect', pending.chunk);
-    this.#stopTimer(); pending.reconnect = true; pending.seeded = true;
-    pending.command = undefined; pending.transcript = ''; pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
+    return pending && !pending.requiresDelegation ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
   }
   #current(): Pending | undefined {
-    const pending = this.#pending;
-    if (pending && !this.ports.isCurrent(pending.identity)) { this.#stopTimer(); this.#pending = undefined; return undefined; }
-    return pending;
+    if (this.#pending && !this.ports.isCurrent(this.#pending.identity)) this.#pending = undefined;
+    return this.#pending;
   }
-  socket(generation: number): void {
-    this.#generation = generation; this.#binding = undefined;
-    const pending = this.#current(); if (pending && !pending.seeded) pending.command = undefined;
+  socket(_generation: number, ready = true): void {
+    this.#binding = null; this.#ready = ready; this.#quiet = true;
+    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = pending.blocked ? 1 : 0; pending.started = false; pending.blocked = false; }
+    this.#drain();
   }
+  ready(): void { this.#ready = true; this.#resume(); }
   attach(identity: RevisionIdentity, binding: string): void {
     if (!this.ports.isCurrent(identity)) return;
-    const pending = this.#current();
-    // A fresh delegation asks for the retained result, even when startup already carried its seed.
-    if (pending?.seeded) { this.#stopTimer(); pending.seeded = false; pending.command = undefined; pending.transcript = ''; }
-    this.#binding = { generation: this.#generation ?? identity.connection_generation, id: binding }; this.#drain();
+    this.#binding = binding; this.#delegated = identity; const pending = this.#current(); if (pending) pending.requiresDelegation = false; this.#resume();
   }
   progress(_identity: RevisionIdentity): void {}
-  deliver(identity: RevisionIdentity, answer: WorkerResult): void {
-    if (!this.ports.isCurrent(identity) || answer.status === 'no_action' || !answer.text.trim()) return;
-    this.#stopTimer(); this.#deferredFallback = false; this.#undelivered = undefined;
-    this.#pending = { identity, answer, chunks: splitSpokenText(answer.text), chunk: 0, command: undefined, attempt: 0, reconnect: false, seeded: false, transcript: '' };
+  deliver(identity: RevisionIdentity, answer: WorkerResult, requiresDelegation = false): void {
+    if (!this.ports.isCurrent(identity) || answer.status === 'cancelled') return;
+    const pending = this.#current();
+    if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) return;
+    const noLookup = answer.status === 'no_action' || !answer.text.trim();
+    const text = noLookup ? NO_LOOKUP_COMMENTARY : answer.text;
+    if (!text.trim()) return;
+    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
-    this.#quiet = input.outputQuiet; this.#owner = input.ownerSpeaking;
-    if (this.#owner) this.#stopTimer();
-    else {
-      if (this.#quiet && this.#deferredFallback) { this.#deferredFallback = false; this.#fallback(); }
-      this.#drain(); if (this.#current()?.command || this.#current()?.seeded) this.#arm(); }
+    this.#quiet = input.outputQuiet; this.#owner = input.ownerSpeaking; this.#drain();
   }
-  reconnected(): void {
-    const pending = this.#current(); if (!pending?.seeded) return;
-    this.#stopTimer();
-    this.ports.state(pending.identity, 'sent', pending.chunk);
-    this.ports.state(pending.identity, 'accepted', pending.chunk);
-    this.#arm();
-  }
-  reconnectFailed(): void { if (this.#current()?.seeded) this.#fail(); }
   accepted(command: string): void {
-    const pending = this.#current();
-    if (pending?.command === command) this.ports.state(pending.identity, 'accepted', pending.chunk);
+    const pending = this.#current(); if (!pending || pending.command !== command) return;
+    this.ports.state(pending.identity, 'accepted', pending.chunk);
+    if (++pending.chunk === pending.chunks.length) { this.#pending = undefined; return; }
+    pending.command = undefined; pending.attempt = 0; this.#drain();
   }
   rejected(command: string): void {
-    const pending = this.#current();
-    if (pending?.command !== command) return;
-    this.#fallback();
+    const pending = this.#current(); if (!pending || pending.command !== command) return;
+    pending.command = undefined; this.#retry();
   }
-  transcript(text: string): void {
-    const pending = this.#current(); if (!pending) return;
-    pending.transcript = `${pending.transcript} ${text}`;
-    const expected = pending.seeded ? pending.seededText : pending.chunks[pending.chunk];
-    if (!expected || !normalized(pending.transcript).includes(normalized(expected))) return;
-    this.#stopTimer(); this.ports.state(pending.identity, 'heard', pending.chunk);
-    if (pending.seeded || ++pending.chunk >= pending.chunks.length) { this.#pending = undefined; return; }
-    pending.command = undefined; pending.transcript = ''; pending.attempt = 0; this.#drain();
+  /** Socket loss preserves only the unacknowledged remainder, never accepted chunks. */
+  closed(_identity: RevisionIdentity): void { this.disconnected(); }
+  disconnected(): void {
+    this.#ready = false; this.#binding = null;
+    const pending = this.#current(); if (pending) pending.command = undefined;
   }
-  /** Socket loss only clears the binding. The task and finished answer remain owned by the call. */
-  closed(_identity: RevisionIdentity): void { this.#binding = undefined; }
-  dispose(): void { this.#stopTimer(); this.#pending = undefined; this.#binding = undefined; }
-  #stopTimer(): void { this.#cancel?.(); this.#cancel = undefined; }
-  #arm(): void {
-    if (this.#cancel || this.#owner || !this.#current()) return;
-    const after = this.ports.after ?? ((ms: number, callback: () => void) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
-    this.#cancel = after(DELIVERY_HEARD_MS, () => { this.#cancel = undefined; this.#fallback(); });
+  dispose(): void { this.#pending = undefined; this.#binding = null; this.#ready = false; }
+  #resume(): void {
+    const pending = this.#current(); if (pending?.blocked) { pending.blocked = false; pending.attempt = 1; }
+    this.#drain();
   }
   #drain(): void {
     const pending = this.#current();
-    if (!pending || this.#owner || !this.#quiet || pending.command || pending.seeded) return;
-    const binding = this.#binding;
-    if (!binding || binding.generation !== (this.#generation ?? pending.identity.connection_generation)) { this.#reconnect(); return; }
-    const text = pending.chunks[pending.chunk]; if (!text) return;
-    pending.command = this.ports.append(binding.id, text);
-    if (!pending.command) { this.#fallback(); return; }
-    this.ports.state(pending.identity, 'sent', pending.chunk); this.#arm();
+    if (!pending || pending.blocked || pending.requiresDelegation || !this.#ready || this.#owner || (!this.#quiet && !pending.started) || pending.command) return;
+    pending.command = this.ports.append(this.#binding, pending.chunks[pending.chunk]!);
+    if (!pending.command) { this.#retry(); return; }
+    pending.started = true; this.ports.state(pending.identity, 'sent', pending.chunk);
   }
-  #fallback(): void {
-    this.#stopTimer(); const pending = this.#current(); if (!pending) return;
-    if (this.#owner || !this.#quiet) { this.#deferredFallback = true; return; }
-    if (pending.seeded) { this.#fail(); return; }
-    if (pending.attempt++ === 0) { this.ports.state(pending.identity, 'retry', pending.chunk); pending.command = undefined; pending.transcript = ''; this.#drain(); return; }
-    this.#reconnect();
-  }
-  #reconnect(): void {
-    const pending = this.#current(); if (!pending || this.#owner || !this.#quiet) return;
-    if (pending.reconnect) { this.#fail(); return; }
-    pending.reconnect = true; pending.seeded = true; pending.command = undefined; pending.transcript = '';
-    this.ports.state(pending.identity, 'reconnect', pending.chunk);
-    pending.seededText = pending.chunks.slice(pending.chunk).join(' ');
-    if (!this.ports.reconnect(pending.seededText, pending.identity)) { this.#fail(); return; }
-  }
-  #fail(): void {
+  #retry(): void {
     const pending = this.#current(); if (!pending) return;
-    this.#stopTimer(); this.#undelivered = { identity: pending.identity, answer: pending.answer };
-    this.ports.state(pending.identity, 'undelivered', pending.chunk); this.#pending = undefined;
+    if (pending.attempt++ === 0) { this.ports.state(pending.identity, 'retry', pending.chunk); this.#drain(); return; }
+    pending.blocked = true;
+    this.ports.state(pending.identity, 'undelivered', pending.chunk);
   }
 }

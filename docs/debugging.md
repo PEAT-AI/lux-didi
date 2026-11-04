@@ -48,6 +48,12 @@ node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/ho
 
 `didi-timeline call <session|latest>` assembles one call's ordered story from the store and every log, `didi-timeline marks` prints every `Mark distortion` press with or without a call, and `didi-timeline doctor` reports log health and the lines no session can be attributed to.
 
+Every one of those commands only reads. #1011: `scripts/didi-timeline` used to rebuild `server/dist` when the dist was missing or older than its source, so a read wrote a build into a shared checkout. A stale, missing or older `server/dist` is now reported and the command stops with exit 1, printing the build to run first:
+
+```sh
+npm --prefix server run build
+```
+
 ## Review a call in one command
 
 ```sh
@@ -71,15 +77,18 @@ node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
 | `ownerFinal` | when the owner's last finished transcription of the turn landed, epoch ms, from the `owner_final` line |
 | `providerFirstAudio` | when the provider's first audible frame of the turn arrived, from `live_first_audio` or `live_answer_audio` |
 | `nativeFirstAudible` | the turn's first audibility receipt from the native player, from the trace store |
-| `finalToProvider` | `providerFirstAudio - ownerFinal`: the wait the owner sat through before her voice existed |
-| `finalToAudible` | `nativeFirstAudible - ownerFinal`: the wait until what she said reached his speaker |
+| `firstSoundProvider` | `providerFirstSound - ownerFinal`: the wait the owner sat through before her voice existed. A first sound, not an answer |
+| `firstSoundNative` | `nativeFirstSound - ownerFinal`: the wait until her first sound reached his speaker. A first sound, not an answer |
+| `answerComplete` | the last drain among the turn's own playback segments minus `ownerFinal`: the wait until the answer had finished playing. Only when every segment of the turn drained and every response the log heard produce audio owns one of those drained segments: a segment still playing, interrupted or absent, or a continuation whose playback receipt never arrived, leaves it `missing`, because `trace_turn.playback_drained_at` is the earliest drain and cannot stand for completion |
+| `segments` | how many playback segments the store joined to this turn. A `0` beside `no_native_receipt` says the app's receipt never joined the turn, which is a different fact from a receipt the app never sent |
+| `flags` | the inverted pairs of the row, e.g. `final_after_provider_audio`: the end receipt is stamped before the final it is measured from. The measurement is then `missing`, never a clamped zero |
 | `missing` | why a measurement is absent (`no_owner_final`, `no_provider_audio`, `no_native_receipt`) |
 | `no_provider_audio` reading | `fragment` when the next owner final follows within `FRAGMENT_FOLLOW_MS` (5 s) and is answered, because the turn splitter writes one final per fragment of one spoken sentence; `unanswered` otherwise, including the last final of a call |
 
-`no_native_receipt` is not a lost transcript. It means the turn has provider audio and no native audibility receipt: the app's `playback.audible` frame never reached the store for that turn. The host writes that receipt only while the session is live, and `#settle` in `server/live/index.ts` closes the turn at `session_end` before the app's playback drain for audio still playing lands, so the last reply of a call keeps `first_audible_at` NULL. What she said is still in `live_journal` as `outputTranscription` and in the turn's `trace_utterance`; the receipt, not the text, is the missing row. The repair is the app's receipt timing across the host's own terminal, which is native work and is filed rather than patched here.
+`no_native_receipt` is not a lost transcript. It means the turn has provider audio and no native audibility receipt on its row. #1011 replays both shapes in `server/test/trace.test.ts`, and the store is not where either is refused: a `playback.audible` that lands after the host's `response.terminal` and `turn.closed` still sets `trace_turn.first_audible_at`, because `playback.audible` in `server/trace/record.ts` writes the playback row and the turn through `playback_key` alone. What does lose the receipt is attribution: `#playbackAttribution` in `server/live/index.ts` caches the turn that was open when the first receipt of a segment arrived, so a segment received with no open turn records with `turn_id` NULL and joins no turn ever after. The audit now shows that: `segments` stays `0` on the turn, and `playback segments attributed=... unattributed=...` counts the receipts the store could not tie to a turn. What she said is still in `live_journal` as `outputTranscription` and in the turn's `trace_utterance`; the receipt, not the text, is the missing row.
 
 
-The aggregates are the five slowest calls, the refusals counted per code, the calls that did not complete grouped by tool, outcome and code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. A call counts as a refusal by its refusal code whatever its outcome string says, because the store records a real refusal as `failed` with the code on the row; an outcome that named no code counts as `uncoded`. Refusals print `none` only when the store carried refusal data and it was empty, and `missing` when the window or the store has none. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
+The aggregates are the five slowest calls, the refusals counted per code, the calls that did not complete grouped by tool, outcome and code, the turns over four seconds from final to first sound, the announced claims the turn never acted on, and the dead-air events. `first sound coverage owner-turns=N provider=a/N native=b/N answer-complete=c/N` is the denominator behind every one of those waits: a `p50` over two of nine turns is not the call's latency, and a measure with no receipt prints `missing` rather than a zero. A call counts as a refusal by its refusal code whatever its outcome string says, because the store records a real refusal as `failed` with the code on the row; an outcome that named no code counts as `uncoded`. Refusals print `none` only when the store carried refusal data and it was empty, and `missing` when the window or the store has none. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
 
 A missing measurement prints as `missing` or `null` and is never printed as zero, so an absent native receipt cannot read as an instant answer. A missing number is answered by a missing receipt, never by inference from a neighbour.
 
@@ -225,3 +234,9 @@ between the output going out and the provider opening the response that carries 
 A playback segment's `audible` instant is the native device's first audible chunk, which is the same
 chunk `received` names, so the timeline prints `same-chunk` there instead of a second stamp that would
 read as a 0 ms audio path.
+
+## Helper tool execution (10.11)
+
+Use `task_tool` events to identify the task, revision, operation id, tool, duration in milliseconds, terminal category, and cache disposition (`miss`, `hit`, or `join`). These are closed metadata fields: arguments, results, owner words, and exception messages are not admitted. Reader `tool_failure` events contain only the tool and closed failure category. Existing connector-level diagnostics retain their own approved schema.
+
+A revised task may join a read started by its previous revision. That read is not a cancelled failure merely because speech continued. An actual task cancellation still aborts it. A final answer marked `incomplete` may contain useful evidence: inspect unfinished-tool coverage instead of treating it as either a complete answer or an empty search. The final no-tool composition budget is separate from the tool-phase deadline.

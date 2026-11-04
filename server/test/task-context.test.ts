@@ -31,7 +31,7 @@ test('helper source text stays out of voice context across an in-flight ordinary
   assert.deepEqual(f.appended, ['Synthetic concise answer.']);
   await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
   await f.emit({ type: 'outputTranscription', text: 'Synthetic concise answer.', finished: true });
-  assert.ok(f.receipts.some(row => row.event === 'task_delivery' && row.state === 'heard'));
+  assert.ok(f.receipts.some(row => row.event === 'task_delivery' && row.state === 'accepted'));
   assert.equal(JSON.stringify(f.receipts).includes(marker), false, 'source bytes never enter the closed audit');
 });
 
@@ -56,7 +56,7 @@ test('each finalized helper ask receives a fresh host clock and the owner time z
   assert.deepEqual(inputs[1]!.time_context, { now_utc: '2031-01-02T23:46:00.000Z', owner_time_zone: 'Asia/Tokyo' });
 });
 
-test('an unbound finished task reaches the retained-result reconnect at the host boundary', async t => {
+test('an unbound finished task appends on the existing host line', async t => {
   const { liveTaskFixture } = await import('./live-task-fixture.js');
   const { attachHostLogSink } = await import('../tools/host-events.js');
   const transitions: { event: string; state?: unknown; trigger?: unknown }[] = [];
@@ -66,5 +66,23 @@ test('an unbound finished task reaches the retained-result reconnect at the host
   } }));
   const f = await liveTaskFixture(t, async () => ({ text: 'The retained synthetic answer.', calls: [] }));
   f.finalize('Give the retained synthetic answer.'); await f.flush();
-  assert.equal(f.voice.sessionsOpened, 2, JSON.stringify(transitions));
+  assert.equal(f.voice.sessionsOpened, 1, JSON.stringify(transitions));
+  assert.equal(f.voice.taskAnswers[0]?.delegationId, null);
+});
+
+test('verified helper status reports only a real in-call rebuild and its closed cause', async t => {
+  const statuses: { rebuilt: boolean; rebuild_cause: string | null }[] = [];
+  const f = await taskLiveFixture(t, async request => {
+    statuses.push(JSON.parse(JSON.parse(request.input).verified_status));
+    return { text: 'Synthetic status answer.', calls: [] };
+  });
+  await f.emit({ type: 'inputTranscription', text: 'Synthetic first status ask.', finished: true, finalOrigin: 'provider' });
+  assert.equal(statuses[0]!.rebuilt, false); assert.equal(statuses[0]!.rebuild_cause, null);
+  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  await f.emit({ type: 'goAway', timeLeftMs: 10_000 });
+  await f.emit({ type: 'inputTranscription', text: 'Synthetic next status ask.', finished: true, finalOrigin: 'provider' });
+  assert.equal(statuses[1]!.rebuilt, true); assert.ok(['host', 'network', 'provider'].includes(statuses[1]!.rebuild_cause!));
+  const rebuild = f.receipts.find(event => event.event === 'live_rebuild'); assert.equal(rebuild?.owed, 'nothing_owed');
+  const opened = f.receipts.filter(event => event.event === 'live_provider_open').at(-1)!;
+  assert.equal(opened.seedChars, (f.requests[1]!.history ?? []).reduce((total, turn) => total + turn.text.length, 0));
 });

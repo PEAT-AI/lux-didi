@@ -13,8 +13,7 @@ import type { JsonObject } from '../adapters/model/types.js';
 test('chat declarations execute one read and one write through the shared task registry', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'task-chat-synthetic-')), store = new Store(directory);
   let reads = 0, writes = 0;
-  const runtime = new TaskRuntime({ store, contentAllowed: () => false,
-    authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal(() => false) }),
+  const runtime = new TaskRuntime({ store, authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal() }),
     infer: async () => { throw Error('The chat model, not a second helper inference, owns this turn.'); },
     execute: async name => { if (name === 'alarm_list') reads++; if (name === 'alarm_create') writes++; return documentResult('Synthetic acknowledged operation.', name); },
     delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
@@ -42,7 +41,7 @@ test('text chat open without a native peer fails honestly with the existing repa
   const { resolveTaskModels } = await import('../config/tasks.js');
   const directory = mkdtempSync(join(tmpdir(), 'task-chat-no-peer-')), store = new Store(directory);
   const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-    bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true,
+    bindings: () => [], timeZone: 'UTC', effectCheck: async () => true,
     infer: async () => { throw Error('No provider call in native-peer regression'); }
   })('synthetic-text-chat-with-no-native-peer', { attach() {}, progress() {}, deliver() {}, closed() {} });
   t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });

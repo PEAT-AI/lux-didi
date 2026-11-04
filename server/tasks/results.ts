@@ -9,6 +9,31 @@ export const TASK_CONNECTOR_FAILURE = Symbol('task-connector-failure');
 export const TASK_CONNECTOR_FAILURE_CODE = Symbol('task-connector-outcome');
 export const connectorFailures = new WeakMap<object, { code: ToolFailureCode; repair: string }>();
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
+export const FAILURE_CATEGORIES = ['not_found', 'wrong_source_id', 'invalid_argument', 'unauthorized', 'timeout', 'unavailable', 'upstream_error', 'cancelled'] as const;
+export type FailureCategory = typeof FAILURE_CATEGORIES[number];
+export function failureCategory(reason: unknown): FailureCategory {
+  switch (reason) {
+    case 'not_found': case 'not-found': return 'not_found';
+    case 'wrong_source_id': return 'wrong_source_id';
+    case 'invalid_arguments': case 'invalid-arguments': case 'invalid_argument': case 'cursor_invalid': case 'cursor_stale': return 'invalid_argument';
+    case 'restricted': case 'not_granted': case 'unauthorized': case 'endpoint_not_allowed': return 'unauthorized';
+    case 'timeout': case 'native_timeout': return 'timeout';
+    case 'cancelled': case 'aborted': return 'cancelled';
+    case 'data_not_connected': case 'unavailable': case 'result_store_unavailable': return 'unavailable';
+    default: return 'upstream_error';
+  }
+}
+export function readerFailure(name: string, category: FailureCategory): ToolResult {
+  const identifier = name === 'read_memory' ? 'Use an entry id returned by search_memory, passed as ref.'
+    : name === 'read_knowledge' ? 'Use an insight id returned by search_knowledge, passed as id.'
+    : name === 'read_company' ? 'Use the ref returned by search_company and pass that ref verbatim, never a numeric record id.'
+    : 'Search this source again and use its returned identifier verbatim.';
+  const action = category === 'unauthorized' ? 'Check this source permission or use another approved source.'
+    : category === 'timeout' || category === 'unavailable' || category === 'upstream_error' ? 'Retry this source or use other verified findings.'
+    : category === 'cancelled' ? 'Continue in the current task using verified findings.' : 'Repair the identifier or cursor before retrying.';
+  hostLogEvent({ event: 'tool_failure', tool: name, category });
+  return failed(`${identifier} ${action} This read did not complete; do not infer absence.`, category);
+}
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
 export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void; recordRedaction?(tool: string, count: number): void };
@@ -18,6 +43,7 @@ export interface ToolResult {
   [TASK_CONNECTOR_FAILURE_CODE]?: ToolFailureCode;
   dataClasses?: readonly import('../adapters/model/types.js').DataClass[];
   exposures?: import('./authority.js').Exposure[];
+  failure_category?: FailureCategory;
   status: ResultStatus;
   text: string;
   references: Reference[];
@@ -27,8 +53,8 @@ export interface ToolResult {
   receipt?: { operation_id: string; state: 'committed' | 'failed' | 'unknown' };
 }
 export const DOCUMENT_CHARS = 24000;
-export function failed(repair: string): ToolResult {
-  return { status: 'failed', text: '', references: [], next_cursor: null, coverage: 'No verified result.', repair };
+export function failed(repair: string, category: FailureCategory = 'upstream_error'): ToolResult {
+  return { failure_category: category, status: 'failed', text: '', references: [], next_cursor: null, coverage: 'No verified result.', repair };
 }
 export function documentResult(text: string, id: string, cursor = '0'): ToolResult {
   const version = createHash('sha256').update(id).update('\0').update(text).digest('hex');

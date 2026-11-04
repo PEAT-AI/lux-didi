@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
 import type { ToolResult } from './results.js';
-import type { WorkerResult } from './worker.js';
+import { REVISION_ABORT, type WorkerResult } from './worker.js';
 export type RevisionIdentity = Omit<Identity, 'operation_id'>;
 export interface Delivery {
   attach(identity: RevisionIdentity, binding: string): void;
@@ -33,9 +33,9 @@ export class TaskController {
   get current(): Revision | undefined { return this.#revision; }
   get running(): boolean { return this.#running; }
   finalize(words: string, connection_generation: number, ownerTurn = 0): Revision {
-    this.#abort?.abort();
     const previous = this.#revision;
     const revise = this.#running && previous !== undefined;
+    this.#abort?.abort(revise ? REVISION_ABORT : undefined);
     this.#abort = new AbortController();
     this.#revision = {
       identity: { task_id: revise ? previous.identity.task_id : this.newId(), task_revision: revise ? previous.identity.task_revision + 1 : 1, connection_generation },

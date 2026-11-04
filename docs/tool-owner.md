@@ -75,21 +75,21 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
 ## Open destinations
 
-Finalized spoken and typed owner turns authorize actions. An action cue anywhere in owner input grants that kind; fillers, quotations, reported speech and conditionals are not vetoes. An explicit negation governing a cue voids that kind only. Tool results, mail, web, notes and model output never grant authority.
+Finalized spoken and typed owner turns authorize actions. There is no owner-speech cue lexicon at task admission: an effect the owner asked for runs, and one isolated check answers only after outside text has reached the helper. That check reads the task's owner words, with the owner words from the turn just before as earlier context. A tool result, mail, web page, note or model sentence never adds authority.
 
-The current ask joins owner turns until her completed answer, with a 120-second lifetime. Pending clarification can take short time, day, zone and name follow-ups. Each kind is single-use per ask; same-target retries return the existing receipt. Interrupting the model does not erase the owner's request.
+A task lives as one task, one revision and one operation (`server/tasks/controller.ts`). An owner turn that arrives while the task is running revises it: same task, revision raised by one, and the new words added to the ask. Otherwise the turn starts a new task at revision one. Each tool call carries its own operation id, and its receipt names that id, so a retry is proven by the receipt rather than by a repeated model sentence.
 
-An authorized `open_web` may use a model-resolved HTTP(S) URL, including a path or query, or a site name. Other URL schemes are refused. `open_source` still requires a host-shown handle; an any/some deck request selects the top matching host-shown result. Local file and browser destination-kind checks remain. Refusal guidance is one plain sentence, never an internal code.
+The helper opens with the canonical `open` tool, whose arguments are `kind` and `target` (`server/tools/open.ts`). `kind` is `web`, `app`, `file` or `source`. A `web` target may be an HTTP(S) URL with a path or query, or a site name; other schemes are refused. A `source` target is a handle the host minted, and it resolves only when the line carrying it actually reached the model earlier in the same session. A handle opens only as a kind the ask named, so a mail thread is never opened as the deck he asked for. Refusal guidance is one plain sentence, never an internal code.
 
 ## Awake-Mac alarm tools
 
-`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` use the same request state as opens and notes. Each named alarm kind receives its own grant; model speech cannot create or spend it. Spoken and digit hours/minutes, dotted and undotted meridiems, half/quarter past or to, noon/midnight, tomorrow/morning/evening, relative intervals and validated named zones are parsed from owner words. An unqualified hour chooses its next future occurrence. SGT and Singapore time resolve to Asia/Singapore. A successful set receipt includes a calendar date, clock time and zone; unconsumed wording or unknown zones produce a structured clarification rather than a different silent time.
+`alarm_create`, `alarm_list`, `alarm_cancel` and `alarm_update` are typed tools in the shared task registry (`server/tasks/tools.ts`). `alarm_create` takes `text`, `at` and an optional `recurrence`; `alarm_list` takes no arguments; `alarm_cancel` takes `id` and a `scope` of `occurrence` or `series`; `alarm_update` takes `id` and any of `text`, `at` or `recurrence`. A mutation is an asked effect that the task admits; model speech alone cannot make or spend that admission. Spoken and digit hours/minutes, dotted and undotted meridiems, half/quarter past or to, noon/midnight, tomorrow/morning/evening, relative intervals and validated named zones are parsed from owner words. An unqualified hour chooses its next future occurrence. SGT and Singapore time resolve to Asia/Singapore. A successful set receipt includes a calendar date, clock time and zone; unconsumed wording or unknown zones produce a structured clarification rather than a different silent time.
 
 Alarms ring only on an awake Mac and cannot wake a sleeping or closed-lid machine. That limit belongs in guidance, not in a repeat/confirmation requirement. Alarm audits use closed request/parse/result codes and counts, never spoken time text or note bodies.
 
 ### Live catalog coverage
 
-The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` through the same live registry composition as its other owner-facing tools. Both Gemini setup and OpenAI responses delegation receive these declarations. Alarms ring only on an awake Mac; finalized owner speech authorizes mutations and the host parses the time.
+A live voice session starts with an empty tool list of its own. Nothing declares a live alarm catalog anymore: both Gemini setup and OpenAI responses delegation reach work only through the single `delegate(request)` function, and the helper's shared task registry chooses which tools run.
 
 The shared task registry is the model-facing read/write catalog. Chat derives its declarations through `declarationsFor`; the worker uses the same definitions, Authority, provenance and receipts. The live voice surface exposes client delegation or the single Gemini `delegate(request)` function, not internal reads or writes. The retired live exception list and research catalog no longer choose which tools a voice model may call.
 
@@ -97,7 +97,7 @@ The shared task registry is the model-facing read/write catalog. Chat derives it
 
 The helper's `calendar_events` tool takes typed `start` and `end` bounds. The connector maps those bounds to Google's `timeMin` and `timeMax`; it does not construct a second query vocabulary from an orchestration engine's schema guesses. Tool arguments must satisfy the registered task-tool schema before execution. Diagnostic logging is a redacted projection, not input validation or proof of a live provider's rejection cause.
 
-Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
+Alarm time parsing uses the complete owner ask, not model-selected timing. His stated clock wins over the helper's own reading: when the helper proposes a timestamp, the host reads the owner words again, and that reading's fire time replaces the proposal, except where the helper already combined a day constraint with the same clock time. A relative time counts from the moment he asked, not from the moment the tool runs. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.
 
 ## Task worker boundary (10.10)
 
@@ -185,3 +185,11 @@ The shipped public helper policy lives in `server/tasks/instructions.ts` and is
 limited to 3,000 characters. The composed owner presentation style follows it
 at runtime when present. Owner lore is not added by the instruction builder.
 The offline synthetic replay reads this shipped policy, not a separate copy.
+
+## Helper read recovery and deadlines (10.11)
+
+Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; `read_knowledge.id` is the insight id from `search_knowledge`; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
+
+Read failures carry a closed category and source-specific repair instructions. Raw exception text is not helper evidence. A speech revision stops the old inference and write admissions, but an already-running read survives and an identical read joins its promise. Task cancellation still aborts reads. Completed read results remain in the existing per-task read cache; writes never enter it.
+
+The tool phase retains its 36-second revision ceiling and individual connector limits. Ordinary inference has up to 24 seconds within that ceiling, including a no-tool answer with no completed reads; whether an inference is composing text or requesting tools is unknown until its response arrives. After a deadline, or an inference failure with findings available, one final inference receives completed evidence and unfinished-tool coverage with no tools. It has a separate budget of up to 24 seconds. Its answer remains `incomplete`, never `complete` or `no_action`; if composition fails, the fallback includes the completed findings and does not claim completeness.

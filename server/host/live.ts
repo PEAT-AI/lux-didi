@@ -29,6 +29,7 @@ const maxIncomingBytes = 64 * 1024;
  * validated LiveProfile while LIVE-GATEWAY-R1 blocks the config file from producing one itself.
  */
 export interface LiveTesting {
+  schedule?: Parameters<typeof createLiveSessionOwner>[0]['schedule'];
   createTaskRuntime?: import('../tasks/host.js').HostTaskFactory; credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
@@ -205,10 +206,10 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
-    contentAllowed: () => false, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

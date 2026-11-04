@@ -103,3 +103,20 @@ test('C-CHAT: a missing capability remains a failure instead of a stock line to 
   assert.match(WORKER_INSTRUCTIONS, /A tool's refusal or failure is a fact/);
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /Say once:/);
 });
+
+test('C-PROMPT 10.11: the helper picks the source that answers and stops, and leaves conversation to her', () => {
+  assert.match(WORKER_INSTRUCTIONS, /She speaks what you write, so you decide what he hears/);
+  // REQUIRED 3a keeps the single-companion framing beside the new opening.
+  assert.match(WORKER_INSTRUCTIONS, /To him there is one companion, never two\./);
+  assert.match(WORKER_INSTRUCTIONS, /returns no_action, so that she answers it herself/);
+  assert.match(WORKER_INSTRUCTIONS, /start with the smallest set that can answer it/);
+  assert.match(WORKER_INSTRUCTIONS, /Stop as soon as the answer or action is verified/);
+  assert.match(WORKER_INSTRUCTIONS, /Use a returned reference only with its own reader/);
+  assert.match(WORKER_INSTRUCTIONS, /give all of it now/);
+  assert.match(WORKER_INSTRUCTIONS, /answered only from verified host status and task evidence/);
+  // The replaced wording must not linger beside the new rules.
+  assert.doesNotMatch(WORKER_INSTRUCTIONS, /Start wide, then narrow/);
+  assert.doesNotMatch(WORKER_INSTRUCTIONS, /read aloud to him word for word/);
+  // Neither public text hands her a quoted line to repeat.
+  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/);
+});

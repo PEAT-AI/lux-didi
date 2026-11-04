@@ -30,7 +30,7 @@ function helperSurface(t: import('node:test').TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'task-declarations-synthetic-'));
   const store = new Store(directory, domainMigrations);
   const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-    bindings: () => [], contentAllowed: () => false, timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
+    bindings: () => [], timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
   const revision = runtime.begin('Synthetic declaration audit', 1, 1);
   const registry = taskDefinitions(runtime, revision.identity, {
     journal: { fail: () => { throw Error('declaration audit must not execute'); } },

@@ -152,6 +152,8 @@ export interface MattermostChatRead {
   /** CA-R2: the topics a `topics` read listed, with their counts and dates, so one can be read whole next. */
   topics?: ChatTopicRow[];
   clarify?: string; notFound?: string; missing?: string;
+  /** #437: the archive's own newest sync time, so a recency read can say how fresh it is. */
+  archiveSyncedAt?: string;
 }
 /** CA-R2: one thread the topic list names. `rootId` is what the thread read takes. */
 export interface ChatTopicRow { rootId: string; author: string; createdAt: string; preview: string; replies: number; participants: string[]; lastReplyAt?: string }
@@ -196,7 +198,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** One channel as the list_channels result describes it; the id is absent in some fixtures. */
-export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string; /** C-CHAT: the server's last post time, on a filtered page. */ lastPostAt?: string; /** C-CHAT: D and G member usernames, on a filtered page. */ members?: string[] }
+export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string; /** C-CHAT: the server's last post time, on a filtered page. */ lastPostAt?: string; /** #437: when the archive last synced this channel. */ lastSyncAt?: string; /** C-CHAT: D and G member usernames, on a filtered page. */ members?: string[] }
+
+/** #437: the archive's newest sync time across the channels the child lists. */
+export function newestSyncAt(channels: readonly MattermostChannel[]): string | undefined {
+  return channels.map(channel => channel.lastSyncAt).filter((at): at is string => at !== undefined).sort().at(-1);
+}
 
 /** A channel's member usernames, from the filtered page's field or the display name it joins. */
 export function groupMembers(channel: MattermostChannel): string[] {
@@ -249,6 +256,7 @@ export function parseChannelList(parsed: unknown): MattermostChannel[] | undefin
       : typeof entry['displayName'] === 'string' ? { displayName: entry['displayName'] } : {}),
     ...(typeof entry['type'] === 'string' ? { type: entry['type'] } : {}),
     ...(typeof entry['last_post_at'] === 'string' ? { lastPostAt: entry['last_post_at'] } : {}),
+    ...(typeof entry['lastSyncAt'] === 'string' ? { lastSyncAt: entry['lastSyncAt'] } : {}),
     ...(Array.isArray(entry['members']) ? { members: entry['members'].filter((member): member is string => typeof member === 'string') } : {}),
   }));
 }
@@ -1041,10 +1049,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const about = asked === '' ? '' : `, about ${asked}`;
     const dates = { from_date: window.from, ...(window.to === undefined ? {} : { to_date: window.to }) };
     const base = { intent: input.intent, window, returned: 0, offset, posts: [] as ChatReadPost[] };
+    // #437: a recency ask is answered from the synced archive, so the read carries the archive's own
+    // newest sync time and its coverage says how fresh that archive is.
+    let archiveSyncedAt: string | undefined;
     const finish = (out: MattermostChatRead): MattermostResult => {
       const composed = { ...who.evidence };
       delete composed[SOURCE_DISPATCH];
-      return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_CHAT_TOOL, decodedResult: out };
+      const decoded = archiveSyncedAt === undefined ? out
+        : { ...out, read: `${out.read}; the chat archive's newest sync is ${archiveSyncedAt}`, archiveSyncedAt };
+      return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_CHAT_TOOL, decodedResult: decoded };
     };
     const missingOf = (...notes: (string | undefined)[]): { missing?: string } => {
       const said = notes.filter((note): note is string => note !== undefined);
@@ -1058,6 +1071,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // `order: "oldest"` walks the same conversation from its first post.
     const order = input.order ?? 'newest';
     if (order !== 'oldest' && order !== 'newest') return { state: 'refused', reason: 'invalid-order' };
+    // #437: the channel list is the sync surface that already knows when the archive last synced. A
+    // child with no such surface adds nothing and the read stands as before.
+    if (recency) {
+      const channels = await loadChannels(signal, capture);
+      if (Array.isArray(channels)) archiveSyncedAt = newestSyncAt(channels);
+    }
     // F5c: one thread, whole and in time order, through the child's own thread read.
     /**
      * CA-R2: the one conversation a topics or a keyword thread read belongs to: a person's direct messages or a

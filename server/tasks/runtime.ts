@@ -12,8 +12,6 @@ import type { ToolResult } from './results.js';
 export interface TaskRuntimeOptions {
   nativeSessionId?: string;
   store: Store; execute: ToolPorts["execute"]; authority: Authority; configuredTools?: Definition[]; infer: Infer; delivery: Delivery;
-  /** Host's existing content capture gate, evaluated at each write. */
-  contentAllowed(): boolean;
   timeZone?: string; now?: () => number;
   log?(event: Record<string, unknown>): void;
 }
@@ -23,6 +21,8 @@ export class TaskRuntime {
   readonly registry: Map<string, TaskTool>;
   #isCurrent: () => boolean = () => true;
   bindCurrent(check: () => boolean): void { this.#isCurrent = check; }
+  readonly #toolsUsed = new Set<string>();
+  usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
   readonly #contexts = new Map<string, { exposures: Set<Exposure>; urls: Set<string> }>();
   taskContext(taskId: string) {
     const task = this.controller.taskContext(taskId);
@@ -43,14 +43,18 @@ export class TaskRuntime {
     };
     visit(result);
   }
+  hostStatus: () => { rebuilt: boolean; rebuild_cause: 'host' | 'network' | 'provider' | null } = () => ({ rebuilt: false, rebuild_cause: null });
+  deliveryState(identity: RevisionIdentity, state: 'sent' | 'accepted' | 'retry' | 'undelivered', chunk: number): void {
+    this.options.store.saveTaskDelivery(identity, `${identity.task_id}:${identity.task_revision}:chunk:${chunk}`,
+      state === 'accepted' ? 'delivered' : state === 'undelivered' ? 'failed' : 'pending');
+  }
   constructor(readonly options: TaskRuntimeOptions) {
     const delivery: Delivery = {
       attach: (identity, binding) => { options.store.saveTaskDelivery(identity, binding, 'attached'); options.delivery.attach(identity, binding); },
       progress: identity => options.delivery.progress(identity),
       deliver: (identity, answer) => {
-        const attempt = randomUUID(); options.store.saveTaskDelivery(identity, attempt, 'pending');
-        try { options.delivery.deliver(identity, answer); options.store.saveTaskDelivery(identity, attempt, 'delivered'); }
-        catch { options.store.saveTaskDelivery(identity, attempt, 'failed'); }
+        try { options.delivery.deliver(identity, answer); }
+        catch { options.store.saveTaskDelivery(identity, randomUUID(), 'failed'); }
       },
       closed: identity => { options.store.saveTaskDelivery(identity, randomUUID(), 'closed'); options.delivery.closed(identity); },
     };
@@ -69,7 +73,7 @@ export class TaskRuntime {
     const revision = this.controller.finalize(words, generation, ownerTurn), { identity } = revision;
     revision.askAtUtc = (this.options.now ?? Date.now)();
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
-    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, this.options.contentAllowed());
+    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence });
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     return revision;
   }
@@ -84,9 +88,11 @@ export class TaskRuntime {
     this.recordOperation(identity, name, args, result); return result;
   }
   recordOperation(operation: OperationIdentity, tool: string, args: Record<string, unknown>, output: ToolResult | null): void {
+    // Failed reads have no successful findings, but an admitted tool still owns an outcome.
+    if (output === null) this.#toolsUsed.add(operation.task_id);
     const effect = this.registry.get(tool)!.effect;
     const state = output === null ? 'pending' : effect === 'none' ? output.status === 'failed' ? 'failed' : 'committed' : output.receipt?.state ?? 'unknown';
-    this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output }, this.options.contentAllowed());
+    this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output });
     if (output) this.#capture(operation.task_id, output, this.registry.get(tool));
     if (output?.receipt) this.controller.recordReceipt(output);
   }
@@ -94,7 +100,7 @@ export class TaskRuntime {
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
     if (this.controller.isCurrent(identity)) {
-      this.options.store.finishTask(identity, answer.status, answer, this.options.contentAllowed());
+      this.options.store.finishTask(identity, answer.status, answer);
       this.controller.complete(identity, answer);
       this.log('complete', identity.task_revision, answer.findings.length, 0, identity);
     } else this.log('stale', identity.task_revision, 0, 0, identity);
@@ -102,7 +108,7 @@ export class TaskRuntime {
   }
   finalize(words: string, generation: number, ownerTurn = 0): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn), { identity } = revision;
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', ...this.hostStatus(), staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => this.settle(identity, answer));

@@ -87,7 +87,13 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
       name: definition.name, description: definition.description, parameters: { ...object(definition.fields), required: Object.keys(definition.fields).filter(key => !(['alarm_create', 'alarm_update', 'alarm_cancel'].includes(definition.name) && ['recurrence', 'scope'].includes(key))) }, effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
-        if (!validation.ok) return failed(validation.repair);
+        if (!validation.ok) {
+          if (tool.name === 'alarm_create' && !signal.aborted) {
+            const active = await ports.execute('alarm_list', {}, signal, outsideTextSeen, identity);
+            return failed(`${validation.repair} Already armed alarms: ${active.text}`);
+          }
+          return failed(validation.repair);
+        }
         if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
         const execute = async (): Promise<ToolResult> => {
           if (tool.name === OPEN_SCHEMA.name) {

@@ -103,7 +103,7 @@ async function cancelHarness(t: TestContext) {
 
 test('SOURCE DEFECT C-RECUR M2: skip this Saturday with a series id cancels only that occurrence', async t => {
   const h = await cancelHarness(t);
-  await h.cancel({ id: h.seriesId }, 'synthetic-skip-journal', 'skip this Saturday');
+  await h.cancel({ id: h.seriesId, scope: 'occurrence' }, 'synthetic-skip-journal', 'skip this Saturday');
   assert.equal(h.series().state, 'active', 'the owner said one Saturday, so the series stays');
   assert.equal(h.series().pending, 1, 'the next occurrence is materialised at once');
   assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', [h.occurrenceId])?.state), 'cancelled');
@@ -113,7 +113,7 @@ test('SOURCE DEFECT C-RECUR M2: skip this Saturday with a series id cancels only
 
 test('SOURCE DEFECT C-RECUR M2: stop the Saturday cardio reminders with an occurrence id cancels the series', async t => {
   const h = await cancelHarness(t);
-  await h.cancel({ id: h.occurrenceId }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
+  await h.cancel({ id: h.occurrenceId, scope: 'series' }, 'synthetic-stop-journal', 'stop the Saturday cardio reminders');
   assert.equal(h.series().state, 'cancelled', 'the owner said the reminders, so the series is cancelled, not deleted');
   assert.equal(h.series().pending, 0, 'no occurrence is left behind');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1, 'the cancelled series row is kept');

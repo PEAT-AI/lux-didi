@@ -166,7 +166,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   const packets = f.responseEntities.flatMap(entity => entity.trim().startsWith('{') ? [JSON.parse(entity)]
     : entity.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5).trim()))) as { result?: Record<string, unknown> }[];
   const wire = packets.find(packet => packet.result && Array.isArray(packet.result.content)); assert(wire?.result);
-  const capturedEntity = JSON.stringify(wire.result); assert.match(capturedEntity, /structuredContent/, 'hash the actual entity, not only accepted display text');
+  const capturedEntity = JSON.stringify(wire); assert.match(capturedEntity, /structuredContent/, 'hash the actual entity, not only accepted display text');
   assert.notEqual(createHash('sha256').update(capturedEntity).digest('hex'), createHash('sha256').update(ACCEPTED).digest('hex'));
   const proof = f.sourceProofs.find(value => value.entitySha256); assert(proof, 'the real canonical chat read invokes the native byte-bound projector');
   assert.equal(proof.entitySha256, createHash('sha256').update(capturedEntity).digest('hex'));

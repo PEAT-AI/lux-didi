@@ -1273,3 +1273,13 @@ test('#807: an amended block keeps the length he gave last', () => {
   if (amended.status !== 'ready') return;
   assert.equal(amended.endUtc - amended.startUtc, 120 * 60000, 'the later length wins');
 });
+
+// #807: a typed length the helper hands over stands as given, instead of losing to the first length
+// word in his accumulated asks.
+test('#807: a typed block length stands as given', () => {
+  const now = Date.UTC(2026, 10, 4, 8, 0);
+  const typed = eventWindow('put a block on my calendar at 3 pm for one hour, actually make it two hours', now, 'Europe/Berlin', undefined, undefined, 45);
+  assert.equal(typed.status, 'ready');
+  if (typed.status !== 'ready') return;
+  assert.equal(typed.endUtc - typed.startUtc, 45 * 60000, 'the typed length wins over his words');
+});

@@ -1,4 +1,3 @@
-import type { ConnectionPolicy } from '../tools/types.js';
 import { taskChatReader } from './fixtures/task-chat-reader.js';
 // C-CHAT (W2b): Naya reads the team chat by person, direct message, group and channel. Every test runs
 // against the synthetic stdio child (fixtures/stdio-mattermost-people-child.mjs): no account, no network.
@@ -771,8 +770,10 @@ for (const [name, args] of [
 }
 
 
-test('R29 the native topics validator agrees with its published schema and still requires a conversation', () => {
-  const declaration = connectorDescriptor('mattermost')!.declarations({} as ConnectionPolicy).find(tool => tool.name === 'mattermost_chat')!;
+test('R29 the native topics validator agrees with its published schema and still requires a conversation', async t => {
+  const f = await setup(t, 'people');
+  const task = taskChatReader(f.adapter, f.registry, { ...f.config, credentialRef: null }, f.discovery.schemaDigest, f.names);
+  const declaration = connectorDescriptor('mattermost')!.declarations(task.policy).find(tool => tool.name === 'mattermost_chat')!;
   assert.equal(declaration.validate({ intent: 'topics', person: 'Ada' }), true);
   assert.equal(declaration.validate({ intent: 'topics', channel: 'AI AI AI' }), true);
   assert.equal(declaration.validate({ intent: 'topics' }), false);

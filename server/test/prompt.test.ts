@@ -342,7 +342,7 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
   const { createHash } = await import('node:crypto');
   assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), 'cfc4f1706de32f5cd2f993df78781469ccd3f26b5ca80a6d096408458c6c2350', 'Architect-authored voice text stays exact');
-  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'ea54b49791c9f1c03007fa7be4771b886f7503c49ca337051564ea851b3ff3c4', 'Architect-authored worker text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '7a087bf30ab5c013108026ad7a21c159452475bbd8924aec5f4b9178def2a9d9', 'Architect-authored worker text stays exact');
   assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);

@@ -10,6 +10,7 @@ export const CONNECTOR_DEADLINE_MS = 12000;
 export const INFERENCE_DEADLINE_MS = 12000;
 export const REVISION_DEADLINE_MS = 36000;
 export const FINAL_INFERENCE_DEADLINE_MS = 24000;
+class ReadStopped extends Error { constructor(readonly category: 'cancelled' | 'timeout') { super(category); } }
 const pendingReads = new WeakMap<Map<string, ToolResult>, Map<string, Promise<ToolResult>>>();
 import { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
@@ -57,7 +58,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   let pending = pendingReads.get(reads);
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
   const receipts: ToolResult[] = [];
-  const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
+  const findings: ToolResult[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
   const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
   const partialText = (): string => findings.map(item => item.text).filter(Boolean).join('\n');
@@ -76,7 +77,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     try {
       const answer = await Promise.race([options.infer({ instructions: workerInstructions(options.profile),
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
-        outputs: [...outputs, ...findings.filter(result => !outputs.some(output => output.result === result)).map((result, index) => ({ id: `completed-${index}`, name: 'completed_read', result }))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
+        outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text || incomplete().text, findings, receipts };
     } catch { return options.signal.aborted ? finish() : incomplete(); }
@@ -86,10 +87,10 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const local = new AbortController();
     let rejectTimeout!: (reason: Error) => void;
     const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
-    const stopRead = (): void => { if (options.signal.reason !== REVISION_ABORT) { local.abort(); rejectTimeout(new Error('Task stopped')); } };
+    const stopRead = (): void => { if (options.signal.reason !== REVISION_ABORT) { local.abort(); rejectTimeout(new ReadStopped('cancelled')); } };
     options.signal.addEventListener('abort', stopRead, { once: true });
     if (options.signal.aborted) stopRead();
-    const clear = clock.timer(() => { local.abort(); rejectTimeout(new Error('Read deadline')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - start)));
+    const clear = clock.timer(() => { local.abort(); rejectTimeout(new ReadStopped('timeout')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - start)));
     try { return await Promise.race([body(local.signal), timeout]); }
     finally { clear(); options.signal.removeEventListener('abort', stopRead); }
   }
@@ -123,8 +124,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try { result = tool.effect === 'none'
         ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
         : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
-      catch {
-        result = tool.effect === 'none' ? readerFailure(tool.name, options.signal.aborted && options.signal.reason !== REVISION_ABORT ? 'cancelled' : 'timeout') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
+      catch (error) {
+        result = tool.effect === 'none' ? readerFailure(tool.name, error instanceof ReadStopped ? error.category : 'upstream_error') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
       if (result.receipt) receipts.push(result);
@@ -148,6 +149,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       }
     } else result = await execute();
     telemetry(result);
+    completedOutputs.push({ id: call.id, name: call.name, result });
     return { id: call.id, name: call.name, result };
   }
   try {

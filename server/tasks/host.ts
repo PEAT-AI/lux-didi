@@ -1,3 +1,4 @@
+import { ServiceError } from '../contracts/errors.js';
 import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { VaultWriter } from '../tools/vault-write.js';
@@ -75,7 +76,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           try {
             const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));
             return documentResult(entry.text, entry.id, typeof args.cursor === 'string' ? args.cursor : '0');
-          } catch { return readerFailure(name, 'not_found'); }
+          } catch (error) { return readerFailure(name, error instanceof ServiceError && error.code === 'NOT_FOUND' ? 'not_found' : 'upstream_error'); }
         }
         const bound = bindings();
         const writes: Record<string, { tool: string; arguments: Record<string, unknown> }> = {

@@ -50,7 +50,7 @@ export class TaskCall {
   get running(): boolean { return this.runtime.controller.running; }
   socket(generation: number, ready = true): void {
     this.#generation = generation; this.#delegation = undefined; this.#latestDelegation = undefined; this.#functions = [];
-    this.delivery.socket(generation, ready);
+    this.#outputQuiet = true; this.delivery.socket(generation, ready);
   }
   ownerWords(): void {
     this.#cancelQuiet?.(); this.#cancelQuiet = undefined; this.#inputPending = true;

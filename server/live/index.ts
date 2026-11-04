@@ -3295,7 +3295,7 @@ export class LiveSessionOwner {
         trace: this.#tracePort(handle.liveSessionId, handle.connection),
       });
       handle.session = canarySessions.wrapSession(handle.liveSessionId, handle.session);
-      handle.taskRebuildCause = cause;
+      handle.taskRebuildCause = cause; handle.taskOutputQuiet = true;
       handle.tasks?.socket(handle.generation, false);
       const readySession = handle.session;
       void readySession.ready.then(() => {

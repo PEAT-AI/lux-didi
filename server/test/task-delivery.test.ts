@@ -97,3 +97,12 @@ test('C-DELIVERY: once quiet starts a chunk sequence, acknowledgements drain it 
   f.delivery.accepted(f.sends[0]!.command); assert.equal(f.sends.length, 2);
   f.delivery.accepted(f.sends[1]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
 });
+
+for (const ownerSpeaking of [false, true]) test(`new socket retires old output activity but preserves owner hold=${ownerSpeaking}`, () => {
+  const f = fixture(); f.delivery.activity({ outputQuiet: false, ownerSpeaking });
+  f.delivery.deliver(identity, answer('Synthetic pending after output loss.')); assert.equal(f.sends.length, 0);
+  f.delivery.disconnected(); f.delivery.socket(2, false); f.delivery.ready();
+  assert.equal(f.sends.length, ownerSpeaking ? 0 : 1);
+  f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sends.length, 1);
+  assert.equal(f.sends[0]!.id, null);
+});

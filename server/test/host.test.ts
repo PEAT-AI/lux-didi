@@ -675,7 +675,7 @@ test('host diagnostics admit task metadata, reject retired research runs and str
   for (const driver of ['selector', 'fallback', 'single-source-hint']) {
     assert.equal(safeEvent({ ...run, driver }), undefined);
   }
-  assert.deepEqual(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), { event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 });
+  assert.equal(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), undefined);
   assert.deepEqual(safeEvent({ event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 }), { event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 });
   assert.deepEqual(safeEvent({ event: 'live_dead_air', deadAirMs: 1500 }), { event: 'live_dead_air', deadAirMs: 1500 });
   assert.deepEqual(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false }), { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false });
@@ -687,7 +687,7 @@ test('host diagnostics admit task metadata, reject retired research runs and str
   assert.equal(safeEvent({ ...run, driver: 'single_source_hint' }), undefined);
   const withoutDriver: Record<string, unknown> = { ...run };
   delete withoutDriver.driver;
-  assert.deepEqual(safeEvent(withoutDriver), withoutDriver);
+  assert.equal(safeEvent(withoutDriver), undefined);
   assert.equal(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: [], elapsedMs: 9, summary: 'owner secret' }), undefined);
   assert.equal(safeEvent({ event: 'live_dead_air', deadAirMs: 1500, text: 'owner secret' }), undefined);
   assert.equal(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30, args: 'owner secret' }], toolResponseWhileGenerating: false }), undefined);
@@ -1780,7 +1780,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       const { data: session } = await response.json();
       const row = host.store.transaction(tx => tx.get('SELECT created_at,accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
       assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
-      const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', ['fixture-search', 'fixture-read']);
+      const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', recoveredAt === Infinity ? ['fixture-search'] : ['fixture-search', 'fixture-read']);
       try {
         assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');

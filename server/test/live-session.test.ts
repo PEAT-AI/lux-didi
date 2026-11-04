@@ -4295,73 +4295,31 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
 
 
 
-for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+// Typed delegation, not the spelling of a progress phrase, is the work boundary.
+// Actual delegation/duplicate/rebuild prerequisites are pinned in task-call.test.
+for (const progress of ['Checking.', 'On it.', 'One sec.', 'Let me look into that.']) test(`delegated work boundary: ${progress} alone grants no task or connector call`, async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-without-call');
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
-  });
-  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
-    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
-  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
-  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
-  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
-  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
+  await attached(h, 'progress-is-not-delegation');
+  h.f.send({ serverContent: { inputTranscription: { text: 'check the synthetic contract', finished: true } } });
+  for (let attempt = 0; attempt < 200 && !h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'); attempt++) await tick();
+  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), 'establish a real finalized owner turn');
+  const tasks = h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n;
+  const calls = h.calls.length;
   h.f.send({ serverContent: { outputTranscription: { text: progress, finished: true }, turnComplete: true } });
-  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
-  assert.ok(armed(), 'the announced lookup armed its three-second bound');
-  await advance(2_000);
-  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
-  assert.deepEqual(counted(), [], 'and nothing is logged yet');
-  await advance(1_000);
-  assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
-  assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
-  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
-  const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
-    && String((entry as { text?: string }).text ?? '').includes('again'));
-  for (let attempt = 0; attempt < 200 && !againSaid(); attempt++) await tick();
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
-  assert.equal(counted().length, 1, 'and it is logged once');
-  h.owner.revoke(session.liveSessionId);
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n, tasks, 'assistant progress text cannot synthesize a delegated task');
+  assert.equal(h.calls.length, calls, 'a phrase is not connector authority');
+  assert.equal(h.f.frames.some(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.includes('Correction:');
+  }), false, 'the retired lexical correction wire is not resurrected');
 });
-
-
 
 // C-CLAIMS9 outcome 1, live path: at 10:23:49Z she said "Let me look into that." and made no call for thirty
 // seconds. The host gives the announcement the same beat and corrects it once.
-test('C-CLAIMS9: "Let me look into that." with no call gets the correction inside the deadline', async t => {
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  const { session } = await attached(h, 'claim-look-into');
-  const corrections = () => h.f.frames.filter(frame => {
-    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.includes('Correction:');
-  });
-  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  h.f.send({ serverContent: { inputTranscription: { text: 'what did the synthetic partner say about the contract', finished: true } } });
-  await settlePort();
-  h.f.send({ serverContent: { outputTranscription: { text: 'Let me look into that.', finished: true }, turnComplete: true } });
-  await settlePort();
-  assert.equal(corrections().length, 0, 'the announcement is given its beat before anything is said');
-  await advance(2_999);
-  assert.equal(corrections().length, 0, 'the deterministic clock has not reached the correction deadline');
-  await advance(1);
-  assert.equal(corrections().length, 1, 'the announced lookup with no call behind it is corrected inside the deadline');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /make the call now/i, 'and it offers the call');
-  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /^\[host note, not the owner\] Correction:/u, 'W6 keeps the W3 correction separate from owner speech');
-  await advance(3_000);
-  assert.equal(corrections().length, 1, 'the same announcement is corrected only once');
-  h.owner.revoke(session.liveSessionId);
-});
+
 
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.

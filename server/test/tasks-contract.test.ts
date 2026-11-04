@@ -515,3 +515,21 @@ test('invalid insight identifiers name search_knowledge and valid insight ids re
   assert.equal(valid.text, 'synthetic insight');
   assert.deepEqual(seen[0], { ids: [63] });
 });
+
+test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  const clock = new TaskTestClock();
+  const response = taskDeferred<import('../tasks/worker.js').Inference>();
+  const entered = taskDeferred<AbortSignal>();
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => { throw new Error('No tool should run'); } });
+  const work = runWorker({ registry, clock, identity: { task_id: 'long-answer', task_revision: 1, connection_generation: 1 }, input: 'synthetic long composition', signal: new AbortController().signal,
+    infer: async (_request, signal) => { entered.resolve(signal); return response.promise; } });
+  const signal = await entered.promise;
+  clock.advance(13000);
+  response.resolve({ text: 'Synthetic long answer without source reads.', calls: [] });
+  const answer = await work;
+  assert.equal(signal.aborted, false);
+  assert.equal(answer.status, 'complete');
+  assert.equal(answer.text, 'Synthetic long answer without source reads.');
+  assert.deepEqual(answer.findings, []);
+});

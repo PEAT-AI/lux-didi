@@ -683,7 +683,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode) => {
           if (code === 'result_store_full' || code === 'result_store_oversize' || code === 'result_store_unavailable') {
             const classified = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool, code });
-            if (classified) { if (options.log) options.log(classified); else hostLogEvent(classified); }
+            if (classified) hostLogEvent(classified);
           }
           const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code };
           if (options.log) options.log(event); else hostLogEvent(event);

@@ -56,7 +56,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   installPeople(parsePeople({ version: 1, people: [{ id: 'person-a', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['person-a@example.invalid'], mattermost: 'ada.moss' }] }));
   t.after(() => installPeople(null));
   const store = new Store(join(f.dir, 'synthetic-host'), hostMigrations);
-  t.after(() => store.close());
+  t.after(() => { task.close(); store.close(); });
   // Match dispatch-gate.test.ts: real source provenance requires a classified live session.
   store.transaction(tx => {
     tx.run('INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -80,7 +80,6 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   live = { ...acceptance, acceptedRunHash: accepted.sha256 };
   const host = { ...live, grants: [...f.names, MATTERMOST_CHAT_TOOL].map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
   const task = canonicalTaskFixture(store, owner, 'chat-sequence', 'Read the synthetic chat sources', ['mattermost']);
-  t.after(() => task.close());
   const definitions = task.tools;
   host.grants.push(...definitions.map(tool => ({ tool: tool.name, effect: 'read' as const, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE })));
   const canonicalCall = (id: string, args: Record<string, unknown>) => {

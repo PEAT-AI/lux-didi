@@ -8,6 +8,7 @@ import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { chatMigrations } from '../chat/index.js';
+import { vaultMigrations } from '../tools/vault-schema.js';
 import { composeChat } from '../host/connected.js';
 import { startHost, pairLocal } from '../host/runtime.js';
 import { createDomainPort } from '../domain/index.js';
@@ -233,7 +234,7 @@ test('CONNECTED terminal SQLite failure after persisted revoke still aborts outs
   const gate = deferredCredentials(); let calls = 0;
   const domain = createDomainPort({ outbox: Outbox });
   const migrations = chatMigrations.map(m => ({ ...m, statements: m.statements.map(sql => sql.startsWith('CREATE TABLE chat_runs') ? sql.replace(/\)\s*$/, ", CHECK(outcome IS NULL OR outcome!='cancelled'))") : sql) }));
-  const store = new Store(dir, [...domain.migrations, ...migrations]);
+  const store = new Store(dir, [...domain.migrations, ...migrations, ...vaultMigrations]);
   const { chat } = composeChat(store, domain, join(dir, 'provider-config'), { credentials: gate.credentials, transport: async () => { calls++; return sse(); } });
   const context = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, clientId: 'trusted-fixture', now: new Date().toISOString() };
   try {

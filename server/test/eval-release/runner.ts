@@ -89,6 +89,9 @@ export interface RunScenarioOptions {
 /** 100 ms of synthetic tone per fragment: the owner's uplink, standing in for an ask nobody actually spoke. */
 const ASK_PCM = synthUtterance(2_400);
 
+/** The teardown's own bound: a socket close is milliseconds of work, never a scenario's worth of waiting. */
+const CLOSE_TIMEOUT_MS = 1_000;
+
 /**
  * The adapter's own clock, driven by the runner: its turn windows are seconds long, so driving them costs no wall
  * time and no test sleeps. `fireNext` runs the earliest armed timer, which is how a turn reaches its quiet window.
@@ -130,17 +133,20 @@ export async function runScenario(options: RunScenarioOptions): Promise<Scenario
   let pump: Promise<void> | undefined;
   // C-EVALS: the scenario's own teardown. Whatever leaves the driven part, the session, the event pump, the replay
   // socket and the alarm store are released, so a fixture that never arrives fails the run instead of holding the
-  // event loop open and stalling the whole check.
+  // event loop open and stalling the whole check. Every step is bounded and the last one always runs.
   let released = false;
   const release = async (): Promise<void> => {
     if (released) return;
     released = true;
-    session?.close();
-    if (pump !== undefined) {
-      try { await settle(timeoutMs, pump, 'the event pump to end after close'); } catch { reasons.push('pump_never_ended'); }
+    try {
+      session?.close();
+      if (pump !== undefined) {
+        try { await settle(timeoutMs, pump, 'the event pump to end after close'); } catch { reasons.push('pump_never_ended'); }
+      }
+      try { await settle(CLOSE_TIMEOUT_MS, replay.close(), 'the replay socket to close'); } catch { reasons.push('replay_close_bounded'); }
+    } finally {
+      env.world.close();
     }
-    await replay.close();
-    env.world.close();
   };
 
   try {

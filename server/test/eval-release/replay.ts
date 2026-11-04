@@ -47,6 +47,8 @@ export interface ReplayStep {
 export interface Recording { readonly provenance?: Readonly<Record<string, unknown>>; readonly steps: readonly ReplayStep[] }
 
 const TRIGGERS: readonly string[] = ['start', 'answer', 'continuation', 'audio'];
+/** How long the fake provider gives a peer to finish the close handshake before terminating it. */
+const CLOSE_DEADLINE_MS = 100;
 
 export function loadRecording(path: string): Recording {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -151,9 +153,12 @@ export async function replayServer(recording: Recording): Promise<Replay> {
     servedCount: () => served,
     totalSteps: () => total,
     takeDelegation: () => { const work = delegated; delegated = undefined; return work; },
+    // C-EVALS: teardown is forced, never a wait on another process's goodwill. A peer that does not finish the
+    // close handshake is terminated, so this resolves for any adapter state and cannot hold the check open.
     close: async () => {
       peer?.close(1000, 'replay done');
-      await new Promise<void>(resolve => server.close(() => resolve()));
+      const deadline = setTimeout(() => { for (const client of server.clients) client.terminate(); }, CLOSE_DEADLINE_MS);
+      try { await new Promise<void>(resolve => server.close(() => resolve())); } finally { clearTimeout(deadline); }
     },
   };
 }

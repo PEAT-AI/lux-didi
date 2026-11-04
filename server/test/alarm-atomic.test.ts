@@ -217,7 +217,7 @@ test('cancelling an acknowledged and snoozed recurring alarm settles every outst
   assert.equal(cancelled.receipt?.state, 'committed');
   assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarm_series WHERE id=?', [seriesId])!.state), 'cancelled');
   assert.deepEqual(outstanding(), [], 'successful series cancellation leaves no occurrence that can ring');
-  for (const row of pending) assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', [row.id])!.state), 'cancelled');
+  for (const row of pending) assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM alarms WHERE id=?', [String(row.id)])!.state), 'cancelled');
   now = Math.max(...pending.map(row => Number(row.fire_at_utc))) + 1;
   scheduler.recheck('mutation');
   assert.deepEqual(due, [originalId], 'neither cancelled occurrence emits alarm_due after both deadlines');

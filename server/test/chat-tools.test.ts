@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
@@ -32,6 +32,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const dir = mkdtempSync(join(tmpdir(), 'chat-tools-'));
   const requests: ModelRequest[] = [];
   const responseEntities: string[] = [];
+  const sourceProofs: Record<string, unknown>[] = [];
   let mailId = 'synthetic-message'; let ask = true; let exactRead = false; let followBodies = false; let bodyMode: 'follow' | 'duplicate' | 'repeat' = 'follow';
   // Fence fixtures: hang the connector after N dispatches, and fail the tool-free answer call.
   let hangAfter: number | null = null;
@@ -101,6 +102,14 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const logEvents: Record<string, unknown>[] = [];
   const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null, log: event => logEvents.push(event as unknown as Record<string, unknown>) });
   const { owner, registry } = mcp;
+  const nativeBindings = owner.taskBindings.bind(owner);
+  t.mock.method(owner, 'taskBindings', (connectionIds: readonly string[]) => nativeBindings(connectionIds).map(binding => {
+    const project = binding.project;
+    if (!project) return binding;
+    return { ...binding, project: (evidence: Parameters<typeof project>[0]) => {
+      const snapshot = project(evidence); sourceProofs.push(structuredClone(snapshot.response)); return snapshot;
+    } };
+  }));
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
@@ -127,7 +136,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (!finished) throw Error('no terminal snapshot');
     return { run: finished, events };
   };
-  return { ...f, dir, chat, owner, registry, sourceRequests, exactMail: (id: string) => { mailId = id; }, canonicalSource: () => { canonicalSource = true; }, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
+  return { ...f, dir, chat, owner, registry, sourceRequests, sourceProofs, exactMail: (id: string) => { mailId = id; }, canonicalSource: () => { canonicalSource = true; }, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
     slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
@@ -154,6 +163,21 @@ test('real chat declares task reads, journals execution, and discloses only gate
   assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED|UNCLASSIFIED/);
   assert.doesNotMatch(JSON.stringify(run), /REJECTED|UNCLASSIFIED/);
   assert.match(JSON.stringify(f.chat.get(run.runId, f.context)), /ACCEPTED/);
+  const packets = f.responseEntities.flatMap(entity => entity.trim().startsWith('{') ? [JSON.parse(entity)]
+    : entity.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5).trim()))) as { result?: Record<string, unknown> }[];
+  const wire = packets.find(packet => packet.result && Array.isArray(packet.result.content)); assert(wire?.result);
+  assert.equal(f.responseEntities.length, 1);
+  const capturedEntity = f.responseEntities[0]!; assert.match(capturedEntity, /structuredContent/, 'hash the actual entity, not only accepted display text');
+  assert.notEqual(createHash('sha256').update(capturedEntity).digest('hex'), createHash('sha256').update(ACCEPTED).digest('hex'));
+  const proof = f.sourceProofs.find(value => value.entitySha256); assert(proof, 'the real canonical chat read invokes the native byte-bound projector');
+  assert.equal(proof.entitySha256, createHash('sha256').update(capturedEntity).digest('hex'));
+  const grant = f.registry.currentGrant('fixture-endpoint')!;
+  assert.deepEqual(proof.source, { endpointId: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', schemaDigest: grant.schemaDigest,
+    toolName: 'search_knowledge', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
+  const expectedSources = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
+  assert.deepEqual(run.toolEvidence?.flatMap(value => value.sources), expectedSources, 'completed run retains exact gated source metadata');
+  assert.deepEqual(f.chat.get(run.runId, f.context)?.toolEvidence?.flatMap(value => value.sources), expectedSources, 'Chat.get projects the same exact source metadata');
+
 });
 
 // Synthetic fixtures only: every secret below is invented for this test.

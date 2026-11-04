@@ -15,7 +15,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -112,15 +112,9 @@ interface ActiveSession {
   /** Whether this turn followed tool work and whether the owner cut it off. */
   turnAfterTool: boolean; turnInterrupted: boolean;
   /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
-  claimText: string; claimTimer?: { cancel: () => void } | undefined;
-  claimToolSeen: boolean; claimCorrected: boolean;
   /** #795: the words this response spoke, kept for its turnComplete; `turnSpoken` is reset when the
    *  provider opens a model turn, which can arrive after the transcript in the same batch. */
   answeredWords?: string | undefined;
-  /** #797: a write this owner turn was refused, so a retry claim in it has something to be checked against. */
-  claimWriteRefused: boolean;
-  /** C-ARGS: a lookup this owner turn was rejected on or failed, so an empty-result claim has nothing behind it. */
-  claimLookupFailed: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -195,7 +189,6 @@ interface ActiveSession {
   debtOutputs?: LiveToolResponse[] | undefined; debtBargeIn?: boolean | undefined;
   /** #660: the reply text of a result that returned but was never said, so a replaced session can still speak it,
    *  and whether the session now open has already been handed it. */
-  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined; unspokenResults?: number | undefined;
   /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
   hostStatusNote?: boolean | undefined;
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
@@ -723,7 +716,6 @@ const CONSUMER_CLOSED_MS = 1_000;
  *  invents a reason the provider did not give. */
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
-const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
 export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
@@ -846,7 +838,6 @@ export const ANSWER_AUDIO_HOLD_MS = 3_000;
  * the same one beat this file already treats as a turn's pause (ANSWER_AUDIO_HOLD_MS), so a claim followed
  * by a call in the same breath is never corrected.
  */
-const CLAIM_WITHOUT_CALL_MS = 3_000;
 /**
  * C-TURN8, C-CLAIMS9 outcome 1: the class of first-person lookup announcements, not a list of exact sentences.
  * "let me", "let's", "I'll", "I'm going to" or "I'm" plus a lookup verb is a promise to act, and so is the
@@ -1025,7 +1016,17 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 /** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
  *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
 const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|laughter|chuckle|chuckles|giggle|giggles|smile|smiles|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
-export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
+export function stripNonLexicalTags(text: string): string {
+  // Only remove plain cue markers. Nested/escaped brackets and citation suffixes are literal text.
+  return text.replace(NON_LEXICAL_TAG, (tag, offset: number) => {
+    let escapes = 0;
+    for (let i = offset - 1; i >= 0 && text[i] === '\\'; i--) escapes++;
+    if (escapes % 2 === 1 || tag.slice(1).includes('[') || tag.endsWith('\\]')) return tag;
+    let suffix = offset + tag.length;
+    while (text[suffix] === ']') suffix++;
+    return tag.endsWith(']') && (text[suffix] === '(' || text[suffix] === '[') ? tag : '';
+  });
+}
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
 /** L8-11: how many owner words over her audible answer make an overlap worth a receipt. */
@@ -2128,7 +2129,6 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()), contextToolChars: 0,
-      claimText: '', claimToolSeen: false, claimCorrected: false, claimWriteRefused: false, claimLookupFailed: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2399,38 +2399,11 @@ export class LiveSessionOwner {
 
   #clearDebt(handle: ActiveSession, reason: 'audible' | 'owner_barge_in' | 'turn_end'): void {
     // #660: only her own audio proves the result was said, and only an ended turn retires an answer she never gave.
-    if (reason !== 'owner_barge_in') { handle.unspoken = undefined; handle.unspokenDelivered = false; }
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
     handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
-  }
-
-  /**
-   * #660: hand the unspoken result to the session that is open now. A session the host replaced cannot accept the
-   * retired call ids of the one it replaced, so the result travels as the one input a fresh session does accept: a
-   * bounded text item, sent once the session is ready. One retry, then the turn ends with its closed reason.
-   */
-  async #deliverUnspoken(handle: ActiveSession): Promise<boolean> {
-    if (handle.unspoken === undefined || handle.unspokenDelivered === true) return true;
-    const text = `${UNSPOKEN_DELIVERY_PREFIX}${handle.unspoken}`;
-    const session = handle.session;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await session.ready.catch(() => {});
-      if (this.#settled(handle) || handle.session !== session) return false;
-      try {
-        session.sendText({ text: hostNote(text) });
-        handle.unspokenDelivered = true;
-        // #667: the recreate names how many unspoken results reached the session that replaced the old one.
-        hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
-          generation: handle.generation, results: handle.unspokenResults ?? 1, attempt: attempt + 1 });
-        return true;
-      } catch { /* a refused send is the one retry: the next pass awaits readiness again, then gives up */ }
-    }
-    // #660: a result the host cannot put in front of the model is not swallowed, it ends the turn with its reason.
-    this.#turnFailed(handle, handle.generation, 'send_failed');
-    return false;
   }
 
   /** #538 R4: the held rung fires the moment the response that held it ends without audio. */
@@ -2534,18 +2507,6 @@ export class LiveSessionOwner {
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
-    // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
-    // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
-    // the answer the owner asked for is not made to wait for two provider recreates.
-    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      // C-REBUILD B: a response in flight owns the wire, and a text handed over now would be a second create under
-      // the answer being spoken. The result waits for that response's own terminal, which is the continuation path
-      // that carries it, and if the response is torn down instead it travels in the new session's opening. The
-      // ladder keeps its timing either way: the rebuild rung still fires one recovery delay from here.
-      if (handle.responseInProgress !== true && !(await this.#deliverUnspoken(handle))) return;
-      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
-      return;
-    }
     const recreated = await this.#recreateForDeadAir(handle, 'dead_air');
     if (!recreated) return;
   }
@@ -2597,7 +2558,7 @@ export class LiveSessionOwner {
     handle.answerAt = undefined;
     this.#cancelTimers(handle);
     // C-TURN8: a failed turn earns no correction for what it never said.
-    this.#resetClaimCheck(handle);
+    handle.answeredWords = undefined;
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
     if (typeof handle.session.sendCommentary === 'function') {
@@ -2614,36 +2575,6 @@ export class LiveSessionOwner {
 
   #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
-  }
-
-  /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
-  #resetClaimCheck(handle: ActiveSession): void {
-    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false; handle.claimWriteRefused = false; handle.claimLookupFailed = false;
-    handle.answeredWords = undefined;
-  }
-
-  /**
-   * C-TURN8: a response that announced a lookup completes, so its call has CLAIM_WITHOUT_CALL_MS to start. A
-   * call anywhere in this owner turn silences it, as does a correction already sent, the mute, and the
-   * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
-   */
-  #armClaimCheck(handle: ActiveSession, sequence: number): void {
-    // C-ARGS: an empty-result claim in a turn whose lookup was rejected or failed is the same empty promise,
-    // and the call it names did run, so the toolSeen silence does not apply to it.
-    const emptyResult = claimsEmptyResult(handle.claimText, handle.claimLookupFailed);
-    const claim = claimsWithoutCall({ text: handle.claimText, writeRefused: handle.claimWriteRefused, toolSeen: handle.claimToolSeen });
-    handle.claimText = '';
-    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    if (!(emptyResult || claim) || handle.claimCorrected || handle.muted || (handle.claimToolSeen && !emptyResult)) return;
-    handle.claimTimer = this.#schedule(() => {
-      handle.claimTimer = undefined;
-      if (this.#settled(handle) || handle.inputFinal === false || handle.muted) return;
-      if (handle.claimToolSeen && !emptyResult) return;
-      handle.claimCorrected = true;
-      hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
-      try { handle.session.sendText({ text: hostNote(emptyResult ? EMPTY_RESULT_CLAIM_LINE : CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
-    }, CLAIM_WITHOUT_CALL_MS);
   }
 
   /** D6: the adapter's 500 ms output-silence model reports waitingForInput between her sentences. That is
@@ -2832,11 +2763,8 @@ export class LiveSessionOwner {
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
         if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
-        // C-DEADAIR: a response that ended after writing text and never made a sound is the 2026-10-27 shape (112
-        // response tokens, nothing above -120 dB on the Mac). The model has nothing more to say in that response, so
-        // the held result goes out now instead of waiting out the ladder.
-        else if (handle.debtTextSeen === true) void this.#deliverUnspoken(handle).catch(() => { /* the rung settles its own failure */ });
-        else this.#fireDeferredRung(handle);
+        // Preserve the text-only response's existing debt-rung gate; TaskDelivery owns waiting answers.
+        else if (handle.debtTextSeen !== true) this.#fireDeferredRung(handle);
       }
     }
     if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
@@ -2982,7 +2910,7 @@ export class LiveSessionOwner {
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
     // C-TURN8: a new owner turn is a fresh correction budget.
-    this.#resetClaimCheck(handle);
+    handle.answeredWords = undefined;
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
@@ -3230,7 +3158,7 @@ export class LiveSessionOwner {
       // answer it already has in hand (a pending tool result, an answer still owed) is never ambient, however long
       // the filler it filed was: the pickup answers his ask and never reopens on a seed line.
       return muteRebuildTrigger({
-        owesAnswer: handle.awaitingAnswer || handle.unspoken !== undefined || handle.answerAt !== undefined,
+        owesAnswer: handle.awaitingAnswer || handle.answerAt !== undefined,
         ownerWordsSinceModelOutput: this.#ownerWordsSinceModelOutput(handle.liveSessionId),
         ackAnsweredOwner: this.#ackAnsweredOwner(handle.liveSessionId),
       });
@@ -3328,7 +3256,6 @@ export class LiveSessionOwner {
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
-    const unspokenOpening = handle.unspoken !== undefined;
     // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
     // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
     const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
@@ -3347,9 +3274,7 @@ export class LiveSessionOwner {
     const base = structuredClone(handle.request);
     delete base.openingText;
     const request = path === 'fresh_seeded'
-      ? { ...base, history: seed.turns, ...(unspokenOpening
-        ? { opening: 'model_first' as const }
-        : handle.quietRebuild ? { opening: 'user_first' as const }
+      ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...base, resumptionHandle: savedHandle as string };
     const taskSeed = handle.tasks?.reconnectAnswer();
@@ -3360,11 +3285,11 @@ export class LiveSessionOwner {
     }
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
-    if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
+    if (handle.quietRebuild) delete request.openingText;
     // C-PICKUP: the recovery line names the pickup this request really opens with, never the one its reason
     // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
     handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
-      : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
+      : handle.quietRebuild ? 'quiet' : 'connection';
     // G3: this session opens on the host's own line, so its first speech is the opener and never the answer to
     // the owner's ask. The flag falls when the owner's own words arrive, which is the turn the ask really opens.
     handle.openingTurn = request.openingText !== undefined || request.opening === 'model_first';
@@ -3387,8 +3312,6 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
         instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
-      // #660: this session has not been handed the unspoken result yet; the recovery delivers it once ready.
-      handle.unspokenDelivered = false;
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
       // C-RECOVERY (c): the new session exists, so the old one can be closed without ever leaving the call open on none.
@@ -3503,7 +3426,6 @@ export class LiveSessionOwner {
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
       // #660: the session that replaced the one a result came back on cannot accept its retired call ids, so the
       // result goes to it as the one input a fresh session accepts. A refused delivery has already ended the turn.
-      await this.#deliverUnspoken(handle);
       return true;
     }
     // A call that ended while an attempt was waiting for its ready event owes no further attempt.
@@ -3553,8 +3475,7 @@ export class LiveSessionOwner {
       if (opened) {
         handle.recoveryRefusals = 0;
         this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, attempt);
-        await this.#deliverUnspoken(handle);
-        return true;
+          return true;
       }
       if (this.#settled(handle)) return false;
       // The receipt names what actually ended the attempt, so a dead socket is never written up as a refusal.
@@ -3924,7 +3845,7 @@ export class LiveSessionOwner {
           clearOpenLedger(handle.liveSessionId);
           // Owner authority survives a model interruption.
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
-          this.#resetClaimCheck(handle);
+          handle.answeredWords = undefined;
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -4024,9 +3945,6 @@ export class LiveSessionOwner {
           countTurnScript(handle, said);
           // #795: the response's own words, so a question back to the owner keeps his write ask standing.
           handle.answeredWords = `${handle.answeredWords ?? ''} ${said}`.slice(-400);
-          handle.claimText = `${handle.claimText} ${said}`.slice(-300);
-          // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
-          if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
         }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {

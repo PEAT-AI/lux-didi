@@ -104,7 +104,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
           }
           return ports.execute(tool.name, pruneNulls(validation.args) as Record<string, unknown>, signal, outsideTextSeen, identity);
         };
-        return redactTaskResult(await (effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, execute, signal)), tool.name);
+        return redactTaskResult(await (effect === 'none' ? execute() : ports.authority.authorize({ ...identity, tool: tool.name, effect, args: validation.args, outside_text: outsideTextSeen }, async () => redactTaskResult(await execute(), tool.name), signal)), tool.name);
       },
     };
     if (!integerSchema(tool.parameters)) throw new Error(`Non-integer numeric schema literal in ${tool.name}`);

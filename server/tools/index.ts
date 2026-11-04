@@ -89,7 +89,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // stands on, so the policy can never widen the envelope one composed name at a time.
   const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
   // W1030: a write family's own names are grantable, but never as reads: they ride beside the family's
-  // read-only consent probe and are never model-facing tool declarations (see liveDefinitions below).
+  // read-only consent probe and are never model-facing tool declarations (separate from the canonical task facade).
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
@@ -589,6 +589,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const nativeReader = descriptor.createReader({ port: dispatch.port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
         const reader = { ...nativeReader, call: async (...args: Parameters<typeof nativeReader.call>) => {
           const evidence = await nativeReader.call(...args);
+          if (evidence.state === 'completed' || evidence.state === 'tool-error') {
+            const status = descriptor.status?.(evidence, policy.endpoint);
+            if (status) {
+              const event = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool: args[0], code: status.code });
+              if (event) hostLogEvent(event);
+              if (status.log) options.log?.(status.log);
+            }
+          }
           if ('reason' in evidence && isToolFailureCode(evidence.reason) && (MCP_FAILURE_STAGES as readonly string[]).includes(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);

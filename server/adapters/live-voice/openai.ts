@@ -234,7 +234,7 @@ interface Settings {
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
-  clock: LiveVoiceClock | undefined; backendProcedure: string | undefined;
+  clock: LiveVoiceClock | undefined;
   firstResponseAudio: boolean; backendBrevityTight: boolean;
   /** O1b-A: the host's receipt door for this session and connection epoch. Absent, this adapter records nothing. */
   trace: LiveTracePort | undefined;
@@ -269,7 +269,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       modelId: options.modelId, voice, keyReference: options.keyReference,
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits), socketFactory,
-      clock: options.clock, backendProcedure: options.backendProcedure,
+      clock: options.clock,
       firstResponseAudio: options.firstResponseAudio === true, backendBrevityTight: options.backendBrevityTight === true,
       trace: undefined,
     });

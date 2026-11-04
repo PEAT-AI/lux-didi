@@ -53,7 +53,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const findings: ToolResult[] = [], outputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
   const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
-  const finish = (): WorkerResult => ({ status: expired ? 'incomplete' : 'cancelled', text: findings.map(item => item.text).filter(Boolean).join('\n') || (expired ? failureText : ''), findings, receipts });
+  const partialText = (): string => findings.map(item => item.text).filter(Boolean).join('\n');
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join('\n'), findings, receipts });
+  const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
   async function bounded<T>(body: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
     if (!current()) throw new Error('Revision stopped');
     const local = new AbortController();
@@ -107,7 +109,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: WORKER_INSTRUCTIONS, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch { return expired || options.signal.aborted ? finish() : { ...finish(), status: 'incomplete', text: finish().text || failureText }; }
+      } catch { return expired || options.signal.aborted ? finish() : incomplete(); }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };

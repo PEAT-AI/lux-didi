@@ -1100,6 +1100,8 @@ test('calendar bounds an oversized page and retains the named-event search', asy
   assert.equal(fake.listArgs.length, 1);
   assert.equal(fake.listArgs[0]?.['maxResults'], 50);
   assert.equal(fake.listArgs[0]?.['q'], 'Synthetic wedding');
+  assert.equal(fake.listArgs[0]?.['timeMin'], '2026-09-29T00:00:00Z');
+  assert.equal(fake.listArgs[0]?.['timeMax'], '2027-04-29T00:00:00Z');
 });
 
 for (const family of ['calendar', 'gmail', 'drive'] as const) for (const mode of ['auth-data', 'auth-consent'] as const) {

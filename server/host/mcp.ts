@@ -742,7 +742,7 @@ export async function composeMcpRuntime(options: {
       // it stands on. It is never a published name, so the envelope above cannot carry it.
       // W1030: a write family is admitted by the same reviewed code, from its own write envelope and only
       // for the names the child published. These names ride in the grant so the compose port can reach
-      // them, and they never become model-facing reads (see liveDefinitions' declaration table).
+      // them, and they never become model-facing reads (the canonical task facade exposes only its closed read definitions).
       const publishedNames = discovery.tools.map(tool => tool.name);
       // W1030: the write names this child published, chosen by the connector's own write envelope. They do
       // not need a read name beside them here, which is exactly how a write-only endpoint connects at all;

@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -37,7 +38,8 @@ async function stop() {
 }
 async function operator(path, body = {}) {
   const token = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
-  const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  // A capture is a mutation, so it carries the same explicit idempotency key the native client sends.
+  const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': randomUUID(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).data;
 }
 async function operatorGet(path) {
@@ -223,8 +225,45 @@ try {
     await page.waitForTimeout(120);
     await page.screenshot({ path: join(artifacts, `desktop-1440-${sha}.png`) });
   });
+  // #883: a saved note lives in its own capture session (Sources/LuxDidi/CompanionClient.swift
+  // `retryCapture` creates "Native capture" and appends the note), so a fresh client must find it
+  // in Memory with no earlier navigation into a conversation.
+  await step('a saved note is in Memory on a fresh launch, before any session is opened', async () => {
+    const saved = await operator('/sessions', { title: 'Native capture', timeZone: 'UTC' });
+    const noteText = 'SELMEM-SAVED-NOTE prune the basil after the market run.';
+    await operator(`/sessions/${saved.id}/entries`, { text: noteText, role: 'user', timeZone: 'UTC' });
+    const fresh = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' });
+    const freshPage = await fresh.newPage();
+    const freshErrors = [];
+    freshPage.on('pageerror', error => freshErrors.push(error.message));
+    try {
+      await freshPage.goto(descriptor.origin);
+      await freshPage.locator('#pair-code').waitFor();
+      const pairing = await operator('/auth/pairing');
+      await freshPage.locator('#pair-code').fill(pairing.pairingCode);
+      await freshPage.locator('#pair-form').evaluate(form => form.requestSubmit());
+      await freshPage.locator('#panel-toggle-left').waitFor();
+      // The rail lives in the left panel, which launches collapsed (U1 #282); open it the owner's way.
+      if (await freshPage.locator('#panel-toggle-left').getAttribute('aria-expanded') !== 'true') await freshPage.locator('#panel-toggle-left').click();
+      const rail = freshPage.locator('#panel-left button[data-route="memory"]');
+      await rail.waitFor();
+      // The fresh client has never opened a conversation: the note's own words are not on the page.
+      const before = await freshPage.evaluate(() => document.body.innerText);
+      assert.doesNotMatch(before, /prune the basil after the market run/, 'the saved note is not on the page before Memory is opened');
+      await rail.click();
+      const sheet = freshPage.locator('#sheet');
+      await sheet.waitFor();
+      await freshPage.waitForFunction(() => document.querySelector('#sheet')?.innerText.includes('SELMEM-SAVED-NOTE'));
+      const memory = await sheet.innerText();
+      assert.match(memory, /prune the basil after the market run/, 'the saved note is in Memory on a fresh launch');
+      assert.doesNotMatch(memory, /SELMEM-CANARY-NEVER-SAVED/, 'Memory shows stored notes only, never a note it does not have');
+      // The page re-renders on each poll, so the shot is the whole fresh viewport rather than a detached node.
+      await freshPage.screenshot({ path: join(artifacts, `memory-fresh-launch-${sha}.png`) });
+      assert.deepEqual(freshErrors, [], 'no page errors on the fresh client');
+    } finally { await fresh.close(); }
+  });
   assert.deepEqual(errors, []);
-  await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, errors, renderer: await readFile(join(artifacts, `renderer-${sha}.json`), 'utf8').then(JSON.parse).then(record => record.renderer), screenshots: [`selected-notes-${sha}.png`, `used-and-omitted-${sha}.png`, `refused-unclassified-${sha}.png`, `mobile-390-disclosure-${sha}.png`, `mobile-390-refused-${sha}.png`, `mobile-390-refused-send-${sha}.png`, `mobile-390-notes-${sha}.png`, `mobile-390-history-${sha}.png`, `mobile-geometry-${sha}.json`, `desktop-1440-${sha}.png`], liveModel: false }, null, 2));
+  await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, errors, renderer: await readFile(join(artifacts, `renderer-${sha}.json`), 'utf8').then(JSON.parse).then(record => record.renderer), screenshots: [`selected-notes-${sha}.png`, `used-and-omitted-${sha}.png`, `refused-unclassified-${sha}.png`, `mobile-390-disclosure-${sha}.png`, `mobile-390-refused-${sha}.png`, `mobile-390-refused-send-${sha}.png`, `mobile-390-notes-${sha}.png`, `mobile-390-history-${sha}.png`, `mobile-geometry-${sha}.json`, `desktop-1440-${sha}.png`, `memory-fresh-launch-${sha}.png`], liveModel: false }, null, 2));
   console.log(`SELMEM-BROWSER PASS steps=${steps.length} sha=${sha} images=${artifacts}`);
 } catch (error) {
   if (page) { const visible = { error: await page.locator('#connected-error').textContent().catch(() => null), usage: await page.locator('#connected-notes-usage').textContent().catch(() => null), summary: await page.locator('#connected-notes-summary').textContent().catch(() => null) }; console.error('BROWSER STATE', JSON.stringify(visible)); }

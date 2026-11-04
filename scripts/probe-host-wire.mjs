@@ -21,7 +21,7 @@ import { composeLiveInstruction, NAYA_LIVE_BASE } from '../server/dist/prompt/in
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 if (args.includes('--help')) {
-  console.log('node scripts/probe-host-wire.mjs --env-file PATH --report PATH --transcripts PATH [--count 3] [--scenarios A1,A3,B,C,D,E,F,G]');
+  console.log('node scripts/probe-host-wire.mjs --env-file PATH --report PATH --transcripts PATH [--count 3] [--scenarios H,I,J]');
   process.exit(0);
 }
 const envFile = option('--env-file');
@@ -29,14 +29,14 @@ const report = option('--report');
 const transcripts = option('--transcripts');
 if (!envFile || !report || !transcripts) throw Error('Required: --env-file, --report, --transcripts');
 const count = Number(option('--count', '3'));
-const scenarios = option('--scenarios', 'A1,A3,B,C,D,E,F,G').split(',');
-if (!Number.isInteger(count) || count < 1 || count > 3 || scenarios.some(x => !/^(A1|A3|B|C|D|E|F|G)$/.test(x))) throw Error('Invalid trial selection');
+const scenarios = option('--scenarios', 'H,I,J').split(',');
+if (!Number.isInteger(count) || count < 1 || count > 4 || scenarios.some(x => !/^(H|I|J)$/.test(x))) throw Error('Invalid trial selection');
 // Deliberately extract only the authorized key; never populate process.env or inspect other values.
 const match = readFileSync(envFile, 'utf8').match(/^OPENAI_API_KEY\s*=\s*["']?([^\r\n"']+)["']?\s*$/m);
 if (!match) throw Error('OPENAI_API_KEY missing');
 const key = match[1].trim();
 const credentials = { resolve: async () => key };
-const cap = 4;
+const cap = 2.50;
 const textRate = 30 / 1e6 / 3; // Same P1 estimate: $0.05/socket minute, 3 chars/token, $30/M blended.
 const ledger = `${transcripts}.budget.json`;
 let spent = existsSync(ledger) ? JSON.parse(readFileSync(ledger, 'utf8')).spent : 0;
@@ -65,6 +65,9 @@ const facts = ['The harbor inspection is on Tuesday at nine.', 'Mira Vale is the
 const longRecord = facts.map((x, i) => `${i + 1}. ${x} ${['This detail belongs to the fictional harbor planning record.', 'Retain this detail in the synthetic briefing.'][i % 2]}`).join('\n');
 const shortRecord = 'Synthetic mail from Mira Vale, subject Harbor plan: The harbor inspection is Tuesday at nine. Meet at the blue gate. Bring a yellow safety vest. The north pier is closed.';
 const questions = {
+  H: 'Please look up what epistemology means in philosophy, just the general idea, not anything personal.',
+  I: 'Read the synthetic harbor briefing from Mira Vale and explain all twelve facts in order, slowly and in detail, at least two hundred words.',
+  J: 'What did the synthetic sender Mira Vale write about the harbor?',
   B: 'What did the synthetic sender Mira Vale write about the harbor?',
   C: 'Read the synthetic harbor briefing from Mira Vale and tell me all twelve facts in order, about twelve hundred characters, without leaving any out.',
   D: 'I think I want something new in my life, and you turned out pretty well.',
@@ -83,7 +86,7 @@ async function trial(scenario, number) {
   writeFileSync(ledger, JSON.stringify({ spent: spent + 0.45, ceiling: cap, reserved: true }));
   active = { start: Date.now(), textChars: 0, helperCost: 0, scenario, number, sessions: 0, events: [], logs: [], commentary: [], acks: [], tools: [], helper: [], audio: [], ownerEnds: [], stopped: false };
   const t = active;
-  raw({ trial: `${scenario}-${number}`, start: new Date().toISOString(), prompt, longRecord: scenario === 'C' || scenario === 'F' ? longRecord : undefined });
+  raw({ trial: `${scenario}-${number}`, start: new Date().toISOString(), prompt, longRecord: scenario === 'I' ? longRecord : undefined });
   const log = e => { t.logs.push({ at: Date.now() - t.start, ...e }); raw({ at: Date.now() - t.start, host: e }); };
   const detach = attachHostLogSink({ event: log });
   const adapter = new OpenAiLiveVoiceAdapter({ modelId: 'gpt-live-1', voice: 'marin', keyReference: 'synthetic', credentials, route,
@@ -136,7 +139,7 @@ async function trial(scenario, number) {
     return response;
   } });
   const store = new Store(join(dir, `${scenario}-${number}`), [...domainMigrations, ...chatMigrations, ...liveMigrations]);
-  const execute = async (name, args) => { t.tools.push({ name, args }); raw({ tool: name, args }); return documentResult(scenario === 'C' || scenario === 'F' ? longRecord : shortRecord, 'synthetic-harbor'); };
+  const execute = async (name, args) => { t.tools.push({ name, args }); raw({ tool: name, args }); return documentResult(scenario === 'I' ? longRecord : shortRecord, 'synthetic-harbor'); };
   const executors = Object.fromEntries(['search_mail', 'read_mail', 'mail_search', 'mail_read', 'search_memory'].map(name => [name, args => execute(name, args)]));
   const owner = createLiveSessionOwner({ store, voice, log,
     profile: validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'marin', keyReference: 'synthetic', route, prompt: { text: prompt, dataClass: 'sensitive' } }),
@@ -165,18 +168,22 @@ async function trial(scenario, number) {
       catch (error) { t.stopped = true; t.error = error.message; clearInterval(timer); }
     }, 30);
     // The real host opens model-first. Let that opening finish before measuring an owner ask.
-    await until(() => t.events.some(e => e.type === 'turnComplete'), 20000);
+    if (!await until(() => t.events.some(e => e.type === 'turnComplete'), 20000)) throw Error('opening did not complete');
     await quiet(1000);
     if (scenario.startsWith('A')) {
       await say('Why does the moon'); await quiet(scenario === 'A1' ? 1000 : 3000); await say('look larger when it is near the horizon?');
-    } else await say(questions[scenario]);
-    if (scenario === 'F') {
-      await until(() => t.audio.some(at => at >= lastWord), 30000); await quiet(1500);
-      await say('Stop. Forget the harbor. What is two plus two?'); await answerDone(); await quiet(12000);
-    } else if (scenario === 'E') {
-      await answerDone(); await quiet(20000); await say('What are you doing right now?'); await answerDone(); await quiet(8000);
-    } else if (scenario === 'G') await quiet(10000);
-    else { await answerDone(); await quiet(scenario === 'C' ? 60000 : 10000); }
+    } else await say(scenario === 'H' ? [questions.H, 'Can you check what stoicism means, as a general philosophy?', 'Look up the general meaning of metaphysics for me.', 'Please research what epistemology is, in ordinary words.'][number - 1] : questions[scenario]);
+    if (scenario === 'I') {
+      const delivered = () => t.logs.filter(e => e.event === 'task_delivery').at(-1)?.at;
+      const speakingLong = await until(() => {
+        const start = delivered();
+        const audio = t.audio.filter(at => start !== undefined && at >= start);
+        return audio.length > 0 && audio.at(-1) - audio[0] >= 15000 && Date.now() - t.start - audio.at(-1) < 400;
+      }, 55000);
+      raw({ bargePrerequisite: speakingLong, at: Date.now() - t.start });
+      if (speakingLong) { await say('Stop. Forget the harbor. What is two plus two?'); await quiet(20000); }
+      else t.error = 'Long audible answer prerequisite not met';
+    } else { await answerDone(); await quiet(5000); }
   } catch (error) { t.error = error.message; raw({ trialError: t.error }); }
   finally {
     clearInterval(timer);
@@ -208,7 +215,7 @@ note('\n## Host-wire measurements\n| Trial | Verdict pending semantic review | l
 try {
   for (let n = 1; n <= count; n++) for (const scenario of scenarios) {
     try { await trial(scenario, n); }
-    catch (error) { if (error.message === 'BUDGET_STOP') { note(`Budget stopped before ${scenario}-${n}: estimated USD ${spent.toFixed(4)} / 4.00.`); throw error; } throw error; }
+    catch (error) { if (error.message === 'BUDGET_STOP') { note(`Budget stopped before ${scenario}-${n}: estimated USD ${spent.toFixed(4)} / 2.50.`); throw error; } throw error; }
   }
 } catch (error) { note(`Probe stopped: ${error.message}`); if (error.message !== 'BUDGET_STOP') process.exitCode = 1; }
 finally { rmSync(dir, { recursive: true, force: true }); }

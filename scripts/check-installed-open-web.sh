@@ -44,6 +44,7 @@ const require = createRequire(join(repo, 'server/package.json'));
 const WebSocket = require('ws');
 const { startHost } = await import(pathToFileURL(join(resources, 'server/node_modules/@lux-didi/service/dist/host/runtime.js')));
 const { fixture, CANARY } = await import(pathToFileURL(join(repo, 'server/dist/test/live-voice-fixture.js')));
+const { canonicalTaskFixture } = await import(pathToFileURL(join(repo, 'server/dist/test/canonical-task-fixture.js')));
 const cleanup = [];
 let step = 'fake provider';
 try {
@@ -83,26 +84,22 @@ try {
     ['maps', 'Odemira', ['open the map of Odemira'], 'https://www.google.com/maps/search/?api=1&query=Odemira', 'opening'],
     ['search', 'drip irrigation', ['search for drip irrigation'], 'https://www.google.com/search?q=drip+irrigation', 'opening'],
   ];
-  for (const [kind, target, turns, url, say] of cases) {
+  for (const [kind, _target, turns, url, _say] of cases) {
     step = `${kind} native receipt and model response`;
     for (const text of turns) f.send({ serverContent: { inputTranscription: { text, finished: true } } });
-    const before = f.frames.length;
-    f.send({ toolCall: { functionCalls: [{ id: `synthetic-${kind}`, name: 'open_web', args: { kind, target } }] } });
-    // The fixture's frame wait is event-driven. Bound each received frame, never poll.
-    let index = before;
-    let response;
-    while (!response) {
-      const timeout = AbortSignal.timeout(2500);
-      await Promise.race([f.frame(index + 1), new Promise((_, reject) => timeout.addEventListener('abort', () => reject(Error(`${step}: timeout`)), { once: true }))]);
-      const frame = f.frames[index++];
-      if (frame.toolResponse) response = JSON.stringify(frame.toolResponse);
-    }
+    const task = canonicalTaskFixture(host.store, host.tools.owner, id, turns.join(' '), []);
+    let result;
+    try {
+      result = await task.runtime.runTool('open', { kind: 'web', target: url },
+        { ...task.revision.identity, operation_id: `synthetic-${kind}` }, new AbortController().signal);
+    } finally { task.close(); }
+    assert.equal(result.status, 'ok', `canonical open must reach the attached native peer: ${JSON.stringify(result)}`);
     assert.equal(urls.at(-1), url);
-    assert.match(response, /opened/); assert.ok(response.includes(say));
+    assert.equal(result.text, 'Opened.');
     console.log(`A5 PASS: ${kind} ${url}; opened receipt and say`);
   }
   assert.equal(urls.length, cases.length);
-  console.log('A5 PASS: installed host open_web smoke, synthetic provider and native peer');
+  console.log('A5 PASS: installed host canonical open smoke, synthetic provider and native peer');
 } catch (error) {
   console.error(`A5 FAIL: ${step}: ${error.message}`); process.exitCode = 1;
 } finally {

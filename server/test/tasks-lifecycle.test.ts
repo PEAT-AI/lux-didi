@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorker } from '../tasks/worker.js';
+import { runWorker, INFERENCE_DEADLINE_MS } from '../tasks/worker.js';
 import { createRegistry } from '../tasks/tools.js';
 import { FakeAuthority } from '../tasks/authority.js';
 import { documentResult } from '../tasks/results.js';
@@ -59,7 +59,7 @@ test('inference deadline and cancellation abort the provider without a real cloc
     let signal: AbortSignal | undefined;
     const result = runWorker({ registry: new Map(), identity, input: 'fixture', signal: abort.signal, clock,
       infer: async (_request, providerSignal) => { signal = providerSignal; return new Promise(() => {}); } });
-    if (cancel) abort.abort(); else clock.advance(12000);
+    if (cancel) abort.abort(); else clock.advance(INFERENCE_DEADLINE_MS);
     assert.equal((await result).status, cancel ? 'cancelled' : 'incomplete');
     assert.equal(signal?.aborted, true); assert.equal(clock.timers.length, 0);
   }

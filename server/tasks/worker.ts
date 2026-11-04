@@ -7,7 +7,8 @@ import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 export const REVISION_ABORT = Symbol('task-revision');
 export const CONNECTOR_DEADLINE_MS = 12000;
-export const INFERENCE_DEADLINE_MS = 12000;
+// A response is not known to be a tool call or spoken composition until it arrives.
+export const INFERENCE_DEADLINE_MS = 24000;
 export const REVISION_DEADLINE_MS = 36000;
 export const FINAL_INFERENCE_DEADLINE_MS = 24000;
 class ReadStopped extends Error { constructor(readonly category: 'cancelled' | 'timeout') { super(category); } }

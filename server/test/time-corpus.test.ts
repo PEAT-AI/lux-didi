@@ -161,11 +161,21 @@ test('C-FREEDOM: a day with no clock names no time of day', () => {
   if (stated.status === 'ready') assert.equal(stated.localTime, '18:00');
 });
 
-test('SOURCE DEFECT C-FREEDOM: cancel that one resolves the most recently armed alarm', async t => {
+test('C-FREEDOM: fake inference lists alarms then cancels the chosen exact id and refuses a wrong id', async t => {
   const h = alarmHarness(t, () => {}, () => now);
   const first = await h.call('alarm_create', { text: 'synthetic first', at: '2026-03-05T10:00:00Z' }, 'wake me in thirty minutes');
   const second = await h.call('alarm_create', { text: 'synthetic second', at: '2026-03-05T10:30:00Z' }, 'also in one hour');
-  const result = await h.call('alarm_cancel', {}, 'cancel that one');
+  // Fake inference resolves the reference from tool data, never by host speech matching.
+  const fakeInference = async () => {
+    const listed = await h.call('alarm_list', {}, 'cancel that one');
+    assert.equal(listed.status, 'ok');
+    assert.match(listed.text, new RegExp(second.references[0]!.id));
+    const refused = await h.call('alarm_cancel', { id: 'synthetic-wrong-id' }, 'cancel that one');
+    assert.equal(refused.status, 'failed');
+    assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'pending');
+    return h.call('alarm_cancel', { id: second.references[0]!.id }, 'cancel that one');
+  };
+  const result = await fakeInference();
   assert.equal(result.status, 'ok', result.repair ?? result.text);
   assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'cancelled');
   assert.equal(alarmRow(h, first.references[0]!.id)!.state, 'pending');

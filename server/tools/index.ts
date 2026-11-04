@@ -29,7 +29,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingSeriesOccurrence, parseCancelScope, parseAlarmTime, alarmReadBack,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -574,7 +574,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
             if (rule) linkAlarmOccurrence(tx, id, id);
           } else {
-            id = pendingSeriesOccurrence(tx, id) ?? id;
+            id = pendingOccurrenceOf(tx, id) ?? id;
             const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
             if (!row) return taskFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
             if (action === 'cancel') {

@@ -1197,6 +1197,23 @@ test('task bindings use configured validated connector readers without the resea
 });
 
 
+test('delivered worker instructions keep requested writes honest and owner-controlled', async () => {
+  const { runWorker } = await import('../tasks/worker.js');
+  let delivered = '';
+  await runWorker({ registry: new Map(), identity: { task_id: 'synthetic-instructions', task_revision: 1, connection_generation: 1 },
+    input: 'Synthetic instruction delivery control', signal: new AbortController().signal,
+    infer: async (request: import('../tasks/worker.js').InferRequest) => { delivered = request.instructions; return { text: 'Synthetic no action.', calls: [], no_action: true }; } });
+  // Assert the obligations delivered to inference, not deleted fragments or exact house wording.
+  assert.ok(delivered.length > 0);
+  assert.match(delivered, /(?:direct|explicit)\s+(?:ask|request).{0,50}(?:run|act|execute|do)/i);
+  assert.match(delivered, /(?:never|not|without).{0,25}(?:ask|request|seek).{0,20}(?:permission|approval)/i);
+  assert.match(delivered, /draft.{0,70}(?:his|owner).{0,20}(?:click|review|approval|send)/i);
+  assert.match(delivered, /event.{0,60}(?:invites?\s+(?:nobody|no\s+one)|no\s+(?:invitees?|guests?|attendees?))/i);
+  assert.match(delivered, /(?:done|complete|success).{0,70}receipt|receipt.{0,70}(?:done|complete|success)/i);
+  assert.match(delivered, /(?:refus|fail)\w*.{0,80}(?:repair|next step|recover)/i);
+  assert.match(delivered, /(?:say|tell|explain).{0,45}(?:left|remain|stop|fail)/i);
+});
+
 test('task alarm executors keep the existing scheduler and refuse invalid writes', async t => {
   const now = Date.UTC(2030, 0, 1); let rechecks = 0;
   const f = await fixture(t, { alarms: { now: () => now, recheck: () => { rechecks++; }, health: () => ({ degraded: false, reasons: [] }) }, timezone: 'UTC' });

@@ -4439,11 +4439,13 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   await tick();
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a superseded generation never ends the call');
   // The live generation is still armed, so the gate itself is not simply dead.
+  let liveStopFrameReceived = false;
+  h.f.clients.at(-1)!.once('message', () => { liveStopFrameReceived = true; });
   h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
   await tick();
   await tick();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' },
-    'the current generation ends the call on the same words');
+    `the current generation ends the call on the same words (transport received=${liveStopFrameReceived})`);
 });
 
 // TOPIC (#565): the query shape of every source call is persisted through the trace writer, so the

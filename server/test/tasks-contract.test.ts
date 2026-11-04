@@ -9,7 +9,12 @@ test('opened documents are whole up to 24000 with explicit continuation', () => 
   const first = documentResult(body, 'synthetic');
   assert.equal(first.text.length, 24000);
   assert.equal(first.status, 'partial');
-  assert.equal(first.next_cursor, '24000');
+  assert.equal(typeof first.next_cursor, 'string');
+  assert.equal(documentResult(body, 'synthetic', '24000').status, 'failed', 'bare offsets are not proof of a captured version');
+  assert.equal(documentResult(body + 'changed', 'synthetic', first.next_cursor!).status, 'failed', 'a continuation cannot read another source version');
+  const other = documentResult(body, 'another-document', first.next_cursor!);
+  assert.equal(other.status, 'failed', 'identical bytes from another document do not share a continuation');
+  assert.match(other.repair!, /restart/i);
   const rest = documentResult(body, 'synthetic', first.next_cursor!);
   assert.equal(first.text + rest.text, body);
   assert.equal(rest.next_cursor, null);

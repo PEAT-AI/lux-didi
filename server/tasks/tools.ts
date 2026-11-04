@@ -84,7 +84,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
+      name: definition.name, description: definition.description, parameters: { ...object(definition.fields), required: Object.keys(definition.fields).filter(key => !(['alarm_create', 'alarm_update', 'alarm_cancel'].includes(definition.name) && ['recurrence', 'scope'].includes(key))) }, effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) return failed(validation.repair);

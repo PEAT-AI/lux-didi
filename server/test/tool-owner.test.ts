@@ -614,18 +614,19 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
 test('SOURCE DEFECT task failure code: a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
-  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
+  const seen: ModelRequest[] = [];
+  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_knowledge') : { contents: [{ role: 'model', parts: [{ text: 'The synthetic source is unavailable.' }] }] }; } });
   // ROUTE-R2: an unclassified dispatched failure takes the closed stage from the adapter's own
   // classifier (failureStage, 994bb035d #211, documented in docs/mcp-adapter.md, pinned by
   // server/test/mcp.test.ts) and dispatchedFailureCode (e27d3870). The exception's own code is never a
   // log token, so the `timeout` this mock attaches stays inert and the stage is the protocol rejection.
-  assert.equal(outcome.status, 'error'); assert.equal(outcome.reason, 'sdk_protocol_rejected');
+  assert.equal(outcome.status, 'complete');
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'sdk_protocol_rejected');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('SOURCE DEFECT task failure code: an oversize unknown result stays invalid_result, never generic transport', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
-  t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { result: { content: [{ type: 'text', text: 'X'.repeat(14_000) }] }, log: event => { if (event.event === 'tool_failure') events.push(event); } });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(outcome.status, 'error');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);

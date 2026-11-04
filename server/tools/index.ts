@@ -650,7 +650,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               if (status.log) options.log?.(status.log);
             }
           }
-          if ('reason' in evidence && isToolFailureCode(evidence.reason)) options.log?.({ event: 'tool_failure', code: evidence.reason, tool: args[0], connector: policy.connector, errorClass: 'Error', messageHead: evidence.reason });
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);
@@ -659,7 +658,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           }
           return evidence;
         } };
-        return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
+        return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode) => options.log?.({ event: 'tool_failure', code, tool, connector: policy.connector, errorClass: 'Error', messageHead: code }), project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
           return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
             recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },

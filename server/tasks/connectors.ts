@@ -1,4 +1,4 @@
-import { isToolFailureCode } from '../adapters/model/types.js';
+import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
@@ -8,7 +8,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
 import { documentResult, failed, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -121,16 +121,16 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
+    const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code }; };
     const hostRepair = connectorFailures.get(result);
-    if (hostRepair) return { ...failed(hostRepair.repair), [TASK_CONNECTOR_FAILURE]: hostRepair.repair, [TASK_CONNECTOR_FAILURE_CODE]: hostRepair.code };
-    if (result.state !== 'completed') return { ...failed('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.'),
-      [TASK_CONNECTOR_FAILURE_CODE]: 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error' };
+    if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
+    if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'connector_error');
     if (binding.project) {
       try {
         const snapshot = binding.project(result);
         const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
         return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
-      } catch { return failed('The connector result could not be safely disclosed. Repair its source policy or use another approved source.'); }
+      } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
     }
     return projectTaskPayload(name, result.decodedResult, args);
   };

@@ -151,7 +151,7 @@ const memoryDeletion = transpileModule(mainParsed.statements
 function memoryDeletionHarness(state: Record<string, unknown>, request: (path: string) => Promise<unknown>) {
   const signal = new AbortController().signal, calls: string[] = [];
   const sandbox: any = {
-    AbortController, AbortSignal, clearTimeout, setTimeout,
+    AbortController, AbortSignal, clearTimeout, setTimeout, window: { confirm: () => true },
     authorityVersion: () => signal,
     assertAuthority: (version: AbortSignal) => { if (version !== signal) throw new Error('synthetic stale authority'); },
     render() {}, notify(message: string) { sandbox.notice = message; }, failure: (error: unknown) => `synthetic failure: ${String(error)}`,

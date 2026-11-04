@@ -28,7 +28,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, parseAlarmTime, alarmReadBack,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -552,16 +552,20 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
         if (!options.alarms || !context.identity) return taskFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
         const now = options.alarms.now();
-        const rule = args.recurrence as SeriesRule | null | undefined;
+        const effect = authorizedTaskEffect.getStore();
+        if (!effect) return taskFailed('Alarm authority context is unavailable. Nothing changed.');
+        let rule = args.recurrence as SeriesRule | null | undefined;
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
         if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        if (at !== undefined) {
+          const interpreted = parseAlarmTime(effect.ownerWords, now, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+          if (interpreted.status === 'ready') { at = interpreted.fireAtUtc; rule = interpreted.series ?? rule; }
+        }
         if (rule) { try { at = seriesNextFireAt(rule, now); } catch { return taskFailed('Invalid recurrence. Nothing changed.'); } }
         const label = typeof args.text === 'string' ? args.text.trim() : undefined;
         if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
         if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
         const id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
-        const effect = authorizedTaskEffect.getStore();
-        if (!effect) return taskFailed('Alarm authority context is unavailable. Nothing changed.');
         const result = store.commitAlarmEffect(effect.identity, tx => {
           if (action === 'create') {
             if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
@@ -578,7 +582,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             }
             else tx.run("UPDATE alarms SET label=?,fire_at_utc=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), id]);
           }
-          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString() }) }), id), references: [{ id }] };
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString(), localTime: alarmReadBack(at, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone).spoken }) }), id), references: [{ id }] };
         });
         if (result.status === 'ok') {
           try { options.alarms.recheck(); } catch {

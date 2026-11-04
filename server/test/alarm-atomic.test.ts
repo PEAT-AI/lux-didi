@@ -53,6 +53,7 @@ test('alarm atomicity: lost confirmation replays one alarm and a durable task re
   assert.equal(replay.status, 'ok');
   assert.equal(replay.receipt?.state, 'committed');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);
+  h.store.close(); // A restarted process must acquire the released single-writer lock.
   const recovered = new Store(h.directory, h.migrations);
   try {
     assert.equal(recovered.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1);

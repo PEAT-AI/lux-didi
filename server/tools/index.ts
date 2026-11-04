@@ -570,8 +570,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         let rule = args.recurrence as SeriesRule | null | undefined;
         let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
         if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
         if (at !== undefined) {
-          const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
           const proposed = alarmReadBack(at, zone);
           const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
           const interpreted = parseAlarmTime(effect.ownerWords, effect.askAtUtc ?? now, zone, time.state === 'read' ? time.spec : undefined);

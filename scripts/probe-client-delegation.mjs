@@ -144,6 +144,10 @@ async function open(run, seed = [], voiceInstructions = instructions) {
     const at = s.ms(); s.events.push({ at, event: e });
     if (e.type === 'session.output_audio.delta') {
       s.audio.push(at);
+      const pcm = Buffer.from(e.audio ?? e.delta ?? '', 'base64');
+      let peak = 0;
+      for (let i = 0; i + 1 < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
+      if (peak > 100) (s.nonSilentAudio ??= []).push({ at, peak });
       if (s.audio.length === 1 || (at - (s.lastAudio ?? 0)) > 500) s.log('receive', { type: e.type, bytes: e.audio?.length ?? e.delta?.length, segment_start: true });
       s.lastAudio = at;
     } else {
@@ -215,7 +219,7 @@ async function toolOutput(s, text) {
   return { at, written };
 }
 function summary(s, details) {
-  const result = { scenario, run: s.run, length, variant, paced, ...details, ids: s.ids, calls: [...s.calls.values()], errors: s.errors, transcript: s.transcripts.map(t => t.text).join(''), transcriptEvents: s.transcripts, audio: s.audio, events: Object.fromEntries([...new Set(s.events.map(x => x.event.type))].map(type => [type, s.events.filter(x => x.event.type === type).length])), end: s.ms() };
+  const result = { scenario, run: s.run, length, variant, paced, ...details, ids: s.ids, calls: [...s.calls.values()], errors: s.errors, transcript: s.transcripts.map(t => t.text).join(''), transcriptEvents: s.transcripts, audio: s.audio, nonSilentAudio: s.nonSilentAudio ?? [], events: Object.fromEntries([...new Set(s.events.map(x => x.event.type))].map(type => [type, s.events.filter(x => x.event.type === type).length])), end: s.ms() };
   note(`RESULT2 ${JSON.stringify(result)}`);
   const sentAt = details.appendAt ?? details.outputAt;
   const firstAudio = sentAt === undefined ? undefined : s.audio.find(at => at >= sentAt);
@@ -275,7 +279,7 @@ async function night(run) {
     details.openingTranscript = s.transcripts.map(t => t.text).join('');
     details.followUp = await ask(s, 'What is the synthetic moon garden gate code I gave you?', false);
   }
-  await pause(scenario === 'S1' ? 35000 : 18000);
+  await pause(scenario === 'S1' ? 125000 : 18000);
   summary(s, details); s.close();
 }
 try {

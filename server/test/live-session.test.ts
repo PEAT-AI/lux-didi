@@ -4434,7 +4434,10 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   await continuity(output, 'resumed');
   assert.equal(h.owner.current().state, 'listening', 'the rebuilt generation is live');
   // A finished turn on the socket the host already left is not the owner's live words.
+  let supersededStopFrameReceived = false;
+  first.once('message', () => { supersededStopFrameReceived = true; });
   first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));
+  await fixtureUntil(() => supersededStopFrameReceived, 'superseded-generation stop frame');
   await tick();
   await tick();
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a superseded generation never ends the call');
@@ -4442,6 +4445,7 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   let liveStopFrameReceived = false;
   h.f.clients.at(-1)!.once('message', () => { liveStopFrameReceived = true; });
   h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
+  await fixtureUntil(() => liveStopFrameReceived, 'current-generation stop frame');
   await tick();
   await tick();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' },

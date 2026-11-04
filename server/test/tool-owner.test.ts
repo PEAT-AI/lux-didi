@@ -48,7 +48,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic' }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -75,7 +75,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     }
     return transport.handleRequest(req);
   });
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: options.responseBytes ?? 12000, projectionChars: 10, timeoutMs: 1000 } });
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
     route: { ...route, allowedClasses: [...route.allowedClasses] }, allowedClasses: ['ordinary', 'private'], connectionIds: options.bindings ?? ['lux'] };
@@ -834,7 +834,7 @@ for (const effect of ['read', 'write'] as const) {
 // retired owner-only read_body capability tokens.
 async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
   const p = policy(); p.bounds = { ...p.bounds, maxEntityBytes: 200_000, maxResultBytes: 200_000 };
-  return fixture(t, { policy: p, memoryBytes: 1_000_000, resultOf });
+  return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
 }
 async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
   const args = { id, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
@@ -1129,9 +1129,7 @@ const namelessObjects = (schema: DeclaredSchema, path: string, found: string[]):
  * prove a constraint the declaration states only as an unbounded rule, which is why the issued-only case
  * above is named rather than built.
  */
-const REFUSED_DECLARATIONS: readonly string[] = [
-  'read_received_body cursor:refused', // host-issued cursor, server/tools/index.ts:357 and :1329
-];
+const REFUSED_DECLARATIONS: readonly string[] = []; // No retired host-cursor verb exists in the task registry.
 
 test('AL-R1 every declared tool accepts a value built only from its declaration', async t => {
   const events: { event?: string; tool?: string; violations?: string[]; reason?: string }[] = [];

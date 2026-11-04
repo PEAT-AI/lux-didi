@@ -23,39 +23,15 @@ The helper uses the canonical `open` schema (`kind` and `target`) and `find_file
 
 A direct ask executes now, without confirmation.
 
-### The tier table (C-PERMTIER, 10.7.2)
+### Task effect authority (10.10)
 
 Task effects are declared in `server/tasks/tools.ts` and admitted by `server/tasks/authority.ts`, not a free/guarded keyword tier. A write after outside text goes through the isolated effect check with the latest finalized owner words and the immediately preceding task owner words as earlier context when present. Ordinary effect-check failure follows the accepted fail-open tradeoff. `delete_event` is different: it stages one exact event id per call and requires a later finalized owner turn and a successful closed confirmation check. A failed check never deletes, a replacement stage cannot inherit confirmation, and a successful confirmation consumes its stage once.
 
-The free tier reads no clause of his speech (C-NOTEGATE, #874). A dictation that says "I don't want to
-put the survey in there" is content about the survey, not a withdrawal of the open owner call, so the
-save it ends with still commits on the first call. Only `delete_event` keeps a negation reading, beside
-its created-or-named selector.
+Task Authority tracks outside-text exposure per task revision, not a session-wide owner/exposure-position fence. A clean owner ask can execute its declared local effects without phrase matching. After outside content reaches the helper, ordinary writes are evaluated by the isolated effect check described above; another finalized owner turn is not a mechanical fence reset. Calendar deletion retains its stricter staged confirmation path.
 
-The one guard left on the free tier is the injection fence. The host keeps one monotonic order per
-session for the owner's finalized words and for third-party text. Mail bodies, chat messages, web
-document pages and other connector results advance the exposure position immediately before the model sees them;
-reading his own calendar, alarms, notes, vault and Trello does not. A free write executes only when
-the latest owner final is newer than the latest exposure; otherwise it is refused `external_text_only`
-with the fact of what happened and what clears it: "Outside text arrived after your last words, so
-that write was refused. It clears when you next speak." No refusal invites him to repeat a phrase or
-to say a magic sentence, and none asks for a fresh authorization.
+Open destinations are validated by scheme, network and provenance policy. After outside reads, the destination must be an unchanged eligible link from the disclosed results and still pass the ordinary effect check. A clean owner ask does not need prior result-link provenance. There are no one-use phrase grants by destination kind or retired research-run source handles. Operation identity and durable receipts govern retries; repeating a model sentence does not establish that an effect committed.
 
-The gate's answer is one `gate_decision` host log line (C-NOTEGATE, #828): the tool, the decision, the
-closed code, the two fence positions and whether any owner final existed, never a word of his.
-
-Model turns, assistant speech, tool results and retries never advance the owner position, and a
-refused write is never auto-flushed by a later final: it needs a fresh model call.
-
-Accepted limitation: an unrelated owner final after an external read can still let a reversible
-low-harm write through. That is the price of not asking him to repeat himself, and it is bounded by
-the tier: nothing here sends to another person and nothing here deletes irreversibly.
-
-An alarm's time comes from his words when they carry one, and otherwise from the model's own time
-argument, which is a deterministic parse and never a refusal for lack of an owner phrase. A
-recurrence the model adds without his words for it is dropped and said in the resulting sentence. A compound ask grants each named kind once. Dispatch reserves an open grant before awaiting the native ack; a same-target retry returns the cached receipt, including an uncertain native outcome, without another effect. A different target after use returns `grant_spent`. `no_owner_request`, `request_expired`, `target_not_authorized` and `grant_spent` are structured host refusals, not instructions to use another device or repeat a complete ask.
-
-A source handle must resolve in the existing host-shown registry, have the kind the owner requested, and satisfy scheme/browser/destination policy. `any`/`some` selects the top matching host-shown result from this request's lookup, not an arbitrary model handle. File paths and app names must bind to the owner's words. Source text, summaries, persona, model speech and injected Lux/mail instructions grant nothing. A named site keeps domain binding; among several candidates it opens the best ranked bound registrable domain and names the chosen site in the receipt. Unknown, unshown or disallowed targets remain refused.
+Alarm parsing and recurrence checks remain mechanical tool concerns after authority admission. A pending occurrence can be updated in place; moving an occurrence that has rung creates a fresh occurrence atomically with its receipt, preserving series linkage. The returned occurrence ID is used for later operations.
 
 `Sources/LuxDidi/NativeActions.swift` owns mechanical native opening and system default-browser behavior, not destination policy. A native receipt, not the model's sentence, determines success. `opened`, `failed`, `not_allowlisted`, `no_native_client`, `ack_timeout` and `native_outcome_unknown` remain distinct outcomes. Open audits contain closed codes, counts and request state only, never target strings, titles, URLs or owner words.
 

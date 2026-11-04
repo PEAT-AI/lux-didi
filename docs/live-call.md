@@ -121,7 +121,7 @@ engine, so nothing is audible.
 
 ## Notes and deletion
 
-Voice can save local memories and owner-requested Lux notes. Composed Lux notes are gated off by default and require staged readback and confirmation; a tool call alone is not a save. Trello card writes have their own board-scoped authority. [Privacy and authority](privacy-and-authority.md) owns these distinctions.
+The host-owned task helper can save local memories and Lux notes through Task Authority. After outside-text exposure, writes use the isolated effect check; Lux saves do not require the retired phrase-grant or staged-readback protocol. Only an actual connector receipt establishes a remote save. Trello writes remain board-scoped and use the same task-effect authority boundary. [Privacy and authority](privacy-and-authority.md) owns these distinctions.
 
 Deleting a local memory can scrub later accepted/rebuilt context, but cannot remove bytes already held by an open provider connection. Stop and restart the call when discarding that current context matters.
 

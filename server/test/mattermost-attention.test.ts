@@ -306,14 +306,13 @@ test('R29 attention rejects an invalid native window before SDK IO', async t => 
 
 test('R29 an actual native attention read advances task exposure, while invalid arguments do not', async t => {
   const f = setup('window');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const task = taskChatReader(f.adapter, f.registry, { ...f.endpoint, credentialRef: null }, await approve(f.registry, f.adapter), [...MATTERMOST_TOOLS]);
   const store = new Store(join(f.dir, 'task-state'));
-  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {} }),
+  const runtime = new TaskRuntime({ store, execute: task.execute, authority: new Authority({ checkEffect: async () => false, log: () => {}, journal: store.taskEffectJournal(() => false) }),
     infer: async () => { throw Error('No inference in an explicit read fixture'); }, contentAllowed: () => false,
     delivery: { attach: () => {}, progress: () => {}, deliver: () => {}, closed: () => {} },
   });
-  t.after(() => { runtime.close(); store.close(); });
+  t.after(async () => { runtime.close(); store.close(); await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const revision = runtime.begin('Read what is waiting for me', 1, 1);
   const invalid = await runtime.runTool('chat_attention', { days: 31, limit: null }, { ...revision.identity, operation_id: 'invalid' }, new AbortController().signal);
   assert.equal(invalid.status, 'failed');

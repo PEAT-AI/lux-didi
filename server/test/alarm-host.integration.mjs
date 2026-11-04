@@ -98,6 +98,7 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
       : name === 'cancel_alarm' ? { id: args.id, scope: null } : {};
     const identity = captured ?? revision?.identity ?? { task_id: 'no-owner-task', task_revision: 1, connection_generation: 1 };
     const result = await task.runTool(tool, fields, { ...identity, operation_id: `matrix-${++calls}` }, new AbortController().signal);
+    if (result.status === 'ok') task.controller.complete(identity, { status: 'complete', text: result.text, findings: [result] });
     return JSON.stringify(result);
   }
   const owner = async text => {

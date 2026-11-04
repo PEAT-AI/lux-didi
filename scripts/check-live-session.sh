@@ -26,7 +26,6 @@ cd server
 group_build() {
   node test/vanilla-tree.integration.mjs || return 1
   npm run build || return 1
-  mkdir -p dist/scripts && cp ../scripts/eval-worker-replay.mjs dist/scripts/ || return 1
   mkdir -p dist/scripts || return 1
   cp "$root/scripts/eval-worker-replay.mjs" dist/scripts/ || return 1
   node node_modules/typescript/bin/tsc --ignoreConfig --types node --typeRoots node_modules/@types \

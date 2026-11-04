@@ -6,7 +6,7 @@ Release 10.11: Naya answers on the open line, knows when nothing is coming, and 
 
 | Release | Date (UTC) | What changed |
 | --- | --- | --- |
-| 10.11 | 2026-11-04 | Answers stay on the open line, idle listening is clear, saved memories stay selected, and tool failures explain what went wrong. |
+| 10.11 | 2026-11-04 | Answers stay owed through late handoff and connection recovery, no-action work stays quiet, idle listening is clear, saved memories stay selected, and tool failures explain what went wrong. |
 
 ## What changed for you
 

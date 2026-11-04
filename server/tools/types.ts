@@ -39,7 +39,7 @@ export const HOST_EVIDENCE: unique symbol = Symbol('host-evidence');
 export type HostEvidenceRef = { kind: 'remote-page'; parent: RemoteResultLineage } | { kind: 'local-history'; sources: HistorySourceRef[] }
   | { kind: 'remote-body'; source: ResultScope; entitySha256: string; bodySha256: string; expiresAt: number; tool: string; body: string;
       upstreamComplete: boolean | 'unknown'; upstreamOmitted: boolean | 'unknown' };
-export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; [HOST_EVIDENCE]?: HostEvidenceRef }
+export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; sourcePolicyRefs?: readonly { connectionId: string; sha256: string }[]; [HOST_EVIDENCE]?: HostEvidenceRef }
 export type EvidenceConsumption = { state: 'allowed'; evidence: HostEvidenceRef } | { state: 'refused'; reason: string };
 export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
@@ -151,5 +151,5 @@ export interface ToolsOwner {
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   taskVisible(runId: string, name: string): boolean;
   runTask<T>(call: ToolCallIntent, args: JsonObject, body: () => T): T;
-  complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly import('../adapters/mcp/port.js').SourceDispatchRef[]): ToolResultRef;
+  complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly import('../adapters/mcp/port.js').SourceDispatchRef[], sourcePolicyRefs?: ModelSnapshot['sourcePolicyRefs']): ToolResultRef;
 }

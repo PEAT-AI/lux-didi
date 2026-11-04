@@ -342,7 +342,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return evidence.tool === nativeTool && source.toolName === nativeTool && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
       && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
   };
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[], sourcePolicyRefs?: ModelSnapshot['sourcePolicyRefs']): ToolResultRef => {
     const call = callDTO(input);
     if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
     const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
@@ -357,7 +357,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
       if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
       if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
-      const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+      const value = { ...(sourcePolicyRefs ? { sourcePolicyRefs: detached(sourcePolicyRefs) } : {}), response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
       if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
       return persistTerminal(tx, call, 'completed', value);
     };
@@ -419,6 +419,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const source = tx.get("SELECT connection_id, policy_sha256 FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed'", [id, ownerId]);
       if (!source || typeof source.connection_id !== 'string' || snapshot.connections.find(bound => bound.connectionId === source.connection_id)?.sha256 !== source.policy_sha256
         || !currentPolicies(tx, snapshot, source.connection_id) || !currentProjection(snapshot, source.connection_id)) return undefined;
+    }
+    if (row.state === 'completed') for (const source of value.sourcePolicyRefs ?? []) {
+      const bound = snapshot.connections.find(item => item.connectionId === source.connectionId);
+      if (!bound || bound.sha256 !== source.sha256 || !currentPolicies(tx, snapshot, source.connectionId) || !currentProjection(snapshot, source.connectionId)
+        || value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c))) return undefined;
     }
     const reference = retained.get(binding.result.id);
     if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return undefined;
@@ -656,7 +661,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         } };
         return { connector: policy.connector, reader, policy, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
-          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id),
+          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
             recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },
             recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
         } };

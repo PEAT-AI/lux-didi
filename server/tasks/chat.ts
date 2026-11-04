@@ -24,7 +24,7 @@ export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity
         const dataClasses: readonly DataClass[] = result.dataClasses ?? (result.status === 'failed' || tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private']);
         const snapshot = result[TASK_DISCLOSURE];
         snapshot?.recordReuse?.();
-        return { status: 'completed', result: owner.complete(call, JSON.parse(JSON.stringify(result)) as JsonObject, dataClasses, undefined, snapshot?.[HOST_EVIDENCE], snapshot?.sourceDispatchRefs?.map(id => ({ id }))) };
+        return { status: 'completed', result: owner.complete(call, JSON.parse(JSON.stringify(result)) as JsonObject, dataClasses, undefined, snapshot?.[HOST_EVIDENCE], snapshot?.sourceDispatchRefs?.map(id => ({ id })), snapshot?.sourcePolicyRefs) };
       });
     },
   }));

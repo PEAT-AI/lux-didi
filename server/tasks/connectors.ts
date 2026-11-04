@@ -121,7 +121,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
     const result = await binding.reader.call(mapping.tool, mapped, signal);
-    const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code }; };
+    const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: repair }; };
     const hostRepair = connectorFailures.get(result);
     if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
     if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
@@ -129,6 +129,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
       try {
         const snapshot = binding.project(result);
         const shaped = projectTaskPayload(name, snapshot.response.text ?? snapshot.response, args);
+        if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
         return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
       } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
     }

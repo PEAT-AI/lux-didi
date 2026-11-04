@@ -987,7 +987,7 @@ type DeclaredSchema = { type?: unknown; properties?: Record<string, DeclaredSche
 /** Every key and value type the case sends is one the declaration states, so the model can produce it. */
 
 /** One declared time shape, and the instant it must fire at on the fixed clock in the UTC host zone. */
-interface TimeCase { label: string; fields: Record<string, unknown>; fireAt: number }
+
 
 /** A voice model fills every unused property: null, then an empty string, then leaves mode out. */
 

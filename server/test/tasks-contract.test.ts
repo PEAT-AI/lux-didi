@@ -279,6 +279,7 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
     assert.equal(Object.hasOwn(fields, 'intent'), false);
     if (selector === 'person' || selector === 'channel') assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false);
   }
+});
 
 test('worker inference receives public instructions followed by presentation style, never lore', async () => {
   const { runWorker } = await import('../tasks/worker.js');

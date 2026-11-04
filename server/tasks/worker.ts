@@ -61,9 +61,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const receipts: ToolResult[] = [];
   const findings: ToolResult[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
-  const failureText = "I couldn't finish that request. I don't have a complete answer yet.";
-  const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join('\n')).filter(Boolean).join('\n');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join('\n'), findings, receipts });
+  const failureText = "I couldn't finish that request.";
+  const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join(' '), findings, receipts });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
   async function compose(): Promise<WorkerResult> {
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();

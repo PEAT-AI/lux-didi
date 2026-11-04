@@ -24,12 +24,12 @@ test('host task context carries captured evidence and continuation into the next
 test('task persistence correlates the worker revision and each operation without provider call ids', async t => {
   let steps = 0;
   const f = await liveTaskFixture(t, async () => ++steps === 1
-    ? { text: '', calls: [{ id: 'synthetic-stage_lux_note',  name: 'stage_lux_note', args: { title: 'Synthetic context', text: 'Synthetic retained note.' } }] }
+    ? { text: '', calls: [{ id: 'synthetic-save_to_vault',  name: 'save_to_vault', args: { title: 'Synthetic context', text: 'Synthetic retained note.' } }] }
     : { text: 'The synthetic note is staged locally.', calls: [] });
   f.bind(); f.finalize('Stage a synthetic local note.'); await f.answer();
   const operations = f.store.transaction(tx => tx.all('SELECT task_id,task_revision,operation_id,tool FROM task_operations'));
   assert.equal(operations.length, 1);
-  assert.equal(operations[0]?.tool, 'stage_lux_note');
+  assert.equal(operations[0]?.tool, 'save_to_vault');
   assert.match(String(operations[0]?.task_id), /^[a-f0-9-]{36}$/);
   assert.match(String(operations[0]?.operation_id), /^[a-f0-9-]{36}$/);
   const revision = f.store.transaction(tx => tx.get('SELECT task_id,task_revision FROM task_revisions'));

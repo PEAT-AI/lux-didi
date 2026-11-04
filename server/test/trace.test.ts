@@ -1027,3 +1027,35 @@ test('C-TRUTH: migrate a copy of a synthetic v8 store without losing calls or re
     } finally { store.close(); }
   } finally { rmSync(source, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
 });
+
+// #1011/#878: the app can still be playing when the host has already closed the turn, so its own
+// audibility receipt lands afterwards. Two synthetic sequences settle whether the store loses it.
+test('#878: an audibility receipt that lands after the host terminal still reaches its turn', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    record(store, 'response.terminal', { liveSessionId: SESSION, responseKey: 'r1' },
+      { terminalAt: T0 + 900, status: 'completed', terminalReason: 'completed' });
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't1' }, { closedAt: T0 + 950, closeReason: 'session_end' });
+    forward(store, frame('received', 1, T0 + 1_000), { turnId: 't1', responseKey: 'r1' });
+    forward(store, frame('audible', 2, T0 + 1_400), { turnId: 't1', responseKey: 'r1' });
+    const turn = store.transaction(tx => tx.get('SELECT first_audible_at, closed_at FROM trace_turn WHERE turn_id=?', ['t1']));
+    assert.equal(turn!['first_audible_at'], T0 + 1_400, 'a closed turn still takes the late receipt');
+    assert.equal(turn!['closed_at'], T0 + 950, 'and the host close stands');
+  });
+});
+
+test('#878: a receipt the host could tie to no turn is the loss point, and it is not silent', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    // The host had no open turn to name when the segment arrived: the receipt records, and joins nothing.
+    forward(store, frame('received', 1, T0 + 1_000));
+    forward(store, frame('audible', 2, T0 + 1_400));
+    const playback = store.transaction(tx => tx.get('SELECT turn_id, audible_at FROM trace_playback'));
+    assert.equal(playback!['audible_at'], T0 + 1_400, 'the receipt itself is stored');
+    assert.equal(playback!['turn_id'], null, 'and joins no turn');
+    const turn = store.transaction(tx => tx.get('SELECT first_audible_at FROM trace_turn WHERE turn_id=?', ['t1']));
+    assert.equal(turn!['first_audible_at'], null, 'so the turn keeps no audibility: attribution is the loss, not the terminal');
+  });
+});

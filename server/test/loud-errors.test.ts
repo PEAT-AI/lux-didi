@@ -186,7 +186,9 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const nextIntent = { ...intent, executionId: 'run:1:1', callId: 'success-call' };
     assert.equal(owner.journal.intent(nextIntent), 'fresh');
     await definition.execute!(callArgs, { ...nextIntent, signal: new AbortController().signal });
-    assert.equal(task.results[1]?.status, 'completed', 'a later successful read is not poisoned by the transient failure');
+    assert.equal(task.results[1]?.status, 'partial', 'the later real mail page is retained, not poisoned by the transient failure');
+    assert.ok(task.results[1]?.text);
+    assert.ok(task.results[1]?.next_cursor, 'the native fixture has another page');
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
     assert.equal(rows.length, 1, `exactly one native failure row reaches the host log: ${JSON.stringify(task.results).slice(0, 1200)}`);
     assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'credential-refresh-failed' });

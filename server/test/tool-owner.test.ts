@@ -117,7 +117,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner,
+  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}), ...(options.compose ? { compose: options.compose } : {}), ...(options.grantMode ? { grantMode: options.grantMode } : {}), ...(options.alarms ? { alarms: options.alarms } : {}), ...(options.timezone ? { timezone: options.timezone } : {}) }); },
@@ -203,12 +203,13 @@ test('persisted disable survives reopen and stale projected registry grants cann
   f.owner.journal.intent(initialCall); const initialResult = await f.execute(initialCall);
   assert.equal(initialResult.status, 'completed'); if (initialResult.status !== 'completed') throw Error('initial read failed');
   const oldGrant = f.registry.currentGrant('endpoint')!;
+  const staleCall = f.intent('stale-read'); f.owner.journal.intent(staleCall);
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
   // Even a stale external projection restored after revoke is not authority.
   f.registry.enable('endpoint'); f.registry.observed('endpoint', tools, f.registry.revision('endpoint'));
   f.registry.approve({ ...oldGrant, generation: 3 });
-  await assert.rejects(f.execute(), /task_source_policy_denied/);
+  await assert.rejects(f.execute(staleCall), /task_source_policy_denied/);
   assert.equal(f.calls.length, 1, 'stale dispatch did not add a connector invocation');
   const reopened = f.reopen();
   assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused');
@@ -230,9 +231,10 @@ test('every request denies empty-binding authority and every accepted connection
     assert.equal(result.status, 'denied'); assert.equal(requests, 0);
     f.setLive(original);
   }
+  const staleCall = f.intent('stale-policy-read'); f.owner.journal.intent(staleCall);
   f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { ...policy().sourcePolicy, revision: 2 } }));
   assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'allowed');
-  assert.throws(() => f.owner.journal.intent(f.intent()), /intent_policy_denied/);
+  await assert.rejects(f.execute(staleCall), /task_source_policy_denied/);
 });
 
 test('unbound run still needs live authority, including initial request', async t => {
@@ -332,19 +334,27 @@ for (const [label, result, memoryBytes] of [
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
   if (label === 'empty-valid') {
     assert.equal(gate.state, 'allowed'); if (gate.state === 'allowed') assert.equal(gate.results[0]!.response['text'], '');
-  } else assert.equal(gate.state, 'refused', 'an unsupported or unbounded source result is never delivered');
+  } else {
+    assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
+    if (gate.state === 'allowed') {
+      assert.equal(gate.results[0]!.response['status'], 'failed');
+      assert.equal(typeof gate.results[0]!.response['repair'], 'string');
+      assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
+    }
+  }
 });
 
-test('abort before dispatch is zero calls; forwarded abort after remote dispatch remains unknown and late completion denied', async t => {
+test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'unknown'); assert.equal(f.calls.length, 0);
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'completed');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'unknown');
+  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'completed');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
-  f.owner.journal.fail(call, 'unknown', 'cancelled');
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
 });
 
@@ -444,15 +454,15 @@ test('bounded complete slice reader denies expired, missing, partial, hash and s
   }
 });
 
-test('executor rechecks trusted authority and post-await policy before calling the accepted reader', async t => {
-  const f = await fixture(t); f.owner.journal.intent(f.intent());
-  const original = f.getLive();
-  f.setLive({ ...original, actorId: 'foreign' });
-  assert.equal((await f.execute()).status, 'failed'); assert.equal(f.calls.length, 0);
-  f.setLive(original);
-  let resolve!: (value: LiveAuthority) => void; f.setLookup(() => new Promise(r => { resolve = r; }));
-  const execution = f.execute(); f.owner.applyConnection(policy({ generation: 2, enabled: false })); resolve(original);
-  assert.equal((await execution).status, 'failed'); assert.equal(f.calls.length, 0);
+test('a captured task declaration rechecks current task identity before calling its reader', async t => {
+  const f = await fixture(t);
+  const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
+  const call = f.intent(); f.owner.journal.intent(call);
+  f.taskRuntime().begin('A different finalized synthetic task.', 2);
+  const outcome = await stale.execute({ query: 'synthetic' }, { ...call, signal: f.signal });
+  assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
+  assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
 });
 
 test('targetless refusal is durable only for a fresh identity; mismatched complete/refusal cannot replace intent', async t => {
@@ -576,7 +586,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
   store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }), /intent_policy_denied/);
+  assert.equal(owner.taskVisible(acceptance.runId, 'search_knowledge'), false, 'legacy route approval never becomes an exposed task read');
   assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
   assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);

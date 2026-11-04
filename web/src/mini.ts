@@ -124,6 +124,10 @@ export function pillState(stage: Element | null | undefined): MiniState {
     || value === 'muted' || value === 'connecting' || value === 'error' ? value : 'idle';
 }
 
+/** #865: the idle frame budget. A settled pill writes its visual at most this often; every
+ *  display frame in between still reads the stage, so a state change paints on the next one. */
+export const IDLE_FRAME_MS = 250;
+
 /** The pill's one animation loop, and the seams a test needs to run it without a browser. */
 export interface MiniOrbScope {
   doc?: Pick<Document, 'querySelector'>;
@@ -147,18 +151,38 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const machine = createOrbVisualBlend('cold', { reducedMotion: reducedMotion() });
   let handle: number | undefined;
   let stopped = false;
+  // #865: the loop reads the stage on every display frame but writes only when the visual
+  // moved, when the surface came back, or when the idle budget asks for its heartbeat.
+  let wroteAt = -Infinity;
+  let wrote: OrbVisual | undefined;
+  let wroteStage: Element | null | undefined;
+  let wroteCanvas: HTMLCanvasElement | null | undefined;
+  let forcePaint = true;
   const visible = () => typeof document === 'undefined'
     || (!document.hidden && (globalThis as { didiNativeSurfaceVisible?: boolean }).didiNativeSurfaceVisible !== false);
+  const unchanged = (visual: OrbVisual, stage: Element | null | undefined, canvas: HTMLCanvasElement | null | undefined) =>
+    wrote !== undefined && stage === wroteStage && canvas === wroteCanvas
+    && wrote.state === visual.state && wrote.hue === visual.hue && wrote.glow === visual.glow
+    && wrote.amplitude === visual.amplitude && wrote.opacity === visual.opacity
+    && wrote.grey === visual.grey && wrote.bright === visual.bright
+    && wrote.mixing?.from === visual.mixing?.from && wrote.mixing?.to === visual.mixing?.to
+    && wrote.mixing?.t === visual.mixing?.t;
   const paint = () => {
     const at = now();
-    health.frames += 1;
-    health.lastPaintAt = at;
-    if (health.firstFrameMs === 0) health.firstFrameMs = at;
     const stage = doc.querySelector('.mini-stage');
     machine.request(visualState(pillState(stage)), at);
     const visual = machine.visual(at);
-    painted = visual;
     const canvas = stage?.querySelector('canvas') as HTMLCanvasElement | null | undefined;
+    if (!forcePaint && unchanged(visual, stage, canvas) && at - wroteAt < IDLE_FRAME_MS) return;
+    forcePaint = false;
+    wroteAt = at;
+    wrote = visual;
+    wroteStage = stage;
+    wroteCanvas = canvas;
+    health.frames += 1;
+    health.lastPaintAt = at;
+    if (health.firstFrameMs === 0) health.firstFrameMs = at;
+    painted = visual;
     if (canvas) (scope.publish ?? publishOrbVisual)(canvas, visual);
     // The opacity, the grey and the wash are the state machine's numbers, painted as CSS
     // variables so the stylesheet owns the drawing and the breath stays a pure function of
@@ -181,11 +205,13 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const refresh = () => {
     if (handle !== undefined) cancel?.(handle);
     handle = undefined;
+    // A surface that came back may have lost its paint, so it never waits for the budget.
+    forcePaint = true;
     if (!stopped) step();
   };
   health.idle = reducedMotion();
   health.startedAt = now();
-  refreshVisuals = paint;
+  refreshVisuals = () => { forcePaint = true; paint(); };
   if (typeof window !== 'undefined') window.addEventListener('didi-surface-visibility', refresh);
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
   handle = frame(step);

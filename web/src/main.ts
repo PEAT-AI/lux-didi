@@ -505,17 +505,17 @@ async function loadSummaries(): Promise<void> {
 }
 // A saved note is its own capture session (the native Save note path appends one entry to a session it
 // creates), so the saved-entry surface is the session read the conversation already uses: the newest
-// sessions first, bounded so a long-lived install never fans out without limit.
-const MEMORY_SESSION_READ = 12, MEMORY_ENTRY_READ = 200;
-async function loadEntries(): Promise<Entry[]> {
+// sessions first, bounded so a long-lived install never fans out without limit. The bounds are
+// parameters so the function stays self-contained for the unit harness.
+async function loadEntries(sessionsToRead = 12, entriesToRead = 200): Promise<Entry[]> {
   const list = await request<{items:Session[];nextCursor:string|null}>('/sessions');
   const saved: Entry[] = [];
-  for (const item of list.items.slice(0, MEMORY_SESSION_READ)) {
+  for (const item of list.items.slice(0, sessionsToRead)) {
     const detail = await request<{entries:Entry[]}>(`/sessions/${encodeURIComponent(item.id)}`);
     saved.push(...detail.entries);
-    if (saved.length >= MEMORY_ENTRY_READ) break;
+    if (saved.length >= entriesToRead) break;
   }
-  return saved.slice(0, MEMORY_ENTRY_READ);
+  return saved.slice(0, entriesToRead);
 }
 async function loadTab() {
   if(connection!=='Connected')return;

@@ -430,7 +430,7 @@ function bindSettings(){if(settingsBound)return;settingsBound=true;bindSettingsP
   recoverHistory(){void connectedView.recoverHistory();},
 });}
 function bind() {
-  root.querySelectorAll<HTMLElement>('button[data-route]').forEach(el => el.onclick = () => { const route = el.dataset.route as RouteId; layout = openSheet(layout, route); if (route === 'today') { tab = 'Today'; void loadTab(); } else if (route === 'memory') { tab = 'Memory'; } notice = ''; error = ''; render(); });
+  root.querySelectorAll<HTMLElement>('button[data-route]').forEach(el => el.onclick = () => { const route = el.dataset.route as RouteId; layout = openSheet(layout, route); if (route === 'today') { tab = 'Today'; void loadTab(); } else if (route === 'memory') { tab = 'Memory'; void loadTab(); } notice = ''; error = ''; render(); });
   document.getElementById('sheet-close')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelector('.sheet-scrim')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelectorAll<HTMLElement>('button[data-panel]').forEach(el => el.onclick = () => applyLayout(togglePanel(layout, el.dataset.panel as PanelId)));
@@ -503,13 +503,27 @@ async function loadSummaries(): Promise<void> {
   memorySummaries = data.items;
   summaryIds = new Set(data.items.map(item => item.id));
 }
+// A saved note is its own capture session (the native Save note path appends one entry to a session it
+// creates), so the saved-entry surface is the session read the conversation already uses: the newest
+// sessions first, bounded so a long-lived install never fans out without limit.
+const MEMORY_SESSION_READ = 12, MEMORY_ENTRY_READ = 200;
+async function loadEntries(): Promise<Entry[]> {
+  const list = await request<{items:Session[];nextCursor:string|null}>('/sessions');
+  const saved: Entry[] = [];
+  for (const item of list.items.slice(0, MEMORY_SESSION_READ)) {
+    const detail = await request<{entries:Entry[]}>(`/sessions/${encodeURIComponent(item.id)}`);
+    saved.push(...detail.entries);
+    if (saved.length >= MEMORY_ENTRY_READ) break;
+  }
+  return saved.slice(0, MEMORY_ENTRY_READ);
+}
 async function loadTab() {
   if(connection!=='Connected')return;
   const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
   try {
     if(tab==='Today')await loadPlan();
     if(tab==='Conversation'){const list=await request<{items:Session[];nextCursor:string|null}>('/sessions');if(version===authorityVersion()&&generation===readGeneration){sessions=list.items;sessionMore=!!list.nextCursor;}}
-    if(tab==='Memory')await loadSummaries();
+    if(tab==='Memory'){await loadSummaries();const saved=await loadEntries();if(version===authorityVersion()&&generation===readGeneration)entries=saved;}
   } catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
   finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
 }
@@ -809,14 +823,18 @@ async function deleteMemory(id: string) {
         assertAuthority(version);
         const current = session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
         assertAuthority(version);
+        // Memory reads saved entries with no conversation open, so the same refresh has to cover it.
+        const saved = !session && tab === 'Memory' ? await loadEntries() : undefined;
+        assertAuthority(version);
         const results = recall ? await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft)}&limit=50`, { signal }) : undefined;
         assertAuthority(version);
         const summaryPayload = await listMemorySummaries(signal);
-        return { current, results, summaryPayload };
+        return { current, saved, results, summaryPayload };
       },
-      apply: ({ current, results, summaryPayload }) => {
+      apply: ({ current, saved, results, summaryPayload }) => {
         if(version!==authorityVersion())return;
         if (current) { session = current.session; entries = current.entries; entriesMore = !!current.nextCursor; }
+        if (saved) entries = saved;
         recall = results;
         memorySummaries = summaryPayload.items; summaryIds = new Set(summaryPayload.items.map(item => item.id));
       },

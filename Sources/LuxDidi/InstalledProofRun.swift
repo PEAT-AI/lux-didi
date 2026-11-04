@@ -19,10 +19,12 @@ import CryptoKit
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
         // U3-R1 removed the saved-history panel this function used to walk (#conversation-history,
-        // [data-tab="Conversation"] and the [data-session] rows). The owner's way into the lane is the right
-        // panel toggle and the canonical page text is the record's surface, so there is one branch: wait for
-        // the text, then report it.
+        // [data-tab="Conversation"] and the [data-session] rows). The owner's way into the lane is the rail
+        // entry, and the guide says a saved local note is inspected in Memory, so the proof selects Memory
+        // (opening the left panel the owner would open) and waits for the record's text there (#883).
         _ = try await js(web, "document.querySelector('#panel-toggle-right[aria-expanded=\"false\"]')?.click(); true")
+        _ = try await js(web, "document.querySelector('#panel-toggle-left[aria-expanded=\"false\"]')?.click(); true")
+        _ = try await js(web, "document.querySelector('#panel-left button[data-route=\"memory\"]')?.click(); true")
         let until = Date().addingTimeInterval(8)
         while Date() < until {
             if try await js(web, check) as? Bool == true { return true }

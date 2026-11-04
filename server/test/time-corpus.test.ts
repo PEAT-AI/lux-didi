@@ -191,3 +191,11 @@ test('owner time correction precedes past-proposal refusal, but an unresolved pa
   assert.equal(refused.status, 'failed');
   assert.match(refused.repair ?? refused.text, new RegExp(corrected.references[0]!.id));
 });
+
+
+test('a near-future ISO proposal retains seconds before applying the sixty-second floor', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const result = await h.call('alarm_create', { text: 'synthetic short alarm', at: new Date(now + 1000).toISOString() }, 'set an alarm for one second from now');
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(Number(alarmRow(h, result.references[0]!.id)!.fire_at_utc), now + 60000);
+});

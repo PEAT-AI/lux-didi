@@ -16,7 +16,7 @@ import { createRegistry, type TaskTool } from '../tasks/tools.js';
 import { connectorExecutor } from '../tasks/connectors.js';
 import { insertAlarmSeries, linkAlarmOccurrence, seriesNextFireAt } from '../tools/alarm.js';
 
-function alarmHarness(t: TestContext, recheck: () => void = () => {}) {
+export function alarmHarness(t: TestContext, recheck: () => void = () => {}, now: () => number = Date.now, timezone = 'UTC') {
   const directory = mkdtempSync(join(tmpdir(), 'synthetic-task-alarm-'));
   const migrations = [...domainMigrations, ...liveMigrations, ...toolsMigrations];
   const store = new Store(directory, migrations);
@@ -24,7 +24,7 @@ function alarmHarness(t: TestContext, recheck: () => void = () => {}) {
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
   t.after(async () => { await port.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, grantMode: 'owner-trusted-reads',
-    lookupAuthority: async () => null, alarms: { now: Date.now, recheck, health: () => ({ degraded: false, reasons: [] }) } });
+    lookupAuthority: async () => null, timezone, alarms: { now, recheck, health: () => ({ degraded: false, reasons: [] }) } });
   const task = { id: 'synthetic-task', revision: 1, ownerWords: '', ownerTurn: 1, exposures: [] };
   let tools: Map<string, TaskTool>;
   const authority = createTaskAuthority(new Authority({ journal: store.taskEffectJournal(() => true), checkEffect: async () => true, log() {} }), {
@@ -37,7 +37,7 @@ function alarmHarness(t: TestContext, recheck: () => void = () => {}) {
     const tool = tools.get(name); assert.ok(tool);
     return tool.run(args, { task_id: task.id, task_revision: task.revision, operation_id: randomUUID(), connection_generation: 1 }, new AbortController().signal);
   };
-  return { store, directory, migrations, call };
+  return { store, directory, migrations, call, task, tools };
 }
 
 test('alarm atomicity: lost confirmation replays one alarm and a durable task receipt', async t => {

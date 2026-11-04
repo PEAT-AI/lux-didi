@@ -1738,24 +1738,15 @@ test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
 // research's own and keeps its code.
 
 
-// F10: on 10-30 eight windows were talked over and the owner's sentence was once finished for him, because an
-// app_quiet final after about 0.7 s lets the provider answer a hesitation. A mid-thought tail waits longer; a
-// finished sentence keeps today's latency.
-test('F10: a mid-thought tail holds the answer for the longer window, a finished sentence does not', async t => {
-  const held = async (words: string) => {
-    const clock = new FakeClock();
-    const opened = await fakeReady(t, { clock });
+// C-DELIVERY: episode quiet has no lexical exceptions. Helper quiet belongs to the host.
+test('input episode finalization uses the same quiet for fragments and sentences', async t => {
+  for (const words of ['Synthetic words with', 'Synthetic sentence.']) {
+    const clock = new FakeClock(); const opened = await fakeReady(t, { clock });
     opened.socket.deliver({ type: 'session.input_transcript.delta', delta: words });
     const starts = () => opened.captured.events.filter(event => event.type === 'modelTurnStarted').length;
-    clock.advance(700); await quiet();
-    const atSevenHundred = starts();
-    clock.advance(900); await quiet();
-    return { atSevenHundred, afterHold: starts() };
-  };
-  assert.deepEqual(await held('book the table for the'), { atSevenHundred: 0, afterHold: 1 },
-    'a trailing preposition holds the answer past the old quiet window');
-  assert.deepEqual(await held('book the table for two at seven.'), { atSevenHundred: 1, afterHold: 1 },
-    'a finished sentence answers at the same 700 ms as before');
+    clock.advance(699); await quiet(); assert.equal(starts(), 0);
+    clock.advance(1); await quiet(); assert.equal(starts(), 1);
+  }
 });
 
 // C-POSTTOOL fallback (#868): generic speech is not proof of an answer for a tool batch. The first audible
@@ -1783,6 +1774,17 @@ test('client delegation starts without session tools or Responses configuration'
   const start = f.socket.sent.map(frame => JSON.parse(frame as string) as Record<string, any>).find(frame => frame.type === 'session.start');
   assert.deepEqual(start?.session.delegation, { type: 'client' });
   assert.equal(start?.session.tools, undefined);
+});
+
+test('task commentary without a delegation sends null and receives a provider acknowledgement', async t => {
+  const f = await fakeReady(t);
+  assert.equal(f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: 'missing' }), undefined);
+  const command = f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: null });
+  assert.equal(typeof command, 'string');
+  const frame = JSON.parse(f.socket.sent.at(-1)!);
+  assert.equal(frame.type, 'session.commentary.append'); assert.equal(frame.delegation_id, null);
+  f.socket.deliver({ type: 'session.commentary.appended', client_event_id: command }); await quiet();
+  assert.ok(f.captured.events.some(event => event.type === 'commentaryAccepted' && event.commandId === command));
 });
 
 test('client delegation carries task answers on its latest id with separate acknowledgments', async t => {

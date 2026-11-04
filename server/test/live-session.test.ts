@@ -134,6 +134,7 @@ interface Harness {
   calls: { name: string; args: unknown }[];
   readonly memorySelections: number;
   advance(ms: number): void;
+  helperQuiet(force?: boolean): Promise<void>;
   /** W10: publishes the calendar grant the way the host does after a slow connector finishes. */
   publishCalendar?(): Promise<void>;
 }
@@ -196,6 +197,7 @@ async function harness(t: TestContext, overrides: {
   failingWrite?: string;
   researchWeb?: import('../tools/web-search.js').WebSearchPort;
 } = {}): Promise<Harness> {
+  const taskScheduler = overrides.scheduler ?? (overrides.taskInfer ? new DeadlineClock() : undefined);
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
@@ -445,9 +447,12 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile,
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
-      timeZone: 'UTC', executors: () => overrides.taskExecutors ?? {}, infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+      contentAllowed: () => true, timeZone: 'UTC', executors: () => overrides.taskExecutors ?? {}, infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => taskScheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(taskScheduler ? { schedule: taskScheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, helperQuiet: async (force = false) => {
+    await settlePort();
+    if (taskScheduler && (overrides.taskInfer || force)) { taskScheduler.now += 1_200; taskScheduler.runDue(); await settlePort(); }
+  }, advance: ms => { if (taskScheduler) taskScheduler.now += ms; else clock += ms; } };
 }
 
 /** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
@@ -595,6 +600,7 @@ test('1023-R1: the opening directive is a completed user turn to the provider, n
   // Positive control, same harness and same queries: a real owner turn does reach the journal, so the emptiness
   // above is the directive being kept out and not the journal path being blind.
   h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await h.helperQuiet();
   await drain(h, second.session.liveSessionId, 2);
   assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription').map(row => row.text),
     ['Synthetic owner words on this call.'], 'the same journal records a real owner turn, verbatim');
@@ -685,6 +691,7 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   const { session, attachment } = await attached(h, 'journal-only');
   const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
   h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true }, outputTranscription: { text: 'Fixture voice output', finished: true }, turnComplete: true } });
+  await h.helperQuiet();
   await drain(h, session.liveSessionId, 4);
   h.f.send({ serverContent: { interrupted: true } });
   await drain(h, session.liveSessionId, 5);
@@ -758,6 +765,7 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   h.f.send({ serverContent: { outputTranscription: { text: 'cut off' } } });
   h.f.send({ serverContent: { interrupted: true, turnComplete: true } });
   h.f.send({ serverContent: { inputTranscription: { text: 'late final input', finished: true } } });
+  await h.helperQuiet();
   const live = await drain(h, session.liveSessionId, 1 + turns * 4 + 4);
   assert.equal(live.lifecycle, 'active');
   assert.equal(live.ready, true, 'the durable ready fact survives later journal writes');
@@ -2113,6 +2121,7 @@ test('Live revocation invalidates authority and discards an in-flight result', a
   const { session, attachment } = await openPort(h, 'task-revocation');
   p.emit({ type: 'delegation', delegationId: 'synthetic-binding' });
   p.emit({ type: 'inputTranscription', text: 'Read the synthetic record', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureSettled(started.promise, 'controlled task inference');
   assert.equal(signal?.aborted, false);
   h.owner.invalidate('profile');
@@ -2299,10 +2308,12 @@ test('a resumed setup rejection falls back to one fresh seeded session with the 
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-policy-resumption-secret' } });
   h.f.send({ serverContent: { inputTranscription: { text: 'first turn', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'first turn');
   h.f.send({ serverContent: { outputTranscription: { text: 'first answer', finished: true } } });
   await transcription(output, 'first answer');
   h.f.send({ serverContent: { inputTranscription: { text: 'second turn', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'second turn');
   // The resumed socket fails before it is ready, so the owner falls back to one fresh seeded setup.
   h.f.send({ goAway: { timeLeft: '10s' } });
@@ -2327,6 +2338,7 @@ test('provider usage metadata is decoded and logged per turn, numbers only', asy
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ usageMetadata: { promptTokenCount: 10, responseTokenCount: 5, totalTokenCount: 15 } });
   h.f.send({ serverContent: { inputTranscription: { text: 'after usage', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'after usage');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; totalTokens?: number; promptTokens?: number; responseTokens?: number });
   const usage = lines.filter(line => line.event === 'live_context_usage');
@@ -2350,6 +2362,7 @@ test('L14: non-lexical transcript tags never reach the journal, and other bracke
   const { session } = await attached(h, 'tags');
   h.f.send({ serverContent: { inputTranscription: { text: 'the plan holds [inhale' } } });
   h.f.send({ serverContent: { inputTranscription: { text: ' and the folder [breath] stays', finished: true } } });
+  await h.helperQuiet();
   h.f.send({ serverContent: { outputTranscription: { text: 'all set [sigh] here', finished: true } } });
   await drain(h, session.liveSessionId, 4);
   const rows = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') ORDER BY journal_id", [session.liveSessionId]));
@@ -2400,6 +2413,7 @@ test('L7: the muted time is excluded from live_dead_air', async t => {
   t.after(() => sink());
   // The owner's turn ends, then she is muted for 25 s before the answer becomes audible.
   h.f.send({ serverContent: { inputTranscription: { text: 'what now', finished: true } } });
+  await h.helperQuiet();
   await tick();
   attachment.setInputMuted(true);
   h.advance(25_000); scheduler.runDue();
@@ -2424,6 +2438,7 @@ test('#720: dead air is measured from the owner last fragment, not the first', a
   const say = async (text: string, advanceMs: number): Promise<void> => {
     const before = h.owner.get(session.liveSessionId).journal.events;
     h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+  await h.helperQuiet();
     await drain(h, session.liveSessionId, before + 1);
     h.advance(advanceMs);
   };
@@ -2452,6 +2467,7 @@ test('#720: a mute inside the span is excluded from live_dead_air', async t => {
   const say = async (text: string, advanceMs: number): Promise<void> => {
     const before = h.owner.get(session.liveSessionId).journal.events;
     h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+  await h.helperQuiet();
     await drain(h, session.liveSessionId, before + 1);
     h.advance(advanceMs);
   };
@@ -2557,6 +2573,7 @@ test('L14: a tag split across two deltas is stripped from the assembled seed, an
   const { session } = await attached(h, 'split-tag');
   h.f.send({ serverContent: { inputTranscription: { text: 'meet at [10:30] and bring [DRAFT] plus [bre' } } });
   h.f.send({ serverContent: { inputTranscription: { text: 'ath] the folder', finished: true } } });
+  await h.helperQuiet();
   await drain(h, session.liveSessionId, 3);
   const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [session.liveSessionId]));
   const assembled = stripNonLexicalTags(rows.map(row => String(row['text'])).join(''));
@@ -2572,6 +2589,7 @@ test('R7: an owner who has already spoken keeps his own words as the last seed t
   await drain(h, session.liveSessionId, 2);
   // The dead call's own last turn is the owner's words, so the seed never needs the helper line.
   h.f.send({ serverContent: { inputTranscription: { text: 'and the folder goes upstairs', finished: true } } });
+  await h.helperQuiet();
   await drain(h, session.liveSessionId, 3);
   h.f.refuseUpgrades(401);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-spoken-resumption' }, goAway: { timeLeft: '10s' } });
@@ -2598,6 +2616,7 @@ test('a provider session deadline continues in a new seeded window; the call cei
   const { session, attachment } = await attached(h, 'session-continue');
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ serverContent: { inputTranscription: { text: 'still here', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'still here');
   h.advance(1000); scheduler.runDue();
   await h.f.frame(2); h.f.send({ setupComplete: {} });
@@ -2615,6 +2634,7 @@ test('the owner hard deadline ends a call terminally while a continuation is in 
   const { session, attachment } = await attached(h, 'owner-hard-deadline');
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ serverContent: { inputTranscription: { text: 'still here', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'still here');
   // The provider session limit is a window, not a call length: the call continues in a fresh seeded window.
   h.advance(1000); scheduler.runDue();
@@ -2869,6 +2889,7 @@ test('a provider rebuild never lowers the marker sequence the Mac sees', async t
   const { attachment } = await attached(h, 'resume-sequence');
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ serverContent: { inputTranscription: { text: 'before the rebuild', finished: true } } });
+  await h.helperQuiet();
   const before = await markerSequence(output, 'inputTranscription');
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-sequence-resumption-secret' }, goAway: { timeLeft: '10s' } });
   await h.f.frame(2);
@@ -2876,6 +2897,7 @@ test('a provider rebuild never lowers the marker sequence the Mac sees', async t
   await continuity(output, 'resumed');
   // The rebuilt provider session counts its own events from one again; the sequence the Mac sees must not.
   h.f.send({ serverContent: { inputTranscription: { text: 'after the rebuild', finished: true } } });
+  await h.helperQuiet();
   const after = await markerSequence(output, 'inputTranscription');
   assert.ok(after > before, `marker sequence ${after} after the rebuild must exceed ${before}`);
   attachment.close(); await attachment.done;
@@ -3045,6 +3067,7 @@ test('the calendar declarations never invite a list before an event read', () =>
 /** #451: the owner's first turn. Before it, a research start is opener work and reaches no source. */
 async function ownerSpoke(h: Harness, text = 'synthetic owner turn'): Promise<void> {
   h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+  await h.helperQuiet();
   await settlePort();
 }
 
@@ -3177,6 +3200,7 @@ test('a finalized request produces one task answer without a provider tool batch
   const { attachment } = await openPort(h, 'helper-answer');
   consumeTaskPort(t, attachment);
   p.emit({ type: 'inputTranscription', text: 'Check the synthetic records', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await settlePort();
   assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
   p.emit({ type: 'delegation', delegationId: 'binding-answer' });
@@ -3198,6 +3222,7 @@ test('a turn logs dead air from the owner turn end to the first model audio', as
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; deadAirMs?: number }); } });
   try {
     h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true } } });
+  await h.helperQuiet();
     for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air'); i++) {
       h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
       await tick();
@@ -3569,6 +3594,7 @@ test('1023-N8: a start right after a call that just ended names his last topic w
   const h = await harness(t);
   const first = await attached(h, 'pending-summary-1');
   h.f.send({ serverContent: { inputTranscription: { text: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.', finished: true } } });
+  await h.helperQuiet();
   await drain(h, first.session.liveSessionId, 2);
   assert.match(h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [first.session.liveSessionId])
     .map(row => String(row['text'] ?? '')).join('')), /Mongoose/, 'the owner words reached the journal before the call ended');
@@ -3961,6 +3987,7 @@ test('C-LOGS11: the first audible receipt logs the owner-final-to-audible wait o
       mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
   // The owner's final opens the turn, so the turn's first audibility receipt has an anchor to measure from.
   h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await h.helperQuiet();
   await settlePort();
   attachment.playbackReceipt(frame('received', 1));
   attachment.playbackReceipt(frame('audible', 2));
@@ -4118,6 +4145,7 @@ test('W6/H12: a second owner utterance closes the open turn as superseded and na
   h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
   await drain(h, session.liveSessionId, baseline + 1);
   h.f.send({ serverContent: { inputTranscription: { text: '', finished: true } } });
+  await h.helperQuiet();
   h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
   await drain(h, session.liveSessionId, baseline + 3);
   const turns = h.store.transaction(tx => tx.all(
@@ -4303,6 +4331,7 @@ for (const progress of ['Checking.', 'On it.', 'One sec.', 'Let me look into tha
   const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   await attached(h, 'progress-is-not-delegation');
   h.f.send({ serverContent: { inputTranscription: { text: 'check the synthetic contract', finished: true } } });
+  await h.helperQuiet(true);
   for (let attempt = 0; attempt < 200 && !h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'); attempt++) await tick();
   assert.ok(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), 'establish a real finalized owner turn');
   const tasks = h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n;
@@ -4336,6 +4365,7 @@ test('OPEN2-5: an open claim the turn did not make gets one correction, never tw
   const { session, attachment } = await attached(h, 'open-claim');
   const output = attachment.output[Symbol.asyncIterator]();
   h.f.send({ serverContent: { inputTranscription: { text: 'open the OCP alignment deck', finished: true } } });
+  await h.helperQuiet();
   await transcription(output, 'open the OCP alignment deck');
   h.f.send({ serverContent: { outputTranscription: { text: "I found it, it's open now, the OCP alignment deck.", finished: true }, turnComplete: true } });
   const corrections = () => h.f.frames.filter(frame => {
@@ -4369,6 +4399,7 @@ test('R7: the owner\'s final turn frees the answer after a cancelled opener', as
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   // The owner speaks and finishes his turn, which is when a cancelled opener stops applying.
   h.f.send({ serverContent: { inputTranscription: { text: 'the folder goes upstairs', finished: true } } });
+  await h.helperQuiet();
   await tick();
   for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
   assert.ok(played.length >= 1, 'his answer is audible, never silenced by an earlier cancel');
@@ -4411,6 +4442,7 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   h.f.send({ serverContent: { interrupted: true } });
   await tick();
   h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: true } } });
+  await h.helperQuiet();
   await tick();
   for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
   assert.ok(played.length >= 1, 'the answer frames reach the device');
@@ -4448,6 +4480,7 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   let liveStopFrameReceived = false;
   h.f.clients.at(-1)!.once('message', () => { liveStopFrameReceived = true; });
   h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
+  await h.helperQuiet();
   await fixtureUntil(() => liveStopFrameReceived, 'current-generation stop frame');
   await tick();
   await tick();
@@ -4761,9 +4794,11 @@ test('W4-R1: a genuine second mute with no tool result still ends the call', asy
   // No tool is called at all, so nothing forges a wait the model never had. C-REBUILD C: the provider created a
   // response for that turn, which keeps the first mute recoverable; the repeated mute is what this test guards.
   await ownerInput(fake);
+  await h.helperQuiet();
   fake.emit({ type: 'modelTurnStarted' });
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
   await ownerInput(fake);
+  await h.helperQuiet();
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));
   const settled = receipts.find(record => record.phase === 'settled');
   assert.equal(settled?.['sinceTool'], false, 'the owner-turn wait says it did not begin at a tool result');
@@ -4919,7 +4954,7 @@ test('alarm session speaks its reminder, repeats after silence and acknowledges 
   assert.ok(fake.texts.every(text => text.startsWith('[host note, not the owner] ')), 'wake and acknowledgement guidance are marked host notes');
   assert.equal(scheduler.list().find(row => row.id === other.id)!.state, 'ringing');
   const count = fake.texts.length;
-  clock.now += 30000; clock.runDue();
+  clock.now += 30000; clock.runDue(); await settlePort();
   assert.equal(fake.texts.length, count, 'acknowledgement stops wake prompts');
   assert.equal(h.owner.current().state, 'listening', 'acknowledgement leaves the call open');
   h.owner.revoke(session.liveSessionId);
@@ -5218,6 +5253,7 @@ test('F2 widening: a canary turn never seeds an owner call, even inside one conv
     await attachment.ready;
     await h.f.frame(base + 2);
     h.f.send({ serverContent: { inputTranscription: { text: asked, finished: true } } });
+  await h.helperQuiet();
     h.f.send({ serverContent: { outputTranscription: { text: answered, finished: true } } });
     await drain(h, session.liveSessionId, 2);
     h.owner.revoke(session.liveSessionId);
@@ -5321,6 +5357,7 @@ test('finalized owner input invokes the task worker without a delegation or prom
   const h = await harness(t, { port: p.port, provider: 'openai', taskInfer: async request => { inputs.push(request.input); return { text: '', calls: [], no_action: true }; } });
   const { session } = await openPort(h, 'task-final');
   p.emit({ type: 'inputTranscription', text: 'Synthetic finalized request', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await settlePort();
   assert.equal(inputs.length, 1);
   assert.ok(inputs[0]?.includes('Synthetic finalized request'));
@@ -5335,6 +5372,7 @@ test('live deletion cannot confirm in its staging owner turn', async t => {
     taskInfer: async request => request.turns.length < 2 ? { text: '', calls: [{ id: `delete-${request.turns.length}`, name: 'delete_event', args: { id: 'synthetic-event' } }] } : { text: 'Please confirm the synthetic event.', calls: [] },
   });
   await openPort(h, 'task-same-turn'); p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await settlePort(); assert.equal(deletes, 0);
 });
 test('live deletion confirmation on a later finalized owner turn commits once', async t => {
@@ -5350,10 +5388,12 @@ test('live deletion confirmation on a later finalized owner turn commits once', 
   const { attachment } = await openPort(h, 'task-later-turn'); consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'staging-binding' });
   p.emit({ type: 'inputTranscription', text: 'Delete the synthetic event', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureUntil(() => p.taskAnswers.length === 1, 'staged deletion reply');
   assert.equal(deletes, 0);
   p.emit({ type: 'delegation', delegationId: 'confirmation-binding' });
   p.emit({ type: 'inputTranscription', text: 'Yes, delete it', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureUntil(() => outcomes.length >= 2, 'both staged and confirmed helper decisions settled');
   assert.equal(deletes, 1, JSON.stringify({ outcomes, operations: h.store.transaction(tx => tx.all('SELECT tool,state FROM task_operations')) }));
 });
@@ -5368,6 +5408,7 @@ test('a pending task owns silence without an old tool batch or background job', 
   consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'pending-binding' });
   p.emit({ type: 'inputTranscription', text: 'Check the synthetic facts', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureSettled(entered.promise, 'pending worker');
   h.advance(3000); scheduler.runDue(); await settlePort();
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a pending worker is not a lost model response');
@@ -5389,10 +5430,12 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
   consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'old-binding' });
   p.emit({ type: 'inputTranscription', text: 'Check the first synthetic fact', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureSettled(entered.promise, 'first worker');
   p.emit({ type: 'interrupted' });
   p.emit({ type: 'inputTranscription', text: 'No, check the corrected fact', finished: true, finalOrigin: 'provider' });
   p.emit({ type: 'delegation', delegationId: 'corrected-binding' });
+  await h.helperQuiet();
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(signals[0]?.aborted, true);
   assert.equal(inferences, 2);
@@ -5412,6 +5455,7 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
   consumeTaskPort(t, attachment);
   p.emit({ type: 'delegation', delegationId: 'old-binding' });
   p.emit({ type: 'inputTranscription', text: 'Read the synthetic record', finished: true, finalOrigin: 'provider' });
+  await h.helperQuiet();
   await fixtureSettled(entered.promise, 'retained worker');
   p.emit({ type: 'goAway', timeLeftMs: 10000 });
   await advanceUntil(h.advance, scheduler, () => p.sessionsOpened === 2);
@@ -5446,6 +5490,7 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='inputTranscription'")?.n)) > 0, 'owner transcript on real wire');
   // The actual adapter's ordinary sentence-ending quiet window is 700 ms, advanced virtually.
   clock.advance(700);
+  await h.helperQuiet();
   await fixtureUntil(() => h.f.frames.some(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append'), 'real OpenAI helper answer');
   const command = h.f.frames.find(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append') as unknown as Record<string, unknown>;
   assert.equal(command['content'], 'The exact synthetic wire answer.'); assert.equal(command['delegation_id'], 'synthetic-wire-binding'); assert.equal(inferences, 1);
@@ -5453,4 +5498,47 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   h.f.send({ type: 'session.commentary.appended', client_event_id: command['event_id'] });
   h.f.send({ type: 'session.output_transcript.delta', delta: 'The exact synthetic wire answer.' });
   await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
+});
+
+for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: adapter and host share one 1200 ms transcript quiet, gap=${gap}`, async t => {
+  const scheduler = new DeadlineClock(), start = scheduler.now;
+  const starts: number[] = [], inputs: string[] = [];
+  const clock = { now: () => scheduler.now,
+    setTimer: (ms: number, fire: () => void) => scheduler.schedule(fire, ms),
+    clearTimer: (token: unknown) => (token as ReturnType<DeadlineClock['schedule']>).cancel() };
+  const limits = { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 };
+  const h = await harness(t, { provider: 'openai', scheduler, limits,
+    portFactory: socketFactory => new OpenAiLiveVoiceAdapter(openAiOptions({ socketFactory, clock, limits })),
+    taskInfer: async request => { starts.push(scheduler.now - start); inputs.push(request.input); return { text: 'Synthetic fragment answer.', calls: [] }; },
+  });
+  const session = h.owner.create({ idempotencyKey: `synthetic-quiet-${gap}`, inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx); consumeTaskPort(t, attachment);
+  await h.f.frame(1); h.f.send({ type: 'session.started', session: { id: 'synthetic-quiet-session' } });
+  await fixtureSettled(attachment.ready, 'synthetic adapter ready');
+  const advanceTo = async (elapsed: number) => {
+    const target = start + elapsed; let steps = 0;
+    for (;;) {
+      const next = [...scheduler.pending].filter(timer => timer.due <= target).sort((a, b) => a.due - b.due)[0];
+      if (!next) break;
+      assert.ok(++steps < 100, 'virtual timer processing is bounded');
+      scheduler.now = next.due; scheduler.runDue(); await settlePort();
+    }
+    scheduler.now = target; await settlePort();
+  };
+  const fragment = async (text: string) => {
+    const before = h.owner.current().entries.filter(entry => entry.kind === 'inputTranscription').length;
+    h.f.send({ type: 'session.input_transcript.delta', delta: text });
+    await fixtureUntil(() => h.owner.current().entries.filter(entry => entry.kind === 'inputTranscription').length > before, 'synthetic transcript delta reached host');
+  };
+  await fragment('Synthetic first fragment.');
+  if (gap >= 1_200) {
+    await advanceTo(1_199); assert.equal(starts.length, 0);
+    await advanceTo(1_200); assert.deepEqual(starts, [1_200], '700 ms adapter finalization must not stack another full 1200 ms');
+  }
+  await advanceTo(gap); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
+  await fragment('Synthetic second fragment.');
+  await advanceTo(gap + 1_199); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
+  await advanceTo(gap + 1_200); assert.equal(starts.length, gap < 1_200 ? 1 : 2);
+  assert.equal(starts.at(-1), gap + 1_200); assert.match(inputs.at(-1)!, /Synthetic second fragment/);
+  if (gap < 1_200) assert.match(inputs[0]!, /Synthetic first fragment/);
 });

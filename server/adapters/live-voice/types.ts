@@ -171,7 +171,7 @@ export interface LiveVoiceSession {
   /** Speakable progress under Responses delegation, paraphrased by the voice model (GPT-Live only). An adapter
    *  that cannot carry progress speech leaves it out and the host keeps its own continuation nudge. Returns
    *  `false` when the adapter refused the append; a host that hears `false` must not claim the line was spoken. */
-  sendTaskAnswer?(input: { text: string; delegationId: string }): string | undefined;
+  sendTaskAnswer?(input: { text: string; delegationId: string | null }): string | undefined;
   sendCommentary?(input: { text: string }): boolean | void;
   endAudioStream(): void;
   close(): void;

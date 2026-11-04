@@ -94,7 +94,7 @@ async function openCall(t: TestContext): Promise<DeadAir> {
 test('task dead-air: a finished result appends without provider inference or a tool batch', async t => {
 let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
 assert.equal(answer.text, 'The synthetic task answer.'); assert.equal(f.voice.taskAnswers.length, 1); assert.equal(calls, 1);
 assert.equal(f.voice.texts.length, 0); assert.equal(f.voice.toolResponses.length, 0, 'no legacy function-output continuation');
 });
@@ -102,7 +102,7 @@ assert.equal(f.voice.texts.length, 0); assert.equal(f.voice.toolResponses.length
 test('task dead-air: pending work stays quiet through the native 8 second watchdog boundary', async t => {
 const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
 t.mock.timers.tick(8_000); await f.flush();
 assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.texts.length, 0);
 release.resolve(); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
@@ -120,7 +120,7 @@ test('C-DEADAIR: a response the owner can hear clears the debt, so the rung neve
 test('task lifecycle: elapsed worker time is durable metadata, not provider response inference', async t => {
 const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
 const task = f.store.transaction(tx => tx.get('SELECT created_at FROM tasks'));
 t.mock.timers.tick(500); release.resolve(); await f.answer();
 const finished = f.store.transaction(tx => tx.get('SELECT updated_at,status FROM tasks'));
@@ -135,7 +135,7 @@ assert.equal(f.voice.taskAnswers.length, 1);
 test('task dead-air: owner words hold a result until the finalized correction', async t => {
 const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
 f.voice.emit({ type: 'inputTranscription', text: 'A synthetic correction is beginning', finished: false }); await f.flush();
 release.resolve(); await f.flush(); t.mock.timers.tick(8_000); await f.flush();
 assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.texts.length, 0);
@@ -160,7 +160,7 @@ const removedRebuilds = (live: DeadAir): Record<string, unknown>[] =>
 test('task dead-air: the completed result waits for audio output to become quiet', async t => {
 const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
 f.voice.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24000, audible: true }); await f.flush();
 release.resolve(); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0, 'a task answer waits for voice output to be quiet');
 f.voice.emit({ type: 'turnComplete' }); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
@@ -169,7 +169,7 @@ f.voice.emit({ type: 'turnComplete' }); assert.equal((await f.answer()).text, 'T
 test('task dead-air: a heard answer cancels timeout before the held result replays', async t => {
 let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
+f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
 f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
 t.mock.timers.tick(14_999); f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); await f.flush();
 t.mock.timers.tick(1); await f.flush(); assert.equal(f.voice.sessionsOpened, 1); assert.equal(calls, 1);
@@ -215,15 +215,13 @@ test('C-REBUILD C: an owner turn with no tool work and no response is never rebu
   assert.equal(removed[0]!.removedCount, 1);
 });
 
-test('task dead-air: microphone mute does not disable unheard-result recovery', async t => {
-let calls = 0;
-const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); const answer = await f.answer();
-f.attachment.setInputMuted(true); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
-t.mock.timers.tick(15_000); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2, 'one bounded retry precedes result reconnect');
-assert.equal(f.voice.taskAnswers[1]?.text, answer.text);
-t.mock.timers.tick(15_000); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'muted unspoken-result reconnect');
-assert.match(f.voice.requests[1]!.system.text, /The synthetic task answer/); assert.equal(calls, 1);
+test('task dead-air: microphone mute never replays an acknowledged result', async t => {
+  const f = await liveTaskFixture(t, async () => ({ text: 'The synthetic task answer.', calls: [] }), { clock: true });
+  f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
+  f.attachment.setInputMuted(true);
+  t.mock.timers.tick(30_000); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1);
 });
 
 // C-REBUILD (B-R7): the contract's invariant replays. One owed turn has one continuation owner: note delivery,
@@ -299,11 +297,11 @@ test('C-REBUILD invariant: a stale timer after the answer was heard does nothing
 test('task barge-in: partial correction blocks stale delivery and finalized words get one answer', async t => {
 const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-f.bind(); f.finalize('Do the synthetic task.'); await fixtureUntil(() => calls === 1, 'controlled task');
+f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
 f.voice.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24000, audible: true });
 f.voice.emit({ type: 'interrupted' }); f.voice.emit({ type: 'inputTranscription', text: 'Wait for the synthetic correction', finished: false });
 await f.flush(); release.resolve(); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0);
-f.bind('corrected-binding'); f.finalize('Use the final synthetic correction.');
+f.finalize('Use the final synthetic correction.'); f.bind('corrected-binding');
 assert.equal((await f.answer()).delegationId, 'corrected-binding'); assert.equal(f.voice.taskAnswers.length, 1);
 });
 

@@ -623,7 +623,7 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test('task delivery audit keeps closed identity/state fields and rejects owner or target text', () => {
-  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'heard' } as const;
+  const event = { event: 'task_delivery', taskId: 'synthetic-task', revision: 1, state: 'accepted' } as const;
   assert.deepEqual(safeEvent(event), event);
   assert.equal(safeEvent({ ...event, ownerWords: 'synthetic owner words' }), undefined);
   assert.equal(safeEvent({ ...event, target: 'https://synthetic.invalid/private' }), undefined);
@@ -711,4 +711,13 @@ test('task delivery audit accepts closed metadata and refuses owner or target te
  assert.equal(safeEvent({ ...metadata, ownerWords: 'SYNTHETIC_PRIVATE_WORDS' }), undefined);
  assert.equal(safeEvent({ ...metadata, target: 'https://example.com/synthetic-private-target' }), undefined);
  assert.equal(JSON.stringify(safeEvent(metadata)).includes('SYNTHETIC_PRIVATE_WORDS'), false);
+});
+
+test('rebuild owed metadata is closed and never a content channel', () => {
+  const base = { event: 'live_rebuild', trigger: 'line_dropped', cause: 'network', liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  for (const owed of ['running_task', 'finished_answer_pending', 'nothing_owed']) {
+    const event = { ...base, owed }; assert.deepEqual(safeEvent(event), event);
+    assert.equal(safeEvent({ ...event, text: 'Synthetic private payload.' }), undefined);
+  }
+  assert.equal(safeEvent({ ...base, owed: 'Synthetic arbitrary text.' }), undefined);
 });

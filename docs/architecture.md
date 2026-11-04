@@ -51,17 +51,17 @@ Permission belongs in `server/tasks/authority.ts`. Direct asks run without anoth
 
 This page describes the merged release. Future work belongs in [roadmap.md](roadmap.md), not in the runtime contract. Historical designs remain under [history/](history/README.md).
 
-## Host-owned task core (10.10, not connected to live sessions yet)
+## Host-owned task core (10.11)
 
 `server/tasks/` owns typed tool results, the configurable text worker loop and revision lifecycle.
-`runtime.ts` composes `Store`, the pure controller and the delivery interface; no live adapter calls it yet.
+`runtime.ts` composes `Store`, the pure controller and the delivery interface; `call.ts` binds it to the live host.
 The model port supports OpenAI Responses and Gemini generateContent over host-resolved credential references.
 Each role has one provider, model id and effort configuration; the measured default is one named constant in
 `tasks/model.ts`. Provider continuation retains reasoning and thought signatures. No provider call runs in the task suites.
 
 Finalized owner words start or revise work without a language classifier. Revision cancellation stops new admissions
 and aborts inference. Read results are canonically deduplicated within a revision and retained across its corrections;
-effect receipts are not a read cache. A stale revision or connection generation cannot deliver.
+effect receipts are not a read cache. A stale revision cannot deliver; a current task survives provider generation changes.
 Connector, inference and revision deadlines are 12, 12 and 36 seconds. There is no call or hop cap.
 The model decides queries. Mail and chat windows are query operators; calendar has typed start and end.
 
@@ -74,5 +74,34 @@ calendar and attendee formatting, search projections, omission annotations and s
 Task migrations belong to `runtime/task-schema.ts` and are applied by `Store` only. Owner words, arguments,
 results and final answers use the host content-capture gate; metadata and delivery attempts remain recorded.
 Content is pruned at 30 days, metadata at 90, matching trace retention. Pending operations become unknown at restart.
-Closed-field `task_lifecycle` events never include queries or bodies. Delivery completion here means acceptance by
-an injected delivery interface, not proof of spoken audio. The live-call integration owns actual transport acknowledgement.
+Closed-field `task_lifecycle` events never include queries or bodies. Delivery completion means provider timeline acknowledgement, not proof of spoken audio. The live-call integration owns actual transport acknowledgement.
+
+### Open-line task delivery (10.11)
+
+Finalized owner speech starts or revises the helper after 1,200 ms without new owner transcript.
+New words restart this host-owned quiet; adapter finalization consumes the same interval, not an extra delay.
+There is no lexical hesitation classifier. Stop commands,
+mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
+
+OpenAI results use commentary on the current provider generation with its latest delegation id,
+or null when there is none. The host waits for owner speech and output quiet, then appends ordered
+chunks of at most 450 characters. Provider timeline acknowledgement settles each chunk, not exact
+transcription or proven playback. An explicit rejection retries once on the same line and then logs
+failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
+heard deadline. Store records pending sends and only records delivered after provider acknowledgement.
+
+A real socket rebuild retains the bounded transcript through rebuildSeed. Unacknowledged remainder
+is appended as commentary after ready, with a null id until this generation has a delegation.
+Accepted chunks are not replayed; no say-first instructions replace conversation history.
+Recovery timing is unchanged. Verified helper status names whether a rebuild happened and its closed
+cause; live_rebuild metadata names running_task, finished_answer_pending or nothing_owed.
+
+A no_action result releases an open delegation with situation-only commentary: no lookup is needed,
+and the voice should answer from its own mind and the conversation. Without an open delegation it
+sends nothing. A no-tool complete or incomplete result is suppressed if the voice already spoke and
+no delegation is open. Tool evidence is always delivered; failure and incomplete text is not rewritten.
+Stale revisions never deliver. Gemini retains its tool-response route apart from the shared input quiet.
+
+Synthetic providers prove routing, ordering, acknowledgement state, holds and bounded rejection handling.
+They cannot prove audibility, exact wording, model weaving, or remembered meaning. Real-wire trials
+established null-id commentary and retained history; transcript matches are not delivery receipts.

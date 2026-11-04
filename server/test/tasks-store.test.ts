@@ -141,3 +141,32 @@ test('host memory reader distinguishes unknown ids and returns valid local entri
     assert.equal(valid.text, 'synthetic local fact');
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('task review content is stored and pruned while source results never enter the database or log', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-review-fixture-'));
+  const store = new Store(directory);
+  const now = 1800000000000, identity = { task_id: 'review-fixture', task_revision: 1, connection_generation: 1 };
+  try {
+    store.saveTaskRevision(identity, ['SYNTHETIC_OWNER_WORDS'], { evidence: [{ text: 'SOURCE_BODY_NOT_RETAINED' }] }, false, now);
+    const row = store.transaction(tx => tx.get('SELECT owner_words,evidence FROM task_revisions'))!;
+    assert.equal(row.owner_words, JSON.stringify(['SYNTHETIC_OWNER_WORDS']));
+    assert.doesNotMatch(String(row.evidence), /SOURCE_BODY_NOT_RETAINED/);
+    store.saveTaskOperation({ ...identity, operation_id: 'review-operation', tool: 'read_mail', effect: 'none', state: 'committed', args: { id: 'SYNTHETIC_ARGUMENT' }, result: { status: 'ok', text: 'SOURCE_BODY_NOT_RETAINED' } }, false, now);
+    const operation = store.transaction(tx => tx.get('SELECT arguments,result FROM task_operations'))!;
+    assert.match(String(operation.arguments), /SYNTHETIC_ARGUMENT/);
+    assert.doesNotMatch(String(operation.result), /SOURCE_BODY_NOT_RETAINED/);
+    const summary = JSON.parse(String(operation.result)) as Record<string, unknown>;
+    assert.equal(summary.category, 'ok');
+    assert.equal(typeof summary.size_bytes, 'number');
+    assert.equal(store.finishTask(identity, 'complete', { text: 'SYNTHETIC_FINAL_ANSWER', findings: [{ text: 'SOURCE_BODY_NOT_RETAINED' }] }, false, now), true);
+    const answer = store.transaction(tx => tx.get('SELECT final_answer FROM tasks'))!;
+    assert.match(String(answer.final_answer), /SYNTHETIC_FINAL_ANSWER/);
+    assert.doesNotMatch(String(answer.final_answer), /SOURCE_BODY_NOT_RETAINED/);
+    assert.equal(safeEvent({ event: 'task_tool', taskId: identity.task_id, revision: 1, operationId: 'review-operation', tool: 'read_mail', durationMs: 1, category: 'ok', cache: 'miss', content: row.owner_words }), undefined);
+    store.pruneTasks(now + 31 * 86400000);
+    assert.equal(store.transaction(tx => tx.get('SELECT owner_words,evidence FROM task_revisions'))?.owner_words, null);
+    assert.equal(store.transaction(tx => tx.get('SELECT arguments FROM task_operations'))?.arguments, null);
+    assert.equal(store.transaction(tx => tx.get('SELECT final_answer,content_pruned_at FROM tasks'))?.final_answer, null);
+    assert.equal(store.transaction(tx => tx.get('SELECT content_pruned_at FROM tasks'))?.content_pruned_at, now + 31 * 86400000);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

@@ -137,13 +137,13 @@ test('L-08: one classified connector failure reaches the host log sink and the h
   noteGmailAccount(undefined);
   const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
   const child = join(here, 'fixtures', 'google-mcp-child.mjs');
-  const args = [child, 'code:scope_missing', join(home, 'child.pid')];
+  const args = [child, 'first-mail:auth_needed', join(home, 'child.pid')];
   const store = new Store(join(home, 'data'), toolsMigrations);
   const registry = new McpRegistry();
   const env = { HOME: join(home, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
   // The synthetic child answers every tool call with one published helper code; scope_missing is the
   // Drive family's own consent refusal. No account, network or credential file is touched.
-  registry.register({ id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture' } as unknown as EndpointConfig);
+  registry.register({ id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'owner@example.invalid', resource: 'google-fixture' } as unknown as EndpointConfig);
   registry.enable('gmail'); registry.allowEgress('gmail');
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
   const seen: unknown[] = [];
@@ -157,7 +157,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port: adapter, lookupAuthority: async () => live });
     const policy: ConnectionPolicy = {
       schemaVersion: 1, ownerId: store.assistantId, connectionId: 'gmail', generation: 1, enabled: true, connector: 'google',
-      endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture', credentialRef: null },
+      endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'owner@example.invalid', resource: 'google-fixture', credentialRef: null },
       toolNames: names, schemaDigest: discovery.schemaDigest,
       sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
       route: { identity: 'voice', allowedClasses: ['private'] },
@@ -168,7 +168,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     // discovery of the same catalog restores the digest the applied policy names.
     const again = await adapter.discover('gmail');
     assert.equal(again.state, 'discovered');
-    registry.approve({ endpointId: 'gmail', schemaDigest: policy.schemaDigest, generation: 1, account: 'local', resource: 'google-fixture', toolNames: names, effect: 'read' });
+    registry.approve({ endpointId: 'gmail', schemaDigest: policy.schemaDigest, generation: 1, account: 'owner@example.invalid', resource: 'google-fixture', toolNames: names, effect: 'read' });
     const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
     const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
@@ -184,7 +184,7 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     assert.equal(outcome.status, 'completed', 'the model tool transport completes even when the contained read fails');
     assert.equal(task.results[0]?.status, 'failed', 'the actual canonical read is failed, never an empty success');
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_failure');
-    assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
+    assert.equal(rows.length, 1, `exactly one native failure row reaches the host log: ${JSON.stringify(task.results).slice(0, 1200)}`);
     assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'scope_missing' });
     assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
     assert.equal(safeEvent({ ...(rows[0] as Record<string, unknown>), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');

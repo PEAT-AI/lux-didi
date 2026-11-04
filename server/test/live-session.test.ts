@@ -1720,6 +1720,9 @@ async function killChild(f: Awaited<ReturnType<typeof fixture>>, dir: string, po
     const created = await nextMessage(child, 'created');
     const liveSessionId = String(created['liveSessionId']);
     if (mode === 'intent') {
+      // A forked process progresses independently of this process's synthetic drain.
+      await f.connected;
+      if (f.frames.length === 0) await once(f.peer!, 'message');
       await f.frame(1);
       f.send({ setupComplete: {} });
       await nextMessage(child, 'intent');

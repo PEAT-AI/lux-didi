@@ -47,10 +47,13 @@ test('a provider that never says it started fails readiness inside the bound', a
 
 test('a recording that never serves its answer ends red, by name', async () => {
   const recording = recordingFor([STARTED, DELEGATION(HELPER)]);
+  const at = Date.now();
   const outcome = await runScenario({ scenario: scenarioOf('calendar-split'), recording, timeoutMs: 300 });
   assert.equal(outcome.pass, false);
   assert.ok(outcome.reasons.includes('turn_not_answered:0'), outcome.reasons.join('; '));
-  assert.ok(outcome.reasons.includes('recording_not_served'), outcome.reasons.join('; '));
+  assert.ok(outcome.reasons.includes('spoken_missing:design review'), outcome.reasons.join('; '));
+  const elapsed = Date.now() - at;
+  assert.ok(elapsed < 5_000, `the unanswered turn took ${elapsed} ms, so the wait is not bounded`);
 });
 
 test('a delegation the fixture does not staff is named, not waited out', async () => {

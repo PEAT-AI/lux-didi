@@ -157,6 +157,9 @@ test('the mini boot functions in main.ts reach no audio, microphone or Live path
 /// M3: a pill stage and its one canvas, enough of the DOM for the loop to read and paint.
 function fakePill(state: MiniState, bars = [0, 1, 2, 3, 4].map(() => ({ style: { height: '' } }))) {
   const style = { vars: new Map<string, string>(), setProperty(name: string, value: string) { this.vars.set(name, value); } };
+  // #865: one canvas, as a real querySelector returns: the loop compares the element it wrote
+  // to against the one on the stage now, so a fresh object per call would look like a rebuild.
+  const canvas = { canvas: true };
   const stage = {
     style,
     attributes: new Map([['data-mini-state', state]]),
@@ -164,7 +167,7 @@ function fakePill(state: MiniState, bars = [0, 1, 2, 3, 4].map(() => ({ style: {
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
     classList: { add: () => undefined },
     querySelectorAll: () => bars,
-    querySelector: (selector: string) => (selector === 'canvas' ? { canvas: true } : null),
+    querySelector: (selector: string) => (selector === 'canvas' ? canvas : null),
   };
   // The pill is the chrome around the stage: the wash and the bars live there.
   const pillStyle = { vars: new Map<string, string>(), setProperty(name: string, value: string) { this.vars.set(name, value); } };

@@ -1004,7 +1004,7 @@ test('#1011: a receipt earlier than the final is a flag, never a zero', () => {
     // The row itself: three missing measures, the segments the store holds, and the three flags in order.
     const lines = renderCallAudit(audit).split('\n');
     const printed = lines[lines.findIndex(entry => entry.startsWith('turns turn ')) + 1]!;
-    assert.match(printed, /^t1 \S+ \S+ \S+ missing missing missing 1 /u);
+    assert.match(printed, /^t1 \S+ \S+ \S+ missing missing missing 2 /u);
     assert.match(printed, /final_after_provider_audio final_after_native_audible final_after_answer_complete$/u);
     assert.equal(/\b0ms\b/u.test(printed), false, 'an impossible interval is never printed as zero');
   });

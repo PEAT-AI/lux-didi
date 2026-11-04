@@ -160,7 +160,7 @@ test('C-DELIVERY: tool evidence is delivered even if the voice already answered 
   const f = fixture(t, async () => ++inferences === 1 ? first.promise : { text: 'Synthetic evidence answer.', calls: [] }, 'openai', undefined,
     async () => ({ status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }));
   const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
-  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', limit: 1 } }] });
+  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] });
   const result = await running; assert.equal(result.findings.length, 1); assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0]!.text, 'Synthetic evidence answer.');
 });
@@ -168,7 +168,7 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
   const clock = quietClock(); let release!: () => void; let reads = 0; let inferences = 0;
   const read = new Promise<void>(resolve => { release = resolve; });
   const f = fixture(t, async () => ++inferences === 1
-    ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', limit: 1 } }] }
+    ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] }
     : { text: 'Synthetic corrected result.', calls: [] }, 'openai', clock.after,
     async () => { reads++; await read; return { status: 'ok', text: 'Synthetic read result.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }; });
   t.after(release);

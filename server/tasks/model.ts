@@ -25,6 +25,7 @@ export function declarations(request: InferRequest, provider: ModelRole['provide
   return request.tools.map(tool => provider === 'openai' ? { type: 'function', name: tool.name, description: tool.description, strict: true, parameters: tool.parameters } : { name: tool.name, description: tool.description, parameters: taskGeminiSchema(tool.parameters) });
 }
 function terminal(text: string, calls: ToolCall[]): Inference {
+  text = text.trim();
   try {
     const value = record(JSON.parse(text));
     if (!calls.length && value.status === 'no_action') return { text: '', calls, no_action: true };

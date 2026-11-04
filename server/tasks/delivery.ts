@@ -24,17 +24,16 @@ export function splitSpokenText(text: string): string[] {
 }
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
-  command?: string | undefined; attempt: number; started: boolean;
+  command?: string | undefined; attempt: number; started: boolean; requiresDelegation: boolean; blocked: boolean;
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
   #binding: string | null = null;
+  #delegated: RevisionIdentity | undefined;
   #ready = true;
   #quiet = true;
   #owner = false;
-  #undelivered: { identity: RevisionIdentity; answer: WorkerResult } | undefined;
   constructor(readonly ports: DeliveryPorts) {}
-  get undelivered() { return this.#undelivered; }
   waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     const pending = this.#current();
     return pending ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
@@ -45,21 +44,21 @@ export class TaskDelivery implements Delivery {
   }
   socket(_generation: number, ready = true): void {
     this.#binding = null; this.#ready = ready; this.#quiet = true;
-    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; pending.started = false; }
+    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; pending.started = false; pending.blocked = false; }
     this.#drain();
   }
-  ready(): void { this.#ready = true; this.#drain(); }
+  ready(): void { this.#ready = true; this.#resume(); }
   attach(identity: RevisionIdentity, binding: string): void {
     if (!this.ports.isCurrent(identity)) return;
-    this.#binding = binding; this.#drain();
+    this.#binding = binding; this.#delegated = identity; const pending = this.#current(); if (pending) pending.requiresDelegation = false; this.#resume();
   }
   progress(_identity: RevisionIdentity): void {}
-  deliver(identity: RevisionIdentity, answer: WorkerResult): void {
+  deliver(identity: RevisionIdentity, answer: WorkerResult, requiresDelegation = false): void {
     if (!this.ports.isCurrent(identity) || answer.status === 'cancelled') return;
-    const text = answer.status === 'no_action' ? (this.#binding ? NO_LOOKUP_COMMENTARY : '') : answer.text;
+    const noLookup = answer.status === 'no_action' || !answer.text.trim();
+    const text = noLookup ? NO_LOOKUP_COMMENTARY : answer.text;
     if (!text.trim()) return;
-    this.#undelivered = undefined;
-    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0, started: false };
+    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
@@ -82,9 +81,13 @@ export class TaskDelivery implements Delivery {
     const pending = this.#current(); if (pending) pending.command = undefined;
   }
   dispose(): void { this.#pending = undefined; this.#binding = null; this.#ready = false; }
+  #resume(): void {
+    const pending = this.#current(); if (pending?.blocked) { pending.blocked = false; pending.attempt = 1; }
+    this.#drain();
+  }
   #drain(): void {
     const pending = this.#current();
-    if (!pending || !this.#ready || this.#owner || (!this.#quiet && !pending.started) || pending.command) return;
+    if (!pending || pending.blocked || pending.requiresDelegation || !this.#ready || this.#owner || (!this.#quiet && !pending.started) || pending.command) return;
     pending.command = this.ports.append(this.#binding, pending.chunks[pending.chunk]!);
     if (!pending.command) { this.#retry(); return; }
     pending.started = true; this.ports.state(pending.identity, 'sent', pending.chunk);
@@ -92,7 +95,7 @@ export class TaskDelivery implements Delivery {
   #retry(): void {
     const pending = this.#current(); if (!pending) return;
     if (pending.attempt++ === 0) { this.ports.state(pending.identity, 'retry', pending.chunk); this.#drain(); return; }
-    this.#undelivered = { identity: pending.identity, answer: pending.answer };
-    this.ports.state(pending.identity, 'undelivered', pending.chunk); this.#pending = undefined;
+    pending.blocked = true;
+    this.ports.state(pending.identity, 'undelivered', pending.chunk);
   }
 }

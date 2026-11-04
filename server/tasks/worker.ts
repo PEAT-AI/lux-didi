@@ -80,7 +80,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
-      return { status: 'incomplete', text: answer.text || incomplete().text, findings, receipts };
+      return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, receipts };
     } catch { return options.signal.aborted ? finish() : incomplete(); }
     finally { clear(); options.signal.removeEventListener('abort', cancel); }
   }
@@ -162,6 +162,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       } catch { return options.signal.aborted ? finish() : compose(); }
       if (!current()) return finish();
       turns.push(inference);
+      if (!inference.calls.length && !inference.text.trim() && findings.length) return compose();
       if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const outstanding = new Map(inference.calls.map(item => [item.id, item]));

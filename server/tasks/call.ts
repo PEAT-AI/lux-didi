@@ -39,9 +39,8 @@ export class TaskCall {
       deliver: (identity, answer) => {
         this.#answer = { identity, answer };
         if (ports.provider === 'openai') {
-          if (answer.status === 'no_action' && !this.#delegation) return;
-          if ((answer.status === 'complete' || answer.status === 'incomplete') && !this.runtime.usedTool(identity) && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation) return;
-          this.delivery.deliver(identity, answer);
+          const requiresDelegation = (answer.status === 'complete' || answer.status === 'incomplete') && !this.runtime.usedTool(identity) && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation;
+          this.delivery.deliver(identity, answer, requiresDelegation);
         }
         else this.#respond();
       },

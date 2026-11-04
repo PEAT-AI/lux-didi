@@ -134,7 +134,7 @@ interface Harness {
   calls: { name: string; args: unknown }[];
   readonly memorySelections: number;
   advance(ms: number): void;
-  helperQuiet(): Promise<void>;
+  helperQuiet(force?: boolean): Promise<void>;
   /** W10: publishes the calendar grant the way the host does after a slow connector finishes. */
   publishCalendar?(): Promise<void>;
 }
@@ -449,9 +449,9 @@ async function harness(t: TestContext, overrides: {
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
       contentAllowed: () => true, timeZone: 'UTC', executors: () => overrides.taskExecutors ?? {}, infer: overrides.taskInfer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => taskScheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(taskScheduler ? { schedule: taskScheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, helperQuiet: async () => {
+  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, helperQuiet: async (force = false) => {
     await settlePort();
-    if (taskScheduler) { taskScheduler.now += 1_200; taskScheduler.runDue(); await settlePort(); }
+    if (taskScheduler && (overrides.taskInfer || force)) { taskScheduler.now += 1_200; taskScheduler.runDue(); await settlePort(); }
   }, advance: ms => { if (taskScheduler) taskScheduler.now += ms; else clock += ms; } };
 }
 
@@ -4331,7 +4331,7 @@ for (const progress of ['Checking.', 'On it.', 'One sec.', 'Let me look into tha
   const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   await attached(h, 'progress-is-not-delegation');
   h.f.send({ serverContent: { inputTranscription: { text: 'check the synthetic contract', finished: true } } });
-  await h.helperQuiet();
+  await h.helperQuiet(true);
   for (let attempt = 0; attempt < 200 && !h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'); attempt++) await tick();
   assert.ok(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), 'establish a real finalized owner turn');
   const tasks = h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM tasks'))?.n;
@@ -5434,8 +5434,8 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
   await fixtureSettled(entered.promise, 'first worker');
   p.emit({ type: 'interrupted' });
   p.emit({ type: 'inputTranscription', text: 'No, check the corrected fact', finished: true, finalOrigin: 'provider' });
-  await h.helperQuiet();
   p.emit({ type: 'delegation', delegationId: 'corrected-binding' });
+  await h.helperQuiet();
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(signals[0]?.aborted, true);
   assert.equal(inferences, 2);

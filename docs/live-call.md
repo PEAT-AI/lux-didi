@@ -41,7 +41,8 @@ General explanation and plain conversation can be answered directly.
 ### Open-line task delivery (10.11)
 
 Finalized owner speech starts or revises the helper after 1,200 ms without new owner transcript.
-New words restart this host-owned quiet; there is no lexical hesitation classifier. Stop commands,
+New words restart this host-owned quiet; adapter finalization consumes the same interval, not an extra delay.
+There is no lexical hesitation classifier. Stop commands,
 mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
 
 OpenAI results use commentary on the current provider generation with its latest delegation id,

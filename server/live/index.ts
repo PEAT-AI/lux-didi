@@ -67,6 +67,7 @@ interface ActiveSession {
   taskOwnerTurn?: number;
   taskRebuildCause?: 'host' | 'network' | 'provider';
   taskWords?: string;
+  taskLastWordsAt?: number;
   taskOutputQuiet?: boolean;
   taskOwnerOpen?: boolean;
   taskWorkAt?: number | undefined;
@@ -3985,7 +3986,7 @@ export class LiveSessionOwner {
         if (event.type === 'inputTranscription') {
           handle.inputJournalId = persisted;
           if (event.text.length) {
-            handle.taskWords = (handle.taskWords ?? '') + event.text; handle.taskOwnerOpen = true; handle.tasks?.ownerWords();
+            handle.taskWords = (handle.taskWords ?? '') + event.text; handle.taskLastWordsAt = this.#now(); handle.taskOwnerOpen = true; handle.tasks?.ownerWords();
             handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: true });
           }
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
@@ -4255,7 +4256,7 @@ export class LiveSessionOwner {
     if (handle.taskWords?.trim()) {
       const words = handle.taskWords; handle.taskWords = '';
       handle.taskOwnerTurn = (handle.taskOwnerTurn ?? 0) + 1;
-      handle.tasks?.finalized(words, handle.taskOwnerTurn);
+      handle.tasks?.finalized(words, handle.taskOwnerTurn, this.#now() - (handle.taskLastWordsAt ?? this.#now()));
     }
     // A correction must become current before releasing a queued answer from the speech hold.
     handle.taskOwnerOpen = false;

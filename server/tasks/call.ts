@@ -56,17 +56,20 @@ export class TaskCall {
     this.#cancelQuiet?.(); this.#cancelQuiet = undefined; this.#inputPending = true;
     this.#spoken = false; this.#delegation = undefined;
   }
-  finalized(words: string, ownerTurn: number): void {
+  finalized(words: string, ownerTurn: number, quietForMs = 0): void {
     this.#queuedWords = [this.#queuedWords, words].filter(Boolean).join(' ');
     this.#queuedTurn = ownerTurn; this.#inputPending = true; this.#cancelQuiet?.();
     const after = this.ports.after ?? ((ms: number, callback: () => void) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
-    this.#cancelQuiet = after(1_200, () => {
+    const start = () => {
       this.#cancelQuiet = undefined; const input = this.#queuedWords; this.#queuedWords = '';
       const result = this.input(input, this.#queuedTurn);
       this.#inputPending = false;
       this.delivery.activity({ outputQuiet: this.#outputQuiet, ownerSpeaking: false });
       void result.catch(() => {});
-    });
+    };
+    const remaining = Math.max(0, 1_200 - quietForMs);
+    // Adapter transcript finalization has already consumed part of this same quiet interval.
+    if (remaining === 0) start(); else this.#cancelQuiet = after(remaining, start);
   }
   spoke(): void { this.#spoken = true; }
   input(words: string, ownerTurn: number): Promise<WorkerResult> {

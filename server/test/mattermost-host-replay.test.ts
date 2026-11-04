@@ -15,6 +15,7 @@ import { hostMigrations } from '../host/runtime.js';
 import { createToolsOwner } from '../tools/index.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { canonicalTaskFixture } from './canonical-task-fixture.js';
+import { TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/tools.js';
 import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 const FIXTURE_NOW = Date.parse('2026-10-25T09:00:00Z');
 const ACCOUNT = 'local';
@@ -81,9 +82,13 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   const task = canonicalTaskFixture(store, owner, 'chat-sequence', 'Read the synthetic chat sources', ['mattermost']);
   t.after(() => task.close());
   const definitions = task.tools;
+  host.grants.push(...definitions.map(tool => ({ tool: tool.name, effect: 'read' as const, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE })));
   const canonicalCall = (id: string, args: Record<string, unknown>) => {
     const { intent, ...fields } = args;
-    return { id, name: `chat_${String(intent)}`, args: { ...fields, from_date: fixtureDaysAgo(7) } };
+    const name = `chat_${String(intent)}`;
+    const properties = definitions.find(tool => tool.name === name)!.parameters.properties as Record<string, unknown>;
+    const supplied: Record<string, unknown> = { ...fields, from_date: fixtureDaysAgo(7) };
+    return { id, name, args: Object.fromEntries(Object.keys(properties).map(key => [key, supplied[key] ?? null])) };
   };
   const sequence = [
     { intent: 'channel', channel: 'Builders', query: 'pilot' },

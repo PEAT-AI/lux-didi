@@ -48,7 +48,7 @@ test('host runtime persists a real synthetic worker revision and delivery attemp
   const directory = mkdtempSync(join(tmpdir(), 'task-runtime-fixture-'));
   const store = new Store(directory), delivery = new FakeDelivery();
   try {
-    const runtime = new TaskRuntime({ store, delivery, execute: async () => { throw new Error('unexpected tool'); }, authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: { get: async () => undefined, put: async () => {} } }), contentAllowed: () => true, infer: async () => ({ text: 'synthetic final', calls: [] }) });
+    const runtime = new TaskRuntime({ store, delivery, execute: async () => { throw new Error('unexpected tool'); }, authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: { get: async () => undefined, put: async () => {} } }), infer: async () => ({ text: 'synthetic final', calls: [] }) });
     const { revision, result } = runtime.finalize('synthetic input', 1);
     assert.equal((await result).status, 'complete');
     assert.equal(delivery.answers.length, 1);

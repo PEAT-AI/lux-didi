@@ -118,3 +118,22 @@ test('SOURCE DEFECT C-RECUR M2: stop the Saturday cardio reminders with an occur
   assert.equal(h.series().pending, 0, 'no occurrence is left behind');
   assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_series')?.n), 1, 'the cancelled series row is kept');
 });
+
+test('task recurrence tools accept an explicit rule and update the durable series, not a one-shot substitute', async t => {
+  const now = Date.UTC(2030, 0, 1);
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const rule = { kind: 'daily' as const, weekdays: [], hour: 12, minute: 0, tz: 'UTC' };
+  const created = await h.call('alarm_create', { text: 'synthetic daily', at: new Date(now + 3_600_000).toISOString(), recurrence: rule }, 'set this repeating reminder');
+  assert.equal(created.status, 'ok', created.repair ?? created.text);
+  const id = created.references[0]!.id;
+  assert.equal(h.store.transaction(tx => tx.get('SELECT kind FROM alarm_series WHERE id=?', [id])?.kind), 'daily');
+  const weekly = { ...rule, kind: 'weekly' as const, weekdays: [6], hour: 10 };
+  const updated = await h.call('alarm_update', { id, text: null, at: null, recurrence: weekly }, 'change the repeating rule');
+  assert.equal(updated.status, 'ok', updated.repair ?? updated.text);
+  const persisted = h.store.transaction(tx => tx.get('SELECT kind,weekdays,local_time FROM alarm_series WHERE id=?', [id]));
+  assert.equal(persisted?.kind, 'weekly');
+  assert.equal(persisted?.weekdays, '6');
+  assert.equal(persisted?.local_time, '10:00');
+  assert.equal(Number(h.store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [id])?.fire_at_utc)), seriesNextFireAt(weekly, now));
+  assert.equal(h.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarm_occurrences WHERE series_id=?', [id])?.n), 1);
+});

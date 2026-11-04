@@ -315,3 +315,11 @@ test('worker inference receives public instructions followed by presentation sty
   await runWorker(withoutProfile);
   assert.equal(received, WORKER_INSTRUCTIONS);
 });
+
+test('company search preserves the native ref rather than a numeric record id', async () => {
+  const { projectTaskPayload } = await import('../tasks/connectors.js');
+  const result = projectTaskPayload('search_company', { results: [{ id: 63, ref: 'ticket:63', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  assert.equal(result.references[0]?.id, 'ticket:63');
+  const plain = projectTaskPayload('search_company', { results: [{ id: 'ticket:64', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  assert.equal(plain.references[0]?.id, 'ticket:64');
+});

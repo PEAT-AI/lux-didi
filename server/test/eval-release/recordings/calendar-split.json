@@ -3,7 +3,7 @@
     "source_finding": "C-EVALS2 tier 2 calendar split-final scenario",
     "date": "2026-11-02",
     "synthetic": true,
-    "note": "Hand-authored synthetic model turn. No provider call was made; frames are provider wire shapes only."
+    "note": "Hand-authored synthetic provider steps in the 10.11 wire shapes: a delegation, then the spoken answer with generated audible speech. The helper's own work is fixture data here, not a model call. No provider call was made."
   },
   "steps": [
     {
@@ -21,69 +21,32 @@
       "trigger": "audio",
       "frames": [
         {
-          "type": "response.event",
-          "event": {
-            "type": "response.created",
-            "response": {
-              "id": "resp_c1"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.output_item.done",
-            "item": {
-              "type": "function_call",
-              "name": "calendar_read",
-              "arguments": "{\"start\": \"2026-11-02T00:00:00-08:00\", \"end\": \"2026-11-03T00:00:00-08:00\"}",
-              "call_id": "call_c1"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.done",
-            "response": {
-              "id": "resp_c1",
-              "status": "completed"
-            }
-          },
-          "delegation_id": "item_dlg1"
+          "type": "session.delegation.created",
+          "delegation": {
+            "id": "dlg_calendar"
+          }
         }
-      ]
+      ],
+      "helper": {
+        "calls": [
+          {
+            "tool": "calendar.read",
+            "args": {
+              "start": "2026-11-02T00:00:00-08:00",
+              "end": "2026-11-03T00:00:00-08:00"
+            }
+          }
+        ],
+        "answer": "Tomorrow you have the design review at 3 and standup at 9:30."
+      }
     },
     {
-      "trigger": "continuation",
+      "trigger": "answer",
+      "audio_ms": 600,
       "frames": [
         {
-          "type": "response.event",
-          "event": {
-            "type": "response.created",
-            "response": {
-              "id": "resp_c2"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
           "type": "session.output_transcript.delta",
-          "event_id": "event_c2",
           "delta": "Tomorrow you have the design review at 3."
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.done",
-            "response": {
-              "id": "resp_c2",
-              "status": "completed"
-            }
-          },
-          "delegation_id": "item_dlg1"
         }
       ]
     }

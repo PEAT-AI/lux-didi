@@ -9,25 +9,18 @@
 import { readFileSync } from 'node:fs';
 import { createLiveVoiceAdapter } from '../../adapters/live-voice/index.js';
 import type { LiveVoiceEvent } from '../../adapters/live-voice/types.js';
-import { replayServer, type Recording } from './replay.js';
+import { replayServer, PROBE_RATE, tonePcm, type Recording } from './replay.js';
 
 /** 24 kHz mono 16-bit PCM, the rate the adapter's own audio path declares. */
-export const PROBE_RATE = 24_000;
+export { PROBE_RATE };
 /** About half a second: long enough to cross several upload chunks, short enough to stay a probe. */
 export const PROBE_SAMPLES = 12_000;
 /** One upload chunk. The probe and its plan both use it, so the plan's chunk count is the run's. */
 export const PROBE_CHUNK_BYTES = 4_800;
 
 /** A synthetic utterance: a 440 Hz tone at a fifth of full scale. Nothing recorded, nothing anyone said. */
-export function synthUtterance(samples = PROBE_SAMPLES): Uint8Array {
-  const pcm = new Uint8Array(samples * 2);
-  const view = new DataView(pcm.buffer);
-  for (let at = 0; at < samples; at += 1) {
-    const amplitude = Math.round(Math.sin((2 * Math.PI * 440 * at) / PROBE_RATE) * 6_500);
-    view.setInt16(at * 2, amplitude, true);
-  }
-  return pcm;
-}
+export function synthUtterance(samples = PROBE_SAMPLES): Uint8Array { return tonePcm(samples); }
+
 
 /** A `say -o file --data-format=LEI16@24000` capture (WAV with a 44 byte header) or bare PCM16. */
 export function readUtteranceFile(path: string): Uint8Array {

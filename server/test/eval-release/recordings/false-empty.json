@@ -1,9 +1,9 @@
 {
   "provenance": {
-    "source_finding": "C-EVALS2 tier 2 false-empty-claim negative",
+    "source_finding": "C-EVALS2 tier 2 false-empty negative",
     "date": "2026-11-02",
     "synthetic": true,
-    "note": "Hand-authored synthetic model turn. No provider call was made; frames are provider wire shapes only."
+    "note": "Hand-authored synthetic provider steps in the 10.11 wire shapes. The fixture's helper makes the declared research call and the answer claims an empty it cannot receipt. No provider call was made."
   },
   "steps": [
     {
@@ -12,7 +12,7 @@
         {
           "type": "session.started",
           "session": {
-            "id": "sess_eval_empty"
+            "id": "sess_eval_false_empty"
           }
         }
       ]
@@ -21,69 +21,32 @@
       "trigger": "audio",
       "frames": [
         {
-          "type": "response.event",
-          "event": {
-            "type": "response.created",
-            "response": {
-              "id": "resp_e1"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.output_item.done",
-            "item": {
-              "type": "function_call",
-              "name": "research",
-              "arguments": "{\"query\": \"finance\", \"source\": \"mail\"}",
-              "call_id": "call_e1"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.done",
-            "response": {
-              "id": "resp_e1",
-              "status": "completed"
-            }
-          },
-          "delegation_id": "item_dlg1"
+          "type": "session.delegation.created",
+          "delegation": {
+            "id": "dlg_false_empty"
+          }
         }
-      ]
+      ],
+      "helper": {
+        "calls": [
+          {
+            "tool": "research",
+            "args": {
+              "query": "finance",
+              "source": "mail"
+            }
+          }
+        ],
+        "answer": "No emails from finance, nothing there."
+      }
     },
     {
-      "trigger": "continuation",
+      "trigger": "answer",
+      "audio_ms": 600,
       "frames": [
         {
-          "type": "response.event",
-          "event": {
-            "type": "response.created",
-            "response": {
-              "id": "resp_e2"
-            }
-          },
-          "delegation_id": "item_dlg1"
-        },
-        {
           "type": "session.output_transcript.delta",
-          "event_id": "event_e2",
           "delta": "No emails from finance, nothing there."
-        },
-        {
-          "type": "response.event",
-          "event": {
-            "type": "response.done",
-            "response": {
-              "id": "resp_e2",
-              "status": "completed"
-            }
-          },
-          "delegation_id": "item_dlg1"
         }
       ]
     }

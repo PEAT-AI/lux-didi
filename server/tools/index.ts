@@ -1,3 +1,4 @@
+import { checkOwnerTime } from './time-check.js';
 import { commitAlarmEffect } from '../runtime/store.js';
 import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
@@ -564,7 +565,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const proposed = alarmReadBack(at, zone);
           const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
           const interpreted = parseAlarmTime(effect.ownerWords, now, zone, time.state === 'read' ? time.spec : undefined);
-          if (interpreted.status === 'ready' && interpreted.source !== 'model') {
+          if (interpreted.status === 'ready' && interpreted.source !== 'model'
+            && (interpreted.fireAtUtc > now || checkOwnerTime(effect.ownerWords).status === 'unique')) {
             // Combining a day constraint with the proposed clock must not erase its seconds.
             if (interpreted.source !== 'combined' || Math.floor(at / 60_000) !== Math.floor(interpreted.fireAtUtc / 60_000)) at = interpreted.fireAtUtc;
             rule = interpreted.series ?? rule;

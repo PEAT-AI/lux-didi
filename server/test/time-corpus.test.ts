@@ -169,11 +169,14 @@ test('C-FREEDOM: fake inference lists alarms then cancels the chosen exact id an
   const fakeInference = async () => {
     const listed = await h.call('alarm_list', {}, 'cancel that one');
     assert.equal(listed.status, 'ok');
-    assert.match(listed.text, new RegExp(second.references[0]!.id));
+    const candidates = JSON.parse(listed.text) as Array<{ id: string; label: string }>;
+    const selected = candidates.find(candidate => candidate.label === 'synthetic second');
+    assert.ok(selected);
+    assert.equal(selected.id, second.references[0]!.id);
     const refused = await h.call('alarm_cancel', { id: 'synthetic-wrong-id' }, 'cancel that one');
     assert.equal(refused.status, 'failed');
     assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'pending');
-    return h.call('alarm_cancel', { id: second.references[0]!.id }, 'cancel that one');
+    return h.call('alarm_cancel', { id: selected.id }, 'cancel that one');
   };
   const result = await fakeInference();
   assert.equal(result.status, 'ok', result.repair ?? result.text);

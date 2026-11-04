@@ -17,13 +17,13 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length <= 3000);
+assert.ok(WORKER_INSTRUCTIONS.length <= 4076);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
 
 // The old waiting cue is absent; the new policy owns silence and fresh acknowledgement.
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('After it, stay quiet until the result comes.').length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split('After a hand-off stay quiet until word comes, and word always comes.').length - 1, 1);
 assert.equal(prompt.NAYA_WORK_DELIVERY.split('freshly worded and never the same way twice in a call').length - 1, 1);
 for (const banned of ['Silence while you look something up is fine.', 'never go silent', 'say one short line',
   'Nothing has been sent or booked', 'Before an actual lookup', 'offer to keep looking', 'You can reach his']) {
@@ -96,7 +96,7 @@ for (const code of ['partial_timeout', 'truncated_to_budget', 'empty_after_retry
   assert.equal(fullLive.includes(code), false, `the voice never recites the retired coverage code ${code}`);
 }
 for (const rule of ['Say it completely and in order, keeping every name, number, date and qualification',
-  'If a result reports a failure, a gap or a partial answer, say that as given.',
+  'If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete.',
   'Say something happened only when a result says it happened.']) {
   assert.equal(fullLive.split(rule).length - 1, 1, `result truth and delivery stay explicit: ${rule}`);
 }

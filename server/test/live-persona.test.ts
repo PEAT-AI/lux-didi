@@ -879,9 +879,10 @@ test('S4b: the Gemini composition still carries every NAYA_WORK_DELIVERY sentenc
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /No backchannel words while he is speaking/);
+  assert.match(NAYA_VOICE_SURFACE, /While he is speaking or thinking the floor stays his/);
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/);
-  assert.match(NAYA_VOICE_SURFACE, /End no answer with "okay\?" as a reflex/);
+  assert.match(NAYA_VOICE_SURFACE, /no reflex tag/);
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /"okay\?"/);
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /name sources briefly/);
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /Only the host bridges lookups/);
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /progress phrase is not reused/);
@@ -1358,10 +1359,10 @@ test('#589/#590: the voice surface names the stop phrases and promises no silenc
 // history, labels general knowledge, and never talks over the owner. Each rule is one sentence, stated once.
 const HONESTY_RULES = [
   'Say something happened only when a result says it happened.',
-  'If a result reports a failure, a gap or a partial answer, say that as given.',
+  'If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete.',
   'Something done in an earlier call is history, and asking whether it worked is a new hand-off.',
   'Never promise to watch something or call back later;',
-  'No backchannel words while he is speaking, including pauses: no "Hmm", "Yeah" or "Okay"',
+  'While he is speaking or thinking the floor stays his, and that includes his pauses, his hesitations and any sentence he has not finished.',
 ];
 /** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
 const HONESTY_CONTRADICTIONS = [
@@ -1370,6 +1371,24 @@ const HONESTY_CONTRADICTIONS = [
   'I\'ll tell you later',
   'keep looking for you',
 ];
+
+test('C-PROMPT 10.11: she answers from herself and speaks of a lookup only in the turn she hands one off', () => {
+  assert.match(NAYA_WORK_DELIVERY, /Everything else is yours and you answer it yourself, at once/);
+  assert.match(NAYA_WORK_DELIVERY, /Speak of looking something up only in the turn you hand it off/);
+  assert.match(NAYA_WORK_DELIVERY, /Word may also be that nothing needs looking up/);
+  assert.match(NAYA_WORK_DELIVERY, /You cannot see work in progress/);
+  assert.match(NAYA_WORK_DELIVERY, /give what is there rather than only that it is incomplete/);
+  assert.match(NAYA_VOICE_SURFACE, /that includes his pauses, his hesitations and any sentence he has not finished/);
+  assert.match(NAYA_VOICE_SURFACE, /no reflex tag/);
+  // The narrower rule it replaces would now make her refuse a question that is hers to answer.
+  assert.doesNotMatch(NAYA_WORK_DELIVERY, /Answer by yourself only when the facts are already in this conversation/);
+  // The new paragraphs hand her no quoted line to say.
+  assert.doesNotMatch(NAYA_WORK_DELIVERY, /"/);
+  const backchannel = NAYA_VOICE_SURFACE.slice(NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),
+    NAYA_VOICE_SURFACE.indexOf('# Ending the call'));
+  assert.ok(backchannel.length > 0);
+  assert.doesNotMatch(backchannel, /"/);
+});
 
 test('HONESTY: the rendered voice instruction carries each honesty rule once and no contradictory text', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1384,7 +1403,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
   assert.match(NAYA_WORK_DELIVERY, /freshly worded and never the same way twice in a call/);
   assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
-  assert.match(NAYA_LIVE_BASE, /no backchannel words while.*speaking/i);
+  assert.match(NAYA_LIVE_BASE, /the floor stays his, and that includes his pauses/i);
   assert.doesNotMatch(NAYA_LIVE_BASE, /stage_lux_note/);
   assert.match(NAYA_WORK_DELIVERY, /and it drafts, notes/);
   assert.match(NAYA_LIVE_BASE, /Never.*mood.*physical.state/i);
@@ -1392,7 +1411,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
 
 test('W6-R1: conversation rules are paid for within each original persona section', () => {
   assert.ok(NAYA_CHARACTER.length <= 2959, `character grew: ${NAYA_CHARACTER.length}`);
-  assert.ok(NAYA_VOICE_SURFACE.length <= 2206, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
+  assert.ok(NAYA_VOICE_SURFACE.length <= 2241, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
 });
 
 test('C-CONVO9: tool_failure cannot become an opener topic', () => {

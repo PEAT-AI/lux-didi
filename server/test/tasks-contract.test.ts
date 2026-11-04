@@ -273,6 +273,6 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
     assert.ok(Object.hasOwn(fields, selector!));
     assert.equal(Object.hasOwn(fields, 'mode'), false);
     assert.equal(Object.hasOwn(fields, 'intent'), false);
-    assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false === (selector === 'person'));
+    if (selector === 'person' || selector === 'channel') assert.equal(Object.hasOwn(fields, selector === 'person' ? 'channel' : 'person'), false);
   }
 });

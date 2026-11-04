@@ -289,14 +289,17 @@ The opt-in file is **outside this public repository** at `~/.lux/didi-canary/ask
 Never commit it, its real names, or its results. Start from the synthetic
 [`scripts/fixtures/canary-asks.example.json`](../scripts/fixtures/canary-asks.example.json),
 replace the placeholders locally, and choose the actual canonical tool names exposed by
-your configured connectors. The example is not a real account corpus. The format is:
+your configured connectors. That file is a shape, not a list of current names: where it
+still shows an older voice-tool name, use the name from the helper registry in
+[tool-owner.md](tool-owner.md) instead, for example `alarm_create` for an alarm ask.
+The example is not a real account corpus. The format is:
 
 ```json
 [
   {
     "id": "alarm-split",
     "finals": ["Set an alarm", "in two minutes"],
-    "expect": {"tool": "set_alarm", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
+    "expect": {"tool": "alarm_create", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
   }
 ]
 ```
@@ -305,7 +308,9 @@ your configured connectors. The example is not a real account corpus. The format
   including speech-recognition splits. Finals are injected unchanged through the existing
   typed-owner-text path, with `finalOrigin === 'typed'`; they are not a prompt quoting an ask.
 - `expect.tool` names the actual tool, including a source tool called by the helper,
-  not just the model's prose or a guessed connector name. `codeClass` is `success`.
+  not just the model's prose or a guessed connector name. A canary ask whose
+  `expect.tool` names a tool this release no longer calls fails with `wrong_tool`, so
+  every name comes from the current helper registry. `codeClass` is `success`.
   `nonEmpty` requires data in the tool's own reply. Successful typed read-data envelopes
   report `code=data`; explicit error/refusal fields always fail. A stored `completed`
   outcome never converts a refusal into a pass.

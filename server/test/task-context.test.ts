@@ -69,3 +69,20 @@ test('an unbound finished task appends on the existing host line', async t => {
   assert.equal(f.voice.sessionsOpened, 1, JSON.stringify(transitions));
   assert.equal(f.voice.taskAnswers[0]?.delegationId, null);
 });
+
+test('verified helper status reports only a real in-call rebuild and its closed cause', async t => {
+  const statuses: { rebuilt: boolean; rebuild_cause: string | null }[] = [];
+  const f = await taskLiveFixture(t, async request => {
+    statuses.push(JSON.parse(JSON.parse(request.input).verified_status));
+    return { text: 'Synthetic status answer.', calls: [] };
+  });
+  await f.emit({ type: 'inputTranscription', text: 'Synthetic first status ask.', finished: true, finalOrigin: 'provider' });
+  assert.equal(statuses[0]!.rebuilt, false); assert.equal(statuses[0]!.rebuild_cause, null);
+  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  await f.emit({ type: 'goAway', timeLeftMs: 10_000 });
+  await f.emit({ type: 'inputTranscription', text: 'Synthetic next status ask.', finished: true, finalOrigin: 'provider' });
+  assert.equal(statuses[1]!.rebuilt, true); assert.ok(['host', 'network', 'provider'].includes(statuses[1]!.rebuild_cause!));
+  const rebuild = f.receipts.find(event => event.event === 'live_rebuild'); assert.equal(rebuild?.owed, 'nothing_owed');
+  const opened = f.receipts.filter(event => event.event === 'live_provider_open').at(-1)!;
+  assert.equal(opened.seedChars, (f.requests[1]!.history ?? []).reduce((total, turn) => total + turn.text.length, 0));
+});

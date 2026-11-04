@@ -24,7 +24,7 @@ export function splitSpokenText(text: string): string[] {
 }
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
-  command?: string | undefined; attempt: number;
+  command?: string | undefined; attempt: number; started: boolean;
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
@@ -45,7 +45,7 @@ export class TaskDelivery implements Delivery {
   }
   socket(_generation: number, ready = true): void {
     this.#binding = null; this.#ready = ready;
-    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; }
+    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = 0; pending.started = false; }
     this.#drain();
   }
   ready(): void { this.#ready = true; this.#drain(); }
@@ -59,7 +59,7 @@ export class TaskDelivery implements Delivery {
     const text = answer.status === 'no_action' ? (this.#binding ? NO_LOOKUP_COMMENTARY : '') : answer.text;
     if (!text.trim()) return;
     this.#undelivered = undefined;
-    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0 };
+    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0, started: false };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
@@ -84,10 +84,10 @@ export class TaskDelivery implements Delivery {
   dispose(): void { this.#pending = undefined; this.#binding = null; this.#ready = false; }
   #drain(): void {
     const pending = this.#current();
-    if (!pending || !this.#ready || this.#owner || !this.#quiet || pending.command) return;
+    if (!pending || !this.#ready || this.#owner || (!this.#quiet && !pending.started) || pending.command) return;
     pending.command = this.ports.append(this.#binding, pending.chunks[pending.chunk]!);
     if (!pending.command) { this.#retry(); return; }
-    this.ports.state(pending.identity, 'sent', pending.chunk);
+    pending.started = true; this.ports.state(pending.identity, 'sent', pending.chunk);
   }
   #retry(): void {
     const pending = this.#current(); if (!pending) return;

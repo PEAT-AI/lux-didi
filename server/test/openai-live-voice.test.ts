@@ -1776,6 +1776,17 @@ test('client delegation starts without session tools or Responses configuration'
   assert.equal(start?.session.tools, undefined);
 });
 
+test('task commentary without a delegation sends null and receives a provider acknowledgement', async t => {
+  const f = await fakeReady(t);
+  assert.equal(f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: 'missing' }), undefined);
+  const command = f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: null });
+  assert.equal(typeof command, 'string');
+  const frame = JSON.parse(f.socket.sent.at(-1)!);
+  assert.equal(frame.type, 'session.commentary.append'); assert.equal(frame.delegation_id, null);
+  f.socket.deliver({ type: 'session.commentary.appended', client_event_id: command }); await quiet();
+  assert.ok(f.captured.events.some(event => event.type === 'commentaryAccepted' && event.commandId === command));
+});
+
 test('client delegation carries task answers on its latest id with separate acknowledgments', async t => {
   const f = await fakeReady(t);
   assert.equal(f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: 'missing' }), undefined);

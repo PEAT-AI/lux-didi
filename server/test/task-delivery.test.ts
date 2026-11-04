@@ -90,3 +90,10 @@ test('C-DELIVERY: a rejection retries once on the same line and then fails', () 
   assert.equal(f.reconnects(), 0);
   assert.equal(f.states.at(-1), 'undelivered');
 });
+
+test('C-DELIVERY: once quiet starts a chunk sequence, acknowledgements drain it back to back', () => {
+  const f = fixture(); f.delivery.deliver(identity, answer('Synthetic sentence. '.repeat(40)));
+  f.delivery.activity({ outputQuiet: false, ownerSpeaking: false });
+  f.delivery.accepted(f.sends[0]!.command); assert.equal(f.sends.length, 2);
+  f.delivery.accepted(f.sends[1]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
+});

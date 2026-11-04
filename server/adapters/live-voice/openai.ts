@@ -443,10 +443,6 @@ class Session implements LiveVoiceSession {
   /** The input episode's quiet timer and its token, which is what a lone journal pair of the owner's turn needs. */
   private episodeQuiet: unknown;
   private episodeToken = 0;
-  /** F10: what the owner has said so far in this episode, which decides whether the tail is a finished sentence. */
-  private episodeWords = '';
-  /** LAT-1022: whether the quiet rule that ended the last input episode was the hesitation one, so the end-of-
-   *  speech line names the rule that actually fired instead of the default. */
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -825,7 +821,6 @@ class Session implements LiveVoiceSession {
     // Ruling GL1-R1: a whitespace-only fragment is still journaled, and it starts no episode.
     if (message.delta.trim().length) {
       // F10: the episode's own words decide the quiet window, so they are kept as they arrive.
-      this.episodeWords = `${this.episodeWords} ${message.delta}`.trim().slice(-240);
       this.noteInput();
     }
     this.userTranscriptOpen = true;
@@ -858,7 +853,6 @@ class Session implements LiveVoiceSession {
 
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
-    this.episodeWords = '';
     // LAT-1022: this is the capture path's own voice-activity verdict that the owner has stopped speaking, so it
     // is stamped here, on the monotonic audio clock and on the wall clock beside it. The session and the turn are
     // the envelope's; the rule that fired is the only other field.
@@ -870,7 +864,6 @@ class Session implements LiveVoiceSession {
   /** A new response, a cut or a closed session retires the pending episode, so its quiet timer cannot fire later. */
   private clearInputEpisode(): void {
     this.episodeToken += 1;
-    this.episodeWords = '';
     if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
   }
 

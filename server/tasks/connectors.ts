@@ -1,3 +1,4 @@
+import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
 import { composedGrantedNames } from '../connectors/index.js';
@@ -120,19 +121,25 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return failed(`The connector rejected these fields. Repair the ${name} arguments before retrying.`);
-    const result = await binding.reader.call(mapping.tool, mapped, signal);
-    const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: repair }; };
-    const hostRepair = connectorFailures.get(result);
-    if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
-    if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
-    if (binding.project) {
-      try {
-        const snapshot = binding.project(result);
-        const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
-        if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
-        return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
-      } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
-    }
-    return projectTaskPayload(name, result.decodedResult, args);
+    const scope = createResultScope();
+    try {
+      return await scope.run(async () => {
+        const result = await binding.reader.call(mapping.tool, mapped, signal);
+        const failure = (repair: string, code: ToolFailureCode): ToolResult => { binding.reportFailure?.(name, code); return { ...failed(repair), [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: repair }; };
+        if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode);
+        const hostRepair = connectorFailures.get(result);
+        if (hostRepair) return { ...failure(hostRepair.repair, hostRepair.code), [TASK_CONNECTOR_FAILURE]: hostRepair.repair };
+        if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
+        if (binding.project) {
+          try {
+            const snapshot = binding.project(result);
+            const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+            if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
+            return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
+          } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
+        }
+        return projectTaskPayload(name, result.decodedResult, args);
+      });
+    } finally { scope.release(); }
   };
 }

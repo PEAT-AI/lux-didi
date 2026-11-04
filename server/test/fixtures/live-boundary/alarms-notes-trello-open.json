@@ -33,7 +33,7 @@
     },
     {
       "id": "note-save-positive",
-      "tool": "stage_lux_note",
+      "tool": "save_to_vault",
       "args": {
         "title": "Synthetic note",
         "text": "Synthetic content."

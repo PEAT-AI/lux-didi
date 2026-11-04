@@ -143,7 +143,8 @@ export const cases: Record<string, () => Promise<void>> = {
     try {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
       f.call.delivery.rejected('wrong-command'); equal(f.reconnects(), 0);
-      f.call.delivery.rejected('c1'); assert.ok(f.states.includes('rejected')); equal(f.sent.length, 2);
+      f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
+      f.call.delivery.rejected('c1'); assert.ok(f.states.includes('retry')); equal(f.sent.length, 2);
       f.call.delivery.rejected('c2'); equal(f.reconnects(), 1);
       equal(f.states.includes('heard'), false);
     } finally { f.call.close(); }

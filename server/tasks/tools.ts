@@ -20,6 +20,7 @@ const string: Schema = { type: 'string', minLength: 1 };
 const optionalString: Schema = { type: ['string', 'null'] };
 const strings: Schema = { type: 'array', items: string };
 const object = (properties: Record<string, Schema>): Schema => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+const alarmRecurrence: Schema = { type: ['object', 'null'], properties: { kind: { type: 'string', enum: ['daily', 'weekdays', 'weekly'] }, weekdays: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } }, hour: { type: 'integer', minimum: 0, maximum: 23 }, minute: { type: 'integer', minimum: 0, maximum: 59 }, tz: string }, required: ['kind', 'weekdays', 'hour', 'minute', 'tz'], additionalProperties: false };
 /** Optional fields remain required and nullable at the provider boundary. */
 export function strictSchema(schema: Schema): Schema {
   const result: Schema = { ...schema };
@@ -77,10 +78,10 @@ const definitions: Definition[] = [
   { name: 'create_event', description: 'Create a calendar event.', fields: { title: string, start: string, end: string, calendar_id: optionalString }, effect: 'external', outside: false },
   { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect: 'destructive', outside: false },
   // Distinct schemas avoid action-dependent optional fields and model guessing.
-  { name: 'alarm_create', description: 'Create a local alarm.', fields: { text: string, at: string }, effect: 'local', outside: false },
+  { name: 'alarm_create', description: 'Create a local alarm.', fields: { text: string, at: string, recurrence: alarmRecurrence }, effect: 'local', outside: false },
   { name: 'alarm_list', description: 'List local alarms.', fields: {}, outside: false },
-  { name: 'alarm_cancel', description: 'Cancel a local alarm.', fields: { id: string }, effect: 'local', outside: false },
-  { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString }, effect: 'local', outside: false },
+  { name: 'alarm_cancel', description: 'Cancel a local alarm.', fields: { id: string, scope: { type: ['string', 'null'], enum: ['occurrence', 'series', null] } }, effect: 'local', outside: false },
+  { name: 'alarm_update', description: 'Update a local alarm.', fields: { id: string, text: optionalString, at: optionalString, recurrence: alarmRecurrence }, effect: 'local', outside: false },
   { name: OPEN_SCHEMA.name, description: OPEN_SCHEMA.description, fields: OPEN_SCHEMA.parameters.properties, effect: 'local', outside: false },
   { name: FIND_FILE_SCHEMA.name, description: FIND_FILE_SCHEMA.description, fields: FIND_FILE_SCHEMA.parameters.properties, outside: false },
 ];
@@ -96,10 +97,16 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
+      name: definition.name, description: definition.description, parameters: { ...object(definition.fields), required: Object.keys(definition.fields).filter(key => !(['alarm_create', 'alarm_update', 'alarm_cancel'].includes(definition.name) && ['recurrence', 'scope'].includes(key))) }, effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
-        if (!validation.ok) return failed(validation.repair);
+        if (!validation.ok) {
+          if (tool.name === 'alarm_create' && !signal.aborted) {
+            const active = await ports.execute('alarm_list', {}, signal, outsideTextSeen, identity);
+            return failed(`${validation.repair} Already armed alarms: ${active.text}`);
+          }
+          return failed(validation.repair);
+        }
         if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
         const execute = async (): Promise<ToolResult> => {
           if (tool.name === OPEN_SCHEMA.name) {

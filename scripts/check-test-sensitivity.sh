@@ -126,6 +126,9 @@ def run_one(sidecar, builds):
             shutil.copy2(os.path.join(root, source), destination)
         baseline = command(sidecar['command'], cwd, env)
         if baseline.returncode != 0:
+            # Preserve the actual first failure, not only a trailing compiler warning.
+            print(baseline.stdout, end='')
+            print(baseline.stderr, end='', file=sys.stderr)
             tail = (baseline.stdout + baseline.stderr).strip().splitlines()[-4:]
             return 'FAIL', 'the unmutated test is already red, so it cannot prove a mutant: ' \
                 + ' / '.join(line.strip()[:160] for line in tail)

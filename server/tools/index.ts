@@ -1,3 +1,6 @@
+import { checkOwnerTime } from './time-check.js';
+import { commitAlarmEffect } from '../runtime/store.js';
+import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
 import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
@@ -27,7 +30,7 @@ import { STAGE_NOTE_IDENTITY,} from './lux-note.js';
 import { VAULT_WRITE_IDENTITY,} from './vault-write.js';
 import { refusalCauseOf } from './refusal-cause.js';
 import { TRELLO_READ_IDENTITY, TRELLO_WRITE_IDENTITY,} from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms,} from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, listPendingAlarms, insertAlarmSeries, linkAlarmOccurrence, alarmSeriesOfOccurrence, materialiseSeriesOccurrence, seriesNextFireAt, type SeriesRule, pendingOccurrenceOf, parseCancelScope, parseAlarmTime, alarmReadBack, readTimeSpec,} from './alarm.js';
 import { COMPOSE_IDENTITY, COMPOSE_NAMES,} from './compose.js';
 import { OPEN_IDENTITY, OPEN_TOOL_NAMES, openWebFailure, OPEN_WEB_NAME,} from './open.js';
 
@@ -549,25 +552,65 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const project = (name: string, value: JsonObject) => value.ok === false
         ? taskFailed(String(value.guidance ?? value.code ?? 'The operation was refused.')) : taskDocumentResult(JSON.stringify(value), name);
       const alarm = (action: 'create' | 'update' | 'cancel', args: Record<string, unknown>, context: TaskExecutionContext) => {
-        if (!options.alarms || !context.identity) return taskFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
-        const now = options.alarms.now(), at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
-        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at) || at! <= now)) return taskFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
-        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
-        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return taskFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
-        if (action === 'update' && at === undefined && label === undefined) return taskFailed('Supply the new reminder text or timestamp. Nothing changed.');
-        const id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
-        const result = store.transaction(tx => {
-          if (action === 'create') {
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
-          } else {
-            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
-            if (!row) return taskFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
-            if (action === 'cancel') tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
-            else tx.run("UPDATE alarms SET label=?,fire_at_utc=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), id]);
+        const alarmFailed = (message: string) => taskFailed(`${message} Already armed alarms: ${JSON.stringify(store.transaction(tx => listPendingAlarms(tx)))}`);
+        if (!options.alarms || !context.identity) return alarmFailed('The local alarm scheduler or task identity is unavailable. Nothing changed.');
+        const now = options.alarms.now();
+        const effect = authorizedTaskEffect.getStore();
+        if (!effect) return alarmFailed('Alarm authority context is unavailable. Nothing changed.');
+        let rule = args.recurrence as SeriesRule | null | undefined;
+        let at = args.at === null || args.at === undefined ? undefined : Date.parse(String(args.at));
+        if (args.at !== null && args.at !== undefined && (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(String(args.at)) || !Number.isFinite(at))) return alarmFailed('Use a future ISO timestamp with an explicit time-zone offset. Nothing changed.');
+        if (at !== undefined) {
+          const zone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const proposed = alarmReadBack(at, zone);
+          const time = readTimeSpec({ mode: 'wall', date: proposed.date, local_time: proposed.localTime, timezone: zone });
+          const interpreted = parseAlarmTime(effect.ownerWords, effect.askAtUtc ?? now, zone, time.state === 'read' ? time.spec : undefined);
+          if (interpreted.status === 'ready' && interpreted.source !== 'model'
+            && (interpreted.fireAtUtc > now || checkOwnerTime(effect.ownerWords).status === 'unique')) {
+            // Combining a day constraint with the proposed clock must not erase its seconds.
+            if (interpreted.source !== 'combined' || Math.floor(at / 60_000) !== Math.floor(interpreted.fireAtUtc / 60_000)) at = interpreted.fireAtUtc;
+            rule = interpreted.series ?? rule;
           }
-          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString() }) }), id), references: [{ id }] };
+        }
+        if (rule) { try { if (rule.kind === 'weekly' && !rule.weekdays.length) throw Error('empty_weekdays'); at = seriesNextFireAt(rule, now); } catch { return alarmFailed('Invalid recurrence. Nothing changed.'); } }
+        if (at !== undefined && at <= now) return alarmFailed('The resolved alarm time is in the past. Nothing changed.');
+        if (at !== undefined) at = Math.max(at, now + 60_000);
+        const label = typeof args.text === 'string' ? args.text.trim() : undefined;
+        if ((action === 'create' && (at === undefined || !label)) || (label !== undefined && (!label || label.length > 200))) return alarmFailed('Give a nonempty reminder label of at most 200 characters and a future timestamp. Nothing changed.');
+        if (action === 'update' && at === undefined && label === undefined && !rule) return alarmFailed('Supply the new reminder text or timestamp. Nothing changed.');
+        let id = action === 'create' ? `alarm_${createHash('sha256').update(`${context.identity.task_id}:${JSON.stringify(args)}`).digest('hex')}` : String(args.id);
+        const result = commitAlarmEffect(store, effect.identity, tx => {
+          if (action === 'create') {
+            if (rule) insertAlarmSeries(tx, { id, rule, label: label!, createdJournalId: context.identity!.task_id });
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [id, at!, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, label!, context.identity!.task_id]);
+            if (rule) linkAlarmOccurrence(tx, id, id);
+          } else {
+            id = pendingOccurrenceOf(tx, id) ?? id;
+            const row = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
+            if (!row) return alarmFailed('That alarm is not active. Read the current local alarms and choose its exact id.');
+            if (action === 'cancel') {
+              tx.run("UPDATE alarms SET state='cancelled',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [id]);
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (series && (args.scope ?? parseCancelScope(effect.ownerWords)) === 'series') tx.run("UPDATE alarm_series SET state='cancelled' WHERE id=?", [series.id]);
+              else if (series) materialiseSeriesOccurrence(tx, id, now);
+            }
+            else {
+              const series = alarmSeriesOfOccurrence(tx, id);
+              if (rule) {
+                if (series) tx.run('UPDATE alarm_series SET rule_kind=?,weekdays=?,local_time=?,tz=?,label=? WHERE id=?', [rule.kind, rule.kind === 'weekly' ? rule.weekdays.join(',') : '', `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`, rule.tz, label ?? String(row.label), series.id]);
+                else { insertAlarmSeries(tx, { id, rule, label: label ?? String(row.label), createdJournalId: context.identity!.task_id }); linkAlarmOccurrence(tx, id, id); }
+              } else if (series && label) tx.run('UPDATE alarm_series SET label=? WHERE id=?', [label, series.id]);
+              tx.run("UPDATE alarms SET label=?,fire_at_utc=?,tz=?,state='pending',ring_started_at_utc=NULL,ring_deadline_utc=NULL WHERE id=?", [label ?? String(row.label), at ?? Number(row.fire_at_utc), rule?.tz ?? String(row.tz), id]);
+            }
+          }
+          return { ...taskDocumentResult(JSON.stringify({ id, state: action === 'cancel' ? 'cancelled' : 'pending', ...(at === undefined ? {} : { at: new Date(at).toISOString(), localTime: alarmReadBack(at, options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone).spoken }) }), id), references: [{ id }] };
         });
-        if (result.status === 'ok') options.alarms.recheck();
+        if (result.status === 'ok') {
+          try { options.alarms.recheck(); } catch {
+            // The durable scheduler rows survive notification failure and restart. Retry once.
+            try { options.alarms.recheck(); } catch { /* Scheduler recovery reads committed rows. */ }
+          }
+        }
         return result;
       };
       const executors: ExistingExecutors = {

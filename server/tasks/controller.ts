@@ -18,7 +18,7 @@ export class FakeDelivery implements Delivery {
   closed(_identity: RevisionIdentity): void {}
 }
 export interface Revision {
-  identity: RevisionIdentity; signal: AbortSignal; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string | undefined;
+  identity: RevisionIdentity; signal: AbortSignal; askAtUtc?: number | undefined; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string | undefined;
   reads: Map<string, ToolResult>; receipts: ToolResult[]; evidence: ToolResult[];
 }
 /** Pure lifecycle decisions; IDs are injected for deterministic tests. No language inspection. */
@@ -46,10 +46,10 @@ export class TaskController {
     this.#running = true; this.#held = false;
     return this.#revision;
   }
-  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; latestOwnerWords: string; ownerTurn: number; precedingOwnerWords?: string | undefined } | undefined {
+  taskContext(taskId: string): { id: string; revision: number; ownerWords: string; latestOwnerWords: string; ownerTurn: number; askAtUtc?: number | undefined; precedingOwnerWords?: string | undefined } | undefined {
     const current = this.#revision;
     if (!current || current.identity.task_id !== taskId) return undefined;
-    return { id: taskId, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), latestOwnerWords: current.ownerWords.at(-1) ?? '', ownerTurn: current.ownerTurn,
+    return { id: taskId, askAtUtc: current.askAtUtc, revision: current.identity.task_revision, ownerWords: current.ownerWords.join('\n'), latestOwnerWords: current.ownerWords.at(-1) ?? '', ownerTurn: current.ownerTurn,
       precedingOwnerWords: current.precedingOwnerWords };
   }
   isCurrentTask(taskId: string, revision: number): boolean {

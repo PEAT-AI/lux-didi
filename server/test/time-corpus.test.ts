@@ -1,204 +1,108 @@
 import assert from 'node:assert/strict';
-import { test, type TestContext } from 'node:test';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-import { Store } from '../runtime/store.js';
-import { domainMigrations } from '../domain/schema.js';
-import { liveMigrations, validateLiveProfile } from '../live/index.js';
-import { composeLive } from '../host/live.js';
-import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
-import { createMcpAdapter } from '../adapters/mcp/adapter.js';
-import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { LiveAuthority } from '../tools/types.js';
-import type { ToolCallIntent } from '../adapters/model/types.js';
-import { fixture } from './live-voice-fixture.js';
+import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { alarmHarness } from './alarm-atomic.test.js';
 import { eventWindow, namedOthers } from '../tools/compose.js';
 import { checkOwnerTime } from '../tools/time-check.js';
-import { parseAlarmTime } from '../tools/alarm.js';
+import { parseAlarmTime, alarmArguments } from '../tools/alarm.js';
 
 interface CorpusRow {
   id: string; words: string; now: string; tz: string; args: Record<string, unknown>;
   args2?: Record<string, unknown>; words2?: string; expects: Record<string, unknown>;
 }
-
 const corpus: CorpusRow[] = readFileSync(new URL('../../test/fixtures/time-corpus.jsonl', import.meta.url), 'utf8')
-  .split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as CorpusRow);
+  .split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line));
 
-/**
- * C-TIME: one harness for the whole corpus. The corpus drives the real tool handler: the owner final
- * is recorded, the tool call is dispatched through the live declaration, and the alarm row is read
- * back from the store. No provider is called and no parser unit stands in for the handler.
- */
-async function alarmHarness(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-time-corpus-'));
-  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-  const f = await fixture(t);
-  const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
-  t.after(() => port.close());
-  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  const clock = { now: Date.parse('2026-03-05T09:30:00Z') };
-  const options = {
-    alarms: { now: () => clock.now, recheck() {}, health: () => ({ degraded: false, reasons: [] }) },
-    timezone: 'Europe/Berlin', grantMode: 'owner-trusted-reads' as const, store, ownerId: store.assistantId, registry, port,
-    lookupAuthority: async (runId: string, signal: AbortSignal) => lookup ? lookup(runId, signal) : null,
-  };
-  const owner = createToolsOwner(options);
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
-    route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
-  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
-    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
-  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
-  const session = service.create('ordinary', `corpus:${randomUUID()}`, context);
-  const attachment = service.attach(session.liveSessionId, context);
-  await f.frame(1); f.send({ setupComplete: {} }); await attachment.ready;
-  const signal = new AbortController().signal;
-  const authority = await lookup!(session.liveSessionId, signal);
-  assert.ok(authority);
-  const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+// The legacy parser is still tested explicitly, not smuggled into a fake task executor.
+// The current worker supplies an ISO instant; the task registry and real local executor
+// are exercised separately below, including the missing owner-time correction boundary.
+test('C-TIME corpus: all owner interpretations and task ISO commits', async t => {
+  assert.ok(corpus.length >= 60);
+  for (const row of corpus) await t.test(row.id, async rowT => {
+    const args = row.words2 === undefined ? row.args : (row.args2 ?? {});
+    const proposal = alarmArguments(args);
+    assert.ok(proposal, `${row.id}: legacy proposal is well formed`);
+    const words = row.words2 === undefined ? row.words : `${row.words} ${row.words2}`;
+    if (row.words2 !== undefined) {
+      const firstProposal = alarmArguments(row.args); assert.ok(firstProposal);
+      assert.notEqual(parseAlarmTime(row.words, Date.parse(row.now), row.tz, firstProposal.time).status, 'ready');
+    }
+    const parsed = parseAlarmTime(words, Date.parse(row.now), row.tz, proposal.time);
+    if (row.expects.status !== undefined) {
+      assert.equal(parsed.status, row.expects.status);
+      assert.equal(parsed.status === 'clarify' ? parsed.reason : undefined, row.expects.reason);
+      return;
+    }
+    assert.equal(parsed.status, 'ready', JSON.stringify(parsed));
+    if (parsed.status !== 'ready') throw new Error('Expected a resolved corpus time');
+    if (row.expects.relative_ms !== undefined) assert.equal(parsed.fireAtUtc - Date.parse(row.now), row.expects.relative_ms);
+    else {
+      assert.equal(parsed.localTime, row.expects.local_time);
+      assert.equal(parsed.date, row.expects.date);
+      assert.equal(parsed.tz, row.expects.tz ?? row.tz);
+    }
+    if (row.expects.corrected !== undefined) assert.equal(parsed.corrected, row.expects.corrected);
+    if (row.expects.series_dropped === true) assert.equal(parsed.series, undefined);
+    const h = alarmHarness(rowT, () => {}, () => Date.parse(row.now), parsed.tz);
+    const text = typeof args.label === 'string' ? args.label : 'synthetic reminder';
+    const result = await h.call('alarm_create', { text, at: new Date(parsed.fireAtUtc).toISOString() }, words);
+    assert.equal(result.status, 'ok', result.repair ?? result.text);
+    const committed = h.store.transaction(tx => tx.get('SELECT * FROM alarms WHERE id=?', [result.references[0]!.id]));
+    assert.ok(committed);
+    assert.equal(committed.state, 'pending');
+    assert.equal(Number(committed.fire_at_utc), parsed.fireAtUtc);
+    assert.equal(committed.tz, parsed.tz);
+    assert.equal(committed.label, row.expects.label || text);
+  });
+});
 
-  const dispatch = async (name: string, args: Record<string, unknown>, words: string) => {
-    owner.ownerRequests.answered?.(session.liveSessionId);
-    owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, clock.now);
-    const definition = live.find(entry => entry.name === name);
-    assert.ok(definition, `${name} is declared to the live model`);
-    const intent: ToolCallIntent = {
-      runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
-      executionId: randomUUID(), toolName: definition.name,
-      argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-      accountId: definition.accountId, resourceId: definition.resourceId,
-    };
-    owner.journal.intent(intent);
-    const outcome = await definition.execute(args, { ...intent, signal });
-    assert.equal(outcome.status, 'completed', `${name} reached its receipt transaction`);
-    const stored = store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
-    assert.equal(stored?.state, 'completed', `${name} stores a completed call`);
-    const reply = (JSON.parse(String(stored?.result_json ?? '{}')) as { response?: Record<string, unknown> }).response ?? {};
-    const row = store.transaction(tx => tx.get('SELECT fire_at_utc,tz,label,state FROM alarms WHERE id=?', [intent.executionId]));
-    return { intent, reply, row };
-  };
-  return { clock, options, owner, session, store, live, dispatch, authority };
+const now = Date.parse('2026-03-05T09:30:00Z');
+function alarmRow(h: ReturnType<typeof alarmHarness>, id: string) {
+  return h.store.transaction(tx => tx.get('SELECT * FROM alarms WHERE id=?', [id]));
 }
 
-test('C-TIME corpus: the owner time wins through the real alarm handler', { timeout: 120000 }, async t => {
-  assert.ok(corpus.length >= 60, `the corpus carries at least sixty messy shapes, saw ${corpus.length}`);
-  // slow: a live session per batch of twelve rows, because one session for all sixty-six rows grows
-  // the stored model snapshot past its ceiling. Twelve keeps the file near two seconds, and the
-  // reason is recorded in the author report.
-  const BATCH = 12;
-  for (let start = 0; start < corpus.length; start += BATCH) {
-    const batch = corpus.slice(start, start + BATCH);
-    await t.test(`rows ${start + 1} to ${start + batch.length}`, async batchT => {
-      const h = await alarmHarness(batchT);
-      for (const row of batch) {
-        await batchT.test(row.id, async () => {
-          // Every row is its own owner turn, never a follow-up of the row before it.
-          h.owner.ownerRequests.release(h.session.liveSessionId);
-          h.clock.now = Date.parse(row.now);
-          h.options.timezone = row.tz;
-          if (row.words2 !== undefined) {
-            const first = await h.dispatch('set_alarm', row.args, row.words);
-            assert.notEqual(first.reply.status, 'set', `${row.id}: the first ask must not commit an alarm`);
-          }
-          const { intent, reply, row: committed } = await h.dispatch('set_alarm', row.words2 !== undefined ? (row.args2 ?? {}) : row.args,
-            row.words2 ?? row.words);
-          if (row.expects.status !== undefined) {
-            assert.equal(reply.status, row.expects.status, `${row.id}: ${JSON.stringify(reply)}`);
-            assert.equal(reply.reason, row.expects.reason, `${row.id}: reason`);
-            assert.equal(committed, undefined, `${row.id}: a clarify commits no alarm row`);
-            return;
-          }
-          assert.equal(reply.status, 'set', `${row.id}: ${JSON.stringify(reply)}`);
-          assert.ok(committed, `${row.id}: the alarm row is committed`);
-          assert.equal(committed.state, 'pending');
-          if (row.expects.relative_ms !== undefined) {
-            assert.equal(Number(committed.fire_at_utc) - h.clock.now, row.expects.relative_ms, `${row.id}: the span is added to the host clock`);
-          } else {
-            assert.equal(reply.local_time, row.expects.local_time, `${row.id}: local time`);
-            assert.equal(reply.date, row.expects.date, `${row.id}: date`);
-            assert.equal(committed.tz, row.expects.tz ?? row.tz, `${row.id}: zone`);
-            assert.equal(reply.id, intent.executionId, `${row.id}: the read-back names its id`);
-            assert.match(String(reply.say), new RegExp(`^Alarm set for \\w+day \\d{1,2} \\w+ at ${String(row.expects.local_time)}`), `${row.id}: she says the read-back`);
-          }
-          if (row.expects.corrected !== undefined) assert.equal(reply.corrected, row.expects.corrected, `${row.id}: the correction is named`);
-          if (row.expects.series !== undefined) assert.ok(reply.series_id, `${row.id}: a stated repeat becomes a series`);
-          if (row.expects.series_dropped === true) assert.match(String(reply.say), /I set it once/);
-          if (row.expects.label !== undefined) assert.equal(reply.label, row.expects.label, `${row.id}: the label is the model's short label`);
-        });
-      }
-    });
-  }
+test('SOURCE DEFECT C-TIME: owner time overrides a wrong worker ISO proposal', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const result = await h.call('alarm_create', { text: 'synthetic call', at: '2026-03-05T18:00:00Z' }, 'remind me at six pm today');
+  assert.equal(result.status, 'ok');
+  assert.equal(Number(alarmRow(h, result.references[0]!.id)!.fire_at_utc), Date.parse('2026-03-05T17:00:00Z'));
 });
 
-test('C-TIME shape8-cancel: settles the one alarm that is armed and lists several', async t => {
-  const h = await alarmHarness(t);
-  h.options.timezone = 'Europe/Berlin';
-  h.clock.now = Date.parse('2026-03-05T09:30:00Z');
-  // A paired valid case first: two alarms are armed with different times.
-  const first = await h.dispatch('set_alarm', {}, 'wake me at 6 pm');
-  const second = await h.dispatch('set_alarm', {}, 'wake me at 7 pm');
-  assert.equal(first.reply.status, 'set');
-  assert.equal(second.reply.status, 'set');
-  // C-FREEDOM: several armed alarms never become a question: the soonest is cancelled and the
-  // read-back says which one it was.
-  const armedList = await h.dispatch('list_alarms', {}, 'list my alarms');
-  const before = armedList.reply.alarms as Array<Record<string, unknown>>;
-  assert.equal(before.length, 2, 'both alarms are armed');
-  const soonest = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
-  assert.equal(soonest.reply.status, 'cancelled', 'several armed alarms act on the soonest');
-  assert.equal(soonest.reply.id, before[0]!.id, 'the soonest alarm is the one cancelled');
-  assert.match(String(soonest.reply.say), /^Cancelled the \w+day \d{1,2} \w+ at 18:00/, 'the read-back names the one it cancelled');
-  const left = await h.dispatch('list_alarms', {}, 'list my alarms');
-  const remaining = left.reply.alarms as Array<Record<string, unknown>>;
-  assert.equal(remaining.length, 1, 'one alarm is left');
-  assert.equal(remaining[0]!.id, before[1]!.id, 'the later one is still armed');
-  // A missing id with exactly one armed alarm cancels that one.
-  const lone = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
-  assert.equal(lone.reply.status, 'cancelled');
-  assert.equal(lone.reply.id, remaining[0]!.id);
-  // The same call again has nothing armed left, so it is not a silent success.
-  const empty = await h.dispatch('cancel_alarm', {}, 'cancel the alarm');
-  assert.equal(empty.reply.status, 'clarify');
-  assert.equal(empty.reply.reason, 'no_alarm');
-  // An id that is truly finished is the only "not active".
-  const finished = await h.dispatch('cancel_alarm', { id: remaining[0]!.id }, 'cancel that one');
-  assert.equal(finished.reply.status, 'refused');
-  assert.equal(finished.reply.reason, 'alarm_not_active');
+test('C-TIME shape8-cancel: explicit task ids settle one alarm and preserve the other', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const first = await h.call('alarm_create', { text: 'synthetic first', at: '2026-03-05T17:00:00Z' }, 'wake me at six');
+  const second = await h.call('alarm_create', { text: 'synthetic second', at: '2026-03-05T18:00:00Z' }, 'wake me at seven');
+  const firstId = first.references[0]!.id, secondId = second.references[0]!.id;
+  const listed = await h.call('alarm_list', {}, 'list my alarms');
+  assert.equal(listed.status, 'ok');
+  assert.match(listed.text, new RegExp(firstId)); assert.match(listed.text, new RegExp(secondId));
+  assert.equal((await h.call('alarm_cancel', { id: firstId }, 'cancel the first alarm')).status, 'ok');
+  assert.equal(alarmRow(h, firstId)!.state, 'cancelled');
+  assert.equal(alarmRow(h, secondId)!.state, 'pending');
+  // A distinct operation, not a replay of the first cancellation.
+  h.task.id = 'synthetic-next-task';
+  assert.equal((await h.call('alarm_cancel', { id: firstId }, 'cancel that one again')).status, 'failed');
+  assert.equal((await h.call('alarm_cancel', { id: secondId }, 'cancel the other')).status, 'ok');
 });
 
-test('C-TIME shape8-armed: a set_alarm clarify names the alarm still armed', async t => {
-  const h = await alarmHarness(t);
-  h.options.timezone = 'Europe/Berlin';
-  h.clock.now = Date.parse('2026-03-05T09:30:00Z');
-  const set = await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
-  assert.equal(set.reply.status, 'set');
-  // C-FREEDOM: a bare hour is no longer a question, so the clarify left is a set with no time at all,
-  // and the armed alarm is still named in it.
-  const retry = await h.dispatch('set_alarm', {}, 'set an alarm');
-  assert.equal(retry.reply.status, 'clarify');
-  const armed = retry.reply.armed as Array<Record<string, unknown>>;
-  assert.equal(armed.length, 1, 'the still armed alarm is named');
-  assert.equal(armed[0]!.id, set.reply.id);
-  assert.equal(armed[0]!.local_time, '18:00');
-  assert.equal(armed[0]!.label, 'call Sam');
+test('SOURCE DEFECT C-TIME shape8-armed: a missing time names the alarm still armed', async t => {
+  const h = alarmHarness(t, () => {}, () => now);
+  const first = await h.call('alarm_create', { text: 'synthetic armed', at: '2026-03-05T17:00:00Z' }, 'wake me at five UTC');
+  const result = await h.call('alarm_create', { text: 'synthetic next' }, 'set an alarm');
+  assert.equal(result.status, 'failed');
+  assert.match(result.repair ?? result.text, new RegExp(first.references[0]!.id));
+  assert.equal(alarmRow(h, first.references[0]!.id)!.state, 'pending');
 });
 
-test('C-TIME snooze: the wall time is resolved in the alarm zone', async t => {
-  const h = await alarmHarness(t);
-  h.options.timezone = 'Europe/Berlin';
-  h.clock.now = Date.parse('2026-03-05T09:30:00Z');
-  const set = await h.dispatch('set_alarm', {}, 'wake me at 6 pm');
-  const id = String(set.reply.id);
-  const snooze = await h.dispatch('snooze_alarm', { id, time: { mode: 'relative', amount: 10, unit: 'minutes' } }, 'snooze for ten minutes');
-  assert.equal(snooze.reply.status, 'set', JSON.stringify(snooze.reply));
-  assert.equal(Number(snooze.row!.fire_at_utc) - h.clock.now, 600000);
-  assert.equal(snooze.row!.tz, 'Europe/Berlin');
-  const fresh = await h.dispatch('snooze_alarm', {}, 'snooze for ten minutes');
-  assert.equal(fresh.reply.status, 'refused', 'a snooze needs the alarm it moves');
+test('C-TIME snooze: task update moves the same alarm and refuses an absent target', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const first = await h.call('alarm_create', { text: 'synthetic snooze', at: '2026-03-05T10:00:00Z' }, 'wake me in thirty minutes');
+  const id = first.references[0]!.id;
+  const result = await h.call('alarm_update', { id, at: '2026-03-05T09:40:00Z', text: null }, 'snooze this for ten minutes');
+  assert.equal(result.status, 'ok');
+  assert.equal(Number(alarmRow(h, id)!.fire_at_utc) - now, 600000);
+  assert.equal(alarmRow(h, id)!.tz, 'Europe/Berlin');
+  assert.equal((await h.call('alarm_update', { id: 'synthetic-absent', at: '2026-03-05T09:40:00Z', text: null }, 'snooze that one')).status, 'failed');
 });
 
 test('C-TIME shape6-7: the event time and the person a description may name', () => {
@@ -257,22 +161,44 @@ test('C-FREEDOM: a day with no clock names no time of day', () => {
   if (stated.status === 'ready') assert.equal(stated.localTime, '18:00');
 });
 
-test('C-FREEDOM: with several alarms armed, his words pick the one', async t => {
-  // The words "bins" name the second alarm, so the first one stays armed and the read-back says which.
-  const h = await alarmHarness(t);
-  h.options.timezone = 'Europe/Berlin';
-  h.clock.now = Date.parse('2026-03-05T09:30:00Z');
-  await h.dispatch('set_alarm', { label: 'call Sam' }, 'wake me at 6 pm to call Sam');
-  await h.dispatch('set_alarm', { label: 'take the bins out' }, 'wake me at 7 pm to take the bins out');
-  const armedList = await h.dispatch('list_alarms', {}, 'list my alarms');
-  const before = armedList.reply.alarms as Array<Record<string, unknown>>;
-  assert.equal(before.length, 2, 'both alarms are armed');
-  const named = await h.dispatch('cancel_alarm', {}, 'cancel the bins alarm');
-  assert.equal(named.reply.status, 'cancelled', 'the alarm his words name is the one cancelled');
-  assert.equal(named.reply.id, before[1]!.id, 'the named alarm went, not the soonest');
-  assert.match(String(named.reply.say), /19:00/, 'the read-back says which one it was');
-  const left = await h.dispatch('list_alarms', {}, 'list my alarms');
-  const remaining = left.reply.alarms as Array<Record<string, unknown>>;
-  assert.equal(remaining.length, 1, 'the alarm his words did not name is still armed');
-  assert.equal(remaining[0]!.id, before[0]!.id, 'the soonest alarm is still armed');
+test('C-FREEDOM: fake inference lists alarms then cancels the chosen exact id and refuses a wrong id', async t => {
+  const h = alarmHarness(t, () => {}, () => now);
+  const first = await h.call('alarm_create', { text: 'synthetic first', at: '2026-03-05T10:00:00Z' }, 'wake me in thirty minutes');
+  const second = await h.call('alarm_create', { text: 'synthetic second', at: '2026-03-05T10:30:00Z' }, 'also in one hour');
+  // Fake inference resolves the reference from tool data, never by host speech matching.
+  const fakeInference = async () => {
+    const listed = await h.call('alarm_list', {}, 'cancel that one');
+    assert.equal(listed.status, 'ok');
+    const candidates = JSON.parse(listed.text) as Array<{ id: string; label: string }>;
+    const selected = candidates.find(candidate => candidate.label === 'synthetic second');
+    assert.ok(selected);
+    assert.equal(selected.id, second.references[0]!.id);
+    const refused = await h.call('alarm_cancel', { id: 'synthetic-wrong-id' }, 'cancel that one');
+    assert.equal(refused.status, 'failed');
+    assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'pending');
+    return h.call('alarm_cancel', { id: selected.id }, 'cancel that one');
+  };
+  const result = await fakeInference();
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(alarmRow(h, second.references[0]!.id)!.state, 'cancelled');
+  assert.equal(alarmRow(h, first.references[0]!.id)!.state, 'pending');
+});
+
+
+test('owner time correction precedes past-proposal refusal, but an unresolved past time is refused', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'Europe/Berlin');
+  const corrected = await h.call('alarm_create', { text: 'synthetic corrected', at: new Date(now - 3_600_000).toISOString() }, 'remind me in thirty minutes');
+  assert.equal(corrected.status, 'ok', corrected.repair ?? corrected.text);
+  assert.equal(Number(alarmRow(h, corrected.references[0]!.id)!.fire_at_utc), now + 1_800_000);
+  const refused = await h.call('alarm_create', { text: 'synthetic past', at: new Date(now - 3_600_000).toISOString() }, 'set this reminder');
+  assert.equal(refused.status, 'failed');
+  assert.match(refused.repair ?? refused.text, new RegExp(corrected.references[0]!.id));
+});
+
+
+test('a near-future ISO proposal retains seconds before applying the sixty-second floor', async t => {
+  const h = alarmHarness(t, () => {}, () => now, 'UTC');
+  const result = await h.call('alarm_create', { text: 'synthetic short alarm', at: new Date(now + 1000).toISOString() }, 'set an alarm for one second from now');
+  assert.equal(result.status, 'ok', result.repair ?? result.text);
+  assert.equal(Number(alarmRow(h, result.references[0]!.id)!.fire_at_utc), now + 60000);
 });

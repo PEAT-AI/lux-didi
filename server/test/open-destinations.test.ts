@@ -7,7 +7,11 @@ import { findFile } from '../tools/find-file.js';
 import { openTarget } from '../tools/open.js';
 import { DRIVE_CHOOSE_GUIDANCE, shapeDriveFile, shapeDriveSearch, shapeGcalList, shapeGmailList, shapeGmailRead } from '../tools/live-shape.js';
 import { renderGoogleTool } from '../tools/google.js';
-import { DRIVE_MIME_TYPES } from '../tools/research.js';
+// These are synthetic MIME fixtures, not a retired research catalog capability.
+const DRIVE_MIME_TYPES: Record<string, readonly string[]> = {
+  doc: ['application/vnd.google-apps.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'],
+  deck: ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint'],
+};
 import { SITE_BLOCKLIST, pickSiteDomain } from '../tools/web-search.js';
 
 /** The check script copies the shared table and both allowlist sources next to the compiled test. */

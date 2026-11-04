@@ -1,3 +1,4 @@
+import { taskChatReader } from './fixtures/task-chat-reader.js';
 // C-CHAT (W2b): Naya reads the team chat by person, direct message, group and channel. Every test runs
 // against the synthetic stdio child (fixtures/stdio-mattermost-people-child.mjs): no account, no network.
 import { test } from 'node:test';
@@ -68,7 +69,7 @@ function chatRead(result: MattermostResult): MattermostChatRead {
   return (result as { decodedResult: unknown }).decodedResult as MattermostChatRead;
 }
 
-/** The research path bound to the real reader, the way the tools owner dispatches each sub-call. */
+const searches = (calls: readonly Call[]) => calls.filter(call => call.name === 'mattermost_search').map(call => call.arguments);
 
 test('C-CHAT: the read envelope carries the two person reads, never a write, and the composites stand on the base reads', () => {
   const envelope = connectionEnvelope('mattermost', { resource: RESOURCE });
@@ -745,3 +746,25 @@ test('CA-R2: a thread by keyword uses the thread list, and no topics in the wind
   assert.equal(empty.notFound, 'No thread in the channel AI AI AI is about zzsyntheticnotopic.');
   assert.deepEqual(empty.topics ?? [], [], 'an empty window lists nothing rather than inventing a topic');
 });
+
+
+for (const [name, args] of [
+  ['chat_person', { person: 'Ada', sides: 'both' }],
+  ['chat_channel', { channel: 'AI AI AI' }],
+  ['chat_group', { people: ['Ada', 'Kim'] }],
+  ['chat_overview', { person: 'Ada' }],
+  ['chat_person_topics', { person: '@ada.moss' }],
+  ['chat_channel_topics', { channel: 'AI AI AI' }],
+] as const) {
+  test(`R29 ${name} reaches its existing native SDK read with explicit typed arguments`, async t => {
+    const f = await setup(t, 'people');
+    const task = taskChatReader(f.adapter, f.registry, { ...f.config, credentialRef: null }, f.discovery.schemaDigest, f.names);
+    const before = f.calls().length;
+    const result = await task.call(name, { ...args, from_date: '2026-09-01', to_date: '2026-10-26' });
+    assert.notEqual(result.status, 'failed', JSON.stringify(result));
+    assert.ok(result.text);
+    assert.equal(task.tools.get(name)?.outside_text, true);
+    assert.ok(f.calls().length > before, 'the Native SDK actually read, not an invented local response');
+    assert.equal(f.calls().some(call => call.name === 'mattermost_chat'), false, 'the composite is not sent as a fictional child API');
+  });
+}

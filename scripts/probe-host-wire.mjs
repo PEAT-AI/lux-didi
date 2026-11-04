@@ -109,7 +109,7 @@ async function trial(scenario, number) {
     const events = { async *[Symbol.asyncIterator]() {
       for await (const e of session.events) {
         const at = Date.now() - t.start;
-        if (e.type === 'audio') t.audio.push(at);
+        if (e.type === 'audio') { if (e.audible) t.audio.push(at); }
         else { t.events.push({ at, ...clean(e) }); raw({ at, voice: clean(e) }); if (typeof e.text === 'string') t.textChars += e.text.length; }
         yield e;
       }
@@ -121,8 +121,9 @@ async function trial(scenario, number) {
     guard(0.15);
     const body = JSON.parse(init.body);
     const inputChars = JSON.stringify(body).length;
-    t.helperCost += inputChars / 3 * 30 / 1e6 + 0.12; // Reserve 4,000 output tokens before request.
-    guard();
+    const reservation = inputChars / 3 * 30 / 1e6 + 0.12; // Reserve 4,000 output tokens before request.
+    guard(reservation); // A refused request must not be charged to the cumulative ledger.
+    t.helperCost += reservation;
     raw({ helperRequest: body, at: Date.now() - t.start });
     const response = await fetch(url, init);
     const result = await response.clone().json();
@@ -183,7 +184,7 @@ async function trial(scenario, number) {
     await owner.shutdown();
     if (draining) await draining.catch(error => { t.error ??= error.message; });
     store.close(); detach();
-    spent = Math.min(cap, estimate()); active = undefined; persist();
+    spent = estimate(); active = undefined; persist();
   }
   const outputs = t.events.filter(e => e.type === 'outputTranscription');
   // Adapter transcription events are deltas; finished markers can contain only a newline.

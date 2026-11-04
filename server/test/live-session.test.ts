@@ -5499,3 +5499,45 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   h.f.send({ type: 'session.output_transcript.delta', delta: 'The exact synthetic wire answer.' });
   await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
 });
+
+for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: adapter and host share one 1200 ms transcript quiet, gap=${gap}`, async t => {
+  const scheduler = new DeadlineClock(), start = scheduler.now;
+  const starts: number[] = [], inputs: string[] = [];
+  const clock = { now: () => scheduler.now,
+    setTimer: (ms: number, fire: () => void) => scheduler.schedule(fire, ms),
+    clearTimer: (token: unknown) => (token as ReturnType<DeadlineClock['schedule']>).cancel() };
+  const h = await harness(t, { provider: 'openai', scheduler,
+    portFactory: socketFactory => new OpenAiLiveVoiceAdapter(openAiOptions({ socketFactory, clock })),
+    taskInfer: async request => { starts.push(scheduler.now - start); inputs.push(request.input); return { text: 'Synthetic fragment answer.', calls: [] }; },
+  });
+  const session = h.owner.create({ idempotencyKey: `synthetic-quiet-${gap}`, inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx); consumeTaskPort(t, attachment);
+  await h.f.frame(1); h.f.send({ type: 'session.started', session: { id: 'synthetic-quiet-session' } });
+  await fixtureSettled(attachment.ready, 'synthetic adapter ready');
+  const advanceTo = async (elapsed: number) => {
+    const target = start + elapsed; let steps = 0;
+    for (;;) {
+      const next = [...scheduler.pending].filter(timer => timer.due <= target).sort((a, b) => a.due - b.due)[0];
+      if (!next) break;
+      assert.ok(++steps < 100, 'virtual timer processing is bounded');
+      scheduler.now = next.due; scheduler.runDue(); await settlePort();
+    }
+    scheduler.now = target; await settlePort();
+  };
+  const fragment = async (text: string) => {
+    const before = h.owner.current().entries.filter(entry => entry.kind === 'inputTranscription').length;
+    h.f.send({ type: 'session.input_transcript.delta', delta: text });
+    await fixtureUntil(() => h.owner.current().entries.filter(entry => entry.kind === 'inputTranscription').length > before, 'synthetic transcript delta reached host');
+  };
+  await fragment('Synthetic first fragment.');
+  if (gap >= 1_200) {
+    await advanceTo(1_199); assert.equal(starts.length, 0);
+    await advanceTo(1_200); assert.deepEqual(starts, [1_200], '700 ms adapter finalization must not stack another full 1200 ms');
+  }
+  await advanceTo(gap); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
+  await fragment('Synthetic second fragment.');
+  await advanceTo(gap + 1_199); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
+  await advanceTo(gap + 1_200); assert.equal(starts.length, gap < 1_200 ? 1 : 2);
+  assert.equal(starts.at(-1), gap + 1_200); assert.match(inputs.at(-1)!, /Synthetic second fragment/);
+  if (gap < 1_200) assert.match(inputs[0]!, /Synthetic first fragment/);
+});

@@ -56,3 +56,9 @@ For the operational sequence and content-free logs, use [debugging.md](debugging
 ## Helper task records
 
 Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; task arguments and results remain private content, not a safe support attachment.
+
+## Helper task diagnostics (10.11)
+
+`task_tool` logs contain only task/revision/operation identifiers, tool name, duration, terminal category and cache disposition. Failure repairs are helper-facing content, not log messages. No task arguments, results, final answers or owner speech are added to these events.
+
+Task content capture remains disabled in the connected host. The transcript writers currently store text directly; their content-reading lifecycle gate requires session-specific authority and is not a reusable host capture-consent callback. This release does not invent a new consent to enable task bodies. Consequently, task content remains NULL in connected-host records. The Store's existing task-content pruning remains in place, alongside transcript retention, but metadata telemetry does not recover historically uncaptured words or searches.

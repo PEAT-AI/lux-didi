@@ -494,3 +494,24 @@ test('task cancellation still aborts reads and emits a cancelled terminal event'
     assert.ok(events.some(event => event.category === 'cancelled'));
   } finally { reply.resolve(documentResult('synthetic', 'entry:1')); await work; detach(); }
 });
+
+test('invalid insight identifiers name search_knowledge and valid insight ids reach the reader', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    toolNames: ['get_insight'], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
+  const seen: Record<string, unknown>[] = [];
+  const reader: import('../connectors/index.js').ConnectorReader = { call: async (_name, args) => { seen.push(args); return { state: 'completed', decodedResult: { text: 'synthetic insight' } } as unknown as import('../connectors/index.js').ConnectorEvidence; } };
+  const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
+  const invalid = await execute('read_knowledge', { id: 'memory:synthetic' }, new AbortController().signal);
+  assert.equal(invalid.failure_category, 'invalid_argument');
+  assert.match(invalid.repair!, /search_knowledge/);
+  assert.equal(seen.length, 0);
+  const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
+  assert.equal(valid.text, 'synthetic insight');
+  assert.deepEqual(seen[0], { ids: [63] });
+});

@@ -9,7 +9,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/schema.js';
-import { taskMigrations } from '../runtime/task-schema.js';
 import { composeMcpRuntime, type McpRuntimeComposition } from '../host/mcp.js';
 import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { COMPOSE_CONSENT } from '../tools/compose.js';
@@ -39,7 +38,7 @@ async function host(t: TestContext, build: (pid: (id: string) => string) => read
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   if (options.catalog !== false) writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: build(pid) }), { mode: 0o600 });
-  const store = new Store(join(dir, 'data'), [...toolsMigrations, ...taskMigrations]);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
   const identity: Host['identity'] = [];
   const mcp = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,

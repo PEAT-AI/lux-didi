@@ -197,7 +197,7 @@ test('policy identical apply is a SQL no-op; generation/identity/delete and immu
   assert.equal((await f.owner.resultGate.authorize(f.host, [f.binding(ref)], ['ordinary'], f.signal)).state, 'allowed');
 });
 
-test('persisted disable survives reopen and stale projected registry grants cannot dispatch', async t => {
+test('SOURCE DEFECT task read delivery: persisted disable survives reopen and stale grants cannot dispatch', async t => {
   const f = await fixture(t);
   const initialCall = { ...f.intent('initial-result'), callId: 'initial-result' };
   f.owner.journal.intent(initialCall); const initialResult = await f.execute(initialCall);
@@ -243,7 +243,7 @@ test('unbound run still needs live authority, including initial request', async 
   assert.equal(result.status, 'denied'); assert.equal(requests, 0);
 });
 
-test('revoke while awaiting authority is caught by final synchronous persisted reread', async t => {
+test('SOURCE DEFECT task read delivery: revoke during authority await refuses the captured result', async t => {
   const f = await fixture(t); const original = f.getLive();
   f.owner.journal.intent(f.intent()); const completed = await f.execute();
   assert.equal(completed.status, 'completed'); if (completed.status !== 'completed') throw Error('initial read failed');
@@ -338,7 +338,8 @@ for (const [label, result, memoryBytes] of [
     assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
     if (gate.state === 'allowed') {
       assert.equal(gate.results[0]!.response['status'], 'failed');
-      assert.equal(typeof gate.results[0]!.response['repair'], 'string');
+      assert.equal(typeof gate.results[0]!.response['cause'], 'string');
+      assert.equal(typeof gate.results[0]!.response['next'], 'string');
       assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
     }
   }
@@ -454,7 +455,7 @@ test('bounded complete slice reader denies expired, missing, partial, hash and s
   }
 });
 
-test('a captured task declaration rechecks current task identity before calling its reader', async t => {
+test('SOURCE DEFECT task identity: a captured declaration rejects a superseded task before reading', async t => {
   const f = await fixture(t);
   const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   const call = f.intent(); f.owner.journal.intent(call);

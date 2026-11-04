@@ -8,19 +8,14 @@ Host tools connect a model's request to validated local or remote work. They do 
 
 The owner supplies the model loop's journal and result gate. Intent precedes dispatch; accepted results have canonical references rather than arbitrary handler objects. Revocation and class/route policy are rechecked before results are released. Unknown effects must remain unknown, not be automatically retried or reported as saved because a model said so. See [model-adapter.md](model-adapter.md).
 
-## Research and coverage
+## Helper work and source evidence
 
-`server/tools/research.ts` owns source routing, bounded reads, coverage and follow-up state. `ResearchLedger`, `ResearchScheduler` and `ResearchAdmission` separate retained results, scheduling and owner-turn permission. A finalized owner turn admits bounded research; a model's desire to continue does not grant another turn.
-
-A coverage statement must distinguish unavailable sources from completed empty reads, and partial work from complete coverage. Found matches, examined records and represented findings are not interchangeable counts. A deadline cannot be disguised as "nothing matched". [Live call](live-call.md) owns dead-air behavior around those operations.
-
-Registry connectors and their projections are described in [connectors.md](connectors.md). Keep exact schemas, source budgets and query operators in the implementation, not a second prose table here.
-
-The reply budget is a tier, not one number: 12,000 chars for a plain ask, 16,000 for an analytical one (a named person or a document, a comparison, team implications, a synthesis across sources) and 20,000 when the owner asks to go deep. The tier is read off the owner's question before the run reads anything, a later question may raise it, and nothing lowers it. The allocator shares the budget as before, with two changes: a source is only trimmed while it still holds more than `sourceFloorChars` (about 1,000) of evidence, so one line never counts as shown, and memory the ask did not refer to gets no allocation at all when the ask names a person or a document, not merely the last word in a squeeze. A hit two reads both returned is shown once.
-
-Beside the per source counts the header closes with `<label> full` or `<label> excerpt` for each source it read, so an excerpt is never called full, and `entities N of M covered` with `missing: <names>` for the people and documents the owner named, read off the question itself rather than a model call.
-
-Knowledge reads in two stages. The search answers with summaries; when the ask names a person or a document, or asks for depth, the host then makes one batched `get_insight` read of at most three hits, the ones naming an asked entity first, inside the round already dispatched and under its own 1,500 ms bound. Each fetched body replaces the summary of the hit it came from, keyed by that hit's id, so the reply shows the entry and not its abstract. A plain search spends no second call.
+The voice has no source tools. The host-owned text helper uses the typed task
+registry to read sources and perform authorized actions. The host runs tools
+and keeps the record; it does not infer intent from model prose. The helper
+reports only evidence actually returned and keeps missing results distinct
+from incomplete reads. The voice speaks the result without exposing helper
+or delegation machinery to the owner.
 
 ## Opening things
 
@@ -130,7 +125,7 @@ Alarm time parsing uses the complete owner ask, not model-selected timing. Wake 
 
 ## Task worker boundary (10.10)
 
-The dormant `server/tasks/` registry is separate from the legacy research tool. Structural argument validation
+The host-owned helper uses the typed `server/tasks/` registry. Structural argument validation
 uses the repository MCP SDK schema validator; nullable optional fields are removed before connector execution.
 Configured company resources compile into `query_company(resource, filters)` from `CONNECTOR_DESCRIPTORS`.
 Read results declare whether they count as outside text. The host tracks that fact between inference turns;
@@ -205,3 +200,12 @@ never confirms. A different id stages afresh, even if a different task is active
 The runtime includes the stage in verified worker status and clears it at call end.
 Ordinary effect checks always receive available immediately preceding owner task
 words as earlier context; no host short-follow-up classification is used.
+
+### Voice and helper instruction ownership (10.10)
+
+The voice model has no source tools. A host-owned text helper reads sources and
+performs authorized actions with typed tools; the voice receives its results.
+The shipped public helper policy lives in `server/tasks/instructions.ts` and is
+limited to 3,000 characters. The composed owner presentation style follows it
+at runtime when present. Owner lore is not added by the instruction builder.
+The offline synthetic replay reads this shipped policy, not a separate copy.

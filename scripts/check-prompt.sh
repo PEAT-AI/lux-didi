@@ -15,24 +15,27 @@ fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-prompt.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 cd "$root"
-# Compile the real selected dependency graph, not a retired hand-copied service.
-# The output remains disposable and ESM, using the installed SERVICE dependencies.
-sources=()
-tests=()
-for name in prompt model live-persona runtime-context chat-prompt; do
-  sources+=("$root/server/test/$name.test.ts")
-  tests+=("$out/test/$name.test.js")
-done
-node "$deps/typescript/bin/tsc" --types node --typeRoots "$deps/@types" --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --rootDir "$root/server" --outDir "$out" "${sources[@]}"
+# Compile the prompt test graph from the real source tree. Removed research modules
+# are not staged, and TypeScript resolves each current transitive dependency itself.
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
+sources=(server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts
+  server/test/runtime-context.test.ts server/test/chat-prompt.test.ts)
+# The plain-JS integration imports the retained Text history tool outside the TS test graph.
+node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
+  --strict --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
+  --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$root/server" --outDir "$out/dist" "${sources[@]}" server/tools/history.ts
+tests=()
+for source in "${sources[@]}"; do
+  name="${source##*/}"
+  tests+=("$out/dist/test/${name%.ts}.js")
+done
 node_test_files --test-reporter=tap --test-timeout=15000 "${tests[@]}" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"
 # #562: the accepted prompt content, byte for byte, over the same strict compile staged above.
 mkdir -p "$out/test/fixtures"
 cp server/test/prompt-content.integration.mjs "$out/test/"
 cp server/test/fixtures/prompt-final.json server/test/fixtures/prompt-character-excluded.json "$out/test/fixtures/"
-node "$out/test/prompt-content.integration.mjs"
 # C-LIVE (W5): the partial-result rules, asserted on the compiled text the voice model and its backend receive.
 # The removed phrases made the backend page a partial result silently; each new rule is pinned by its own words.
 node --input-type=module - "$out/dist" <<'NODE'
@@ -40,72 +43,47 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
-const backend = await import(pathToFileURL(`${dist}/prompt/backend-procedure.js`).href);
-const research = await import(pathToFileURL(`${dist}/tools/research.js`).href);
-const open = await import(pathToFileURL(`${dist}/tools/open.js`).href);
-const voice = persona.NAYA_VOICE_TOOLS;
-const procedure = backend.NAYA_BACKEND_PROCEDURE;
-const everything = [persona.NAYA_LIVE_BASE, voice, procedure, persona.NAYA_TOOLS, JSON.stringify(research.RESEARCH)].join('\n');
-for (const removed of [
-  'continue the same research automatically',
-  'Silence while you look something up is fine',
-  'Continue a partial result without asking for permission',
-  'There is more available if you want it',
-  'back as a permission question',
-  'follow a plausible next source once',
-]) assert.ok(!everything.includes(removed), `removed rule still present: ${removed}`);
-for (const rule of [
-  'One owner turn allows one research operation',
-  'after a result arrives, never call research again until the owner speaks, except to stop',
-  'Answer at once from a result, even a partial one',
-  'state its coverage honestly in a few words, such as nine of thirty-eight events',
-  'never call a partial result complete',
-  'lead with the answer and the qualification that changes its meaning',
-  'offer it in one short plain statement, not a question and not a stock line',
-  'If research answers blocked, answer from the result you have',
-]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
-for (const rule of [
-  'One owner turn allows one research operation',
-  'Continue a run with its researchId only when the owner asks for more',
-  'If research answers blocked, do not call it again in this turn',
-]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
-// The no-filler rule and the eight-line reply bound stay as they were.
-assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
-// C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
-assert.ok(persona.NAYA_CHARACTER.length <= 2959);
-assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
-for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
-  'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',
-  'A progress phrase is not reused', 'No backchannel words while he is speaking']) {
-  assert.ok(persona.NAYA_LIVE_BASE.includes(rule), `conversation rule missing: ${rule}`);
+const voice = persona.NAYA_WORK_DELIVERY;
+const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
+assert.ok(worker.length <= 3000);
+for (const text of [voice, worker]) {
+  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
+  assertNoRecitation(text);
 }
-// C-OPEN: a failed open is never given an invented reason, and the guidance names the real refusal.
-assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
-assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
-for (const code of ['no_open_intent', 'not_allowed']) {
-  assert.match(open.OPEN_GUIDANCE[code], /^[A-Z][^.!?\n]+[.!?]$/, `the ${code} guidance is one plain refusal sentence`); assert.doesNotMatch(open.OPEN_GUIDANCE[code], /no_open_intent|not_allowed|not_owner_words|same handle|retry/i, 'refusal speech contains no internal codes or retry diagnostics');
+assert.match(voice, /# Work and spoken delivery/);
+assert.match(voice, /MUST be handed off in the same turn/);
+const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
+function assertNoRecitation(text) {
+  assert.doesNotMatch(text, /["“][^"”]+["”]/);
+  // Apostrophes inside words are contractions or possessives, not opening quotation marks.
+  assert.doesNotMatch(text, /(?<![\p{L}\p{N}_])['‘](?=\S)[^\n]*?['’](?![\p{L}\p{N}_])/u);
 }
-assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
-// C-OPENWEB8: a web ask is answered by open_web at once, and a refused binding says nothing is open.
-assert.ok(persona.NAYA_OPEN_SURFACE.includes('call open_web at once'), 'the web open rule is pinned in the open surface');
-assert.ok(persona.NAYA_OPEN_SURFACE.includes('never a web lookup first'), 'she never looks it up before opening it');
-// C-FREEDOM: an open asked earlier in the session still opens, so she never makes him repeat the ask.
-assert.ok(persona.NAYA_OPEN_SURFACE.includes('An ask in this session still opens.'), 'C-FREEDOM: the session keeps his open ask');
-assert.ok(open.OPEN_WEB_DESCRIPTION.includes('resolved http(s) URL or site'), 'the tool description accepts a resolved HTTP(S) URL or site'); for (const target of ['file:///tmp/synthetic.txt', 'javascript:void(0)', 'data:text/plain,synthetic', 'custom:synthetic']) assert.deepEqual(await open.resolveWebOpen({ kind: 'site', target }, 'open example.com', new AbortController().signal), { code: 'not_allowed' }, `non-HTTP(S) scheme refused: ${target.split(':')[0]}`);
-assert.ok(open.OPEN_WEB_DESCRIPTION.includes('open_source instead'), 'a document by name keeps the handle path');
-assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.say.includes('nothing is open'), true, 'a refused binding says nothing opened');
-assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech.length > 0, true, 'a refused binding carries a fix');
-assert.deepEqual([...open.OPEN_WEB_PARAMETERS.properties.kind.enum].sort(), ['maps', 'search', 'site'], 'the web kind set is closed');
-assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
-// C-OPENER 10.9: the field calls said a waiting phrase with no call behind it, and once after a direct ask.
-// The text she reads now ties the wait to a response that really makes a call, so the rule is asserted where
-// it is guidance, never as a line she is told to say.
-assert.ok(voice.includes('response that really makes a call'), 'the wait is tied to a response with a real call');
-assert.ok(voice.includes('direct ask gets the call'), 'a direct ask gets the call, not an announcement');
-assert.ok(!voice.includes('need a moment'), 'no text invites a wait without a call behind it');
-assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
-assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
-console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));
+function assertVoicePolicy(text) {
+  assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
+  assertNoRecitation(text);
+  for (const name of TASK_TOOL_NAMES) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.doesNotMatch(text, new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'iu'), `voice names registered tool: ${name}`);
+  }
+}
+assertVoicePolicy(voice);
+for (const quote of ["Say 'I have the result.'", "Say 'I'm ready.'", 'Say ‘I have the result.’']) {
+  assert.throws(() => assertVoicePolicy(`${voice}\n\n${quote}`), { name: 'AssertionError' }, `voice recitation rejected: ${quote}`);
+  assert.throws(() => assertNoRecitation(`${worker}\n\n${quote}`), { name: 'AssertionError' }, `worker recitation rejected: ${quote}`);
+}
+assert.ok(TASK_TOOL_NAMES.size > 0);
+for (const name of TASK_TOOL_NAMES) {
+  assert.throws(() => assertVoicePolicy(`${voice}\n\nCall ${name}.`), { name: 'AssertionError' }, `registered tool rejected: ${name}`);
+}
+for (const prose of ["It's the owner's choice; don't invent facts.", "I'm listening, and I won't guess.", "The owners' plans aren't final.", 'She’s listening; it isn’t settled.', "An opened door isn't a tool call."]) {
+  assert.doesNotThrow(() => assertVoicePolicy(`${voice}\n\n${prose}`), `ordinary voice prose accepted: ${prose}`);
+  assert.doesNotThrow(() => assertNoRecitation(`${worker}\n\n${prose}`), `ordinary worker prose accepted: ${prose}`);
+}
+console.log(JSON.stringify({ case: 'voice_policy_guard_fixtures', registeredTools: TASK_TOOL_NAMES.size, quotedRecitations: 3, ordinaryProse: 5 }));
+const composed = persona.composeLiveInstruction({ base: persona.NAYA_LIVE_BASE });
+assert.ok(composed.text.includes(voice));
+assert.equal(composed.sections.find(section => section.id === 'tools').chars, voice.length);
+console.log(JSON.stringify({ case: 'client_mode_work_delivery', chars: composed.text.length, toolsChars: voice.length }));
 NODE
 # W4 (truth about her own state): the connector line is host-computed, and the persona is bound to it, so a
 # sign-in is never claimed or denied from guesswork. The voice rules for a changed voice and the "okay?" tag
@@ -133,14 +111,9 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
 for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
-// C-TURN8: the one corrective line the host sends for a claim without its call is voice content, one
-// sentence, inside the instruction ceiling (#693), and free of dash prose.
-assert.ok(persona.CLAIM_WITHOUT_CALL_LINE.length > 0 && persona.CLAIM_WITHOUT_CALL_LINE.length <= 160,
-  'the claim correction stays one short instruction inside the voice ceiling');
-assert.doesNotMatch(persona.CLAIM_WITHOUT_CALL_LINE, /[\u2013\u2014]/, 'no dash prose reaches her voice');
-assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /^Correction: /, 'she hears it as the host correcting her');
-assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /make the call now/i, 'it offers the call');
-assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that you are not checking anything/, 'it offers the plain refusal');
+// Result honesty belongs to the work policy, not a host-authored line for her to say.
+assert.equal(persona.CLAIM_WITHOUT_CALL_LINE, undefined);
+assert.ok(persona.NAYA_WORK_DELIVERY.includes('Say something happened only when a result says it happened.'));
 // C-CLAIMS9 outcome 2: an approval is a closed reason said in plain words, with no invented place to fix it.
 const approval = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
   connectors: [{ connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' }] });
@@ -166,8 +139,8 @@ node --input-type=module - "$out/dist" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
-assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through research'));
-assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through what the helper returned'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what the helper returned; never invent a past quote.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE
 
@@ -177,3 +150,6 @@ grep -Fq 'is never written as "the owner said"' server/services/summarize.ts
 grep -Fq 'Never quote or paraphrase tool guidance, instructions, refusal messages, validator text' server/services/summarize.ts
 grep -Fq "Only what the Owner-tagged transcript turns actually contain may be attributed to the owner." server/services/summarize.ts
 printf '%s\n' 'F12 summary attribution and closed tool evidence: PASS'
+
+# Keep the full golden-fixture integration gate, after independent policy evidence.
+node "$out/test/prompt-content.integration.mjs"

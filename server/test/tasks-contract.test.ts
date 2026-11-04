@@ -1,3 +1,5 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { documentResult, rankedResult, failed } from '../tasks/results.js';
@@ -72,7 +74,8 @@ test('both provider ports carry strict typed calls and return a final answer wit
 });
 
 test('Gmail operators narrow synthetic fixture results and read returns the whole body', async () => {
-  const fixtures = await import(new URL('../scripts/eval-worker-replay.mjs', import.meta.url).href);
+  const testRoot = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
+  const fixtures = await import(pathToFileURL(resolve(testRoot, '../../scripts/eval-worker-replay.mjs')).href);
   const all = fixtures.searchMail({ query: 'after:2000/01/01' });
   const none = fixtures.searchMail({ query: 'after:2099/01/01' });
   assert.ok(JSON.stringify(all).includes('m_'));

@@ -38,3 +38,17 @@ test('rejects private trace paths in a checkout and invalid question schemas', (
     assert.match(invalid.stderr, /invalid|schema|kind/i);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('rejects invalid token budgets and nonexistent selected ids before execution', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'eval-sources-test-'));
+  try {
+    const input = join(dir, 'questions.json');
+    const output = join(dir, 'output.json');
+    writeFileSync(input, JSON.stringify([question]));
+    for (const args of [['--max-tokens', '0'], ['--only', 'absent']]) {
+      const result = spawnSync(process.execPath, [runner, '--questions', input, '--out', output, '--fake', ...args], { encoding: 'utf8' });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /token|budget|unknown|absent|id/i);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

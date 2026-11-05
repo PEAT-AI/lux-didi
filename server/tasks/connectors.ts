@@ -17,9 +17,9 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
-  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
-  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
-  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
+  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
+  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
+  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
   chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
   chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
   chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
@@ -74,7 +74,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
   if (name === 'search_knowledge' && typeof data === 'string') {
-    const rows = rankedText(data);
+    const rows = rankedText(data).slice(0, 6).map(row => ({ ...row, title: row.title.slice(0, 300) }));
     const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
     return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
       text: data.slice(0, 24000),

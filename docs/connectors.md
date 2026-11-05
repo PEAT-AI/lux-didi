@@ -72,3 +72,39 @@ failures also log a closed exception class when known: refused, DNS, TLS, timeou
 HTTP status family or transport; otherwise unknown. Recovery spacing is unchanged.
 
 A late connector recovery does not itself grant access. A later task still uses the host's configured bindings and approved capabilities. Connector recovery must not make voice stall recovery more aggressive.
+
+
+## Owner vault helper
+
+The reviewed remote read catalogue is exactly `search_knowledge`, `get_insight`,
+`list_meetings`, `get_meeting` and `list_insights`. No maintenance, personnel mutation,
+link mutation or other remote tools are published. Discovery and approval still apply.
+The helper's typed meeting/list tools are `vault_meetings`, `read_vault_meeting` and
+`list_vault`; list pages and meeting child pages have bounded limits and offsets.
+
+Search wire arguments select `detail="voice"`, `snippet_chars=600` and
+`limit=min(6, configured maximum)`. Confidence and supersession are evidence, not
+instructions. The entire accepted text envelope reaches the helper, capped at 24000
+characters and six bounded references. Source policy validation still precedes delivery;
+structured diagnostics never outrank the accepted MCP text blocks.
+
+A fresh Lux Knowledge endpoint with no `unknownClass` defaults to `sensitive`.
+An explicit class is preserved; no other connector gains a default classification.
+Both source and route must allow sensitive content before search includes it. The
+remote `get_insight` API has no `include_sensitive` argument: id reads and linked reads
+are not filtered by that search flag, and returned content retains the source class.
+`get_meeting` and `list_insights` do take the sensitive flag; `list_meetings` does not.
+
+Installed private configuration is an installation responsibility, never a repository
+fixture. With the application stopped, the installer must set the vault endpoint's
+`unknownClass` to `sensitive` in `<dataDir>/provider-config/mcp.json` and ensure the
+active answer route's `dataClasses` and its credential record's `allowedClasses`
+include sensitive. The route files are `live.json` for voice and `profile.json` for
+text; the OpenAI credential record is `openai-primary.json`. Use the existing reviewed
+route-class configuration operation to update route and credential bindings together,
+not an ad hoc edit of persisted approvals. Other endpoints and routes retain their
+existing classes. No owner configuration or account is used by repository checks.
+
+Synthetic checks establish shaping, bounded arguments, disclosure classes, replacement
+links and refusal behavior. They do not establish production ranking quality, real
+private visibility, provider latency or search discoverability after a real save.

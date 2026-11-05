@@ -183,13 +183,35 @@ The voice model has no source tools. A host-owned text helper reads sources and
 performs authorized actions with typed tools; the voice receives its results.
 The shipped public helper policy lives in `server/tasks/instructions.ts` and is
 limited to 3,000 characters. The composed owner presentation style follows it
-at runtime when present. Owner lore is not added by the instruction builder.
+at runtime when present. The helper also receives the owner lore from the same private owner profile. The profile is never checked into this public repository.
 The offline synthetic replay reads this shipped policy, not a separate copy.
 
 ## Helper read recovery and deadlines (10.11)
 
-Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; `read_knowledge.id` is the insight id from `search_knowledge`; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
+Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; `read_knowledge.ids` is a bounded batch of insight ids from `search_knowledge` or `list_vault`, with `include_links` for linked rationale; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
 
 Read failures carry a closed category and source-specific repair instructions. Raw exception text is not helper evidence. A speech revision stops the old inference and write admissions, but an already-running read survives and an identical read joins its promise. Task cancellation still aborts reads. Completed read results remain in the existing per-task read cache; writes never enter it.
 
 The tool phase retains its 36-second revision ceiling and individual connector limits. Ordinary inference has up to 24 seconds within that ceiling, including a no-tool answer with no completed reads; whether an inference is composing text or requesting tools is unknown until its response arrives. After a deadline, or an inference failure with findings available, one final inference receives completed evidence and unfinished-tool coverage with no tools. It has a separate budget of up to 24 seconds. Its answer remains `incomplete`, never `complete` or `no_action`; if composition fails, the fallback includes the completed findings and does not claim completeness.
+
+
+### Vault retrieval contract
+
+Vault search is semantic retrieval: returned hits are `ok`, not failed exact-name matches.
+The helper receives the source confidence header, ordered ranks, score, type, snippet,
+validity and supersession evidence. A superseded entry is historical context; follow its
+replacement and name the change rather than presenting the old fact as current.
+Company and people exact-name behavior is separate and unchanged.
+
+The helper asks for at most six voice snippets of 600 characters. Source text is bounded
+to 24000 characters, with at most six bounded reference titles. Reads support up to six
+ids and linked rationale in one request, retaining versioned continuations for long text.
+`vault_meetings` finds meetings by participant/date; `read_vault_meeting` reads one;
+`list_vault` supplies true totals and offset pages for all/count questions. None can write.
+Owner profile lore and style are appended privately; the public instruction ceiling is
+4600 characters. Search using the owner's terms, inspect snippets, read plausible hits,
+and try another wording before claiming absence.
+
+Saving authority is unchanged. `save_to_vault` reports saved only for a confirmed insert
+with an insight id; duplicates, failures and unknown outcomes are not reported as saved.
+A save receipt is not proof that a later ranked search will put the new entry first.

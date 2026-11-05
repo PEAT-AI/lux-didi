@@ -54,11 +54,12 @@ OpenAI results use commentary on the current provider generation with its latest
 or null when there is none. The host waits for owner speech and output quiet, then appends ordered
 fenced JSON items of at most 450 characters, including the fence and encoded fields. Provider timeline acknowledgement settles each chunk, not exact
 transcription or proven playback. An explicit rejection retries once on the same line and then logs
-failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
-heard deadline. Store records pending sends and only records delivered after provider acknowledgement.
+failure. Delivery never reconnects and has no heard deadline. Within one context it does not resend
+accepted items; a fresh session restarts an unfinished envelope at its header, even if earlier
+items were accepted. Acceptance is timeline evidence, not proof that facts were spoken. Store records pending sends and only records delivered after provider acknowledgement.
 
-A real socket rebuild retains the bounded transcript through rebuildSeed. Unacknowledged remainder
-is appended as commentary after ready, with a null id until this generation has a delegation.
+A real socket rebuild retains the bounded transcript through rebuildSeed. The complete unfinished envelope
+is appended header-first as commentary after ready, with a null id until this generation has a delegation.
 Accepted chunks are not replayed; no say-first instructions replace conversation history.
 Recovery timing is unchanged. Verified helper status names whether a rebuild happened and its closed
 cause; live_rebuild metadata names running_task, finished_answer_pending or nothing_owed.
@@ -210,7 +211,7 @@ The release owner runs the real-wire probe and synthetic replay separately.
 
 ### Typed work commentary
 
-The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice collects all parts through `final:true` before answering. Transport acceptance and the delivery record advance per item, not per logical envelope.
+The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice collects all parts through `final:true` before answering. Transport acceptance and the delivery record advance per item, not per logical envelope. A fresh session receives the complete unfinished envelope from part 1, including already accepted headers and exact entities. The cumulative unique-item acceptance count is preserved, never treated as evidence that facts were spoken. Recovery context seeds also carry the complete envelope.
 
 Exact entities are reproduced verbatim, including names, dates, times, amounts, numbers and qualifications. Everything else is phrased in her own voice, with no invented facts, filler or meta-status. Requested full results are told completely once. `partial` gives what exists and names the gap; `no_action` answers from the conversation without mentioning a lookup; `failure` gives the supplied cause and repair once without inventing a next step. Work runs in silence.
 

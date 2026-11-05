@@ -36,14 +36,15 @@ test('stale results and stale receipts cannot deliver, paired with a valid resul
   f.stale(); f.delivery.accepted(f.sends[0]!.command); f.delivery.deliver(identity, answer('Synthetic stale.'));
   assert.equal(f.sends.length, 1); assert.deepEqual(f.states, ['sent']);
 });
-test('socket loss retains only the unacknowledged remainder and waits for ready', () => {
+test('socket loss restores the whole unfinished envelope and waits for ready', () => {
   const f = fixture(); f.delivery.socket(1); f.delivery.attach(identity, 'old');
   f.delivery.deliver(identity, answer('Synthetic sentence. '.repeat(40)));
-  f.delivery.accepted(f.sends[0]!.command); const pending = f.sends[1]!.text;
+  f.delivery.accepted(f.sends[0]!.command); const header = f.sends[0]!.text;
   f.delivery.disconnected(); f.delivery.socket(2, false); assert.equal(f.sends.length, 2);
   f.delivery.accepted(f.sends[1]!.command); assert.equal(f.states.filter(s => s === 'accepted').length, 1);
   f.delivery.ready(); assert.equal(f.sends.length, 3); assert.equal(f.sends[2]!.id, null);
-  assert.equal(f.sends[2]!.text, pending);
+  assert.equal(f.sends[2]!.text, header);
+  assert.equal(f.delivery.said()!.accepted, 1, 'prior header acceptance remains evidence, not speech');
   f.delivery.accepted(f.sends[2]!.command);
   while (f.delivery.waitingAnswer()) f.delivery.accepted(f.sends.at(-1)!.command);
   assert.equal(f.delivery.waitingAnswer(), undefined);

@@ -24,7 +24,7 @@ for (const boundary of ['before input', 'pending without a binding', 'pending wi
 }
 
 for (const boundary of ['sent', 'accepted', 'partly heard']) {
-  test(`task rebuild boundary: ${boundary} retains only unacknowledged delivery, never repeats work`, async t => {
+  test(`task rebuild boundary: ${boundary} restores complete unfinished envelopes, never repeats work`, async t => {
     let inferences = 0;
     const f = await liveTaskFixture(t, async () => { inferences++; return { text: 'The complete synthetic boundary answer.', calls: [] }; });
     f.finalize('Give the synthetic boundary answer.'); f.bind('old-binding'); const first = await f.answer();
@@ -35,8 +35,8 @@ for (const boundary of ['sent', 'accepted', 'partly heard']) {
     f.bind('fresh-binding'); await f.flush();
     assert.equal(f.voice.taskAnswers.length, boundary === 'sent' ? 3 : 2);
     if (boundary === 'sent') {
-      assert.equal(f.voice.taskAnswers[2]?.delegationId, null, 'pending answer uses commentary after ready without a new delegation');
-      assert.equal(f.voice.taskAnswers[2]?.text, f.voice.taskAnswers[1]!.text);
+      assert.equal(f.voice.taskAnswers[2]?.delegationId, null, 'complete pending envelope restarts on the new line without a delegation');
+      assert.equal(f.voice.taskAnswers[2]?.text, f.voice.taskAnswers[0]!.text);
     }
     assert.equal(inferences, 1);
     assert.doesNotMatch(f.voice.requests[1]!.system.text, /first spoken output must be exactly/);

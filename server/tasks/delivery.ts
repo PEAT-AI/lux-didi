@@ -124,7 +124,7 @@ export class TaskDelivery implements Delivery {
   said(): Said | undefined { return this.#said; }
   waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     const pending = this.#current();
-    return pending && !pending.requiresDelegation ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
+    return pending && !pending.requiresDelegation ? { identity: pending.identity, text: pending.chunks.join(' ') } : undefined;
   }
   #current(): Pending | undefined {
     if (this.#pending && !this.ports.isCurrent(this.#pending.identity)) this.#pending = undefined;
@@ -132,7 +132,7 @@ export class TaskDelivery implements Delivery {
   }
   socket(_generation: number, ready = true): void {
     this.#binding = null; this.#ready = ready; this.#quiet = true;
-    const pending = this.#current(); if (pending) { pending.command = undefined; pending.attempt = pending.blocked ? 1 : 0; pending.started = false; pending.blocked = false; }
+    const pending = this.#current(); if (pending) { pending.chunk = 0; pending.command = undefined; pending.attempt = pending.blocked ? 1 : 0; pending.started = false; pending.blocked = false; }
     this.#drain();
   }
   ready(): void { this.#ready = true; this.#resume(); }
@@ -157,7 +157,7 @@ export class TaskDelivery implements Delivery {
   accepted(command: string): void {
     const pending = this.#current(); if (!pending || pending.command !== command) return;
     this.ports.state(pending.identity, 'accepted', pending.chunk);
-    if (this.#said !== undefined) this.#said.accepted = pending.chunk + 1;
+    if (this.#said !== undefined) this.#said.accepted = Math.max(this.#said.accepted, pending.chunk + 1);
     if (++pending.chunk === pending.chunks.length) { this.#pending = undefined; return; }
     pending.command = undefined; pending.attempt = 0; this.#drain();
   }
@@ -165,7 +165,7 @@ export class TaskDelivery implements Delivery {
     const pending = this.#current(); if (!pending || pending.command !== command) return;
     pending.command = undefined; this.#retry();
   }
-  /** Socket loss preserves only the unacknowledged remainder, never accepted chunks. */
+  /** Timeline acceptance is not speech: a fresh context needs every part of an unfinished envelope. */
   closed(_identity: RevisionIdentity): void { this.disconnected(); }
   disconnected(): void {
     this.#ready = false; this.#binding = null;

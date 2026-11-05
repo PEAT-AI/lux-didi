@@ -13,7 +13,10 @@ export function commentaryResults<T extends { text: string }>(items: T[]): (T & 
     const part = commentaryPart(item.text);
     const group = groups.get(part.id) ?? [];
     const prior = group.find(value => commentaryPart(value.text).part === part.part);
-    if (prior) assert.equal(item.text, prior.text, 'retries preserve the identical wire item');
+    if (prior) {
+      assert.equal(item.text, prior.text, 'retries preserve the identical wire item');
+      group[group.indexOf(prior)] = item; // Latest transport command owns acceptance on a rebuilt session.
+    }
     else group.push(item);
     groups.set(part.id, group);
   }

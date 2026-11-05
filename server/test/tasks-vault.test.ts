@@ -88,10 +88,14 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const { createRegistry } = await import('../tasks/tools.js');
   const { FakeAuthority } = await import('../tasks/authority.js');
   const { runWorker } = await import('../tasks/worker.js');
-  const policy = {
-    connector: 'lux-knowledge', toolNames: ['search_knowledge', 'get_insight'],
-    bounds: { maxSearchLimit: 25, maxGetIds: 10 },
-  } as import('../tools/types.js').ConnectionPolicy;
+  const policy: import('../tools/types.js').ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true,
+    connector: 'lux-knowledge', toolNames: ['search_knowledge', 'get_insight'], schemaDigest: 'fixture',
+    endpoint: { id: 'fixture', url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'sensitive', allowedClasses: ['sensitive'] },
+    route: { identity: 'fixture', allowedClasses: ['sensitive'] },
+    bounds: { maxSearchLimit: 25, maxGetIds: 10, maxQueryChars: 4000, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  };
   const seen: { tool: string; args: Record<string, unknown> }[] = [];
   const read = '#89969 Old watering plan\n⚠ superseded by #90213\nLinked rationale: #90213 Current watering plan\nSYNTHETIC PRIVATE ROW';
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {

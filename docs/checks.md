@@ -286,8 +286,12 @@ proves the whole declared tool set of this build is one the provider accepts. It
 for every helper request until 10.13.
 
 The declared set is the static declarations plus the company tools of every configured endpoint, built
-from the app's cached discovery (`server/test/fixtures/mongoose-tools-list-literal.json`, the committed
-capture of the published tool lists) read-only. The request goes through the packaged model port
+from the installed discovery read-only. That source is a premise the product does not yet meet: the
+host keeps `tool_connections.policy_json` with `toolNames` and `schemaDigest` only, and
+`mongoosePublishCatalogue` has no persisted form, so an endpoint's published parameter schemas exist
+only inside a live connection. Until an offline cache exists, or a source is authorised, the check
+refuses with `reason=discovery_missing` for every configured endpoint rather than substituting a
+catalogue the installed app does not have. `--capture FILE` names such a source explicitly. The request goes through the packaged model port
 (`server/dist`, rebuilt when a source file is newer), the installed role from `loadTaskModels(configDir)`
 and the real credential resolver for the provider key. The check never connects a connector, never
 resolves a sign-in material, never refreshes an OAuth grant and never copies or writes the owner's
@@ -307,8 +311,8 @@ never the key, never owner content.
   does not take the OpenAI strict shape. A machine with nothing configured has nothing to prove.
 - A run costs well under USD 0.01. Do not loop it.
 
-The cached capture is a dated artifact: a company tool the live endpoint publishes but the capture does
-not carry is not sent, so the capture has to be refreshed when the endpoints gain tools.
+A catalogue source is a dated artifact: a company tool the endpoint publishes but the source does not
+carry is not sent, so the source has to be refreshed when the endpoints gain tools.
 
 It runs in `scripts/run-installed-checks.sh`, so `scripts/install-macos-app.sh` restores the prior app
 when it fails, and it is a local check of `scripts/ci-gauntlet.sh` (`check-helper-provider:local`). It is

@@ -2,10 +2,13 @@
 // One real helper request through the packaged model port, so a schema the provider refuses can never
 // ship. The FULL declared set of this build is sent with the real worker role and the real provider
 // key: the static declarations plus the company tools of every configured endpoint, built from the
-// app's CACHED discovery read-only. Nothing here resolves a sign-in material, performs an OAuth
+// installed discovery read-only, which today the product does not keep: see the note at --capture. Nothing here resolves a sign-in material, performs an OAuth
 // refresh, or connects a connector; connector liveness is scripts/check-installed-connectors.sh's job.
 //
 // Usage: node scripts/lib/helper-provider-smoke.mjs --data-dir DIR --module-dir DIR [--capture FILE]
+//
+//   --capture FILE  an authorised catalogue of the published company declarations. There is no default:
+//                   see the note above.
 //
 //   exit 0  PASS: the provider answered `completed`, named a registered tool, and the observed registry
 //           equals the expected one (static declarations plus every cached company definition)
@@ -27,10 +30,13 @@ const CAP_OUTPUT_TOKENS = 256;
 const BODY_LIMIT = 2048;
 const REQUEST_TIMEOUT_MS = 60000;
 const INSTALLED_SETTINGS = 'Library/Application Support/ai.peat.lux-didi-operator/settings.json';
-const CAPTURE = fileURLToPath(new URL('../../server/test/fixtures/mongoose-tools-list-literal.json', import.meta.url));
+// No default catalogue source: the host keeps no offline cache of published company declarations
+// (tool_connections.policy_json carries toolNames and schemaDigest only), so substituting one here would
+// prove a catalogue the installed app does not have. --capture names an authorised source explicitly.
+
 
 function parseArgs(argv) {
-  const options = { dataDir: '', moduleDir: '', capture: CAPTURE };
+  const options = { dataDir: '', moduleDir: '', capture: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === '--data-dir') options.dataDir = argv[++index] ?? '';
@@ -144,7 +150,7 @@ async function main(argv) {
   }
 
   const endpoints = configuredCompanyEndpoints(sourceDir);
-  const catalogues = existsSync(options.capture) ? JSON.parse(readFileSync(options.capture, 'utf8')) : {};
+  const catalogues = options.capture && existsSync(options.capture) ? JSON.parse(readFileSync(options.capture, 'utf8')) : {};
   const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: async () => { throw new Error('helper-provider-smoke executes no tool'); } };
   const plan = companyPlan({ endpoints: endpoints.map(endpoint => endpoint.name), catalogues, credentials: credentialsFor(sourceDir), ports, mcp: { mongoosePublishCatalogue, configuredCompanyTools } });
   const staticOnly = createRegistry(ports);
@@ -155,7 +161,8 @@ async function main(argv) {
 
   if (plan.missing.length) {
     process.stderr.write(`HELPER-PROVIDER FAIL reason=discovery_missing expected=${expected} observed=${tools.length} configured=${endpoints.length} seconds=${seconds()}\n`);
-    for (const name of plan.missing) process.stderr.write(`HELPER-PROVIDER FAIL endpoint=${name} reason=discovery_missing cache=${options.capture}\n`);
+    for (const name of plan.missing) process.stderr.write(`HELPER-PROVIDER FAIL endpoint=${name} reason=discovery_missing cache=${options.capture || 'absent'}\n`);
+    process.stderr.write('HELPER-PROVIDER FAIL the host keeps no offline cache of published company declarations (tool_connections.policy_json carries toolNames and schemaDigest only), so no installed discovery exists to read\n');
     return 2;
   }
   const refusal = providerShapeRefusal({ expectedEndpoints: endpoints.length, published: plan.publishedEndpoints, company: plan.definitions.length, tools: tools.length, static: staticOnly.size });

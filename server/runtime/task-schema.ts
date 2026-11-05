@@ -54,7 +54,7 @@ export interface OperationRecord extends TaskRecord {
   state: 'pending' | 'committed' | 'failed' | 'unknown'; args: unknown; result: unknown;
 }
 
-export function pruneOpeningTopics(tx: Transaction, now: number): void {
+export function pruneOpeningTopics(tx: Pick<Transaction, 'run'>, now: number): void {
   tx.run('DELETE FROM delivered_opening_topics WHERE utc < ?', [now - 30 * 86400000]);
   tx.run('DELETE FROM delivered_opening_topics WHERE call_id NOT IN (SELECT call_id FROM delivered_opening_topics ORDER BY utc DESC, rowid DESC LIMIT 100)');
 }

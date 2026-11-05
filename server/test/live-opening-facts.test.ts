@@ -1,3 +1,5 @@
+import { DatabaseSync } from 'node:sqlite';
+import { taskMigrations, pruneOpeningTopics } from '../runtime/task-schema.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript } from '../prompt/live-persona.js';
@@ -69,4 +71,24 @@ test('first turn includes every transcription segment and stops before later ass
   assert.equal(openingTurnTranscript([{ kind: 'inputTranscription', text: 'Hello' },
     { kind: 'outputTranscription', text: 'The architecture ' }, { kind: 'outputTranscription', text: 'review is next.' },
     { kind: 'turnComplete', text: null }, { kind: 'outputTranscription', text: 'Another topic' }]), 'The architecture review is next.');
+});
+
+test('calendar facts contain only upcoming timed items and preserve all-day context', () => {
+  const result = buildOpeningFacts({ ...base, day: ['2026-11-05 08:00 Old meeting', '2026-11-05 10:00 Design review', '2026-11-05 All-day workshop'] });
+  assert.deepEqual(result.facts.day, ['2026-11-05 10:00 Design review', '2026-11-05 All-day workshop']);
+});
+
+test('opening diagnostic retention removes old rows and bounds even a burst of calls', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    for (const sql of taskMigrations.find(migration => migration.version === 4)!.statements) db.exec(sql);
+    const insert = db.prepare('INSERT INTO delivered_opening_topics(call_id,utc,topics) VALUES (?,?,?)');
+    insert.run('old', now - 31 * 86400000, '["old"]');
+    for (let index = 0; index < 105; index++) insert.run(`call-${index}`, now + index, '["architecture"]');
+    pruneOpeningTopics({ run: (sql, params = []) => Number(db.prepare(sql).run(...params).changes) }, now + 105);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM delivered_opening_topics').get()?.['n'], 100);
+    assert.equal(db.prepare('SELECT call_id FROM delivered_opening_topics WHERE call_id=?').get('old'), undefined);
+    assert.equal(db.prepare('SELECT call_id FROM delivered_opening_topics WHERE call_id=?').get('call-0'), undefined);
+    assert.equal(db.prepare('SELECT call_id FROM delivered_opening_topics WHERE call_id=?').get('call-104')?.['call_id'], 'call-104');
+  } finally { db.close(); }
 });

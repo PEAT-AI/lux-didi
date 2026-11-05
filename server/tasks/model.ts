@@ -124,7 +124,7 @@ export function createModelPort(options: ModelOptions): Infer {
         if (typeof call.name === 'string') calls.push({ id: typeof call.id === 'string' ? call.id : `gemini-${request.turns.length}-${calls.length}`, name: call.name, args: call.args });
       }
     }
-    if (!calls.length && !texts.join('').trim()) throw new ProviderError('provider_empty', detail, response.status, requestId);
+    if (!calls.length && !texts.length) throw new ProviderError('provider_empty', detail, response.status, requestId);
     const items = role.provider === 'openai' ? (Array.isArray(json.output) ? json.output : []) : (record(record((json.candidates as unknown[])[0]).content).parts as unknown[]);
     return { ...terminal(texts.join('\n'), calls), continuation: { provider: role.provider, items } };
   };

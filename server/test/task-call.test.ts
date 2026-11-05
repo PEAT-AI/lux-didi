@@ -1,3 +1,4 @@
+import { ProviderError } from '../tasks/model.js';
 import { stripNonLexicalTags } from '../live/index.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
@@ -266,4 +267,16 @@ test('SILENCE-R1: failed composition speaks plain findings with one incomplete c
   assert.equal(answer.status, 'incomplete');
   assert.equal(answer.text, "Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
   assert.doesNotMatch(answer.text, /\d+[.)]|\n/);
+});
+
+test('failed inference passes an empty fact immediately without requiring delegation', async t => {
+  const f = fixture(t, async () => { throw new ProviderError('provider_rejected', 'uniqueItems is not permitted', 400); });
+  let delivered: { answer: import('../tasks/worker.js').WorkerResult; requiresDelegation: boolean | undefined } | undefined;
+  f.call.delivery.deliver = (_identity, answer, requiresDelegation) => { delivered = { answer, requiresDelegation }; };
+  f.call.spoke();
+  const result = await f.call.input('synthetic helper request', 1);
+  assert.equal(result.status, 'incomplete'); assert.equal(result.text, '');
+  assert.equal(delivered?.requiresDelegation, false);
+  assert.equal(delivered?.answer.failure?.reason_code, 'provider_rejected');
+  assert.equal(delivered?.answer.text, '');
 });

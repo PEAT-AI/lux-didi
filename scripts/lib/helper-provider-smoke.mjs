@@ -63,41 +63,56 @@ export function captureStamp(capturePath) {
 }
 
 /**
- * The persisted discovery record, keyed by endpoint resource name. Declarations arrived from the host's
- * `runtime/store` accessor, one row per endpoint: `{ endpointId, resource, discoveredAt, schemaDigest,
- * declarations }`, where `declarations` is a JSON array of `{ name, description, parameters }`.
+ * The persisted discovery record, keyed by the endpoint id the host recorded it under. Declarations
+ * arrived from the host's `runtime/store` accessor, one row per endpoint: `{ endpointId, resource,
+ * discoveredAt, schemaDigest, declarations }`, where `declarations` is a JSON array of `{ name,
+ * description, parameters }`. The resource name is never the key: two endpoints can share one resource.
  */
 export function storeCatalogue(rows) {
   const catalogues = {};
   let discoveredAt = 0;
   for (const row of Array.isArray(rows) ? rows : []) {
-    const name = String(row?.resource ?? '').replace(/^mongoose:/, '');
-    if (!name) continue;
+    const endpointId = String(row?.endpointId ?? '');
+    if (!endpointId) continue;
     let declarations;
     try { declarations = JSON.parse(String(row?.declarations ?? '[]')); } catch { continue; }
     if (!Array.isArray(declarations) || !declarations.length) continue;
-    catalogues[name] = declarations
+    const tools = declarations
       .filter(entry => entry && typeof entry.name === 'string' && entry.name !== '')
       .map(entry => ({ name: entry.name, description: entry.description, inputSchema: entry.parameters ?? {} }));
+    if (!tools.length) continue;
+    catalogues[endpointId] = tools;
     discoveredAt = Math.max(discoveredAt, Number(row?.discoveredAt ?? 0));
   }
   return { catalogues, discoveredAt };
 }
 
 /**
- * Where the company declarations come from: the host's own record when it kept one, else the committed
- * capture, whose line is a WARN because it claims no live-discovery parity. The two are never mixed, so
- * a configured endpoint missing from the record fails closed instead of passing on a stale capture.
+ * Where the company declarations come from: the host's own record when it kept one for these configured
+ * endpoints, else the committed capture, whose line is a WARN because it claims no live-discovery parity.
+ * Selection is by configured endpoint id, never by resource, so a removed endpoint's row cannot stand in
+ * for a replacement that has discovered nothing, and rows for unconfigured endpoints are dropped. The
+ * two sources are never mixed, so a configured endpoint missing from the record fails closed.
  */
-export function declarationSource({ record, capture, stamp }) {
+export function declarationSource({ record, endpoints, capture, stamp }) {
   const stored = record?.catalogues ?? {};
-  if (record && record.discoveredAt && Object.keys(stored).length) {
+  const fromStore = {};
+  for (const endpoint of endpoints ?? []) {
+    const tools = stored[endpoint.id];
+    if (Array.isArray(tools) && tools.length) fromStore[endpoint.id] = tools;
+  }
+  const matched = Object.keys(fromStore).length;
+  if (record && record.discoveredAt && matched) {
     const discovered = new Date(record.discoveredAt).toISOString();
-    return { kind: 'store', catalogues: stored, line: `HELPER-PROVIDER source=store discovered_at=${discovered} endpoints=${Object.keys(stored).length}` };
+    return { kind: 'store', catalogues: fromStore, line: `HELPER-PROVIDER source=store discovered_at=${discovered} endpoints=${matched}` };
+  }
+  const fromCapture = {};
+  for (const endpoint of endpoints ?? []) {
+    if (Array.isArray(capture?.[endpoint.name])) fromCapture[endpoint.id] = capture[endpoint.name];
   }
   return {
     kind: 'capture',
-    catalogues: capture ?? {},
+    catalogues: fromCapture,
     line: `HELPER-PROVIDER WARN source=capture file=${stamp?.path || 'absent'} captured=${stamp?.captured ?? 'unknown'} live-parity=not-claimed`,
   };
 }
@@ -113,8 +128,10 @@ function configuredDir(dataDir) {
 }
 
 /**
- * The company endpoints this configuration declares, by their discovery name. Read-only: the catalog is
- * the app's own, and nothing here writes to it.
+ * The company endpoints this configuration declares, each with the endpoint id the host records its
+ * discovery under: the record is selected by that id, never by the resource name alone, because two
+ * endpoints can share one resource and a replacement endpoint has discovered nothing yet. Read-only: the
+ * catalog is the app's own, and nothing here writes to it.
  */
 export function configuredCompanyEndpoints(configDir) {
   const file = join(configDir, 'mcp.json');
@@ -123,37 +140,40 @@ export function configuredCompanyEndpoints(configDir) {
   const endpoints = Array.isArray(doc?.endpoints) ? doc.endpoints : [];
   return endpoints
     .filter(entry => entry && entry.connector === 'mongoose' && entry.enabled !== false)
-    .map(entry => ({ name: String(entry.resource ?? '').replace(/^mongoose:/, '') || 'unknown', id: `cached-${String(entry.id ?? 'endpoint')}` }));
+    .map(entry => {
+      const name = String(entry.resource ?? '').replace(/^mongoose:/, '') || 'unknown';
+      return { name, id: typeof entry.id === 'string' && entry.id !== '' ? entry.id : `unconfigured-${name}` };
+    });
 }
 
 /**
- * The company declarations, built from cached discovery only. A configured endpoint whose cache is
- * absent is named and the plan fails closed: its declarations would ship unproved. This function takes
- * a credential port only so a caller can prove it is never consulted.
+ * The company declarations, built from cached discovery only. Endpoints are `{ name, id }` and the
+ * catalogues are keyed by that id, so each configured endpoint is proved by its own discovery. A
+ * configured endpoint whose cache is absent is named and the plan fails closed: its declarations would
+ * ship unproved. This function takes a credential port only so a caller can prove it is never consulted.
  */
 export function companyPlan({ endpoints, catalogues, credentials, ports, mcp }) {
   void credentials;
   void ports;
-  const missing = endpoints.filter(name => !Array.isArray(catalogues?.[name]) || catalogues[name].length === 0);
-  if (missing.length) return { missing, definitions: [], publishedEndpoints: 0 };
-  const policy = name => ({
-    schemaVersion: 1, ownerId: 'helper-provider-smoke', connectionId: `cached-${name}`, generation: 1, enabled: true, connector: 'mongoose',
-    endpoint: { id: `cached-${name}`, url: 'https://fixture.invalid/mcp', account: 'cached', resource: `mongoose:${name}`, credentialRef: null },
-    toolNames: catalogues[name].map(tool => String(tool.name ?? '')), schemaDigest: `cached-${name}`,
+  const missing = endpoints.filter(endpoint => !Array.isArray(catalogues?.[endpoint.id]) || catalogues[endpoint.id].length === 0);
+  if (missing.length) return { missing: missing.map(endpoint => endpoint.name), definitions: [], publishedEndpoints: 0 };
+  const policy = endpoint => ({
+    schemaVersion: 1, ownerId: 'helper-provider-smoke', connectionId: endpoint.id, generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: endpoint.id, url: 'https://fixture.invalid/mcp', account: 'cached', resource: `mongoose:${endpoint.name}`, credentialRef: null },
+    toolNames: catalogues[endpoint.id].map(tool => String(tool.name ?? '')), schemaDigest: `cached-${endpoint.id}`,
     sourcePolicy: { id: 'cached', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: 'cached', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
   });
-  const bindings = endpoints.map(name => ({ connector: 'mongoose', policy: policy(name), reader: { call: async () => ({ state: 'completed', decodedResult: {} }) } }));
+  const bindings = endpoints.map(endpoint => ({ connector: 'mongoose', policy: policy(endpoint), reader: { call: async () => ({ state: 'completed', decodedResult: {} }) } }));
   for (const binding of bindings) {
-    const name = String(binding.policy.endpoint.resource).replace(/^mongoose:/, '');
-    mcp.mongoosePublishCatalogue(binding.policy.endpoint.id, catalogues[name].map(tool => ({
+    mcp.mongoosePublishCatalogue(binding.policy.endpoint.id, catalogues[binding.policy.endpoint.id].map(tool => ({
       name: String(tool.name), inputSchema: tool.inputSchema,
       description: typeof tool.description === 'string' && tool.description.trim() !== '' ? tool.description : `Cached discovery of ${String(tool.name)}.`,
     })));
   }
   // A configured endpoint counts as published only when its own cached declarations produce a tool.
-  const publishedEndpoints = endpoints.filter(name => mcp.configuredCompanyTools([bindings.find(binding => binding.policy.endpoint.id === `cached-${name}`)]).length > 0).length;
+  const publishedEndpoints = endpoints.filter(endpoint => mcp.configuredCompanyTools([bindings.find(binding => binding.policy.endpoint.id === endpoint.id)]).length > 0).length;
   return { missing: [], definitions: mcp.configuredCompanyTools(bindings), publishedEndpoints };
 }
 
@@ -208,14 +228,14 @@ async function main(argv) {
   // W9: the host's own record first, so the paid request proves the set the app really sends; the
   // committed capture only stands in when the host kept none, and then the run says WARN.
   const capture = options.capture && existsSync(options.capture) ? JSON.parse(readFileSync(options.capture, 'utf8')) : {};
+  const endpoints = configuredCompanyEndpoints(sourceDir);
   const source = declarationSource({
-    record: storeCatalogue(readPublishedCatalogues(join(dataDir, 'state.sqlite'))), capture, stamp,
+    record: storeCatalogue(readPublishedCatalogues(join(dataDir, 'state.sqlite'))), endpoints, capture, stamp,
   });
   process.stdout.write(`${source.line}\n`);
-  const endpoints = configuredCompanyEndpoints(sourceDir);
   const catalogues = source.catalogues;
   const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: async () => { throw new Error('helper-provider-smoke executes no tool'); } };
-  const plan = companyPlan({ endpoints: endpoints.map(endpoint => endpoint.name), catalogues, credentials: credentialsFor(sourceDir), ports, mcp: { mongoosePublishCatalogue, configuredCompanyTools } });
+  const plan = companyPlan({ endpoints, catalogues, credentials: credentialsFor(sourceDir), ports, mcp: { mongoosePublishCatalogue, configuredCompanyTools } });
   const staticOnly = createRegistry(ports);
   const registry = createRegistry(ports, plan.definitions);
   const tools = [...registry.values()];

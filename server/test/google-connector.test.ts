@@ -465,13 +465,13 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       assert.equal(secondPage.next_cursor, null);
       const before = readFileSync(`${pidFile}.calls`, 'utf8');
       const badId = await callTool('read_mail', { id: '', cursor: null });
-      assert.equal(badId.reason, 'wrong_id');
+      assert.equal(badId.reason_code, 'wrong_id');
       assert.match(badId.repair ?? '', /Search again and read an id the search returned/);
       assert.equal(readFileSync(`${pidFile}.calls`, 'utf8'), before, 'malformed reference never reaches the wire');
       const missing = await callTool('read_mail', { id: 'synthetic-not-found', cursor: null });
-      assert.equal(missing.reason, 'wrong_id');
+      assert.equal(missing.reason_code, 'wrong_id');
       const outage = await callTool('read_mail', { id: 'synthetic-outage', cursor: null });
-      assert.equal(outage.reason, 'source_down');
+      assert.equal(outage.reason_code, 'source_down');
 
     } finally { task.close(); }
   } finally {

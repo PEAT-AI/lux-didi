@@ -818,13 +818,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!Number.isSafeInteger(days) || days < 1 || days > MATTERMOST_ATTENTION.maxDays) return { state: 'refused', reason: 'invalid-days' };
     const limit = input.limit === undefined ? MATTERMOST_ATTENTION.limit : input.limit;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
-    // #1016: the budget is armed before the identity read, because that read is a child call too:
-    // identity time plus the waves must fit inside the task's read stop, not start after it.
-    const deadline = Date.now() + (options.attentionBudgetMs ?? MATTERMOST_ATTENTION_BUDGET_MS);
-    const local = new AbortController();
-    const halt = signal === undefined ? local.signal : AbortSignal.any([signal, local.signal]);
-    const remaining = (): number => deadline - Date.now();
-    const who = await ownerIdentity(halt);
+    const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
@@ -845,15 +839,19 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     };
     // #610: the independent reads run under one budget. The two attention searches and the channel
     // list answer on their own, so they go out together at the attention page size, never the maximum.
-    // #1016: the waves run under the budget armed above, under the task layer's read stop, so the waves
-    // that answered are kept when one of them does not. A budget end is a partial digest, never a throw.
+    // #1016: the scan runs under its own budget, under the task layer's read stop, so the waves that
+    // answered are kept when one of them does not. A budget end is a partial digest, never a throw.
+    const deadline = Date.now() + (options.attentionBudgetMs ?? MATTERMOST_ATTENTION_BUDGET_MS);
+    const local = new AbortController();
+    const halt = signal === undefined ? local.signal : AbortSignal.any([signal, local.signal]);
+    const remaining = (): number => deadline - Date.now();
     type ChildRead = Awaited<ReturnType<typeof read>>;
     /**
      * #1016: one wave, every child read against what is left of the budget. A read still running when the
      * budget ends is dropped, its finished siblings are kept and the wave is named, never blocking them.
      */
-    const wave = async <T>(works: Promise<T>[]): Promise<{ values: (T | undefined)[]; complete: boolean }> => {
-      const values: (T | undefined)[] = new Array<T | undefined>(works.length);
+    const wave = async <T>(works: Promise<T>[]): Promise<{ values: T[]; complete: boolean }> => {
+      const values: T[] = new Array<T>(works.length);
       if (works.length === 0) return { values, complete: true };
       const left = remaining();
       if (left <= 0) { local.abort(); return { values, complete: false }; }
@@ -873,9 +871,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       delete composed[SOURCE_DISPATCH];
       return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items, ...(notes.length === 0 ? {} : { missing: notes.join('; ') }), ...(gaps.length === 0 ? {} : { sourceIncomplete: true }) } satisfies MattermostAttention };
     };
-    // #1016: an identity read that spends the budget leaves no wave able to answer, so the digest is
-    // partial and names the identity read instead of running the waves past the task's read stop.
-    if (remaining() <= 0) return finish(['the identity read']);
     const attentionLimit = Math.min(MATTERMOST_ATTENTION.limit, settings.maxLimit);
     // C-CHAT (L4-11): both searches read the window newest first in keyword mode, never the whole archive
     // ranked by the slow default mode and filtered afterwards.
@@ -919,11 +914,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       capture(recentRead.evidence);
       const moved = (parseChannelList(recentRead.evidence.decodedResult) ?? [])
         .filter(channel => channel.id !== undefined && (channel.lastPostAt === undefined || Date.parse(channel.lastPostAt) >= cutoff));
-      // Wave two: the conversations that moved, at the history limit. A budget end keeps the histories
-      // that did answer, then names the wave and the thread seeds it did not reach.
+      // Wave two: the conversations that moved, at the history limit. A budget end here loses the
+      // threads it seeded.
       const second = await wave(moved.map(async channel => read('mattermost_search', { query: '', channel: channel.id!, limit: MATTERMOST_ATTENTION.historyLimit, ...windowed }, halt)));
+      if (!second.complete) return finish(['moved_conversations', 'threads']);
       for (const history of second.values) {
-        if (history === undefined) continue;
         if (!history.ok) return history.result;
         capture(history.evidence);
         for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
@@ -933,16 +928,14 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           threadCandidate(post);
         }
       }
-      if (!second.complete) return finish(['moved_conversations', 'threads']);
     }
     // Threads the owner started or joined: only a newest post from someone else awaits a reply. The
     // reads run together, and the cap keeps the scan's tail short.
     const roots = [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads);
-    // Wave three: the candidate threads under the rest of the budget. A budget end keeps the threads
-    // that did answer.
+    // Wave three: the candidate threads under the rest of the budget.
     const third = await wave(roots.map(async rootId => read('mattermost_get_thread', { post_id: rootId }, halt)));
+    if (!third.complete) return finish(['threads']);
     for (const thread of third.values) {
-      if (thread === undefined) continue;
       if (!thread.ok) continue;
       capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
@@ -950,7 +943,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (newest === undefined || newest.at < cutoff || isOwnerPost(who.owner, newest.author)) continue;
       push('thread', newest);
     }
-    return finish(third.complete ? [] : ['threads']);
+    return finish([]);
   }
 
   /** C-CHAT: the argument names a child tool declares, so a read sends only what that child understands. */

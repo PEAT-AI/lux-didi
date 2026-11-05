@@ -8,7 +8,7 @@
 // newer child's filtered page {total, returned, offset, channels} (types, sort, limit) with them. Post fields are the
 // concise shape {id, username, channel, timestamp, message, url}, and the declared limit maxima are
 // the child's own (search 50, channel history 200).
-// argv[2] = mode (window | no-window | no-thread | slow | stall-thread | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
+// argv[2] = mode (window | no-window | no-thread | slow | slow-identity | stall-thread | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
 import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -80,6 +80,8 @@ server.setRequestHandler('tools/call', async (request) => {
   // A child that answers half a second late: a serial scan of its twelve children cannot fit the
   // same budget as a concurrent one, and the test stays well under the five second line.
   if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
+  // #1016: an identity read that answers after the scan's budget: the budget must already be armed there.
+  if (mode === 'slow-identity' && name === 'mattermost_whoami') await new Promise(resolve => setTimeout(resolve, 3_000));
   // #1016: a child that answers the thread read long after the scan's budget, so only the budget ends the scan.
   if (mode === 'stall-thread' && name === 'mattermost_get_thread') await new Promise(resolve => setTimeout(resolve, 6_000));
   // #1016: a real upstream failure, which must stay a failure and never become a partial digest.

@@ -818,7 +818,13 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!Number.isSafeInteger(days) || days < 1 || days > MATTERMOST_ATTENTION.maxDays) return { state: 'refused', reason: 'invalid-days' };
     const limit = input.limit === undefined ? MATTERMOST_ATTENTION.limit : input.limit;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
-    const who = await ownerIdentity(signal);
+    // #1016: the budget is armed before the identity read, because that read is a child call too:
+    // identity time plus the waves must fit inside the task's read stop, not start after it.
+    const deadline = Date.now() + (options.attentionBudgetMs ?? MATTERMOST_ATTENTION_BUDGET_MS);
+    const local = new AbortController();
+    const halt = signal === undefined ? local.signal : AbortSignal.any([signal, local.signal]);
+    const remaining = (): number => deadline - Date.now();
+    const who = await ownerIdentity(halt);
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
@@ -839,12 +845,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     };
     // #610: the independent reads run under one budget. The two attention searches and the channel
     // list answer on their own, so they go out together at the attention page size, never the maximum.
-    // #1016: the scan runs under its own budget, under the task layer's read stop, so the waves that
-    // answered are kept when one of them does not. A budget end is a partial digest, never a throw.
-    const deadline = Date.now() + (options.attentionBudgetMs ?? MATTERMOST_ATTENTION_BUDGET_MS);
-    const local = new AbortController();
-    const halt = signal === undefined ? local.signal : AbortSignal.any([signal, local.signal]);
-    const remaining = (): number => deadline - Date.now();
+    // #1016: the waves run under the budget armed above, under the task layer's read stop, so the waves
+    // that answered are kept when one of them does not. A budget end is a partial digest, never a throw.
     type ChildRead = Awaited<ReturnType<typeof read>>;
     /**
      * #1016: one wave, every child read against what is left of the budget. A read still running when the
@@ -871,6 +873,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       delete composed[SOURCE_DISPATCH];
       return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items, ...(notes.length === 0 ? {} : { missing: notes.join('; ') }), ...(gaps.length === 0 ? {} : { sourceIncomplete: true }) } satisfies MattermostAttention };
     };
+    // #1016: an identity read that spends the budget leaves no wave able to answer, so the digest is
+    // partial and names the identity read instead of running the waves past the task's read stop.
+    if (remaining() <= 0) return finish(['the identity read']);
     const attentionLimit = Math.min(MATTERMOST_ATTENTION.limit, settings.maxLimit);
     // C-CHAT (L4-11): both searches read the window newest first in keyword mode, never the whole archive
     // ranked by the slow default mode and filtered afterwards.

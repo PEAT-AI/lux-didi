@@ -277,6 +277,23 @@ test('#1016: a stalled child yields the waves that answered, with the missing wa
   assert.match(rendered.text, /^note: .*no answer from threads/u, 'the model reads the coverage line before the items');
 });
 
+// The identity read is a child call too: the budget is armed before it, so a slow whoami ends the scan
+// there, named and partial, instead of running the waves past the task's read stop.
+test('#1016: an identity read that spends the budget ends the scan, named', async t => {
+  const f = setup('slow-identity');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_500);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The identity read answers after three seconds, against a 2,500 ms budget and the child's own 5 s stop.
+  assert.ok(elapsed < 5_000, `the scan ends at its budget, not after the waves (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a spent budget is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from the identity read/u, 'the coverage line names the identity read');
+  assert.deepEqual(view.items, [], 'no wave ran once the budget was spent');
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_search'), [], 'no wave child call follows a spent budget');
+});
+
 // The budget must end the scan before the task layer stops the read, or the evidence is thrown away again.
 test('#1016: the attention budget ends the scan below the task read stop', () => {
   assert.equal(MATTERMOST_ATTENTION_BUDGET_MS, 10_000, 'the shipped budget');

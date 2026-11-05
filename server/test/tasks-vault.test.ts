@@ -61,3 +61,24 @@ test('vault exposes only the reviewed read catalogue with bounded valid lookup a
     assert.equal(tool.validate(invalid), false, name);
   }
 });
+
+test('fresh vault source defaults sensitive without widening another connector or an explicit class', async t => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { loadMcpEndpoints } = await import('../config/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'vault-default-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const base = { url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null, enabled: true, allowEgress: true };
+  writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, endpoints: [
+    { ...base, id: 'vault', connector: 'lux-knowledge' },
+    { ...base, id: 'other', connector: 'synthetic' },
+    { ...base, id: 'explicit', connector: 'lux-knowledge', unknownClass: 'ordinary' },
+  ] }), { mode: 0o600 });
+  const loaded = loadMcpEndpoints({ configDir: dir });
+  assert.equal(loaded.state, 'configured');
+  if (loaded.state !== 'configured') return;
+  assert.equal(loaded.catalog.endpoints[0]?.unknownClass, 'sensitive');
+  assert.equal(loaded.catalog.endpoints[1]?.unknownClass, null);
+  assert.equal(loaded.catalog.endpoints[2]?.unknownClass, 'ordinary');
+});

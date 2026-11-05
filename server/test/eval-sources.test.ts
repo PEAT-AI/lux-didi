@@ -9,7 +9,7 @@ const root = resolve(process.env.DIDI_TEST_SOURCE_ROOT ?? 'server/test', '../..'
 const runner = join(root, 'scripts/eval-sources.mjs');
 const question = { id: 'synthetic', question: 'Synthetic question?', expected_sources: ['vault'], expected_refs: ['synthetic-ref'], required_facts: [['synthetic fact']], forbidden_facts: ['synthetic forbidden'], kind: 'fact' };
 
-test('fake run keeps question and answer private and writes owner-only output', () => {
+test('fake run keeps question and answer private and writes owner-only output', t => {
   const dir = mkdtempSync(join(tmpdir(), 'eval-sources-test-'));
   try {
     const input = join(dir, 'questions.json');
@@ -17,6 +17,7 @@ test('fake run keeps question and answer private and writes owner-only output', 
     writeFileSync(input, JSON.stringify([question]));
     const result = spawnSync(process.execPath, [runner, '--questions', input, '--out', output, '--fake'], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
+    t.diagnostic(result.stdout.trim());
     assert.doesNotMatch(result.stdout, /Synthetic question|synthetic fact/);
     assert.match(result.stdout, /synthetic/);
     assert.equal(statSync(output).mode & 0o777, 0o600);
@@ -85,5 +86,17 @@ test('fake ceiling stops subsequent questions and reports measured tokens', () =
     assert.equal(report.results.length, 1);
     assert.equal(report.stopped, 'token_ceiling');
     assert.ok(report.totals.input_tokens > 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A parser exception must not echo malformed private input into public console logs.
+test('malformed private JSON never leaks through parser errors', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'eval-sources-test-'));
+  try {
+    const input = join(dir, 'questions.json');
+    writeFileSync(input, '[{"question":"PRIVATE_SYNTHETIC_SENTINEL",oops}]');
+    const result = spawnSync(process.execPath, [runner, '--questions', input, '--out', join(dir, 'output.json'), '--fake'], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE_SYNTHETIC_SENTINEL/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

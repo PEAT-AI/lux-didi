@@ -92,3 +92,30 @@ test('W3-R3: empty text without a structured failure is no_action, not failure',
   assert.equal(resultCommentary({ status: 'no_action', text: '', findings: [],
     failure: { stage: 'model', reason_code: 'provider_rejected', detail: '' } }).kind, 'failure');
 });
+
+test('W3-R6: accepted header is redelivered before content on a fresh session', () => {
+  const sent: { text: string; command: string }[] = [];
+  const delivery = new TaskDelivery({ isCurrent: () => true,
+    append: (_binding, text) => { const command = `r${sent.length + 1}`; sent.push({ text, command }); return command; }, state: () => {} });
+  const identity = { task_id: 'recovery-task', task_revision: 1, connection_generation: 1 };
+  delivery.socket(1);
+  delivery.deliver(identity, { status: 'complete', text: 'Daniel Tepe has a result. ' + 'More verified detail. '.repeat(35), exact: ['Daniel Tepe'], findings: [] });
+  const header = sent[0]!.text;
+  delivery.accepted(sent[0]!.command);
+  assert.equal(delivery.said()!.accepted, 1);
+  assert.equal(decode(sent[1]!.text).section, 'content');
+  const wholeEnvelope = delivery.waitingAnswer()!.text;
+  assert.ok(wholeEnvelope.startsWith(header), 'a recovery seed must include the header and exact list');
+  delivery.disconnected(); delivery.socket(2, false);
+  assert.equal(sent.length, 2, 'no append before fresh session is ready');
+  delivery.ready();
+  assert.equal(sent[2]!.text, header, 'fresh context receives part 1 again');
+  assert.deepEqual(decode(sent[2]!.text).exact, ['Daniel Tepe']);
+  assert.equal(delivery.said()!.accepted, 1, 'a new context does not erase prior acceptance evidence');
+  delivery.accepted(sent[2]!.command);
+  assert.equal(delivery.said()!.accepted, 1, 'reaccepted header is not counted twice');
+  assert.equal(sent[3]!.text, sent[1]!.text);
+  let acceptedIndex = 3;
+  while (delivery.waitingAnswer()) { delivery.accepted(sent[acceptedIndex++]!.command); }
+  assert.equal(delivery.said()!.accepted, delivery.said()!.total);
+});

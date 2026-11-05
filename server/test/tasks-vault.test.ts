@@ -132,5 +132,7 @@ test('real short weak-candidate rows retain their id and rank without invented e
   const result = projectTaskPayload('search_knowledge', wire, { query: 'orchid watering' });
   assert.deepEqual(result.references.map(ref => [ref.id, ref.rank]), [['115', 1], ['89969', 2]]);
   assert.equal(result.text, wire);
+  assert.equal((result.references[1] as unknown as Record<string, unknown>)?.snippet_status, 'not_supplied');
+  assert.equal((result.references[0] as unknown as Record<string, unknown>)?.snippet_status, undefined, 'full row is not marked title-only');
   assert.doesNotMatch(result.text, /Score: 0\.348/, 'a short remote row has no per-hit score to reconstruct');
 });

@@ -1,3 +1,5 @@
+// The sequence check also executes the affected OpenAI typed-input adapter contracts.
+import './openai-live-voice.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';

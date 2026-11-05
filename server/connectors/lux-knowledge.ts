@@ -313,7 +313,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (!validateKnowledgeLookup(tool, args, settings.maxSearchLimit)) return { state: 'refused', reason: 'invalid_arguments' };
       const denied = preflight(registry, settings, tool);
       if (denied) return { state: 'refused', reason: denied };
-      return dispatch(tool, { ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
+      return dispatch(tool, { limit: Math.min(20, settings.maxSearchLimit), ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
     },
     async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
       const validated = validateSearch(input, settings);

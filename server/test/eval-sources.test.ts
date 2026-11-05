@@ -100,3 +100,45 @@ test('malformed private JSON never leaks through parser errors', () => {
     assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE_SYNTHETIC_SENTINEL/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('ruling default token ceiling and dated per-model prices are enforced', async () => {
+  const { options, validatePrices, estimateCost } = await api();
+  assert.equal(options(['--questions', 'q', '--out', 'o'])['max-tokens'], 800000);
+  assert.equal(options(['--questions', 'q', '--out', 'o', '--prices', 'private.json']).prices, 'private.json');
+  const prices = validatePrices({ effective_date: '2026-11-05', models: { synthetic: { input_per_million: 2, output_per_million: 8 } } });
+  assert.equal(estimateCost(prices, 'synthetic', { input_tokens: 1000000, output_tokens: 500000 }), 6);
+  assert.equal(estimateCost(prices, 'unknown', { input_tokens: 1, output_tokens: 1 }), null);
+  assert.equal(estimateCost(undefined, 'synthetic', { input_tokens: 1, output_tokens: 1 }), null);
+  assert.throws(() => validatePrices({ models: {} }));
+});
+
+test('no match does not excuse a fabricated answer on an abstain case', async () => {
+  const { score } = await api();
+  const q = { ...question, kind: 'abstain', required_facts: [] };
+  const trace = { status: 'complete', findings: [{ source: 'vault', status: 'no_match' }], opened: [], writes: 0 };
+  assert.equal(score(q, { ...trace, text: 'No match was found.' }).correct, true);
+  assert.equal(score(q, { ...trace, text: 'The answer is a fabricated synthetic fact.' }).correct, false);
+  assert.equal(score(q, { ...trace, text: 'No match was found. The answer is a fabricated synthetic fact.' }).correct, false);
+});
+
+test('structured job status controls incomplete coverage even when helper says complete', async () => {
+  const { score } = await api();
+  const trace = { status: 'complete', text: 'Here are all the decisions.', opened: ['synthetic-ref'], findings: [{ source: 'vault', status: 'ok', text: JSON.stringify({ job: { status: 'running' } }) }] };
+  assert.equal(score(question, trace).hard_fail, true);
+  assert.equal(score(question, { ...trace, text: 'This is the complete answer.' }).hard_fail, true);
+  assert.equal(score(question, { ...trace, text: 'Only partial results are available.' }).hard_fail, false);
+  assert.equal(score(question, { ...trace, findings: [{ source: 'vault', status: 'ok', job: { status: 'failed' } }] }).hard_fail, true);
+});
+
+test('missing provider usage remains fatal outside the real workers exception boundary', async () => {
+  const { usageTransport, evaluate } = await api();
+  const { runWorker } = await import('../tasks/worker.js');
+  const { createRegistry } = await import('../tasks/tools.js');
+  const { configuredCompanyTools } = await import('../tasks/connectors.js');
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  const transport = usageTransport(usage, async () => new Response(JSON.stringify({ output: [] }), { status: 200 }));
+  let requests = 0;
+  const context = { m: { runWorker, createRegistry, configuredCompanyTools }, bindings: [], execute: async () => { throw new Error('unexpected call'); }, infer: async () => { requests++; await transport('https://synthetic.invalid', {}); return { text: '', calls: [] }; } };
+  await assert.rejects(evaluate(question, context, usage, 800000), /usage.*unavailable|missing.*usage/i);
+  assert.equal(requests, 1);
+});

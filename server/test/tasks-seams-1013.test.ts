@@ -130,3 +130,41 @@ test('inference deadline logs deadline, never superseded', async () => {
     assert.equal(rows.filter(row => row.event === 'task_inference_failed' && row.reason_code === 'deadline').length, 1);
   } finally { detach(); }
 });
+
+test('superseded final composition emits only a superseded attempt', async () => {
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { TaskController, FakeDelivery } = await import('../tasks/controller.js');
+  const { createRegistry } = await import('../tasks/tools.js');
+  const { FakeAuthority } = await import('../tasks/authority.js');
+  const { documentResult } = await import('../tasks/results.js');
+  const rows: any[] = [];
+  const detach = attachHostLogSink({ event: row => rows.push(row) });
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-final');
+  const first = controller.finalize('synthetic first', 1);
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let turn = 0;
+  try {
+    const pending = runWorker({
+      registry: createRegistry({ execute: async () => documentResult('synthetic verified', 'fixture'), authority: new FakeAuthority() }),
+      identity: first.identity, input: '', signal: first.signal,
+      infer: async request => {
+        if (++turn === 1) return { text: '', calls: [{ id: 'synthetic-read', name: 'read_mail', args: { id: 'synthetic', cursor: null } }] };
+        if (turn === 2) return { text: '', calls: [] };
+        assert.match(request.input, /Tool work stopped before completion/);
+        entered();
+        return new Promise(() => {});
+      } });
+    await started;
+    const second = controller.finalize('synthetic next', 1);
+    const result = await pending;
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.failure, undefined);
+    assert.deepEqual(result.failures, []);
+    assert.equal(rows.filter(row => row.event === 'task_inference_failed').length, 0);
+    assert.equal(rows.filter(row => row.event === 'task_inference_superseded' && row.stage === 'final' && row.revision === 1).length, 1);
+    const next = await runWorker({ registry: new Map(), identity: second.identity, input: '', signal: second.signal,
+      infer: async () => ({ text: 'synthetic complete', calls: [] }) });
+    assert.equal(next.status, 'complete');
+  } finally { detach(); }
+});

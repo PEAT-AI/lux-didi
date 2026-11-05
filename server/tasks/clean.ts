@@ -82,7 +82,7 @@ export function cleanMailStructure(raw: string): string {
   body = stripTrackingUrls(body);
   return body.replace(/\n{3,}/g, '\n\n').trim();
 }
-const HEADER_LINE = /^(subject|from|to|cc|bcc|reply-to|date|labels|attachments)\s*:/i;
+export const HEADER_LINE = /^(subject|from|to|cc|bcc|reply-to|date|labels|attachments)\s*:/i;
 /** Split a leading header block from the text, so a header line that resembles a quoted-reply
  * marker never cuts the message. A block with no body after it is kept whole. */
 function splitHeaderBlock(text: string): { head: string; body: string } {

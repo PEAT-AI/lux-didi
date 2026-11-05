@@ -8,7 +8,7 @@ import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index
 import { GOOGLE_DEFAULTS } from '../connectors/google.js';
 import { receivedGmailBody } from '../tools/live-shape.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import { cleanMailStructure } from './clean.js';
+import { cleanMailStructure, HEADER_LINE } from './clean.js';
 import { documentResult, failed, readerFailure, failureCategory, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
@@ -68,12 +68,11 @@ function rankedText(raw: string): RankedItem[] {
 function eventTime(value: unknown): string {
   return typeof value === 'string' ? value : text(record(value).dateTime ?? record(value).date);
 }
-const MAIL_HEADER_LINE = /^(subject|from|to|cc|bcc|reply-to|date|labels|attachments)\s*:/i;
 /** The message text below the shaped header block, ignoring bracketed source notes and handle lines. */
 function mailBodyText(shaped: string): string {
   const lines = shaped.split('\n');
   let at = 0;
-  while (at < lines.length && MAIL_HEADER_LINE.test(lines[at]!.trim())) at += 1;
+  while (at < lines.length && HEADER_LINE.test(lines[at]!.trim())) at += 1;
   return lines.slice(at).map(line => line.trim())
     .filter(line => line && !/^\[[^\]]*\]$/.test(line) && !/^open: L[0-9]{1,4}(?:\s*=|\s|$)/.test(line))
     .join('\n');

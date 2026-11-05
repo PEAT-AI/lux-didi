@@ -106,11 +106,11 @@ assert.ok(WORKER_INSTRUCTIONS.includes('One empty search proves nothing; say mis
 
 const styledProfile = { ...ownerProfile, style: { text: 'SYNTHETIC PRESENTATION STYLE', dataClass: 'ordinary' },
   lore: { text: 'SYNTHETIC OWNER LORE', dataClass: 'ordinary' } };
-const style = prompt.ownerProfileSections(styledProfile).find(section => section.id === 'owner-style').text;
+const context = prompt.ownerProfileSections(styledProfile).map(section => section.text).join('\n\n');
 const styledWorker = workerInstructions(styledProfile);
-assert.equal(styledWorker, `${approved.WORKER_INSTRUCTIONS}\n\n${style}`);
+assert.equal(styledWorker, `${approved.WORKER_INSTRUCTIONS}\n\n${context}`);
 assert.equal(styledWorker.split('SYNTHETIC PRESENTATION STYLE').length - 1, 1);
-assert.equal(styledWorker.includes('SYNTHETIC OWNER LORE'), false);
+assert.equal(styledWorker.includes('SYNTHETIC OWNER LORE'), true);
 
 console.log(JSON.stringify({ case: 'compiled_public_prompt_contract', exactApprovedBlocks: 5, textReadOnly: true,
   voiceWorkerSeparated: true, unavailableSourcePreserved: true, noToolsPolicyPresent: true, workerStyleAfterPublic: true,

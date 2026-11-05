@@ -154,7 +154,7 @@ test('unknown model failure keeps generic facts', () => {
 
 
 test('tool failure keeps the tool repair facts', () => {
-  const commentary = resultCommentary({ status: 'incomplete', text: 'Synthetic tool failure.', findings: [failed('reconnect the synthetic source', 'provider_unavailable')], failures: [{ tool: 'synthetic_search', reason_code: 'provider_unavailable' }] });
+  const commentary = resultCommentary({ status: 'incomplete', text: 'Synthetic tool failure.', findings: [failed('reconnect the synthetic source', 'unavailable')], failures: [{ tool: 'synthetic_search', reason_code: 'source_down' }] });
   assert.equal(commentary.what_failed, 'synthetic_search');
   assert.equal(commentary.next_step, 'reconnect the synthetic source');
 });

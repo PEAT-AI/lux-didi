@@ -13,6 +13,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
+import { CONNECTOR_DEADLINE_MS } from '../tasks/worker.js';
 import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_BUDGET_MS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
@@ -311,9 +312,7 @@ test('#1016: an identity read that spends the budget ends the scan, named', asyn
 
 // The budget must end the scan before the task layer stops the read, or the evidence is thrown away again.
 test('#1016: the attention budget ends the scan below the task read stop', () => {
-  assert.equal(MATTERMOST_ATTENTION_BUDGET_MS, 10_000, 'the shipped budget');
-  // server/tasks/worker.ts stops a connector read after 12 s (CONNECTOR_DEADLINE_MS).
-  assert.ok(MATTERMOST_ATTENTION_BUDGET_MS < 12_000, 'the scan ends before the read stop');
+  assert.ok(MATTERMOST_ATTENTION_BUDGET_MS < CONNECTOR_DEADLINE_MS, 'the scan ends before the task layer stops the read');
 });
 
 // Owner rule: direct and group conversations only, never the whole channel list.

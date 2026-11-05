@@ -1,4 +1,4 @@
-import { commentaryResults } from './commentary-test.js';
+import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { stripNonLexicalTags } from '../live/index.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
@@ -31,7 +31,7 @@ function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = '
   });
   call.socket(1); t.after(() => { call.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { call, store, sent, responses, results() {
-    for (let i = 0; i < sent.length; i++) call.delivery.accepted(`c${i + 1}`);
+    for (let i = 0; i < sent.length; i++) if (!commentaryPart(sent[i]!.text).final) call.delivery.accepted(`c${i + 1}`);
     return commentaryResults(sent).map(({ id, text, kind }) => ({ id, text, kind }));
   } };
 }
@@ -60,7 +60,8 @@ test('a correction suppresses the stale worker answer', async t => {
 test('no delegation still executes finalized input and appends on the open line', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic answer.', calls: [] }));
   await f.call.input('Synthetic request', 1);
-  assert.equal(f.call.pendingAnswer()?.text, 'Synthetic answer.');
+  assert.match(f.call.pendingAnswer()!.text, /"content":"Synthetic answer\."/);
+  assert.match(f.call.pendingAnswer()!.text, /"kind":"result"/);
 });
 test('Gemini delegate attaches to the finalized task and carries its spoken answer', async t => {
   let inference = 0; const f = fixture(t, async () => { inference++; return { text: 'Synthetic spoken answer.', calls: [] }; }, 'gemini');

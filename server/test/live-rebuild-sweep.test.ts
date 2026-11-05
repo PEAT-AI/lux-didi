@@ -33,10 +33,10 @@ for (const boundary of ['sent', 'accepted', 'partly heard']) {
     await f.flush(); f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 });
     await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh answer socket');
     f.bind('fresh-binding'); await f.flush();
-    assert.equal(f.voice.taskAnswers.length, boundary === 'sent' ? 2 : 1);
+    assert.equal(f.voice.taskAnswers.length, boundary === 'sent' ? 3 : 2);
     if (boundary === 'sent') {
-      assert.equal(f.voice.taskAnswers[1]?.delegationId, null, 'pending answer uses commentary after ready without a new delegation');
-      assert.equal(f.voice.taskAnswers[1]?.text, first.text);
+      assert.equal(f.voice.taskAnswers[2]?.delegationId, null, 'pending answer uses commentary after ready without a new delegation');
+      assert.equal(f.voice.taskAnswers[2]?.text, f.voice.taskAnswers[1]!.text);
     }
     assert.equal(inferences, 1);
     assert.doesNotMatch(f.voice.requests[1]!.system.text, /first spoken output must be exactly/);

@@ -81,7 +81,7 @@ test('task replay: repeated rejection fails on the same line; stale acknowledgem
   f.voice.emit({ type: 'commentaryRejected', commandId: f.voice.taskAnswers[1]!.commandId }); await f.flush();
   f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(15_000); await f.flush();
-  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 2);
+  assert.equal(calls, 1); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 3);
 });
 
 for (const noAction of [false, true]) {

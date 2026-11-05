@@ -59,6 +59,7 @@ for (const status of ['waiting', 'heard', 'stale'] as const) test(`VOICE-R14: or
   assert.doesNotMatch(request.system.text, /first spoken output must be exactly/);
   assert.ok(request.history?.some(turn => turn.text.includes('Synthetic rebuild request')), 'rebuild keeps owner transcript seed');
   assert.doesNotMatch(request.system.text, /Synthetic waiting rebuild answer/);
-  assert.equal((await f.answers()).length, status === 'waiting' ? 2 : 1);
-  if (status === 'waiting') assert.equal((await f.answers())[1], 'Synthetic waiting rebuild answer.');
+  assert.equal(f.appended.length, status === 'waiting' ? 3 : 2);
+  assert.equal((await f.answers()).length, 1, 'a retry is the same logical envelope');
+  if (status === 'waiting') assert.equal((await f.answers())[0], 'Synthetic waiting rebuild answer.');
 });

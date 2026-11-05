@@ -11,7 +11,11 @@ export function commentaryResults<T extends { text: string }>(items: T[]): (T & 
   const groups = new Map<string, T[]>();
   for (const item of items) {
     const part = commentaryPart(item.text);
-    const group = groups.get(part.id) ?? []; group.push(item); groups.set(part.id, group);
+    const group = groups.get(part.id) ?? [];
+    const prior = group.find(value => commentaryPart(value.text).part === part.part);
+    if (prior) assert.equal(item.text, prior.text, 'retries preserve the identical wire item');
+    else group.push(item);
+    groups.set(part.id, group);
   }
   return [...groups.values()].map(group => {
     const parts = group.map(item => commentaryPart(item.text));

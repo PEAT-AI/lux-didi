@@ -78,6 +78,7 @@ test('verified helper status reports only a real in-call rebuild and its closed 
   });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic first status ask.', finished: true, finalOrigin: 'provider' });
   assert.equal(statuses[0]!.rebuilt, false); assert.equal(statuses[0]!.rebuild_cause, null);
+  await f.answers();
   await f.emit({ type: 'commentaryAccepted', commandId: `synthetic-command-${f.appended.length}` });
   await f.emit({ type: 'goAway', timeLeftMs: 10_000 });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic next status ask.', finished: true, finalOrigin: 'provider' });

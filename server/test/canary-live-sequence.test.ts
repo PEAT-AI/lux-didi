@@ -47,10 +47,10 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   await provider.frame(1);
   const running = post('run', { sessionId: snapshot.liveSessionId });
   provider.send({ setupComplete: {} });
-  await fixtureUntil(() => provider.frames.length > 1, 'canary owner text reaches provider');
-  await fixtureUntil(() => events.some(event => event['event'] === 'task_lifecycle' && event['phase'] === 'start'), 'real task lifecycle starts');
   const response = await running;
   assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  assert.ok(events.some(event => event['event'] === 'task_lifecycle' && event['phase'] === 'start'), 'real task lifecycle starts');
+  assert.ok(provider.frames.some(frame => JSON.stringify(frame).includes(asks[0].finals[0])), 'ask reaches provider');
   const report = (await response.json()).data;
   assert.match(report.lines.join('\n'), new RegExp(`callId=${snapshot.liveSessionId}`));
   // No real task_tool receipt in this fixture: it must remain red.

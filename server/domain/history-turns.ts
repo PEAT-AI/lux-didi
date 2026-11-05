@@ -8,36 +8,13 @@ export function persistHistoryTurns(tx: Transaction, liveSessionId: string): num
   if (session?.lifecycle !== 'terminal') return 0;
   const pending = new Map<string, SQLRow[]>();
   let inserted = 0;
-  for (const row of tx.all(`SELECT journal_id,kind,text,finished,arrived_at FROM live_journal
-    WHERE live_session_id=? ORDER BY journal_id`, [liveSessionId])) {
-    const kind = String(row.kind);
-    if (kind !== 'inputTranscription' && kind !== 'outputTranscription') {
-      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') pending.clear();
-      continue;
-    }
-    const fragments = pending.get(kind) ?? [];
-    fragments.push(row); pending.set(kind, fragments);
-    if (row.finished !== 1) continue;
-    pending.delete(kind);
+  // C-TRACE: one group of fragments becomes one row. A group the provider never finished is still what he
+  // said before her speech cut it, so it is written as the turn it was instead of being dropped.
+  const flush = (kind: string, fragments: SQLRow[]): void => {
     // A pruned fragment must not silently become an apparently complete quote.
-    if (fragments.some(fragment => fragment.text === null)) continue;
+    if (fragments.some(fragment => fragment.text === null)) return;
     const text = fragments.map(fragment => String(fragment.text)).join('');
-    if (!text.trim()) continue;
-    const first = fragments[0]!;
-    const count = tx.run(`INSERT OR IGNORE INTO history_turns(live_session_id,journal_first,journal_last,role,text,at)
-      VALUES(?,?,?,?,?,?)`, [liveSessionId, first.journal_id!, row.journal_id!, kind === 'inputTranscription' ? 'owner' : 'assistant', text, first.arrived_at!]);
-    if (count) {
-      const turn = tx.get('SELECT id FROM history_turns WHERE live_session_id=? AND journal_first=?', [liveSessionId, first.journal_id!])!;
-      tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn.id!, text]);
-      inserted += count;
-    }
-  }
-  // C-TRACE: the tail of the last sentence has no provider final when her own speech cut it, and a
-  // boundary clears the group it was accumulating in. The words he said are still a turn of their own.
-  for (const [kind, fragments] of pending) {
-    if (fragments.some(fragment => fragment.text === null)) continue;
-    const text = fragments.map(fragment => String(fragment.text)).join('');
-    if (!text.trim()) continue;
+    if (!text.trim()) return;
     const first = fragments[0]!;
     const last = fragments[fragments.length - 1]!;
     const count = tx.run(`INSERT OR IGNORE INTO history_turns(live_session_id,journal_first,journal_last,role,text,at)
@@ -47,7 +24,25 @@ export function persistHistoryTurns(tx: Transaction, liveSessionId: string): num
       tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn.id!, text]);
       inserted += count;
     }
+  };
+  for (const row of tx.all(`SELECT journal_id,kind,text,finished,arrived_at FROM live_journal
+    WHERE live_session_id=? ORDER BY journal_id`, [liveSessionId])) {
+    const kind = String(row.kind);
+    if (kind !== 'inputTranscription' && kind !== 'outputTranscription') {
+      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') {
+        for (const [grouped, fragments] of pending) flush(grouped, fragments);
+        pending.clear();
+      }
+      continue;
+    }
+    const fragments = pending.get(kind) ?? [];
+    fragments.push(row); pending.set(kind, fragments);
+    if (row.finished !== 1) continue;
+    pending.delete(kind);
+    flush(kind, fragments);
   }
+  // C-TRACE: a journal that ends mid-sentence has no boundary to flush it.
+  for (const [kind, fragments] of pending) flush(kind, fragments);
   return inserted;
 }
 

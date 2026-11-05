@@ -3916,7 +3916,9 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
           // fact the timeline reads instead of inferring one from a missing receipt (D12-3).
-          this.#closeTurn(handle, 'completed', handle.firstAudioAt === undefined ? 'no_response' : 'answered');
+          // C-TRACE: the turn's own audible clock, not the last response's, so a turn answered by a later
+          // response says it was answered.
+          this.#closeTurn(handle, 'completed', handle.turnFirstAudibleAt === undefined ? 'no_response' : 'answered');
         }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) this.#holdSpeaking(handle); this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {

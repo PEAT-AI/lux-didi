@@ -3206,6 +3206,7 @@ test('a finalized request produces one task answer without a provider tool batch
   assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
   p.emit({ type: 'delegation', delegationId: 'binding-answer' });
   await settlePort(); finish.resolve(); await settlePort();
+  await acceptTaskAnswer(p);
   assert.equal(inferences, 1, 'a provider delegation attaches to current work, not a second inference');
   const answers = commentaryResults(p.taskAnswers);
   assert.equal(answers.length, 1);
@@ -3690,6 +3691,15 @@ const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, 
 /** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
+/** Accept each envelope part in turn, as the real client does, so the whole answer reaches the wire. */
+const acceptTaskAnswer = async (p: ReturnType<typeof progressPort>): Promise<void> => {
+  for (let guard = 0; guard < 8; guard++) {
+    const pending = p.taskAnswers.at(-1);
+    if (!pending || commentaryPart(pending.text).final) return;
+    p.emit({ type: 'commentaryAccepted', commandId: pending.commandId });
+    await settlePort();
+  }
+};
 
 
 
@@ -5417,6 +5427,7 @@ test('a pending task owns silence without an old tool batch or background job', 
   assert.equal(p.sessionsOpened, 1, 'the watchdog must not recreate a socket during worker inference');
   assert.equal(p.taskAnswers.length, 0);
   release.resolve(); await settlePort();
+  await acceptTaskAnswer(p);
   assert.equal(commentaryResults(p.taskAnswers)[0]?.text, 'The synthetic work finished.');
 });
 
@@ -5441,6 +5452,7 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(signals[0]?.aborted, true);
   assert.equal(inferences, 2);
+  await acceptTaskAnswer(p);
   const corrected = commentaryResults(p.taskAnswers);
   assert.equal(corrected.length, 1);
   assert.equal(corrected[0]?.text, 'The corrected synthetic answer.');
@@ -5466,6 +5478,7 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
   p.emit({ type: 'delegation', delegationId: 'fresh-binding' });
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(inferences, 1, 'socket rebuild must not redispatch a task or an effect');
+  await acceptTaskAnswer(p);
   const retained = commentaryResults(p.taskAnswers);
   assert.equal(retained.length, 1);
   assert.equal(retained[0]?.delegationId, 'fresh-binding');

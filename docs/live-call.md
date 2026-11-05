@@ -37,14 +37,11 @@ questions and actions are handed off in the same turn. The voice waits for an
 actual result rather than inventing progress or claiming a lookup happened.
 General explanation and plain conversation can be answered directly.
 
-Delivery keeps the facts. A returned result is spoken completely and in order, every name
-said as it is written, every number, date and qualification exact, with nothing added in
-front of it and nothing left out, and a result the owner asked to hear is never summarised.
-A large amount may be spoken rounded when the exact figure adds nothing and he did not ask
-for it. Her own view may follow the facts in her own voice, and the facts themselves are
-never changed. An acknowledgement at the hand-off usually needs no words, and it never
-promises work: the voice has not yet seen whether there is work to do.
-
+Delivery keeps exact entities verbatim and leaves other wording to her. Fenced COMMENTARY
+items carry a typed result, partial result, no_action or failure as data. A requested full
+result is told completely once, with no rounded amounts, altered qualifications, invented
+facts, filler or meta-status. An acknowledgement at the hand-off usually needs no words
+and never promises work. The voice collects the complete commentary sequence before speaking.
 
 ### Open-line task delivery (10.11)
 
@@ -55,13 +52,14 @@ mic pacing and barge-in retain their existing paths. Longer gaps can revise runn
 
 OpenAI results use commentary on the current provider generation with its latest delegation id,
 or null when there is none. The host waits for owner speech and output quiet, then appends ordered
-chunks of at most 450 characters. Provider timeline acknowledgement settles each chunk, not exact
+fenced JSON items of at most 450 characters, including the fence and encoded fields. Provider timeline acknowledgement settles each chunk, not exact
 transcription or proven playback. An explicit rejection retries once on the same line and then logs
-failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
-heard deadline. Store records pending sends and only records delivered after provider acknowledgement.
+failure. Delivery never reconnects and has no heard deadline. Within one context it does not resend
+accepted items; a fresh session restarts an unfinished envelope at its header, even if earlier
+items were accepted. Acceptance is timeline evidence, not proof that facts were spoken. Store records pending sends and only records delivered after provider acknowledgement.
 
-A real socket rebuild retains the bounded transcript through rebuildSeed. Unacknowledged remainder
-is appended as commentary after ready, with a null id until this generation has a delegation.
+A real socket rebuild retains the bounded transcript through rebuildSeed. The complete unfinished envelope
+is appended header-first as commentary after ready, with a null id until this generation has a delegation.
 Accepted chunks are not replayed; no say-first instructions replace conversation history.
 Recovery timing is unchanged. Verified helper status names whether a rebuild happened and its closed
 cause; live_rebuild metadata names running_task, finished_answer_pending or nothing_owed.
@@ -209,3 +207,14 @@ included, even when the Live session declares no tools. Memory yields first,
 then runtime context; the work policy never yields and the hard limit still
 fails loudly. String checks prove instruction delivery, not model behaviour.
 The release owner runs the real-wire probe and synthetic replay separately.
+
+
+### Typed work commentary
+
+The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice collects all parts through `final:true` before answering. Transport acceptance and the delivery record advance per item, not per logical envelope. A fresh session receives the complete unfinished envelope from part 1, including already accepted headers and exact entities. The cumulative unique-item acceptance count is preserved, never treated as evidence that facts were spoken. Recovery context seeds also carry the complete envelope.
+
+Exact entities are reproduced verbatim, including names, dates, times, amounts, numbers and qualifications. Everything else is phrased in her own voice, with no invented facts, filler or meta-status. Requested full results are told completely once. `partial` gives what exists and names the gap; `no_action` answers from the conversation without mentioning a lookup; `failure` gives the supplied cause and repair once without inventing a next step. Work runs in silence.
+
+The helper returns JSON with `spoken` connected prose and an `exact` list, or `{"status":"no_action"}`. When an older result has no exact list, deterministic host extraction retains names, numeric values, dates, times, currency, units and email addresses. Entity strings are never severed across items; an entity or header too large for the transport fails closed as `invalid_result` rather than being silently truncated. Sentence boundaries are preferred; an overlong sentence can be divided at whitespace outside exact entities.
+
+Recovery inputs are typed `recovery` envelopes with `cause` (`connection_dropped` or `provider_silent`) and `mid_answer`. They ask for continuation without a greeting or an explanation of the pause. Task identities, attempts, receipts and delivery counters never enter model-visible commentary; the envelope id and part counters only assemble its data.

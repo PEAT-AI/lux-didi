@@ -1,4 +1,5 @@
 import { ProviderError } from '../tasks/model.js';
+import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { stripNonLexicalTags } from '../live/index.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
@@ -30,14 +31,17 @@ function fixture(t: TestContext, infer: Infer, provider: 'openai' | 'gemini' = '
     state: () => {},
   });
   call.socket(1); t.after(() => { call.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, store, sent, responses };
+  return { call, store, sent, responses, results() {
+    for (let i = 0; i < sent.length; i++) if (!commentaryPart(sent[i]!.text).final) call.delivery.accepted(`c${i + 1}`);
+    return commentaryResults(sent).map(({ id, text, kind }) => ({ id, text, kind }));
+  } };
 }
 function deferred() { let resolve!: (value: Inference) => void; const promise = new Promise<Inference>(done => { resolve = done; }); return { promise, resolve }; }
 test('delegation before final input and duplicates do not start a worker', async t => {
   let inference = 0; const f = fixture(t, async () => { inference++; return { text: 'Synthetic answer.', calls: [] }; });
   f.call.delegation('d1'); f.call.delegation('d1'); assert.equal(inference, 0);
   await f.call.input('Synthetic request', 1); assert.equal(inference, 1);
-  assert.deepEqual(f.sent, [{ id: 'd1', text: 'Synthetic answer.' }]);
+  assert.deepEqual(f.results(), [{ id: 'd1', text: 'Synthetic answer.', kind: 'result' }]);
 });
 test('a socket rebuild does not abort a running task', async t => {
   const pending = deferred(); let signal: AbortSignal | undefined;
@@ -45,26 +49,27 @@ test('a socket rebuild does not abort a running task', async t => {
   const running = f.call.input('Synthetic request', 1);
   f.call.socket(2); f.call.delegation('new-socket');
   assert.equal(signal?.aborted, false); pending.resolve({ text: 'Completed after rebuild.', calls: [] }); await running;
-  assert.deepEqual(f.sent, [{ id: 'new-socket', text: 'Completed after rebuild.' }]);
+  assert.deepEqual(f.results(), [{ id: 'new-socket', text: 'Completed after rebuild.', kind: 'result' }]);
 });
 test('a correction suppresses the stale worker answer', async t => {
   const first = deferred(); let inference = 0;
   const f = fixture(t, async () => ++inference === 1 ? first.promise : { text: 'Corrected answer.', calls: [] });
   f.call.delegation('d1'); const stale = f.call.input('First request', 1);
   await f.call.input('Correction', 2); first.resolve({ text: 'Stale answer.', calls: [] }); await stale;
-  assert.deepEqual(f.sent, [{ id: 'd1', text: 'Corrected answer.' }]);
+  assert.deepEqual(f.results(), [{ id: 'd1', text: 'Corrected answer.', kind: 'result' }]);
 });
 test('no delegation still executes finalized input and appends on the open line', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic answer.', calls: [] }));
   await f.call.input('Synthetic request', 1);
-  assert.equal(f.call.pendingAnswer()?.text, 'Synthetic answer.');
+  assert.match(f.call.pendingAnswer()!.text, /"content":"Synthetic answer\."/);
+  assert.match(f.call.pendingAnswer()!.text, /"kind":"result"/);
 });
 test('Gemini delegate attaches to the finalized task and carries its spoken answer', async t => {
   let inference = 0; const f = fixture(t, async () => { inference++; return { text: 'Synthetic spoken answer.', calls: [] }; }, 'gemini');
   f.call.functions([{ id: 'fn1', name: 'delegate', args: { request: 'Model words are not the owner request' } }]);
   assert.equal(inference, 0); await f.call.input('Actual finalized owner words', 1);
   assert.deepEqual(f.responses, [[{ id: 'fn1', name: 'delegate', response: { status: 'complete', text: 'Synthetic spoken answer.' } }]]);
-  assert.equal(f.sent.length, 0);
+  assert.equal(f.results().length, 0);
 });
 
 
@@ -76,8 +81,8 @@ test('R24 EF5: a final inference answer is redacted in Store, delivery and recov
   const rows = f.store.transaction(tx => tx.all('SELECT final_answer FROM tasks'));
   assert.equal(rows.length, 1); assert.match(String(rows[0]!.final_answer), /Ordinary verified answer/);
   assert(!JSON.stringify(rows).includes(secret), 'retained final answer contains no secret');
-  assert.equal(f.sent.length, 1); assert.match(f.sent[0]!.text, /Ordinary verified answer/);
-  assert(!JSON.stringify(f.sent).includes(secret)); assert.match(f.sent[0]!.text, /\[redacted\]/);
+  assert.equal(f.results().length, 1); assert.match(f.results()[0]!.text, /Ordinary verified answer/);
+  assert(!JSON.stringify(f.results()).includes(secret)); assert.match(f.results()[0]!.text, /\[redacted\]/);
   const seed = f.call.pendingAnswer(); assert(seed);
   assert.match(seed.text, /Ordinary verified answer/); assert(!JSON.stringify(seed).includes(secret));
   assert.match(seed.text, /\[redacted\]/);
@@ -145,15 +150,15 @@ for (const spoken of [false, true]) test(`C-DELIVERY: no-tool result after prior
   const result = f.call.input('Synthetic general question', 1);
   if (spoken) f.call.spoke();
   pending.resolve({ text: 'Synthetic own answer.', calls: [] }); await result;
-  assert.equal(f.sent.length, spoken ? 0 : 1);
+  assert.equal(f.results().length, spoken ? 0 : 1);
 });
 for (const bound of [false, true]) test(`C-DELIVERY: no-action terminal fact with open delegation=${bound}`, async t => {
   const pending = deferred(); const f = fixture(t, async () => pending.promise);
   const result = f.call.input('Synthetic general question', 1);
   if (bound) f.call.delegation('open');
   pending.resolve({ text: '', calls: [], no_action: true }); await result;
-  assert.equal(f.sent.length, bound ? 1 : 0);
-  if (bound) assert.match(f.sent[0]!.text, /No lookup is needed/);
+  assert.equal(f.results().length, bound ? 1 : 0);
+  if (bound) assert.equal(f.results()[0]!.kind, 'no_action');
 });
 
 test('C-DELIVERY: tool evidence is delivered even if the voice already answered without a delegation', async t => {
@@ -162,8 +167,8 @@ test('C-DELIVERY: tool evidence is delivered even if the voice already answered 
     async () => ({ status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }));
   const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
   first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] });
-  const result = await running; assert.equal(result.findings.length, 1); assert.equal(f.sent.length, 1);
-  assert.equal(f.sent[0]!.text, 'Synthetic evidence answer.');
+  const result = await running; assert.equal(result.findings.length, 1); assert.equal(f.results().length, 1);
+  assert.equal(f.results()[0]!.text, 'Synthetic evidence answer.');
 });
 test('C-DELIVERY: a correction during a running read revises only after transcript quiet', async t => {
   const clock = quietClock(); let release!: () => void; let reads = 0; let inferences = 0;
@@ -181,7 +186,7 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
   clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(f.call.runtime.controller.isCurrent(first), false); release();
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  assert.equal(reads, 1); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, 'Synthetic corrected result.');
+  assert.equal(reads, 1); assert.equal(f.results().length, 1); assert.equal(f.results()[0]!.text, 'Synthetic corrected result.');
 });
 
 for (const failedRead of [false, true]) test(`review F1: prior voice speech cannot suppress an attempted read, failed=${failedRead}`, async t => {
@@ -199,29 +204,29 @@ for (const failedRead of [false, true]) test(`review F1: prior voice speech cann
   const result = await running; assert.equal(reads, 1);
   assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
   assert.equal(result.findings.length, failedRead ? 0 : 1);
-  if (failedRead) { assert.equal(result.text, ''); assert.equal(f.sent.length, 0); }
-  else { assert.ok(result.text.trim()); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, result.text); }
+  if (failedRead) { assert.equal(result.text, ''); assert.equal(f.results().length, 0); }
+  else { assert.ok(result.text.trim()); assert.equal(f.results().length, 1); assert.equal(f.results()[0]!.text, result.text); }
 });
 
 for (const text of ['', 'Synthetic late answer.']) test(`C-SILENCE: late delegation retains terminal ${JSON.stringify(text)}`, async t => {
   const f = fixture(t, async () => ({ text, calls: [], ...(!text ? { no_action: true } : {}) }));
   f.call.spoke(); await f.call.input('Synthetic late ask', 1);
-  assert.equal(f.sent.length, 0);
-  f.call.delegation('late'); assert.equal(f.sent.length, 1);
-  f.call.delivery.accepted('c1'); f.call.delegation('again'); assert.equal(f.sent.length, 1);
+  assert.equal(f.results().length, 0);
+  f.call.delegation('late'); assert.equal(f.results().length, 1);
+  f.call.delivery.accepted('c1'); f.call.delegation('again'); assert.equal(f.results().length, 1);
 });
 for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank terminal with delegation ${JSON.stringify(text)}`, async t => {
   const pending = deferred(), f = fixture(t, async () => pending.promise);
   const running = f.call.input('Synthetic blank ask', 1); f.call.delegation('open');
   pending.resolve({ text, calls: [] }); await running;
-  assert.equal(f.sent.length, 1); assert.match(f.sent[0]!.text, /No lookup is needed/);
+  assert.equal(f.results().length, 1); assert.equal(f.results()[0]!.kind, 'no_action');
 });
 test('C-SILENCE: no action survives unready replacement and late delegation', async t => {
   const pending = deferred(), f = fixture(t, async () => pending.promise);
   const running = f.call.input('Synthetic rebuild ask', 1);
   f.call.socket(2, false); pending.resolve({ text: '', calls: [], no_action: true }); await running;
-  f.call.delegation('late'); assert.equal(f.sent.length, 0);
-  f.call.delivery.ready(); assert.equal(f.sent.length, 1);
+  f.call.delegation('late'); assert.equal(f.results().length, 0);
+  f.call.delivery.ready(); assert.equal(f.results().length, 1);
 });
 test('C-SILENCE: twice rejected remainder stays owed until socket ready', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic retained answer.', calls: [] }));
@@ -229,7 +234,8 @@ test('C-SILENCE: twice rejected remainder stays owed until socket ready', async 
   f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); assert.equal(f.sent.length, 2);
   assert.ok(f.call.delivery.waitingAnswer());
   f.call.socket(2); assert.equal(f.sent.length, 3);
-  f.call.delivery.accepted('c3'); f.call.delivery.ready(); assert.equal(f.sent.length, 3);
+  f.call.delivery.accepted('c3'); assert.equal(f.sent.length, 4, 'accepted header releases content');
+  f.call.delivery.accepted('c4'); f.call.delivery.ready(); assert.equal(f.sent.length, 4);
 });
 for (const rejected of [false, true]) test(`C-SILENCE: newer revision retires terminal debt rejected=${rejected}`, async t => {
   let runs = 0;
@@ -238,15 +244,15 @@ for (const rejected of [false, true]) test(`C-SILENCE: newer revision retires te
   if (rejected) { f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); }
   await f.call.input('Synthetic new ask', 2); const count = f.sent.length;
   f.call.delegation('new'); assert.equal(f.sent.length, count + 1);
-  assert.match(f.sent.at(-1)!.text, /No lookup is needed/);
+  assert.equal(commentaryPart(f.sent.at(-1)!.text).kind, 'no_action');
 });
 for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank composition keeps findings and coverage ${JSON.stringify(text)}`, async t => {
   let runs = 0;
   const f = fixture(t, async () => ++runs === 1 ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] } : { text, calls: [] }, 'openai', undefined,
     async () => ({ status: 'ok', text: 'Synthetic findings.', references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
   await f.call.input('Synthetic findings ask', 1);
-  assert.match(f.sent[0]!.text, /Synthetic findings/);
-  assert.match(f.sent[0]!.text, /coverage/i);
+  assert.match(f.results()[0]!.text, /Synthetic findings/);
+  assert.match(f.results()[0]!.text, /coverage/i);
 });
 test('C-SILENCE: recovery rejection waits for another event, not activity', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic retained.', calls: [] }));

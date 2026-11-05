@@ -19,12 +19,12 @@ for (const boundary of ['before input', 'pending without a binding', 'pending wi
     const answer = await f.answer();
     assert.equal(answer.delegationId, 'fresh-binding'); assert.equal(answer.text, 'The retained synthetic boundary result.');
     assert.equal(inferences, 1, 'rebuilding transport must not repeat the worker');
-    assert.equal(f.voice.taskAnswers.length, 1, 'no stale-socket append');
+    assert.equal(f.voice.taskAnswers.length, 2, 'no stale-socket append');
   });
 }
 
 for (const boundary of ['sent', 'accepted', 'partly heard']) {
-  test(`task rebuild boundary: ${boundary} retains only unacknowledged delivery, never repeats work`, async t => {
+  test(`task rebuild boundary: ${boundary} restores complete unfinished envelopes, never repeats work`, async t => {
     let inferences = 0;
     const f = await liveTaskFixture(t, async () => { inferences++; return { text: 'The complete synthetic boundary answer.', calls: [] }; });
     f.finalize('Give the synthetic boundary answer.'); f.bind('old-binding'); const first = await f.answer();
@@ -33,10 +33,10 @@ for (const boundary of ['sent', 'accepted', 'partly heard']) {
     await f.flush(); f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 });
     await fixtureUntil(() => f.voice.sessionsOpened === 2, 'fresh answer socket');
     f.bind('fresh-binding'); await f.flush();
-    assert.equal(f.voice.taskAnswers.length, boundary === 'sent' ? 2 : 1);
+    assert.equal(f.voice.taskAnswers.length, boundary === 'sent' ? 3 : 2);
     if (boundary === 'sent') {
-      assert.equal(f.voice.taskAnswers[1]?.delegationId, null, 'pending answer uses commentary after ready without a new delegation');
-      assert.equal(f.voice.taskAnswers[1]?.text, first.text);
+      assert.equal(f.voice.taskAnswers[2]?.delegationId, null, 'complete pending envelope restarts on the new line without a delegation');
+      assert.equal(f.voice.taskAnswers[2]?.text, f.voice.taskAnswers[0]!.text);
     }
     assert.equal(inferences, 1);
     assert.doesNotMatch(f.voice.requests[1]!.system.text, /first spoken output must be exactly/);
@@ -52,7 +52,7 @@ test('task rebuild boundary: a heard result is conversation history, not a secon
   f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
   f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'post-heard socket');
   f.bind('fresh-binding'); await f.flush();
-  assert.equal(f.voice.taskAnswers.length, 1); assert.equal(inferences, 1);
+  assert.equal(f.voice.taskAnswers.length, 2); assert.equal(inferences, 1);
   assert.match(JSON.stringify(f.voice.requests[1]?.history), /synthetic result is already heard/);
 });
 
@@ -71,4 +71,17 @@ test('task rebuild boundary: closing the consumer cancels late delivery and leav
   f.attachment.close(); await fixtureSettled(f.attachment.done, 'consumer-close terminal receipt');
   release.resolve(); await f.flush();
   assert.equal(f.voice.taskAnswers.length, 0); assert.equal(inferences, 1); assert.equal(f.voice.closes, 1);
+});
+
+test('recovery commentary preserves mid-answer state before the host clears playback', async t => {
+  const f = await liveTaskFixture(t, async () => ({ text: 'A synthetic interrupted answer.', calls: [] }));
+  f.finalize('Give the synthetic answer.'); f.bind(); const answer = await f.answer();
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId });
+  f.voice.emit({ type: 'modelTurnStarted' });
+  f.voice.emit({ type: 'audio', pcm: new Uint8Array(480), rate: 24000, audible: true }); await f.flush();
+  f.voice.emit({ type: 'goAway', timeLeftMs: 10000 });
+  await fixtureUntil(() => f.voice.sessionsOpened === 2, 'interrupted-answer recovery');
+  const opening = f.voice.requests[1]!.openingText!;
+  assert.match(opening, /^```COMMENTARY\n/);
+  assert.equal(JSON.parse(opening.slice(14, -4)).mid_answer, true);
 });

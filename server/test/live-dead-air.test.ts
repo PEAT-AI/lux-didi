@@ -95,7 +95,7 @@ test('task dead-air: a finished result appends without provider inference or a t
 let calls = 0;
 const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
 f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
-assert.equal(answer.text, 'The synthetic task answer.'); assert.equal(f.voice.taskAnswers.length, 1); assert.equal(calls, 1);
+assert.equal(answer.text, 'The synthetic task answer.'); assert.equal(f.voice.taskAnswers.length, 2); assert.equal(calls, 1);
 assert.equal(f.voice.texts.length, 0); assert.equal(f.voice.toolResponses.length, 0, 'no legacy function-output continuation');
 });
 
@@ -125,7 +125,7 @@ const task = f.store.transaction(tx => tx.get('SELECT created_at FROM tasks'));
 t.mock.timers.tick(500); release.resolve(); await f.answer();
 const finished = f.store.transaction(tx => tx.get('SELECT updated_at,status FROM tasks'));
 assert.ok(Number(finished?.updated_at) >= Number(task?.created_at) + 500); assert.equal(calls, 1);
-assert.equal(f.voice.taskAnswers.length, 1);
+assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 // C-REBUILD8 (review BL1): the debt ladder owns the same speaking hold the sliding watchdog keeps. On 2026-10-28
@@ -139,7 +139,7 @@ f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls =
 f.voice.emit({ type: 'inputTranscription', text: 'A synthetic correction is beginning', finished: false }); await f.flush();
 release.resolve(); await f.flush(); t.mock.timers.tick(8_000); await f.flush();
 assert.equal(f.voice.taskAnswers.length, 0); assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.texts.length, 0);
-f.finalize('Use the completed synthetic correction.'); await f.answer(); assert.equal(f.voice.taskAnswers.length, 1);
+f.finalize('Use the completed synthetic correction.'); await f.answer(); assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 // C-REBUILD (council verdict, standard round 2026-11-01, PERF.md finding 2): 7 of 19 owner rebuilds tore down a
@@ -221,7 +221,7 @@ test('task dead-air: microphone mute never replays an acknowledged result', asyn
   f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   f.attachment.setInputMuted(true);
   t.mock.timers.tick(30_000); await f.flush();
-  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1);
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 // C-REBUILD (B-R7): the contract's invariant replays. One owed turn has one continuation owner: note delivery,
@@ -302,7 +302,7 @@ f.voice.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24000, audible: tr
 f.voice.emit({ type: 'interrupted' }); f.voice.emit({ type: 'inputTranscription', text: 'Wait for the synthetic correction', finished: false });
 await f.flush(); release.resolve(); await f.flush(); assert.equal(f.voice.taskAnswers.length, 0);
 f.finalize('Use the final synthetic correction.'); f.bind('corrected-binding');
-assert.equal((await f.answer()).delegationId, 'corrected-binding'); assert.equal(f.voice.taskAnswers.length, 1);
+assert.equal((await f.answer()).delegationId, 'corrected-binding'); assert.equal(f.voice.taskAnswers.length, 2);
 });
 
 test('C-REBUILD invariant: a session replacement during a deferral carries one line, never two', async t => {

@@ -95,7 +95,8 @@ for (const code of ['partial_timeout', 'truncated_to_budget', 'empty_after_retry
   'grant_missing', 'provider_failed', 'skipped_by_route']) {
   assert.equal(fullLive.includes(code), false, `the voice never recites the retired coverage code ${code}`);
 }
-for (const rule of ['Say it completely and in order, keeping every name, number, date and qualification',
+for (const rule of ['Reproduce every exact entity verbatim',
+  'Everything else is in your own voice',
   'If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete.',
   'Say something happened only when a result says it happened.']) {
   assert.equal(fullLive.split(rule).length - 1, 1, `result truth and delivery stay explicit: ${rule}`);
@@ -119,3 +120,14 @@ console.log(JSON.stringify({ case: 'compiled_public_prompt_contract', exactAppro
 console.log(JSON.stringify({ case: 'excluded_character_release_subset', excludedCandidateAbsent: true, ownerText: true,
   fullPublicOpenAiLive: true, noToolsVoice: true, naturalResultQualificationsRetained: true, defaultTextExistingRule: true,
   mandatoryDurationConflictOpen: true, behaviorAccepted: false }));
+
+// Typed commentary is data: exact entities survive, phrasing belongs to the voice.
+for (const rule of ['Reproduce every exact entity verbatim', 'Everything else is in your own voice',
+  'Collect every part through final:true before speaking', 'no rounding, dropping or rephrasing',
+  'A no_action means answer from this conversation and your own mind', 'A failure means say the cause and next step',
+  'Continue exactly where the conversation was']) assert.ok(prompt.NAYA_WORK_DELIVERY.includes(rule), rule);
+for (const gone of ['A finished result is already written', 'Say it completely and in order',
+  'A large amount may be said rounded', 'She speaks what you write', 'Write what she would say']) {
+  assert.ok(!(prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(gone), gone);
+}
+assert.ok(WORKER_INSTRUCTIONS.includes('one JSON object with spoken'));

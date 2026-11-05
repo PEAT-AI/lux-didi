@@ -84,8 +84,8 @@ test('C-CHAT: source identity, time window and count survive the typed tool resu
   const evidence = documentResult('Source: #fixture-room. Window: 2026-09-25 to 2026-10-01. Count: 2. Synthetic messages.', 'synthetic-chat');
   const { returned } = await searchChat('#fixture-room after:2026-09-25 before:2026-10-01', evidence);
   assert.deepEqual(returned, evidence);
-  assert.match(WORKER_INSTRUCTIONS, /Keep names, numbers and dates exact/);
-  assert.match(NAYA_WORK_DELIVERY, /keeping every name, number, date and qualification/);
+  assert.match(WORKER_INSTRUCTIONS, /exact \(every name, number, date, time, amount and qualification used, verbatim\)/);
+  assert.match(NAYA_WORK_DELIVERY, /Reproduce every exact entity verbatim/);
 });
 
 test('C-CHAT: an ambiguous name remains a failed result, not an empty successful read', async () => {
@@ -105,7 +105,7 @@ test('C-CHAT: a missing capability remains a failure instead of a stock line to 
 });
 
 test('C-PROMPT 10.11: the helper picks the source that answers and stops, and leaves conversation to her', () => {
-  assert.match(WORKER_INSTRUCTIONS, /She speaks what you write, so you decide what he hears/);
+  assert.match(WORKER_INSTRUCTIONS, /Supply exact facts for her to phrase in her own voice/);
   // REQUIRED 3a keeps the single-companion framing beside the new opening.
   assert.match(WORKER_INSTRUCTIONS, /To him there is one companion, never two\./);
   assert.match(WORKER_INSTRUCTIONS, /returns no_action, so that she answers it herself/);
@@ -118,5 +118,5 @@ test('C-PROMPT 10.11: the helper picks the source that answers and stops, and le
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /Start wide, then narrow/);
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /read aloud to him word for word/);
   // Neither public text hands her a quoted line to repeat.
-  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/);
+  assert.doesNotMatch(WORKER_INSTRUCTIONS.replace('{"status":"no_action"}', ''), /"/);
 });

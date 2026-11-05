@@ -341,15 +341,15 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
   const { createHash } = await import('node:crypto');
-  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), 'd3b15c441ac0a13f18c89a69a4c5bc999e2f2ea633cd9b7f145aada5d676a5be', 'Architect-authored voice text stays exact');
-  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '59e1e105bd7be1cfbc79eb14148c781ac66915b337b3e4bc1a941ddd1179ca42', 'Architect-authored worker text stays exact');
+  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '0c1175c50b1d3c863113a69cb0afade6cd3e4661864f1b15e4456847bfd340db', 'Architect-authored voice text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'b3b43b91feb56b54bb8fb4c25b3412f6f72720d2f64b3623dfe4469dfab5e88e', 'Architect-authored worker text stays exact');
   // 10.11: the mandated scope, searching and speech rules re-pin the worker block to its measured size (TR-R5).
   assert.ok(WORKER_INSTRUCTIONS.length <= 6214);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
-    assert.doesNotMatch(text, /["“][^"”]+["”]/);
+    assert.doesNotMatch(text.replace('{"status":"no_action"}', ''), /["“][^"”]+["”]/, 'no quoted prose to recite outside the required JSON schema');
   }
-  assert.doesNotMatch(NAYA_WORK_DELIVERY, /\b[a-z]+_[a-z_]+\b/);
+  assert.deepEqual([...new Set(NAYA_WORK_DELIVERY.match(/\b[a-z]+_[a-z_]+\b/g))].sort(), ['connection_dropped', 'mid_answer', 'next_step', 'no_action', 'provider_silent', 'what_failed']);
   assert.match(NAYA_WORK_DELIVERY, /MUST be handed off in the same turn/);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/i);
   assert.equal(workerInstructions(), WORKER_INSTRUCTIONS);

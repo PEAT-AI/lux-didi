@@ -1,3 +1,4 @@
+import { commentaryPart, commentaryResults } from './commentary-test.js';
 
 import { type TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -43,5 +44,10 @@ export async function taskLiveFixture(t: TestContext, infer?: Infer, timeContext
   const emit = async (event: ProviderEvent) => { (fake.emit as (event: ProviderEvent) => void)(event); await flushTaskLive();
     if (event.type === 'inputTranscription' && event.finished) { t.mock.timers.tick(1_200); await flushTaskLive(); }
   };
-  return { emit, appended, receipts, inference, requests: fake.requests, store };
+  return { emit, appended, receipts, inference, requests: fake.requests, store, async answers() {
+    while (appended.length && !commentaryPart(appended.at(-1)!).final) {
+      await emit({ type: 'commentaryAccepted', commandId: `synthetic-command-${appended.length}` });
+    }
+    return commentaryResults(appended.map(text => ({ text }))).map(item => item.text);
+  } };
 }

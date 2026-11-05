@@ -13,7 +13,7 @@ export type CommentaryAnswer = WorkerResult & {
   failure?: { stage: string; reason_code: string; detail: string };
 };
 export function commentaryEnvelope(value: object): string {
-  return ````COMMENTARY\n${JSON.stringify(value)}\n````;
+  return '```COMMENTARY\n' + JSON.stringify(value) + '\n```';
 }
 /** Recall is preferred: every match is a verbatim slice, never a normalized value. */
 export function extractExact(content: string): string[] {

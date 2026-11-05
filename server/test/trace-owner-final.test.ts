@@ -123,7 +123,8 @@ test('C-TRACE 2: attributionUncertain is true only where a turn really replaced 
   await ownerSaid(live, 'second question');
   await modelTurn(live);
   await turnComplete(live);
-  // A third utterance arrives before the provider closed the second turn, which is the real ambiguity.
+  // A third utterance arrives before the provider closed the second turn, which is the real ambiguity:
+  // the provider's own transcript cannot say which turn it belongs to.
   await ownerSaid(live, 'third');
   await ownerSaid(live, 'question');
   await modelTurn(live);
@@ -133,18 +134,18 @@ test('C-TRACE 2: attributionUncertain is true only where a turn really replaced 
     [1, null, 0],
     [2, null, 0],
     [3, `${live.liveSessionId}:t2`, 1],
+    [4, `${live.liveSessionId}:t3`, 1],
   ]);
 });
 
 test('C-TRACE 3: a turn answered by a later response says answered and keeps its first audible moment', async t => {
   const live = await openLive(t);
   await ownerSaid(live, 'answer me');
-  // The provider opens a second response inside the same turn: the first one was only her opening.
+  // The provider opens a second response inside the same turn and it carries no audio of its own: without a
+  // turn-scoped audible clock the turn would claim nothing was ever heard.
   await modelTurn(live);
   await audible(live);
-  await live.advance(2000);
   await modelTurn(live);
-  await audible(live);
   await turnComplete(live);
   const turn = live.store.transaction(tx => tx.get('SELECT outcome, first_audible_at FROM trace_turn ORDER BY turn_index LIMIT 1'));
   assert.equal(turn?.outcome, 'answered');

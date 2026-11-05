@@ -297,7 +297,7 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
   }
 });
 
-test('worker inference receives public instructions followed by presentation style, never lore', async () => {
+test('worker inference receives presentation style and private owner lore', async () => {
   const { runWorker } = await import('../tasks/worker.js');
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   const profile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic Owner',
@@ -309,7 +309,7 @@ test('worker inference receives public instructions followed by presentation sty
   await runWorker(options);
   assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
   assert.match(received, /SYNTHETIC STYLE/);
-  assert.doesNotMatch(received, /SYNTHETIC LORE/);
+  assert.match(received, /SYNTHETIC LORE/);
   received = '';
   const { profile: omittedProfile, ...withoutProfile } = options;
   assert.ok(omittedProfile);

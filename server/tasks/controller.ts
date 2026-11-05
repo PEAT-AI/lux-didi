@@ -28,6 +28,8 @@ export const SAID_TEXT_CHAR_LIMIT = 4_000;
 export interface BoundedSaid extends Said { truncated: boolean }
 export interface Revision {
   identity: RevisionIdentity; signal: AbortSignal; askAtUtc?: number | undefined; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string | undefined;
+  /** Owner finals that arrived while a hop ran and are not applied yet: they wait for its boundary. */
+  pending: number;
   /** One host fact, never a decision: his words overlapped her speech. */
   overlapped: boolean; alreadySaid?: BoundedSaid | undefined;
   reads: Map<string, ToolResult>; receipts: ToolResult[]; evidence: ToolResult[];
@@ -37,14 +39,37 @@ export class TaskController {
   #abort: AbortController | undefined;
   #revision: Revision | undefined;
   #running = false;
+  #inFlight = false;
   #held = false;
   #retained: ToolResult[] = [];
   readonly #receipts: ToolResult[] = [];
   constructor(readonly delivery: Delivery, readonly newId: () => string = randomUUID) {}
   get current(): Revision | undefined { return this.#revision; }
   get running(): boolean { return this.#running; }
+  /** The host reports that a worker hop is running for the current revision. */
+  hop(active: boolean): void { this.#inFlight = active; }
+  /** Some of his words are waiting for the running hop's boundary. */
+  get pending(): boolean { return (this.#revision?.pending ?? 0) > 0; }
+  /** His words since the hop started, taken together once, at its boundary. */
+  reconcile(): number {
+    const revision = this.#revision;
+    if (!revision || revision.pending === 0) return 0;
+    const applied = revision.pending;
+    revision.pending = 0; this.#held = false;
+    return applied;
+  }
   finalize(words: string, connection_generation: number, ownerTurn = 0, overlapped = false): Revision {
     const previous = this.#revision;
+    if (this.#inFlight && previous !== undefined) {
+      // His next words never throw the running lookup away. The hop keeps its signal and its read
+      // cache; the revision number advances on the same revision so the answer it finishes with
+      // holds the latest authority, and the words are applied at the hop's own boundary.
+      previous.identity.task_revision += 1;
+      previous.ownerWords.push(words); previous.ownerTurn = ownerTurn;
+      previous.overlapped = previous.overlapped || overlapped;
+      previous.pending += 1; this.#held = false;
+      return previous;
+    }
     const revise = this.#running && previous !== undefined;
     this.#abort?.abort(revise ? REVISION_ABORT : undefined);
     this.#abort = new AbortController();
@@ -52,6 +77,7 @@ export class TaskController {
       identity: { task_id: revise ? previous.identity.task_id : this.newId(), task_revision: revise ? previous.identity.task_revision + 1 : 1, connection_generation },
       ownerTurn, precedingOwnerWords: revise ? previous.precedingOwnerWords : previous?.ownerWords.join("\n"),
       signal: this.#abort.signal, ownerWords: revise ? [...previous.ownerWords, words] : [words],
+      pending: 0,
       overlapped, alreadySaid: boundedSaid(this.delivery.said?.()),
       reads: revise ? previous.reads : new Map(), receipts: [...this.#receipts], evidence: [...this.#retained],
     };
@@ -91,7 +117,7 @@ export class TaskController {
   disconnect(): void {
     this.#abort?.abort();
     if (this.#revision) this.delivery.closed(this.#revision.identity);
-    this.#running = false;
+    this.#running = false; this.#inFlight = false;
   }
 }
 /** Earlier owner words are context, not a repeated request; tool evidence remains labelled data. */

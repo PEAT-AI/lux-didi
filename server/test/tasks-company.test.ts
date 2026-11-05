@@ -78,6 +78,13 @@ test('company data agent running job can be resumed later and answer is preserve
   assert.deepEqual(JSON.parse(completed.text).answer, answer);
   assert.deepEqual(seen, [{ tool: 'ask_data_agent', args: { question: 'Synthetic KPI' } }, { tool: 'data_agent_job', args: { job_id: jobId, op: 'get' } }]);
 });
+test('company answered metric retains the exact server answer and never opens a lower-level tool', async () => {
+  const answer = { answer_number: 17.25, answer_ranking: [{ label: 'Synthetic segment', value: 17.25 }], definition: 'Synthetic reported KPI', sql: 'synthetic server-owned query', tables: ['synthetic_table'], assumptions: ['Synthetic fixture'], clarification: null };
+  const seen: { tool: string; args: Record<string, unknown> }[] = [];
+  const result = await connectorExecutor([dataBinding([job('answered', answer)], seen)])('data_agent_job', { job_id: jobId, op: 'get' }, new AbortController().signal);
+  assert.deepEqual(JSON.parse(result.text).answer, answer);
+  assert.deepEqual(seen.map(item => item.tool), ['data_agent_job']);
+});
 test('company job failure and clarification are native results, not empty ranked rows', async () => {
   for (const status of ['failed', 'needs_reply']) {
     const seen: { tool: string; args: Record<string, unknown> }[] = [];

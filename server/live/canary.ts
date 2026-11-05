@@ -262,48 +262,59 @@ export class InstalledCanary {
     session.running = true;
     const readyStarted = this.now();
     const readyDeadline = readyStarted + 10_000;
-    hostLogEvent({ event: 'canary_step', step: 'ready_wait', callId: id, ms: 0 });
-    while (!session.abort.signal.aborted && !this.live.providerReady?.(id) && !this.live.snapshot(id).terminal && this.now() < readyDeadline) {
-      try { await this.wait(session.abort.signal); } catch { break; }
-    }
-    hostLogEvent({ event: 'canary_step', step: 'ready_waited', callId: id, ms: Math.max(0, this.now() - readyStarted) });
-    if (!this.live.providerReady?.(id)) {
-      const terminal = this.live.snapshot(id).terminal;
-      const code = terminal && 'code' in terminal ? terminal.code : session.expired ? 'canary_shutdown_timer' : 'provider_not_ready';
-      hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code, ms: Math.max(0, this.now() - readyStarted) });
-      const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=none code=${code} ms=${Math.max(0, this.now() - readyStarted)}`);
-      lines.push(`CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0 callId=${id} terminalReason=${session.expired ? 'canary_shutdown_timer' : 'clean_close'}`);
-      this.shutdown();
-      return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
-    }
-    // Owner asks are the only input. Raw task events wake the observer; the
-    // durable exact-call receipt remains the final authority.
-    let settled = false;
-    let failed = 0;
-    const detach = attachHostLogSink({ event: raw => {
-      if (record(raw) && (raw['event'] === 'task_settled' || raw['event'] === 'task_inference_failed')) {
-        settled = true;
-        hostLogEvent({ event: 'canary_step', step: 'settled', callId: id, code: typeof raw['code'] === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(raw['code']) ? raw['code'] : raw['status'] === 'complete' ? 'complete' : 'task_incomplete', ms: Math.max(0, this.now() - readyStarted) });
-        if (raw['event'] === 'task_inference_failed' || raw['status'] !== 'complete') failed++;
-      }
-    } });
+    let detach = () => {};
     try {
+      hostLogEvent({ event: 'canary_step', step: 'ready_wait', callId: id, ms: 0 });
+      while (!session.abort.signal.aborted && !this.live.providerReady?.(id) && !this.live.snapshot(id).terminal && this.now() < readyDeadline) {
+        try { await this.wait(session.abort.signal); } catch (error) { if (!session.abort.signal.aborted) throw error; break; }
+      }
+      hostLogEvent({ event: 'canary_step', step: 'ready_waited', callId: id, ms: Math.max(0, this.now() - readyStarted) });
+      if (!this.live.providerReady?.(id)) {
+        const terminal = this.live.snapshot(id).terminal;
+        const code = terminal && 'code' in terminal ? terminal.code : session.expired ? 'canary_shutdown_timer' : 'provider_not_ready';
+        hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code, ms: Math.max(0, this.now() - readyStarted) });
+        const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=none code=${code} ms=${Math.max(0, this.now() - readyStarted)}`);
+        lines.push(`CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0 callId=${id} terminalReason=${session.expired ? 'canary_shutdown_timer' : 'clean_close'}`);
+        this.shutdown();
+        return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
+      }
+      // Owner asks are the only input. Raw task events wake the observer; the
+      // durable exact-call receipt remains the final authority.
+      let settled = false;
+      let failed = 0;
+      let failureCode = 'task_incomplete';
+      const askLines: string[] = [];
+      detach = attachHostLogSink({ event: raw => {
+        if (record(raw) && (raw['event'] === 'task_settled' || raw['event'] === 'task_inference_failed')) {
+          settled = true;
+          failureCode = typeof raw['reason_code'] === 'string' ? canaryFailureCode({ code: raw['reason_code'] }) : raw['status'] === 'complete' ? 'complete' : 'task_incomplete';
+          hostLogEvent({ event: 'canary_step', step: 'settled', callId: id, code: failureCode, ms: Math.max(0, this.now() - readyStarted) });
+          if (raw['event'] === 'task_inference_failed' || raw['status'] !== 'complete') failed++;
+        }
+      } });
       for (const ask of session.asks) {
         settled = false;
+        failureCode = 'task_incomplete';
+        const beforeFailed = failed;
         const started = this.now();
         for (const final of ask.finals) {
           this.live.text(final);
           hostLogEvent({ event: 'canary_step', step: 'ask_injected', callId: id, ms: Math.max(0, this.now() - started) });
         }
         while (!settled && !session.abort.signal.aborted && !this.live.snapshot(id).terminal && this.now() - started < 60_000) {
-          try { await this.wait(session.abort.signal); } catch { break; }
+          try { await this.wait(session.abort.signal); } catch (error) { if (!session.abort.signal.aborted) throw error; break; }
         }
-        if (!settled) failed++;
+        if (!settled) {
+          failed++;
+          const terminal = this.live.snapshot(id).terminal;
+          failureCode = terminal && 'code' in terminal ? terminal.code : session.expired ? 'canary_shutdown_timer' : 'task_timeout';
+        }
+        if (failed > beforeFailed) askLines.push(`CANARY FAIL id=${ask.id} tool=none code=${failureCode} ms=${Math.max(0, this.now() - started)}`);
       }
       const terminal = this.live.snapshot(id).terminal;
       const terminalReason = session.expired ? 'canary_shutdown_timer' : terminal ? ('code' in terminal ? terminal.code : terminal.state) : 'clean_close';
       hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code: terminalReason, ms: Math.max(0, this.now() - readyStarted) });
-      const lines = [`CANARY SUMMARY pass=0 fail=${failed} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id} terminalReason=${terminalReason}`];
+      const lines = [`CANARY SUMMARY pass=0 fail=${failed} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id} terminalReason=${terminalReason}`, ...askLines];
       return { lines, passed: 0, failed, providerTurns: canarySessions.progress(id)?.turns ?? 0 };
     } catch (error) {
       const code = canaryFailureCode(error);

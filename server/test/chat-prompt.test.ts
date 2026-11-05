@@ -135,3 +135,6 @@ test('information answers cover material facts while banter stays short', () => 
     assert.equal(WORKER_INSTRUCTIONS.toLowerCase().includes(boilerplate), false);
   }
 });
+
+// Keep the offline rubric in the existing helper instruction contract check.
+import './eval-worker-replay-rubric.test.js';

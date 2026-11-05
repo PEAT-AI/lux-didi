@@ -217,7 +217,7 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   ];
   // This configured endpoint failed credential refresh before publishing its catalogue.
   const crm: BoundConnector = { connector: 'mongoose', policy: { ...policy, connectionId: 'configured-failing-crm', toolNames: ['get_company'], endpoint: { ...policy.endpoint, id: 'configured-failing-crm', resource: 'mongoose:crm' } },
-    reader: { call: async () => { crmReads++; return { state: 'unavailable', reason: 'credential-refresh-failed' } as ConnectorEvidence; } },
+    reader: { call: async () => { crmReads++; throw new Error('credential-refresh-failed'); } },
   };
   const create = (bindings: readonly BoundConnector[]) => hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => bindings, timeZone: 'UTC',
     infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,

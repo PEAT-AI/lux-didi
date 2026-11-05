@@ -34,7 +34,7 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets' }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets' }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
@@ -74,7 +74,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
   if (name === 'search_knowledge' && typeof data === 'string') {
-    const rows = rankedText(data).slice(0, 6).map(row => ({ ...row, title: row.title.slice(0, 300) }));
+    const rows = rankedText(data).slice(0, 12).map(row => ({ ...row, title: row.title.slice(0, 300) }));
     const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
     return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
       text: data.slice(0, 24000),

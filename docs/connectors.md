@@ -83,7 +83,7 @@ The helper's typed meeting/list tools are `vault_meetings`, `read_vault_meeting`
 `list_vault`; list pages and meeting child pages have bounded limits and offsets.
 
 Search wire arguments select `detail="snippets"` and
-`limit=min(6, configured maximum)`. Confidence and supersession are evidence, not
+`limit=min(12, configured maximum)`. Confidence and supersession are evidence, not
 instructions. Voice mode is not used: its secondary rows omit scores and relationship badges.
 Snippet width is the remote renderer's native width, not the voice-only `snippet_chars`
 argument. Full snippet rows carry scores and badges; remote weak title-only rows
@@ -91,7 +91,7 @@ are retained with their ids and ranks and `snippet_status="not_supplied"` so the
 helper can distinguish missing source snippets from missing knowledge, without
 inventing absent evidence.
 The entire accepted text envelope reaches the helper, capped at 24000
-characters and six bounded references. Source policy validation still precedes delivery;
+characters and twelve bounded references. Source policy validation still precedes delivery;
 structured diagnostics never outrank the accepted MCP text blocks.
 
 A fresh Lux Knowledge endpoint with no `unknownClass` defaults to `sensitive`.

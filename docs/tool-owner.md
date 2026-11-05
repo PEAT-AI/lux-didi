@@ -203,8 +203,8 @@ validity and supersession evidence. A superseded entry is historical context; fo
 replacement and name the change rather than presenting the old fact as current.
 Company and people exact-name behavior is separate and unchanged.
 
-The helper asks for at most six full-format snippets at the remote renderer's native width, not abbreviated voice rows. Source text is bounded
-to 24000 characters, with at most six bounded reference titles. Reads support up to six
+The helper asks for at most twelve full-format snippets at the remote renderer's native width, not abbreviated voice rows. Source text is bounded
+to 24000 characters, with at most twelve bounded reference titles. Reads support up to six
 ids and linked rationale in one request, retaining versioned continuations for long text.
 `vault_meetings` finds meetings by participant/date; `read_vault_meeting` reads one;
 `list_vault` supplies true totals and offset pages for all/count questions. None can write.

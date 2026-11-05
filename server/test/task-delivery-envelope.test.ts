@@ -75,8 +75,8 @@ test('W3-R3: empty structured failure delivers immediately without delegation, e
   const delivery = new TaskDelivery({ isCurrent: () => true, append: (_binding, text) => { sent.push(text); return `command${sent.length}`; }, state: () => {} });
   delivery.socket(1);
   const failure = { stage: 'model', reason_code: 'provider_rejected', detail: 'private diagnostics' };
-  delivery.deliver({ task_id: 'failure-task', task_revision: 1, connection_generation: 1 },
-    { status: 'incomplete', text: '', findings: [], failure }, true);
+  const answer = { status: 'incomplete' as const, text: '', findings: [], failure };
+  delivery.deliver({ task_id: 'failure-task', task_revision: 1, connection_generation: 1 }, answer, true);
   assert.equal(sent.length, 1);
   assert.equal(decode(sent[0]!).kind, 'failure');
   assert.equal(decode(sent[0]!).cause, 'provider_rejected');

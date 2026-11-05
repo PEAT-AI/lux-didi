@@ -17,7 +17,7 @@ function transportClass(error: unknown): ProviderErrorClass {
 }
 export class ProviderError extends Error {
   readonly detail: string;
-  readonly request_id?: string;
+  readonly request_id: string | undefined;
   constructor(readonly reason_code: typeof PROVIDER_REASONS[number], detail = '', readonly status?: number, request_id?: string, readonly error_class: ProviderErrorClass = status === 429 ? 'http_429' : status !== undefined && status >= 500 ? 'http_5xx' : status !== undefined && status >= 400 ? 'http_4xx' : 'unknown') {
     super(reason_code); this.name = 'ProviderError'; this.detail = redactSecrets(detail).slice(0, 2000);
     this.request_id = request_id && /^[A-Za-z0-9_-]+$/.test(request_id) ? request_id.slice(0, 64) : undefined;

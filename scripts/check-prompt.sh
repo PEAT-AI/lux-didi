@@ -52,6 +52,28 @@ for (const text of [voice, worker]) {
 }
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
+// C-PROMPT: one rule per behaviour. A hand-off usually needs no words, delivery keeps every fact exact and
+// may add her own view after the facts, and the base asks a closing question only when it is earned.
+for (const rule of [
+  'A hand-off usually needs no words',
+  'an acknowledgement never promises work',
+  "Say a person's name as it is written",
+  'A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it',
+  'your own view may follow in your own voice',
+  'never summarise what he asked to hear',
+]) assert.ok(voice.includes(rule), `the delivery rule is stated: ${rule}`);
+for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
+  'Say still about one only'])
+  assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
+assert.match(persona.NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
+assert.match(persona.NAYA_CHARACTER, /Call something still open or still true only when it was confirmed in the last 24 hours/);
+assert.match(persona.NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
+  'a call with nothing open greets the moment');
+// C-PROMPT: the class one topic belongs to is the class the note names and the plan refuses.
+assert.equal(persona.openerClass('the supplier payment came to 4,200 dollars'), 'recent-thread');
+assert.equal(persona.openerClass('the 15:00 meeting moved'), 'calendar');
+assert.equal(persona.openerClass('the open loop on the deposit'), 'open-loop');
+assert.equal(persona.openerClass('my tools failed again'), 'tool_failure');
 // 10.11: each new rule is a judgment she applies, and neither public text carries a said line.
 for (const rule of [
   'Everything else is yours and you answer it yourself',

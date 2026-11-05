@@ -36,7 +36,7 @@ const dmDana = post('postDmDana', 'direct-dana', 'dana', now - 1 * HOUR, 'sent y
 const dmOwner = post('postDmOwner', 'direct-dana', 'owner-chat', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
 // #1016: a second direct conversation, listed only by the stall-dm mode, whose answer proves a wave keeps
 // the siblings that did answer.
-const dmRavi = post('postDmRavi', 'direct-ravi', 'ravi', now - 2 * HOUR, 'sent the retest notes', 'dm-ravi');
+const dmRavi = post('postDmRavi', 'direct-ravi', 'ravi', now - 45 * 60 * 1000, 'sent the retest notes', 'dm-ravi');
 // Two threads the owner opened: one waits on Dana, the other the owner answered last.
 const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'owner-chat', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
 const threadOpenReply = post('threadOpenReply', 'direct-dana', 'dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply');

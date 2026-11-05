@@ -78,10 +78,7 @@ Closed-field `task_lifecycle` events never include queries or bodies. Delivery c
 
 ### Open-line task delivery (10.11)
 
-Finalized owner speech starts or revises the helper after 600 ms without new owner transcript.
-The bound is `OWNER_QUIET_MS` in `server/tasks/call.ts`, measured from `host.log` `owner_final` to
-`task_lifecycle` start/revision on the 2026-11-05 01:11 and 07:18 calls (n=39): the adapter credit
-already covered 693 to 705 ms and no two finals of one ask landed closer than 730 ms.
+Finalized owner speech starts or revises the helper after 600 ms (`OWNER_QUIET_MS` in `server/tasks/call.ts`, measured from `host.log` `owner_final` to `task_lifecycle` start/revision on the 2026-11-05 01:11 and 07:18 calls: 39 finalizations, adapter credit 693 to 705 ms, closest same-ask finals 730 ms) without new owner transcript.
 New words restart this host-owned quiet; adapter finalization consumes the same interval, not an extra delay.
 There is no lexical hesitation classifier. Stop commands,
 mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.

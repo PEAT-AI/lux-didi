@@ -17,7 +17,7 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length <= 5090);
+assert.ok(WORKER_INSTRUCTIONS.length <= 4600);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
@@ -106,11 +106,11 @@ assert.ok(WORKER_INSTRUCTIONS.includes('One empty search proves nothing; say mis
 
 const styledProfile = { ...ownerProfile, style: { text: 'SYNTHETIC PRESENTATION STYLE', dataClass: 'ordinary' },
   lore: { text: 'SYNTHETIC OWNER LORE', dataClass: 'ordinary' } };
-const style = prompt.ownerProfileSections(styledProfile).find(section => section.id === 'owner-style').text;
+const context = prompt.ownerProfileSections(styledProfile).map(section => section.text).join('\n\n');
 const styledWorker = workerInstructions(styledProfile);
-assert.equal(styledWorker, `${approved.WORKER_INSTRUCTIONS}\n\n${style}`);
+assert.equal(styledWorker, `${approved.WORKER_INSTRUCTIONS}\n\n${context}`);
 assert.equal(styledWorker.split('SYNTHETIC PRESENTATION STYLE').length - 1, 1);
-assert.equal(styledWorker.includes('SYNTHETIC OWNER LORE'), false);
+assert.equal(styledWorker.includes('SYNTHETIC OWNER LORE'), true);
 
 console.log(JSON.stringify({ case: 'compiled_public_prompt_contract', exactApprovedBlocks: 5, textReadOnly: true,
   voiceWorkerSeparated: true, unavailableSourcePreserved: true, noToolsPolicyPresent: true, workerStyleAfterPublic: true,

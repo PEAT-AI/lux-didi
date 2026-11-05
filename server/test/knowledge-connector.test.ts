@@ -101,11 +101,11 @@ function setup(url: string, extras: Extras = {}) {
   const adapter = createMcpAdapter({ registry, store });
   return { registry, adapter, store };
 }
-async function approve(adapter: McpPort, registry: McpRegistry, names: readonly string[] = [...LUX_KNOWLEDGE_TOOLS], generation = 1) {
+async function approve(adapter: McpPort, registry: McpRegistry, names?: readonly string[], generation = 1) {
   const discovery = await adapter.discover('source');
   assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw new Error('discovery failed');
-  registry.approve({ endpointId: 'source', schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: 'account-a', resource: 'resource-a', generation });
+  registry.approve({ endpointId: 'source', schemaDigest: discovery.schemaDigest, toolNames: names ?? discovery.tools.map(tool => tool.name).filter(name => LUX_KNOWLEDGE_TOOLS.includes(name as never)), effect: 'read', account: 'account-a', resource: 'resource-a', generation });
   return discovery;
 }
 function baseConfig(schemaDigest: string, overrides: Partial<LuxKnowledgeConfig> = {}): LuxKnowledgeConfig {
@@ -848,5 +848,27 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
       'snippet-chars-out-of-range', 'snippet-chars-out-of-range', 'invalid-meeting-date', 'invalid-meeting-date',
     ]);
     assert.equal(f.calls.length, 1, 'a refused search never reaches the wire');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+
+test('reviewed meeting and list tools dispatch only bounded read-only filters with sensitivity', async () => {
+  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' } }));
+  const f = await fixture({ list: () => ({ tools: [searchTool, getTool, ...tools, writerTool] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry, { includeSensitive: true });
+    for (const [tool, args, invalid] of [
+      ['list_meetings', { participant: 'Synthetic', date_from: '2026-01-01', limit: 2 }, { date_from: '2026-02-30' }],
+      ['get_meeting', { meeting_id: 'synthetic', limit: 2 }, { limit: 2 }],
+      ['list_insights', { count_only: true, limit: 2 }, { limit: 100000 }],
+    ] as const) {
+      const before = f.calls.length;
+      assert.equal((await reader.lookup(tool, invalid)).state, 'refused');
+      assert.equal(f.calls.length, before);
+      complete(await reader.lookup(tool, args));
+      assert.deepEqual(f.calls.at(-1), { name: tool, arguments: { ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: true }) } });
+    }
+    assert.ok(!adapter.visibleTools('source').some(tool => tool.name === 'save_insight'));
   } finally { await adapter.close(); await f.close(); }
 });

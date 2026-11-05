@@ -139,9 +139,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
   assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
   const ranked = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
-  assert.equal(ranked.references[0]?.match, 'exact');
+  assert.equal(ranked.references[0]?.rank, 1);
   const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
-  assert.equal(neighbour.status, 'no_match'); assert.equal(neighbour.text, '');
+  assert.equal(neighbour.status, 'ok'); assert.match(neighbour.text, /Orchid/);
 });
 
 test('configured schemas reject floats but accept integer bounds', () => {
@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length <= 5090);
+assert.ok(WORKER_INSTRUCTIONS.length <= 4600);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
@@ -297,7 +297,7 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
   }
 });
 
-test('worker inference receives public instructions followed by presentation style, never lore', async () => {
+test('worker inference receives presentation style and private owner lore', async () => {
   const { runWorker } = await import('../tasks/worker.js');
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   const profile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic Owner',
@@ -309,7 +309,7 @@ test('worker inference receives public instructions followed by presentation sty
   await runWorker(options);
   assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
   assert.match(received, /SYNTHETIC STYLE/);
-  assert.doesNotMatch(received, /SYNTHETIC LORE/);
+  assert.match(received, /SYNTHETIC LORE/);
   received = '';
   const { profile: omittedProfile, ...withoutProfile } = options;
   assert.ok(omittedProfile);
@@ -514,7 +514,7 @@ test('invalid insight identifiers name search_knowledge and valid insight ids re
   assert.equal(seen.length, 0);
   const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
   assert.equal(valid.text, 'synthetic insight');
-  assert.deepEqual(seen[0], { ids: [63] });
+  assert.deepEqual(seen[0], { ids: [63], include_links: true });
 });
 
 test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {

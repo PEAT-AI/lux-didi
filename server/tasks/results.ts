@@ -89,7 +89,7 @@ export function readerFailure(name: string, category: FailureCategory, reason: R
   return failed(`${identifier} ${action} This read did not complete; do not infer absence.`, category, reason);
 }
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
-export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
+export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour'; rank?: number; snippet_status?: 'not_supplied' }
 export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void; recordRedaction?(tool: string, count: number): void };
 export interface ToolResult {
   [TASK_DISCLOSURE]?: TaskDisclosure;
@@ -127,7 +127,7 @@ export function documentResult(text: string, id: string, cursor = '0'): ToolResu
   return { status: end < text.length ? 'partial' : text.length ? 'ok' : 'empty', text: text.slice(start, end), references: [{ id }],
     next_cursor: end < text.length ? `v1:${version}:${end}` : null, coverage: `Characters ${start} to ${end} of ${text.length}; ${end < text.length ? 'continue with next_cursor' : 'complete'}.`, repair: null };
 }
-export interface RankedItem { id: string; title: string; text?: string; url?: string }
+export interface RankedItem { id: string; title: string; text?: string; url?: string; snippet_status?: 'not_supplied' }
 const normalize = (text: string): string => text.normalize('NFKC').toLocaleLowerCase('en').trim().replace(/\s+/g, ' ');
 /** A name is exact only when its complete normalized title equals the query. No language inference. */
 export function rankedResult(query: string, items: readonly RankedItem[]): ToolResult {

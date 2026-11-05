@@ -3,7 +3,7 @@ import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, Stor
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
 /** The only remote tools this connector may ever call, in fixed order. No caller override. */
-export const LUX_KNOWLEDGE_TOOLS = ['search_knowledge', 'get_insight'] as const;
+export const LUX_KNOWLEDGE_TOOLS = ['search_knowledge', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights'] as const;
 export type LuxKnowledgeTool = (typeof LUX_KNOWLEDGE_TOOLS)[number];
 
 export interface LuxKnowledgeConfig {
@@ -109,6 +109,7 @@ export type LuxKnowledgeResult =
   | LuxKnowledgeUnknown;
 
 export interface LuxKnowledgeReader {
+  lookup(tool: 'list_meetings' | 'get_meeting' | 'list_insights', args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
@@ -308,6 +309,12 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
   }
 
   return {
+    async lookup(tool, args, signal) {
+      if (!validateKnowledgeLookup(tool, args, settings.maxSearchLimit)) return { state: 'refused', reason: 'invalid_arguments' };
+      const denied = preflight(registry, settings, tool);
+      if (denied) return { state: 'refused', reason: denied };
+      return dispatch(tool, { limit: Math.min(20, settings.maxSearchLimit), ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
+    },
     async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
       const validated = validateSearch(input, settings);
       if (!validated.ok) return { state: 'refused', reason: validated.reason };
@@ -336,4 +343,24 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       return dispatch('get_insight', args, signal, ids);
     },
   };
+}
+
+/** Read-only discovery accepts only bounded, literal filters, never server catalogue overrides. */
+export function validateKnowledgeLookup(tool: string, args: Record<string, unknown>, maxLimit: number): boolean {
+  const keys = tool === 'list_meetings' ? ['participant', 'date_from', 'date_to', 'order', 'limit']
+    : tool === 'get_meeting' ? ['meeting_id', 'limit', 'offset']
+    : tool === 'list_insights' ? ['project', 'status', 'count_only', 'limit', 'offset', 'participant', 'meeting_date_from', 'meeting_date_to'] : [];
+  if (!keys.length || Object.keys(args).some(key => !keys.includes(key))) return false;
+  if (tool === 'get_meeting' && (typeof args.meeting_id !== 'string' || !args.meeting_id.trim())) return false;
+  for (const [key, value] of Object.entries(args)) {
+    if (key === 'limit') { if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > Math.min(50, maxLimit)) return false; }
+    else if (key === 'offset') { if (!Number.isSafeInteger(value) || Number(value) < 0) return false; }
+    else if (key === 'count_only') { if (typeof value !== 'boolean') return false; }
+    else if (key.includes('date_')) { if (!isCalendarDay(value)) return false; }
+    else if (key === 'order') { if (value !== 'newest' && value !== 'oldest') return false; }
+    else if (key === 'status') { if (!['active', 'archived', 'all'].includes(String(value))) return false; }
+    else if (typeof value !== 'string' || !value.trim() || value.length > 200) return false;
+  }
+  const from = args.date_from ?? args.meeting_date_from, to = args.date_to ?? args.meeting_date_to;
+  return !from || !to || String(from) <= String(to);
 }

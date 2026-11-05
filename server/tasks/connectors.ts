@@ -20,6 +20,9 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
+  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
+  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
+  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
   chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
   chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
   chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
@@ -34,8 +37,8 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: (parameters.properties as { limit: { maximum: number } }).limit.maximum }) },
-  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: [Number(a.id)] }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets' }) },
+  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query, mode: a.mode ?? 'answer', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
 };
@@ -62,8 +65,8 @@ function posts(root: Record<string, unknown>): Record<string, unknown>[] {
 /** The knowledge service's Markdown row header is a structural wire format, not query interpretation. */
 function rankedText(raw: string): RankedItem[] {
   return raw.split('\n').flatMap(line => {
-    const match = /^\*\*#(\d+)\*\*\s+(?:\[[^\]]+\]\s+)?(.+)$/.exec(line);
-    return match ? [{ id: match[1]!, title: match[2]!.trim() }] : [];
+    const match = /^(?:-\s+)?\*\*#(\d+)\*\*\s+(?:\[[^\]]+\]\s+)?(.+)$/.exec(line);
+    return match ? [{ id: match[1]!, title: match[2]!.trim(), ...(/^\s*-\s+/.test(line) ? { snippet_status: 'not_supplied' as const } : {}) }] : [];
   });
 }
 function eventTime(value: unknown): string {
@@ -96,6 +99,16 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
   if (name === 'search_company' || name === 'read_company' || name === 'query_company' || Object.hasOwn(companySteps, name)) return companyPayload(data);
+  if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
+  if (name === 'search_knowledge' && typeof data === 'string') {
+    const rows = rankedText(data).slice(0, 12).map(row => ({ ...row, title: row.title.slice(0, 300) }));
+    const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
+    return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
+      text: data.slice(0, 24000),
+      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1, ...(row.snippet_status ? { snippet_status: row.snippet_status } : {}) })), next_cursor: null,
+      coverage: `${rows.length} ranked vault candidates in source order. Semantic retrieval, not exact-name matching.${data.length > 24000 ? ' Source text truncated.' : ''}`,
+      repair: rows.length || empty ? null : 'Unrecognized vault search response; do not infer corpus absence.' };
+  }
   if (typeof data === 'string' && !name.startsWith('read_')) {
     const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
@@ -204,7 +217,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
             if (binding.connector !== 'mongoose') {
             // A mail read and a calendar window are judged on the structured source, never on the
             // rendered display text: the display drops the quoted chain, trims and carries handles.
-            const payloadSource = name === 'read_mail' || name === 'calendar_events' ? result.decodedResult
+            const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : name === 'read_mail' || name === 'calendar_events' ? result.decodedResult
               : binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult
               : snapshot.response.text ?? snapshot.response;
             const shaped = projectTaskPayload(name, payloadSource, args);

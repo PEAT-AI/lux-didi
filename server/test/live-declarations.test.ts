@@ -53,13 +53,13 @@ test('shared helper and chat declarations conform to the provider schema dialect
     assert.equal(declarations.some(tool => tool.name === retired), false, `${retired} is not a helper declaration`);
   }
 });
-test('knowledge reads expose their canonical id/cursor schema, not backend-specific options', t => {
+test('knowledge reads expose bounded batches and linked rationale', t => {
   const registry = helperSurface(t), knowledge = registry.find(tool => tool.name === 'read_knowledge')!;
   assert.ok(knowledge);
-  assert.equal(knowledge.validate({ id: '7', cursor: null }), true);
-  assert.equal(knowledge.validate({ id: '7', cursor: null, include_links: true }), false);
+  assert.equal(knowledge.validate({ ids: [7, 8], include_links: true, cursor: null }), true);
+  assert.equal(knowledge.validate({ ids: [], include_links: true, cursor: null }), false);
   const declaration = declarationsFor(registry).declarations.find(tool => tool.name === 'read_knowledge')!;
-  assert.deepEqual(Object.keys(declaration.parameters['properties'] as object).sort(), ['cursor', 'id']);
+  assert.deepEqual(Object.keys(declaration.parameters['properties'] as object).sort(), ['cursor', 'ids', 'include_links']);
 });
 
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {

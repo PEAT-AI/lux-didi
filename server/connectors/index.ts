@@ -1,3 +1,4 @@
+import { validateKnowledgeLookup } from './lux-knowledge.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -180,6 +181,17 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
   declarations(policy) {
     const bounds = policy.bounds;
     return [
+      ...(['list_meetings', 'get_meeting', 'list_insights'] as const).map(name => ({
+        name, description: name === 'list_meetings' ? 'Find meetings by participant and calendar dates.' : name === 'get_meeting' ? 'Read a known meeting and its entries.' : 'List vault entries with a true total; use for all or counts.',
+        effect: 'read' as const, guidance: 'Use literal identifiers, calendar dates and bounded pages. Never use ranked search for complete sets.',
+        parameters: { type: 'object', additionalProperties: false, properties: {
+          ...(name === 'list_meetings' ? { participant: { type: 'string' }, date_from: { type: 'string' }, date_to: { type: 'string' }, order: { type: 'string', enum: ['newest', 'oldest'] } }
+          : name === 'get_meeting' ? { meeting_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }
+          : { project: { type: 'string' }, status: { type: 'string', enum: ['active', 'archived', 'all'] }, count_only: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, participant: { type: 'string' }, meeting_date_from: { type: 'string' }, meeting_date_to: { type: 'string' } }),
+          limit: { type: 'integer', minimum: 1, maximum: Math.min(50, bounds.maxSearchLimit) },
+        }, required: name === 'get_meeting' ? ['meeting_id'] : [] },
+        validate(args: unknown) { return isRecord(args) && validateKnowledgeLookup(name, args, bounds.maxSearchLimit); },
+      })),
       {
         name: 'search_knowledge',
         description: 'Search the owner knowledge base. Pass 2 to 5 core terms, not a sentence; returns matching entry ids with short excerpts. Fetch an entry by id with get_insight for the full body. Returns the top 3 entries with 400-character bodies; call get_insight only to read one entry in full.',
@@ -242,6 +254,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
     });
     return {
       async call(tool, args, signal) {
+        if (tool === 'list_meetings' || tool === 'get_meeting' || tool === 'list_insights') return await reader.lookup(tool, args, signal);
         if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
         // The declaration speaks the wire names; the reader takes the connector's own field names.
         const search = args as {

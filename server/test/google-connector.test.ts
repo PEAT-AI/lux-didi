@@ -839,7 +839,7 @@ test('the warm calendar digest reads the primary calendar once and renders the e
   assert.equal(read.calls[0]!.calendarId, 'primary', 'the primary calendar only');
   assert.equal(read.calls[0]!.timeMin, '2026-10-18T00:00:00+00:00');
   assert.equal(read.calls[0]!.timeMax, '2026-10-19T00:00:00+00:00');
-  assert.equal(read.calls[0]!.maxResults, 10);
+  assert.equal(read.calls[0]!.maxResults, 50, 'the whole day fits one bounded read, not the page default');
 });
 
 test('the warm calendar digest keeps one bounded line and trims a day that does not fit', async () => {

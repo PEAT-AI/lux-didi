@@ -82,3 +82,43 @@ test('fresh vault source defaults sensitive without widening another connector o
   assert.equal(loaded.catalog.endpoints[1]?.unknownClass, null);
   assert.equal(loaded.catalog.endpoints[2]?.unknownClass, 'ordinary');
 });
+
+test('a bounded fixture helper turn reads semantic candidates and their replacement in one batch', async () => {
+  const { connectorExecutor } = await import('../tasks/connectors.js');
+  const { createRegistry } = await import('../tasks/tools.js');
+  const { FakeAuthority } = await import('../tasks/authority.js');
+  const { runWorker } = await import('../tasks/worker.js');
+  const policy = {
+    connector: 'lux-knowledge', toolNames: ['search_knowledge', 'get_insight'],
+    bounds: { maxSearchLimit: 25, maxGetIds: 10 },
+  } as import('../tools/types.js').ConnectionPolicy;
+  const seen: { tool: string; args: Record<string, unknown> }[] = [];
+  const read = '#89969 Old watering plan\n⚠ superseded by #90213\nLinked rationale: #90213 Current watering plan\nSYNTHETIC PRIVATE ROW';
+  const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {
+    seen.push({ tool, args });
+    return { state: 'completed', decodedResult: tool === 'search_knowledge' ? vaultEnvelope : read } as import('../connectors/index.js').ConnectorResult;
+  } }]);
+  const registry = createRegistry({ execute, authority: new FakeAuthority() });
+  let hop = 0, size = 0;
+  const started = performance.now();
+  const result = await runWorker({ registry, identity: { task_id: 'fixture-vault', task_revision: 1, connection_generation: 1 },
+    input: 'orchid watering', signal: new AbortController().signal,
+    infer: async request => {
+      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_knowledge', args: { query: 'orchid watering' } }] };
+      if (hop === 2) {
+        assert.equal(request.outputs[0]?.result.status, 'ok');
+        assert.match(request.outputs[0]!.result.text, /Score: 0.518/);
+        size = Buffer.byteLength(JSON.stringify(request.outputs[0]!.result));
+        return { text: '', calls: [{ id: 'read', name: 'read_knowledge', args: { ids: [115, 89969, 90213], include_links: true, cursor: null } }] };
+      }
+      assert.match(request.outputs[1]!.result.text, /SYNTHETIC PRIVATE ROW/);
+      assert.match(request.outputs[1]!.result.text, /superseded by #90213/);
+      return { text: 'The old plan was replaced by the current weekly schedule.', calls: [] };
+    } });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(seen, [
+    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 6, detail: 'voice', snippet_chars: 600 } },
+    { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },
+  ]);
+  console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: vaultEnvelope.length }));
+});

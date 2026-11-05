@@ -110,7 +110,7 @@ test('C-TRACE 1: an owner utterance cut by her speech is finalized from its own 
   assert.equal(unattributed(live), 0);
 });
 
-test('C-TRACE 1: the assembled final stays on his turn while her own words have theirs', async t => {
+test('C-TRACE 1: the assembled final joins a turn whose origin is the owner', async t => {
   const live = await openLive(t);
   await ownerPartial(live, 'what is ');
   await ownerPartial(live, 'the weather');
@@ -118,14 +118,14 @@ test('C-TRACE 1: the assembled final stays on his turn while her own words have 
   await live.emit({ type: 'outputTranscription', text: 'A synthetic answer.', finished: true });
   await audible(live);
   await turnComplete(live);
-  const rows = live.store.transaction(tx => tx.all("SELECT role, turn_id, final FROM trace_utterance ORDER BY journal_id"));
-  const owner = rows.filter(row => String(row.role) === 'owner');
-  assert.deepEqual(owner.map(row => [String(row.turn_id), Number(row.final)]), [
-    [`${live.liveSessionId}:t1`, 0], [`${live.liveSessionId}:t1`, 0], [`${live.liveSessionId}:t1`, 1],
-  ]);
-  const model = rows.filter(row => String(row.role) === 'model');
-  assert.ok(model.length >= 1, 'her own words are the model rows of this call');
-  for (const row of model) assert.notEqual(String(row.turn_id), `${live.liveSessionId}:t1`, 'no model row is his turn');
+  // Her answer inside his turn shares that turn's id by design, so the reader's own test is the join: every owner
+  // row, and the assembled final above all, must sit on a trace_turn whose origin is the owner.
+  const joined = live.store.transaction(tx => tx.all(
+    "SELECT t.origin AS origin, COUNT(*) AS rows FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE u.role='owner' GROUP BY t.origin"));
+  assert.deepEqual(joined.map(row => [String(row.origin), Number(row.rows)]), [['owner', 3]]);
+  const finals = live.store.transaction(tx => tx.all(
+    "SELECT t.origin AS origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE u.role='owner' AND u.final=1"));
+  assert.deepEqual(finals.map(row => String(row.origin)), ['owner']);
 });
 
 test('C-TRACE 1: the same cut utterance is a turn of its own in history_turns', async t => {

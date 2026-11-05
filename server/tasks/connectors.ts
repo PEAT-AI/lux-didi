@@ -7,7 +7,7 @@ import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailBody } from './clean.js';
-import { documentResult, failed, readerFailure, failureCategory, rankedResult, type RankedItem, type ToolResult } from './results.js';
+import { documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
@@ -71,12 +71,12 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if (typeof data === 'string' && !name.startsWith('read_')) {
     const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
-    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
+    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', search_outcome: 'none', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
     const body = typeof data === 'string' ? data : thread || text(root.body ?? root.text ?? root.content);
-    if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.');
+    if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.', 'upstream_error', 'empty_content');
     if (name === 'read_company') {
       const cursor = text(root.next_cursor) || null;
       const complete = record(root.coverage).complete;
@@ -86,7 +86,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     return documentResult(name === 'read_mail' ? cleanMailBody(body) : body, id, text(args.cursor) || '0');
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
-  if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');
+  if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.', 'upstream_error', 'invalid_result');
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
@@ -96,7 +96,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const next = text(root.nextPageToken ?? root.next_cursor);
   const cursor = name === 'search_mail' ? next : '';
   const incomplete = !!next || root.sourceIncomplete === true;
-  return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
+  return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', search_outcome: items.length ? 'returned' : 'none', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
     coverage: `${items.length} returned items.${cursor ? ' More results exist; continue the same query with the returned cursor.' : incomplete ? ' Coverage incomplete. Source paging is not exposed by this tool; narrow the query or time window instead.' : ' Connector returned no continuation.'}`, repair: null };
 }
 export function nativeTaskReadGranted(policy: BoundConnector['policy'], tool: string): boolean {
@@ -121,9 +121,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
-    if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
+    if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
     const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
-    if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
+    if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
@@ -131,7 +131,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     try {
       return await scope.run(async () => {
         const result = await binding.reader.call(mapping.tool, mapped, signal);
-        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
+        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code), reasonCodeFor('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
         if (hostRepair) {
@@ -150,6 +150,6 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         }
         return projectTaskPayload(name, result.decodedResult, args);
       });
-    } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error'); } finally { scope.release(); }
+    } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error', signal.aborted ? 'cancelled' : 'source_down'); } finally { scope.release(); }
   };
 }

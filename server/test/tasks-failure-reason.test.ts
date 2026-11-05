@@ -55,10 +55,9 @@ test('FAIL-R3: a failed result carries a closed reason code that survives serial
 
 test('FAIL-R4: every failure path of the task registry yields a closed reason code', async () => {
   const registry = createRegistry({ authority: { authorize: async (_intent: unknown, body: () => Promise<unknown>) => body() } as never,
-    execute: async (name: string) => {
-      if (name === 'read_mail') return failed('Check the mail connection, then retry.', 'unauthorized', 'no_access');
-      throw new Error('synthetic executor fault');
-    } });
+    execute: async (name: string) => name === 'read_mail'
+      ? failed('Check the mail connection, then retry.', 'unauthorized', 'no_access')
+      : failed('This source is not reachable right now.', 'unavailable', 'source_down') });
   const seen: string[] = [];
   const record = (result: { status: string; reason_code?: string }): void => {
     if (result.status !== 'failed') return;
@@ -73,7 +72,7 @@ test('FAIL-R4: every failure path of the task registry yields a closed reason co
   record(await run('no_such_tool', {}));
   record(await run('read_mail', {}));
   record(await run('read_mail', { id: 'synthetic', cursor: null }));
-  record(await run('search_mail', { query: 'synthetic' }));
+  record(await run('read_thread', { ref: 'synthetic-thread', cursor: null }));
   const aborted = new AbortController(); aborted.abort();
   record(await registry.get('read_mail')!.run({ id: 'synthetic', cursor: null }, identity, aborted.signal));
   assert.ok(seen.includes('no_access') && seen.includes('bad_argument') && seen.includes('source_down'), `paths: ${[...new Set(seen)].join(',')}`);
@@ -104,19 +103,26 @@ test('FAIL-R6: the answer carries its failures and the next task sees them in it
   const inputs: string[] = [];
   const runtime = new TaskRuntime({ store, delivery: new FakeDelivery(),
     authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal() }),
-    execute: async () => failed('Ask the owner to sign in to the mail source, then retry.', 'unauthorized', 'sign_in_needed'),
+    execute: async (name: string) => {
+      if (name === 'read_mail') return failed('Ask the owner to sign in to the mail source, then retry.', 'unauthorized', 'sign_in_needed');
+      throw new Error('synthetic executor fault');
+    },
     infer: async request => {
       inputs.push(request.input);
-      return inputs.length === 1 ? { text: '', calls: [{ id: 'synthetic-call', name: 'read_mail', args: { id: 'synthetic', cursor: null } }] } : { text: 'Mail was not readable.', calls: [] };
+      if (inputs.length === 1) return { text: '', calls: [{ id: 'synthetic-call', name: 'read_mail', args: { id: 'synthetic', cursor: null } }] };
+      if (inputs.length === 3) return { text: '', calls: [{ id: 'synthetic-call-2', name: 'read_thread', args: { ref: 'synthetic-thread', cursor: null } }] };
+      return { text: 'The source was not readable.', calls: [] };
     } });
   try {
     const first = runtime.finalize('Read the synthetic message', 1);
     const answer = await first.result;
     assert.deepEqual(answer.failures, [{ tool: 'read_mail', reason_code: 'sign_in_needed' }]);
     const second = runtime.finalize('So what happened there', 1);
-    await second.result;
+    const answer2 = await second.result;
     const status = JSON.parse(JSON.parse(inputs.at(-1)!).verified_status) as { failures?: unknown };
-    assert.deepEqual(status.failures, [{ tool: 'read_mail', reason_code: 'sign_in_needed' }]);
+    assert.deepEqual(status.failures, [{ tool: 'read_mail', reason_code: 'sign_in_needed' }], 'the next task reads the earlier failures');
+    // A thrown executor error names the source as down instead of the old upstream blanket.
+    assert.deepEqual(answer2.failures, [{ tool: 'read_thread', reason_code: 'source_down' }]);
   } finally { runtime.close(); store.close(); rmSync(directory, { recursive: true }); }
 });
 

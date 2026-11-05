@@ -264,6 +264,6 @@ test('SILENCE-R1: failed composition speaks plain findings with one incomplete c
   }, 'openai', undefined, async (_name, args) => ({ status: 'ok', text: `${(args as { query: string }).query} finding.`, references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
   const answer = await f.call.input('Synthetic two sources', 1);
   assert.equal(answer.status, 'incomplete');
-  assert.equal(answer.text, "I couldn't finish that request. Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
+  assert.equal(answer.text, "Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
   assert.doesNotMatch(answer.text, /\d+[.)]|\n/);
 });

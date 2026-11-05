@@ -218,8 +218,8 @@ export class Store {
     });
   }
   finishTask(identity: TaskRecord, status: string, answer: unknown, now = Date.now()): boolean {
-    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,final_answer=CASE WHEN content_pruned_at IS NULL THEN ? ELSE NULL END,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
-      [status, JSON.stringify(typeof answer === 'string' ? answer : answer && typeof answer === 'object' && 'text' in answer && typeof answer.text === 'string' ? answer.text : ''), now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
+    return this.transaction(tx => tx.run('UPDATE tasks SET status=?,failure=?,final_answer=CASE WHEN content_pruned_at IS NULL THEN ? ELSE NULL END,updated_at=? WHERE task_id=? AND current_revision=? AND EXISTS (SELECT 1 FROM task_revisions r WHERE r.task_id=tasks.task_id AND r.task_revision=tasks.current_revision AND r.connection_generation=?)',
+      [status, JSON.stringify(answer && typeof answer === 'object' && 'failure' in answer ? answer.failure : null), JSON.stringify(typeof answer === 'string' ? answer : answer && typeof answer === 'object' && 'text' in answer && typeof answer.text === 'string' ? answer.text : ''), now, identity.task_id, identity.task_revision, identity.connection_generation]) === 1);
   }
   saveTaskDelivery(identity: TaskRecord, attemptId: string, state: 'attached' | 'pending' | 'delivered' | 'closed' | 'failed', now = Date.now()): void {
     this.transaction(tx => { tx.run(`INSERT INTO task_deliveries(attempt_id,task_id,task_revision,connection_generation,state,updated_at) VALUES (?,?,?,?,?,?)

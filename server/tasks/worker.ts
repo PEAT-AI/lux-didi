@@ -13,11 +13,11 @@ export const REVISION_DEADLINE_MS = 36000;
 export const FINAL_INFERENCE_DEADLINE_MS = 24000;
 class ReadStopped extends Error { constructor(readonly category: 'cancelled' | 'timeout') { super(category); } }
 const pendingReads = new WeakMap<Map<string, ToolResult>, Map<string, Promise<ToolResult>>>();
-import { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
+import { ProviderError, DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export { DEFAULT_WORKER_MODEL, DEFAULT_WORKER_EFFORT } from './model.js';
 export interface ToolCall { id: string; name: string; args: unknown }
 export interface Output { id: string; name: string; result: ToolResult }
-export interface Inference { text: string; calls: ToolCall[]; no_action?: boolean; continuation?: { provider: 'openai' | 'gemini'; items: unknown[] } }
+export interface Inference { exact?: string[]; text: string; calls: ToolCall[]; no_action?: boolean; continuation?: { provider: 'openai' | 'gemini'; items: unknown[] } }
 export interface InferRequest {
   instructions: string; input: string; outputs: Output[]; turns: Inference[];
   tools: TaskTool[]; model: string; effort: string;
@@ -25,7 +25,8 @@ export interface InferRequest {
 export type Infer = (request: InferRequest, signal: AbortSignal) => Promise<Inference>;
 /** One failed tool and the closed reason it gave, so the next task can say what happened. */
 export interface FailureRecord { tool: string; reason_code: ReasonCode }
-export interface WorkerResult { status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; failures?: FailureRecord[]; receipts?: ToolResult[] }
+export interface WorkerFailure { stage: 'inference' | 'final'; reason_code: string; detail: string }
+export interface WorkerResult { failure?: WorkerFailure; exact?: string[]; status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; failures?: FailureRecord[]; receipts?: ToolResult[] }
 /** A thrown executor error carries its own closed code when it has one, and otherwise names the source as down. */
 const thrownReason = (error: unknown): ReasonCode => {
   const reason = error instanceof Error && 'reason' in error && typeof error.reason === 'string' ? error.reason : '';
@@ -74,9 +75,16 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     if (!failures.some(failure => failure.tool === tool)) failures.push({ tool, reason_code: code });
   };
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
-  const failureText = "I couldn't finish that request.";
+  let failure: WorkerFailure | undefined;
+  const inferenceFailed = (error: unknown, stage: WorkerFailure['stage']): void => {
+    const provider = error instanceof ProviderError ? error : undefined;
+    failure = { stage, reason_code: expired || clock.now() - start >= REVISION_DEADLINE_MS ? 'deadline' : provider?.reason_code ?? 'provider_unavailable', detail: provider?.detail ?? '' };
+    hostLogEvent({ event: 'task_inference_failed', taskId: options.identity.task_id, revision: options.identity.task_revision,
+      stage, reason_code: failure.reason_code, status: provider?.status, model: options.model ?? DEFAULT_WORKER_MODEL,
+      tool_count: options.registry.size, instruction_chars: workerInstructions(options.profile).length, elapsed_ms: Math.max(0, clock.now() - start), detail: failure.detail });
+  };
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join(' '), findings, failures, receipts });
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
@@ -94,7 +102,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts };
-    } catch { return options.signal.aborted ? finish() : incomplete(); }
+    } catch (error) { inferenceFailed(error, 'final'); return options.signal.aborted ? finish() : incomplete(); }
     finally { clear(); options.signal.removeEventListener('abort', cancel); }
   }
   async function readBounded(body: (signal: AbortSignal) => Promise<ToolResult>): Promise<ToolResult> {
@@ -175,7 +183,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch { return options.signal.aborted ? finish() : compose(); }
+      } catch (error) { inferenceFailed(error, 'inference'); return options.signal.aborted ? finish() : compose(); }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();

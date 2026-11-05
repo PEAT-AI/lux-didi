@@ -195,14 +195,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       !['sent', 'accepted', 'retry', 'undelivered'].includes(String(value.state))) return;
     return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
   }
+  if (value.event === 'task_inference_superseded') {
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'elapsed_ms']) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) ||
+      !isSafeCount(value.revision) || !['inference', 'final'].includes(String(value.stage)) || !isSafeCount(value.elapsed_ms)) return;
+    return value;
+  }
   if (value.event === 'task_inference_failed') {
     const reasons = ['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout', 'deadline'];
-    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'reason_code', 'status', 'model', 'tool_count', 'instruction_chars', 'elapsed_ms', 'detail']) ||
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'reason_code', 'status', 'model', 'tool_count', 'instruction_chars', 'elapsed_ms', 'detail', 'provider_error_class', 'http_status', 'request_id']) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
       !['inference', 'final'].includes(String(value.stage)) || !reasons.includes(String(value.reason_code)) ||
       (value.status !== undefined && (!isSafeCount(value.status) || Number(value.status) > 599)) ||
       typeof value.model !== 'string' || !/^[A-Za-z0-9_.:/-]{1,100}$/.test(value.model) ||
-      !isSafeCount(value.tool_count) || !isSafeCount(value.instruction_chars) || !isSafeCount(value.elapsed_ms) || typeof value.detail !== 'string') return;
+      !isSafeCount(value.tool_count) || !isSafeCount(value.instruction_chars) || !isSafeCount(value.elapsed_ms) || typeof value.detail !== 'string' ||
+      (value.provider_error_class !== undefined && !['dns', 'connect', 'reset', 'tls', 'abort', 'body', 'http_4xx', 'http_429', 'http_5xx', 'unknown'].includes(String(value.provider_error_class))) ||
+      (value.http_status !== undefined && !isSafeCount(value.http_status)) ||
+      (value.request_id !== undefined && (typeof value.request_id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.request_id)))) return;
     return { ...value, detail: redactSecrets(value.detail).slice(0, 2000) };
   }
   if (value.event === 'task_runtime_rejected') {

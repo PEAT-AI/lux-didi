@@ -61,3 +61,39 @@ test('superseded inference is cancelled without a provider failure', async () =>
     assert.equal(rows.filter(row => row.event === 'task_inference_superseded').length, 1);
   } finally { detach(); }
 });
+
+test('provider diagnostics classify nested transport failures and bounded HTTP ids', async () => {
+  const { ProviderError } = await import('../tasks/model.js');
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const rows: any[] = [];
+  const detach = attachHostLogSink({ event: row => rows.push(row) });
+  const profile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic',
+    style: { text: '', dataClass: 'ordinary' as const }, lore: { text: '', dataClass: 'ordinary' as const } };
+  const request = { instructions: '', input: '', outputs: [], turns: [], tools: [], model: 'synthetic', effort: 'low' as const };
+  try {
+    for (const [transport, expected, status, requestId] of [
+      [async () => { throw Object.assign(new Error('synthetic private message'), { cause: { code: 'ECONNRESET' } }); }, 'reset', undefined, undefined],
+      [async () => new Response('', { status: 429, headers: { 'x-request-id': 'req_synthetic' } }), 'http_429', 429, 'req_synthetic'],
+    ] as const) {
+      const infer = createModelPort({ role: { keyReference: 'test' }, credentials: { resolve: async () => 'key' }, transport });
+      await assert.rejects(() => infer(request, new AbortController().signal), error => {
+        assert.ok(error instanceof ProviderError);
+        assert.equal(error.error_class, expected);
+        assert.equal(error.status, status);
+        assert.equal(error.request_id, requestId);
+        return true;
+      });
+      await runWorker({ registry: new Map(), identity: { task_id: 'synthetic-provider', task_revision: 1, connection_generation: 1 },
+        input: '', signal: new AbortController().signal, infer, profile });
+      const row = rows.find(row => row.event === 'task_inference_failed');
+      assert.equal(row.provider_error_class, expected);
+      assert.equal(row.http_status, status);
+      assert.equal(row.request_id, requestId);
+      assert.equal(JSON.stringify({ ...row, detail: undefined }).includes('synthetic private message'), false);
+      rows.length = 0;
+    }
+    await runWorker({ registry: new Map(), identity: { task_id: 'synthetic-unknown', task_revision: 1, connection_generation: 1 },
+      input: '', signal: new AbortController().signal, infer: async () => { throw new Error('synthetic'); }, profile });
+    assert.equal(rows.find(row => row.event === 'task_inference_failed').provider_error_class, 'unknown');
+  } finally { detach(); }
+});

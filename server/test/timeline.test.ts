@@ -1126,3 +1126,21 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
   assert.equal(rendered.includes('SYNTHETIC_REPAIR_NOT_METADATA'), false, 'only the closed reason code leaves the row');
   assert.equal(rendered.includes('other-call'), false);
 });
+
+test('call audit lists inference attempts and counts only the selected call', () => {
+  const { buildTaskAudit, renderTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const base = { taskId: 'synthetic', stage: 'inference', callId: 'synthetic-call' };
+  const rows = [
+    { ...base, event: 'task_inference_superseded', revision: 1, elapsed_ms: 2 },
+    { ...base, event: 'task_inference_failed', revision: 2, reason_code: 'provider_unavailable', provider_error_class: 'reset', elapsed_ms: 3 },
+    { ...base, event: 'task_inference_failed', revision: 3, reason_code: 'deadline', provider_error_class: 'unknown', elapsed_ms: 24000 },
+    { ...base, callId: 'other-call', event: 'task_inference_superseded', revision: 4, elapsed_ms: 1 },
+  ];
+  const audit = buildTaskAudit({ all: () => [] }, rows, { callId: 'synthetic-call' });
+  assert.deepEqual(audit.inferenceOutcomeCounts, { superseded: 1, failed: 1, deadline: 1 });
+  const text = renderTaskAudit(audit);
+  assert.match(text, /revision=1 outcome=superseded elapsed_ms=2/);
+  assert.match(text, /revision=2 outcome=failed provider_unavailable reset elapsed_ms=3/);
+  assert.match(text, /revision=3 outcome=deadline elapsed_ms=24000/);
+  assert.doesNotMatch(text, /revision=4/);
+});

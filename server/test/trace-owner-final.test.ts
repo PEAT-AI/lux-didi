@@ -82,9 +82,14 @@ const modelTurn = (live: Live): Promise<void> => live.emit({ type: 'modelTurnSta
 const turnComplete = (live: Live): Promise<void> => live.emit({ type: 'turnComplete' });
 const audible = (live: Live): Promise<void> => live.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24_000, audible: true, rmsDbfs: -20 });
 
-/** His words in the trace: the turn's rows, in journal order, with the final flag the audit reads. */
-const traceUtterance = (live: Live): { text: string; final: number }[] => live.store.transaction(tx => tx.all(
-  "SELECT text, final FROM trace_utterance WHERE role='owner' ORDER BY journal_id").map(row => ({ text: String(row.text), final: Number(row.final) })));
+/** His words in the trace: the turn's rows, in journal order, with the turn they are attached to. */
+const traceUtterance = (live: Live): { text: string; final: number; turnId: string | null }[] => live.store.transaction(tx => tx.all(
+  "SELECT text, final, turn_id FROM trace_utterance WHERE role='owner' ORDER BY journal_id")
+  .map(row => ({ text: String(row.text), final: Number(row.final), turnId: row.turn_id === null ? null : String(row.turn_id) })));
+
+/** The unattributed count the store keeps for a call whose transcripts could not be placed on a turn. */
+const unattributed = (live: Live): number => Number(live.store.transaction(tx => tx.get(
+  'SELECT COALESCE(diagnostic_unattributed_transcripts,0) AS n FROM live_sessions WHERE live_session_id=?', [live.liveSessionId]))?.['n'] ?? 0);
 
 test('C-TRACE 1: an owner utterance cut by her speech is finalized from its own deltas', async t => {
   const live = await openLive(t);
@@ -94,11 +99,33 @@ test('C-TRACE 1: an owner utterance cut by her speech is finalized from its own 
   await modelTurn(live);
   await audible(live);
   await turnComplete(live);
+  const turn = `${live.liveSessionId}:t1`;
+  // T1: the assembled final is his turn's, never the model's, and it carries the turn id the audit reads.
   assert.deepEqual(traceUtterance(live), [
-    { text: 'what is ', final: 0 },
-    { text: 'the weather', final: 0 },
-    { text: 'what is the weather', final: 1 },
+    { text: 'what is ', final: 0, turnId: turn },
+    { text: 'the weather', final: 0, turnId: turn },
+    { text: 'what is the weather', final: 1, turnId: turn },
   ]);
+  // T2: his words were placed on a turn, so the call is not counted as carrying unattributed transcripts.
+  assert.equal(unattributed(live), 0);
+});
+
+test('C-TRACE 1: the assembled final stays on his turn while her own words have theirs', async t => {
+  const live = await openLive(t);
+  await ownerPartial(live, 'what is ');
+  await ownerPartial(live, 'the weather');
+  await modelTurn(live);
+  await live.emit({ type: 'outputTranscription', text: 'A synthetic answer.', finished: true });
+  await audible(live);
+  await turnComplete(live);
+  const rows = live.store.transaction(tx => tx.all("SELECT role, turn_id, final FROM trace_utterance ORDER BY journal_id"));
+  const owner = rows.filter(row => String(row.role) === 'owner');
+  assert.deepEqual(owner.map(row => [String(row.turn_id), Number(row.final)]), [
+    [`${live.liveSessionId}:t1`, 0], [`${live.liveSessionId}:t1`, 0], [`${live.liveSessionId}:t1`, 1],
+  ]);
+  const model = rows.filter(row => String(row.role) === 'model');
+  assert.ok(model.length >= 1, 'her own words are the model rows of this call');
+  for (const row of model) assert.notEqual(String(row.turn_id), `${live.liveSessionId}:t1`, 'no model row is his turn');
 });
 
 test('C-TRACE 1: the same cut utterance is a turn of its own in history_turns', async t => {

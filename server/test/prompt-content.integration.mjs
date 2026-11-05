@@ -24,7 +24,7 @@ for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE'])
 
 // The old waiting cue is absent; the new policy owns silence and fresh acknowledgement.
 assert.equal(prompt.NAYA_WORK_DELIVERY.split('After a hand-off stay quiet until word comes, and word always comes.').length - 1, 1);
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('freshly worded and never the same way twice in a call').length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split('A hand-off usually needs no words. When you do speak in it, say only what is true then').length - 1, 1);
 for (const banned of ['Silence while you look something up is fine.', 'never go silent', 'say one short line',
   'Nothing has been sent or booked', 'Before an actual lookup', 'offer to keep looking', 'You can reach his']) {
   assert.equal((prompt.NAYA_CHARACTER + prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(banned), false,
@@ -80,7 +80,7 @@ const fullLive = openAiInstructions(prompt.composeLiveSessionInstruction({ text:
   delegatedBackend: true, records: [], trustedChars: 60000 }).text);
 const excluded = JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json', import.meta.url)));
 assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),
-  '6e1b088a0c6fadeb814551c587c7218f4ebce1d700b09b6641d22cf49ac58d70', 'release character contains only the authorized wording changes');
+  '185fafd2ba7c1c79f76a9d9d45ea80cb3b0f6d80cba7cd00a4a713219213a054', 'release character contains only the authorized wording changes');
 assert.notEqual(prompt.NAYA_CHARACTER, excluded.NAYA_CHARACTER);
 for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]) {
   assert.equal(system.split(prompt.NAYA_CHARACTER).length - 1, 1);

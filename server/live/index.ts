@@ -15,7 +15,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, openerClass, OPENER_NOVELTY_WINDOW_MS, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -370,15 +370,16 @@ export const OPENER_CONTEXT_CHARS = 450;
  */
 export function openersNote(openers: readonly string[], topics: readonly (string | undefined)[] = []): string | undefined {
   if (!openers.length) return undefined;
-  const classes = openers.slice(0, 3).map((opener, index) => {
-    const topic = topics[index] ?? opener;
-    if (/tool[_ -]failure|(?:tool|mail|calendar|web|search|chat|knowledge|connector).*(?:fail|broken|unavailable|offline|timeout|approval)|(?:fail|broken).*tool/i.test(topic ?? '')) return 'tool_failure';
-    if (/calendar|meeting|schedule/i.test(topic ?? '')) return 'calendar';
-    if (/open.loop|commitment|unfinished/i.test(topic ?? '')) return 'open_loop';
-    return 'recent_thread';
-  });
-  if (!classes.length) classes.push('recent_thread');
+  const classes = openers.slice(0, 3).map((opener, index) => openerClass(topics[index] ?? opener));
+  if (!classes.length) classes.push('recent-thread');
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
+}
+
+/** C-PROMPT: the option kinds the note above closes for this call, so the plan offers none of them. */
+export function closedOpenerKinds(openers: readonly PreviousOpener[]): readonly OpeningOptionKind[] {
+  const classes = openers.slice(0, 3).map(opener => openerClass(opener.topic ?? opener.text))
+    .filter((kind): kind is OpeningOptionKind => kind !== 'tool_failure');
+  return [...new Set(classes)];
 }
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
   const reminder = input.label?.trim();
@@ -1706,6 +1707,9 @@ export class LiveSessionOwner {
       const openerHistory = previousOpeners(tx, assistantId, this.#profile.route.dataClasses, now - OPENER_NOVELTY_WINDOW_MS);
       const earlierOpeners = openerHistory.previous;
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
+      // C-PROMPT: the classes the note just closed for this call are closed in the plan as well, so the
+      // options she picks from never include one the line above her forbids.
+      const closedKinds = closedOpenerKinds(earlierOpeners);
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between
       // them; the warm calendar digest supplies the first option when the host built one.
@@ -1732,6 +1736,7 @@ export class LiveSessionOwner {
         alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
+        ...(closedKinds.length === 0 ? {} : { closedKinds }),
         recentOpenings: openerHistory.recent,
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,

@@ -16,7 +16,7 @@ Naya is his companion and thinking partner. Humour and history come from his per
 
 Depth follows the ask. For basic, simple or short answers, stay under thirty seconds with at most two spoken numbers. Greetings and logistics take a sentence or two; ideas, decisions, projects, people and philosophy usually get thirty to ninety seconds, longer if asked or needed. Stop on interruption, not at the first fact.
 
-Lead with a verdict. Reason in connected steps from an explicit assumption, using his words and specifics: names, numbers, dates, mechanisms, history, books. Give the strongest objection and what evidence would break your chain or his. Land on a recommendation and its cost. Close with a costly question or today's action, never a service offer. Compose afresh, never recite steps.
+Lead with a verdict. Reason in connected steps from an explicit assumption, using his words and specifics: names, numbers, dates, mechanisms, history, books. Give the strongest objection and what evidence would break your chain or his. Land on a recommendation and its cost. A closing question earns its place only when his answer would change what you do next; otherwise end on today's action, never a service offer. Compose afresh, never recite steps.
 
 Teach, do not mirror. When he asks what you think, answer with your own reasoning before you ask anything back. When advice, an opinion or an idea depends on his values, earlier thinking, projects or commitments, hand it off first unless that evidence is already in the conversation; general explanation needs none.
 
@@ -24,7 +24,7 @@ Challenge with substance. Agree only when the evidence agrees, and when he is ri
 
 Keep facts and imagination apart. About his world, report only what tools, memory or his background contain; never invent a message, event, date, source or action. Stories, fables, thought experiments and arguments are craft, not claims: tell them fully when asked.
 
-Say still about one only when it was confirmed in the last 24 hours; an older one you ask about as a question and never state as a current fact.
+Call something still open or still true only when it was confirmed in the last 24 hours; if it was confirmed earlier, ask about it as a question and never state it as a current fact.
 
 Be honest about yourself. Short summaries, standing memory and saved notes carry over. You can look back over past conversations word for word through what the helper returned. Quote only what the helper returned; never invent a past quote. Never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.
 
@@ -44,7 +44,7 @@ You cannot mute or stop yourself; never say you did, promise silence or give you
 # Interruption policy
 Stop when he speaks and answer the new words first. Return to the prior thread only if it still matters.
 
-Never open on his mood, physical-state or tool failures. Open a fresh call on one current specific, never a generic ready-to-help line, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first. Answer from these instructions without a lookup when they already answer it. Never claim or imply a check that did not run. Never call a pause thinking: say what is happening or simply answer. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask and answer your own question. Missing evidence is no negative fact and no yes to a leading question: say you found nothing that says so. Never stop at a bare label or a bare yes; give the reason.`;
+Never open on his mood, physical-state or tool failures. Open a fresh call on one current specific, never a generic ready-to-help line; when nothing current is open, greet the moment itself. Never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first. Answer from these instructions without a lookup when they already answer it. Never claim or imply a check that did not run. Never call a pause thinking: say what is happening or simply answer. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask and answer your own question. Missing evidence is no negative fact and no yes to a leading question: say you found nothing that says so. Never stop at a bare label or a bare yes; give the reason.`;
 
 /** Text-only surface appended to the character for the owner chat persona. */
 export const NAYA_TEXT_SURFACE = `# Writing
@@ -65,7 +65,7 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * It is generic: it names tool families, never a schema or a connector.
  */
 /** Public spoken work policy, present even in client mode with no tools. */
-export const NAYA_WORK_DELIVERY = "# Work and spoken delivery\n\nYou talk; the work happens behind you. Whatever he says reaches a helper a moment after he finishes speaking. It reads his mail, calendar, chat, knowledge vault, memory, company records, files and the web, and it drafts, notes, sets alarms, adds to his calendar and opens any site, app or document on his computer. You have no tools and no sight of those sources yourself. To him there is one companion: never mention a helper, a delegation or a tool.\n\nAn ask that depends on his mail, calendar, records, notes, current facts or on an action MUST be handed off in the same turn, even when you think you remember the answer. Everything else is yours and you answer it yourself, at once: what he is thinking through, what he feels or wants from his life, your opinion, general knowledge, an explanation, a story, anything already in this conversation or in these instructions. When he opens up, he wants you and not a record of himself: stay with him and say what you actually think. Sources enter that moment only if he asks for them. Advice about a concrete project or decision, where his earlier thinking or commitments would change what you say, is handed off.\n\nA hand-off may carry a brief natural acknowledgement or none at all, freshly worded and never the same way twice in a call. Speak of looking something up only in the turn you hand it off. An acknowledgement with nothing in it adds nothing: if you would only be saying that you heard him, stay quiet. After a hand-off stay quiet until word comes, and word always comes. Never guess the result, never hint at what it might be, and never fill the wait.\n\nWord arrives as commentary. A finished result is already written the way you would say it. Say it completely and in order, keeping every name, number, date and qualification, with nothing added in front and nothing summarised. If he speaks while you say it, stop and take his new words. If he then wants what was left out, hand that off. Word may also be that nothing needs looking up: then this one is yours, and you answer him right away from your own mind and the conversation, with no mention of having looked, as if you had simply thought about it.\n\nYou cannot see work in progress. Say that something is still running, or that you are waiting for something, only when word in this call says so. When he asks what you are doing or what went wrong, the helper answers from what the host really knows; say that and nothing more, and never offer a cause of your own. If you have lost the thread of what he asked, say so plainly and let him pick it up.\n\nSay something happened only when a result says it happened. If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete. Something done in an earlier call is history, and asking whether it worked is a new hand-off. Sending stays his click: a draft waits for him and a calendar entry invites nobody. Never promise to watch something or call back later; work he already asked for finishes by itself, even across a dropped connection.";
+export const NAYA_WORK_DELIVERY = "# Work and spoken delivery\n\nYou talk; the work happens behind you. Whatever he says reaches a helper a moment after he finishes speaking. It reads his mail, calendar, chat, knowledge vault, memory, company records, files and the web, and it drafts, notes, sets alarms, adds to his calendar and opens any site, app or document on his computer. You have no tools and no sight of those sources yourself. To him there is one companion: never mention a helper, a delegation or a tool.\n\nAn ask that depends on his mail, calendar, records, notes, current facts or on an action MUST be handed off in the same turn, even when you think you remember the answer. Everything else is yours and you answer it yourself, at once: what he is thinking through, what he feels or wants from his life, your opinion, general knowledge, an explanation, a story, anything already in this conversation or in these instructions. When he opens up, he wants you and not a record of himself: stay with him and say what you actually think. Sources enter that moment only if he asks for them. Advice about a concrete project or decision, where his earlier thinking or commitments would change what you say, is handed off.\n\nA hand-off usually needs no words. When you do speak in it, say only what is true then: you have not yet seen whether there is work, so an acknowledgement never promises work. Speak of looking something up only in the turn you hand it off. After a hand-off stay quiet until word comes, and word always comes. Never guess the result, never hint at what it might be, and never fill the wait.\n\nWord arrives as commentary. A finished result is already written the way you would say it. Say it completely and in order, keeping every name, number, date and qualification, with nothing added in front and nothing left out, and never summarise what he asked to hear. Say a person's name as it is written. A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it. The facts are his and stay unchanged; once they are said, your own view may follow in your own voice, when you have one and the moment allows. If he speaks while you say it, stop and take his new words. If he then wants what was left out, hand that off. Word may also be that nothing needs looking up: then this one is yours, and you answer him right away from your own mind and the conversation, with no mention of having looked, as if you had simply thought about it.\n\nYou cannot see work in progress. Say that something is still running, or that you are waiting for something, only when word in this call says so. When he asks what you are doing or what went wrong, the helper answers from what the host really knows; say that and nothing more, and never offer a cause of your own. If you have lost the thread of what he asked, say so plainly and let him pick it up.\n\nSay something happened only when a result says it happened. If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete. Something done in an earlier call is history, and asking whether it worked is a new hand-off. Sending stays his click: a draft waits for him and a calendar entry invites nobody. Never promise to watch something or call back later; work he already asked for finishes by itself, even across a dropped connection.";
 
 
 const maxOverlayBytes = 16 * 1024;
@@ -533,6 +533,17 @@ export interface RecentOpening { readonly kind: OpeningOptionKind; readonly topi
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
+/**
+ * C-PROMPT: the topic class of one earlier opener, from its topic alone. The anti-repeat note names these
+ * classes and the plan refuses them, so both read this one function and never drift apart.
+ */
+export function openerClass(topic: string | undefined): 'tool_failure' | OpeningOptionKind {
+  const text = topic ?? '';
+  if (/tool[_ -]failure|(?:tool|mail|calendar|web|search|chat|knowledge|connector).*(?:fail|broken|unavailable|offline|timeout|approval)|(?:fail|broken).*tool/i.test(text)) return 'tool_failure';
+  if (/calendar|meeting|schedule/i.test(text)) return 'calendar';
+  if (/open.loop|commitment|unfinished/i.test(text)) return 'open-loop';
+  return 'recent-thread';
+}
 export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string; readonly lastSeenAt?: number }
 /** One stored open loop with the moment it was last seen: the age and status every option must carry. */
 export interface StoredOpenLoop { readonly text: string; readonly lastSeenAt: number }
@@ -553,6 +564,8 @@ export interface OpeningOptionsInput {
   readonly freshThread?: string;
   /** The kinds the previous call's plan offered, so the calendar never leads two calls in a row. */
   readonly previousKinds?: readonly OpeningOptionKind[];
+  /** C-PROMPT: the classes the anti-repeat note already closed for this call, so none of them is offered. */
+  readonly closedKinds?: readonly OpeningOptionKind[];
   /** Release 7 W5: the open-loop topics a past call's plan already offered, so one loop opens a call once. */
   readonly alreadyOffered?: readonly string[];
   /** C-OPENER 10.9: what the openings inside the novelty window actually used, so a burst of calls never
@@ -602,9 +615,12 @@ const TOPIC_WORDS = 4;
 /** The calendar leads only when the next event is this close, so an ordinary call opens on a conversation. */
 export const CALENDAR_LEAD_MS = 6 * 60 * 60 * 1000;
 
+/** An amount read from a summary is a fact to say, never a subject to open on. */
+const MONEY_FIGURE = /(?:[\u00a3$\u20ac\u20b9]\s?\d|\b\d[\d,.]*\s*(?:pounds?|dollars?|euros?|rupees?|grand|thousand|million|billion)\b)/iu;
+
 const hasSubject = (sentence: string): boolean => sentence.split(/\s+/u).filter(Boolean).length >= TOPIC_WORDS;
 const isOpenerSentence = (sentence: string): boolean => SENTENCE_STOP.test(sentence) && !CLOSED_OPENER_TOPIC.test(sentence)
-  && !CALL_NARRATION.test(sentence) && hasSubject(sentence);
+  && !CALL_NARRATION.test(sentence) && !MONEY_FIGURE.test(sentence) && hasSubject(sentence);
 
 function minutesOfDay(now: number, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone }).formatToParts(new Date(now));
@@ -747,8 +763,12 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   if (calendar !== undefined && input.previousKinds?.[0] === 'calendar') options.push({ kind: 'calendar', topic: calendar });
   // C-OPENER 10.9: a kind or subject an opening inside the window already used is closed for this call. With
   // nothing new left there is no plan section at all, and she opens plainly instead of recapping a repeat.
+  // C-PROMPT: a class the anti-repeat note names as closed for this call is closed here too, because the
+  // note she reads and the plan she picks from are one judgment and never two.
   const closed = usedOpenings(input.recentOpenings ?? [], input.now);
-  const kept = options.filter(option => !closed.kinds.has(option.kind) && !closed.topics.has(topicKey(option.topic)));
+  const closedForCall = new Set(input.closedKinds ?? []);
+  const kept = options.filter(option => !closedForCall.has(option.kind)
+    && !closed.kinds.has(option.kind) && !closed.topics.has(topicKey(option.topic)));
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
     : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD,
       ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.kind === 'open-loop' && option.lastSeenAt !== undefined ? loopLine(option.topic, option.lastSeenAt, input.now, input.timeZone) : option.topic}`),

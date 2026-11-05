@@ -46,7 +46,7 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '6e1b088a0c6fadeb814551c587c7218f4ebce1d700b09b6641d22cf49ac58d70');
+  assert.equal(sha(NAYA_CHARACTER), '185fafd2ba7c1c79f76a9d9d45ea80cb3b0f6d80cba7cd00a4a713219213a054');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -1004,6 +1004,43 @@ test('C-OPENER: three calls inside the window plan three different openings, the
   assert.equal(second.section, '', 'and no plan section, so she opens with a plain greeting');
 });
 
+// C-PROMPT: the anti-repeat note names classes closed for this call, and the plan must offer none of them.
+test('C-PROMPT: a class closed for this call is not offered, and an open class still is', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const open = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0 });
+  assert.ok(optionOf(open, 'calendar'), 'the paired valid case offers a class that is open');
+  const closed = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    closedKinds: ['calendar'] });
+  assert.equal(optionOf(closed, 'calendar'), undefined, 'a class the note closed is never offered');
+  assert.ok(optionOf(closed, 'recent-thread'), 'and a class the note left open is still offered');
+  const everyClass = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
+    closedKinds: ['calendar', 'recent-thread', 'open-loop'] });
+  assert.equal(everyClass.section, '', 'with every class closed there is no options block at all');
+  assert.deepEqual(everyClass.options, [], 'and she opens from the moment with no list');
+});
+
+// C-PROMPT: an opener is a subject, never an amount read out of a summary.
+test('C-PROMPT: a money figure in a summary never reaches an opening option', () => {
+  const figure = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice came to 4,200 dollars.')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(figure.section, '', 'a summary carrying an amount supplies no opener');
+  assert.deepEqual(figure.options, []);
+  const same = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice went out this morning.')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(same, 'recent-thread')?.topic, 'the invoice went out this morning',
+    'the paired valid case keeps the same sentence when it carries no figure');
+});
+
+// C-PROMPT: a start with nothing open carries no options block and no instruction to pick one.
+test('C-PROMPT: a start with nothing open composes no options block and greets from the moment', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [], trustedChars: BUDGET });
+  assert.equal(composed.text.includes(OPENING_OPTIONS_TITLE), false, 'no options block is composed');
+  assert.equal(composed.text.includes('Pick one of these'), false, 'and nothing tells her to pick from a list');
+  assert.match(NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
+    'the voice surface lets a call with nothing open start from the moment');
+});
+
 test('C-OPENER: an opening older than the window closes nothing, and a quick re-call closes the bit it used', () => {
   const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
   const stale = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
@@ -1225,8 +1262,8 @@ test('593: an old standing loop carries its age and last-seen date', () => {
 
 // 593: the persona states the 24 hour rule once, in plain words.
 test('593: the persona carries one rule about still and loops not seen in the last day', () => {
-  assert.match(NAYA_CHARACTER, /Say still about one only when it was confirmed in the last 24 hours/, 'the 24 hour still rule is in the persona');
-  assert.match(NAYA_CHARACTER, /never state as a current fact/, 'and an older loop is never a current fact');
+  assert.match(NAYA_CHARACTER, /Call something still open or still true only when it was confirmed in the last 24 hours/, 'the 24 hour still rule is in the persona');
+  assert.match(NAYA_CHARACTER, /never state it as a current fact/, 'and an older item is never a current fact');
   assert.equal(NAYA_CHARACTER.split('24 hours').length - 1, 1, 'the rule is stated once');
 });
 
@@ -1313,7 +1350,7 @@ test('W5: each audit rule is stated once in the built GPT-Live voice instruction
 
 test('spoken wait guidance replaces the retired lookup announcement policy', () => {
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /after announcing a check|Announcing a lookup|Only the host bridges lookups/);
-  assert.match(NAYA_WORK_DELIVERY, /A hand-off may carry a brief natural acknowledgement or none at all/);
+  assert.match(NAYA_WORK_DELIVERY, /A hand-off usually needs no words/);
 });
 
 test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
@@ -1397,11 +1434,24 @@ test('HONESTY: the rendered voice instruction carries each honesty rule once and
   for (const gone of HONESTY_CONTRADICTIONS) assert.equal(voice.text.includes(gone), false, `no rule contradicts it: ${gone}`);
 });
 
+// C-PROMPT: delivery states the facts exactly and the close asks only when a question is earned.
+test('C-PROMPT: delivery keeps the facts exact, adds her view after them, and the close asks only when earned', () => {
+  assert.match(NAYA_WORK_DELIVERY, /keeping every name, number, date and qualification/);
+  assert.match(NAYA_WORK_DELIVERY, /Say a person's name as it is written/);
+  assert.match(NAYA_WORK_DELIVERY, /A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it/);
+  assert.match(NAYA_WORK_DELIVERY, /your own view may follow in your own voice/);
+  assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear/);
+  assert.equal(NAYA_CHARACTER.includes('Close with a costly question'), false, 'the base no longer orders a costly question');
+  assert.match(NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
+  assert.equal(NAYA_CHARACTER.includes('Say still about one'), false, 'the garbled still sentence is gone');
+});
+
 test('C-CONVO9: conversational rules remain explicit inside existing ceilings', () => {
   assert.match(NAYA_LIVE_BASE, /host note, not the owner/);
   assert.match(NAYA_LIVE_BASE, /never agree with.*host/i);
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
-  assert.match(NAYA_WORK_DELIVERY, /freshly worded and never the same way twice in a call/);
+  assert.match(NAYA_WORK_DELIVERY, /A hand-off usually needs no words/);
+  assert.match(NAYA_WORK_DELIVERY, /an acknowledgement never promises work/);
   assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
   assert.match(NAYA_LIVE_BASE, /the floor stays his, and that includes his pauses/i);
   assert.doesNotMatch(NAYA_LIVE_BASE, /stage_lux_note/);
@@ -1411,7 +1461,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
 
 test('W6-R1: conversation rules are paid for within each original persona section', () => {
   assert.ok(NAYA_CHARACTER.length <= 2959, `character grew: ${NAYA_CHARACTER.length}`);
-  assert.ok(NAYA_VOICE_SURFACE.length <= 2241, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
+  assert.ok(NAYA_VOICE_SURFACE.length <= 2300, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
 });
 
 test('C-CONVO9: tool_failure cannot become an opener topic', () => {

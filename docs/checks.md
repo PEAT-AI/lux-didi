@@ -380,3 +380,89 @@ eval prints each segment with its budget and fails only on a breach, a missing s
 receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
 itself a failure. No real account or provider. Run it with
 `bash scripts/check-latency-budget.sh`; it takes no flags and builds the server host itself before the replay.
+
+## Private source evaluation (manual only)
+
+`scripts/eval-sources.mjs` is a private, priced, manual tool, **never in CI**.
+Only the owner/master writes the private question file and runs real connectors.
+Do not put questions, expected facts, identifiers, responses or traces in this
+public repository, CI logs, issues or build artifacts. Synthetic tests are not
+an owner evaluation.
+
+Prerequisites: Node 26, `npm ci --prefix server`, then
+`npm run build --prefix server`. Configure the helper credentials and read
+connector grants through the normal app setup before evaluating. The runner
+uses `loadTaskModels`, `credentialsFor`, `composeMcpRuntime`, the production
+registry and `connectorExecutor`, and a fresh `runWorker` per question. There
+is no voice model. Native open, local effects and external writes are excluded;
+the authority port also refuses effects. This measures connector read authority,
+not the conversation's voice routing or write approval workflow.
+
+The data directory is `--data-dir`, or the app's standard
+`${XDG_DATA_HOME:-$HOME/.local/share}/lux-didi`; provider configuration is its
+`provider-config` subdirectory. The app store has an exclusive lock. When the
+app is running, use a consistent offline snapshot/SQLite backup of the store
+and its required configuration in a private evaluation directory. Do not copy a
+live database without its WAL consistency. Preserve owner identity and connector
+grants. Keep the source snapshot read-only, and give the runner a separate
+writable working copy, since production store migrations, connector receipts
+and credential refresh need local writes. Resolve credential references through
+the existing credential provider; never paste keys into question files. Do not
+point this working copy at the installed app's data. The runner does not launch,
+quit, control the app or modify Settings. It closes its own connector runtime.
+A locked store or missing credentials is a failed run, not a successful score.
+
+Run privately, with fresh output paths outside **every** git checkout:
+
+```sh
+node scripts/eval-sources.mjs --questions /private/path/questions.json --out /private/path/before.json --data-dir /private/path/eval-copy --runs 1 --max-tokens 800000
+node scripts/eval-sources.mjs --questions /private/path/questions.json --out /private/path/after.json --data-dir /private/path/eval-copy --only case1,case2
+```
+
+EVAL-R1: the ceiling is **tokens, not dollars**. `--max-tokens` defaults to
+800000 combined input/output tokens. Usage comes from provider responses,
+including reasoning output when reported. It stops before the next helper turn
+or question after the ceiling is observed. An in-flight response may exceed
+the ceiling; this is not a provider-side hard billing cap. Without a private price table, or for a model absent from it, only tokens are
+reported. Optional `--prices /private/path/prices.json` enables estimates from
+owner-supplied rates, never invented prices. The private JSON schema is
+`{"effective_date":"2026-11-05","models":{"model-id":{"input_per_million":2,"output_per_million":8}}}`.
+Rates are nonnegative USD per million tokens; the date is required. The table
+and effective date stay in the private report. Console prints estimates, not
+the table. A missing, malformed or nonnumeric provider usage record stops the
+run with an explicit usage error, even if the worker catches inference errors. The first question prints measured
+tokens so the owner can decide whether to continue at a different ceiling.
+Use the same questions, models, grants, runs and ceiling for before/after runs.
+The private output stores complete questions, scoring, tool arguments/results,
+helper turns and usage, is created exclusively at mode 0600, and refuses existing
+files and paths in checkouts (including symlinked parents). Console output is
+limited to case ids, scores and aggregate numeric measures.
+
+The question JSON is a nonempty array. Each object has `id` (unique printable
+ASCII letters/digits/underscore/dot/hyphen), `question` (nonempty natural speech),
+`expected_sources` (source names such as `vault`, `company`), `expected_refs`
+(any-of exact refs that must be opened), `required_facts` (each a nonempty list
+of accepted text alternatives), `forbidden_facts` (text alternatives that must
+never occur), and `kind` (`fact`, `abstain`, `restricted`, `capability`). Empty
+expectation lists are allowed. Fact checks are case-insensitive substring
+checks, not a semantic judge. Review private traces for paraphrases. A retrieved
+search hit alone does not count as opened. Empty/no-match or restricted connector
+outcomes can justify abstention only when the answer itself is an explicit,
+no-match/restricted response, not an unsupported factual answer. Every sentence
+must be an abstention, so appending fabricated facts cannot pass. Ordinary
+paraphrases are supported; for other legitimate wording, private
+`required_facts` alternatives may specify an accepted full abstention response
+(or each accepted sentence). These are exact case-insensitive full-answer or
+full-sentence matches, not substring permission for additional assertions; unavailable capability is reported separately
+from a miss. Structured job status determines incomplete coverage wherever supplied,
+including a running/failed job inside a successful tool response; source prose
+is not parsed for job state. Incomplete coverage plus an exhaustive claim, forbidden facts and
+writes are hard failures. Three separate rates report source, opened hit and
+facts, with median/p90 latency, turns, per-tool counts and token usage.
+
+For synthetic development only add `--fake`. This uses the real worker and
+production read registry with deterministic synthetic inference and executor
+responses. It proves plumbing, trace privacy, scoring and budget handling; it
+**does not prove** provider behavior, credential validity, real connector
+permissions, source freshness, retrieval quality or owner-answer correctness.
+Never use its score as a real before/after evaluation.

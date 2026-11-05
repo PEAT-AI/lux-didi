@@ -23,7 +23,7 @@ export function score(q, trace) {
   const incomplete = trace.status !== 'complete' || findings.some(f => f.status === 'partial' || f.next_cursor);
   const normal = findings.some(f => ['empty', 'no_match'].includes(f.status) || /restricted|unauthorized|not_granted/.test([f.reason_code, f.failure_category, f.repair].join(' ')));
   const hard = (trace.writes ?? 0) > 0 || q.forbidden_facts.some(f => includes(trace.text, f)) || (incomplete && /\b(everything|complete list|all results|nothing else|exhaustive)\b/i.test(trace.text));
-  const source = q.expected_sources.length === 0 || findings.some(f => q.expected_sources.includes(f.source));
+  const source = q.expected_sources.every(source => findings.some(f => f.source === source));
   const opened = q.expected_refs.length === 0 || q.expected_refs.some(ref => (trace.opened ?? []).includes(ref));
   const facts = q.required_facts.every(alts => alts.some(f => includes(trace.text, f)));
   const abstain = ['abstain', 'restricted'].includes(q.kind) && normal && source && trace.status === 'complete';
@@ -55,7 +55,7 @@ function outsideCheckout(path) {
 async function modules() {
   const dir = process.env.DIDI_EVAL_MODULE_DIR ?? join(root, 'server/dist');
   const load = name => import(pathToFileURL(join(dir, name + '.js')).href);
-  return { load, ...(await load('tasks/worker')), ...(await load('tasks/tools')), ...(await load('tasks/connectors')), ...(await load('tasks/model')) };
+  return { load, ...(await load('tasks/results')), ...(await load('tasks/worker')), ...(await load('tasks/tools')), ...(await load('tasks/connectors')), ...(await load('tasks/model')) };
 }
 async function compose(fake, dataDir, usage) {
   const m = await modules();
@@ -122,7 +122,7 @@ export async function evaluate(q, context, usage, ceiling) {
       if (result === null) calls[name] = (calls[name] ?? 0) + 1;
       else {
         const source = sourceFor(name);
-        operations.push({ identity, name, args, result: { ...result, source } });
+        operations.push({ identity, name, args, result: { ...result, source, reason_code: result[context.m.TASK_CONNECTOR_FAILURE_CODE] ?? result[context.m.TASK_CONNECTOR_FAILURE] ?? null } });
         if (/^read_|^query_/.test(name) && ['ok', 'partial'].includes(result.status)) {
           const ref = args.id ?? args.ref;
           if (typeof ref === 'string') opened.push(ref);
@@ -150,7 +150,9 @@ function options(argv) {
 }
 export async function main(argv) {
   const opts = options(argv);
-  let questions = validateQuestions(JSON.parse(readFileSync(opts.questions, 'utf8')));
+  let input;
+  try { input = JSON.parse(readFileSync(opts.questions, 'utf8')); } catch { throw new Error('Invalid private question file'); }
+  let questions = validateQuestions(input);
   if (opts.only) {
     const only = opts.only.split(',');
     if (only.some(id => !questions.some(q => q.id === id))) throw new Error('Unknown selected id');
@@ -179,7 +181,7 @@ export async function main(argv) {
     const latencies = results.map(r => r.wall_ms).sort((a, b) => a - b);
     const percentile = p => Math.round(latencies[Math.max(0, Math.ceil(latencies.length * p) - 1)] ?? 0);
     const rate = field => `${results.filter(r => r.score[field]).length}/${results.length}`;
-    report.summary = { median_ms: percentile(.5), p90_ms: percentile(.9), source_rate: rate('right_source'), hit_rate: rate('right_hit'), fact_rate: rate('required_facts'), helper_turns: results.reduce((n, r) => n + r.helper_turns, 0), tool_calls: {} };
+    report.summary = { wall_ms: results.reduce((n, r) => n + r.wall_ms, 0), median_ms: percentile(.5), p90_ms: percentile(.9), source_rate: rate('right_source'), hit_rate: rate('right_hit'), fact_rate: rate('required_facts'), helper_turns: results.reduce((n, r) => n + r.helper_turns, 0), tool_calls: {} };
     for (const r of results) for (const [tool, n] of Object.entries(r.tool_calls)) report.summary.tool_calls[tool] = (report.summary.tool_calls[tool] ?? 0) + n;
     console.log(`Summary n=${results.length} source=${rate('right_source')} hit=${rate('right_hit')} facts=${rate('required_facts')} median_ms=${percentile(.5)} p90_ms=${percentile(.9)} input_tokens=${usage.input_tokens} output_tokens=${usage.output_tokens} turns=${report.summary.helper_turns} tools=${JSON.stringify(report.summary.tool_calls)} stop=${report.stopped ?? 'finished'}`);
   } catch { report.error = 'evaluation_failed'; throw new Error('Evaluation failed; inspect private output and prerequisites'); }

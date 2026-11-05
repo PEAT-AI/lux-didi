@@ -37,14 +37,11 @@ questions and actions are handed off in the same turn. The voice waits for an
 actual result rather than inventing progress or claiming a lookup happened.
 General explanation and plain conversation can be answered directly.
 
-Delivery keeps the facts. A returned result is spoken completely and in order, every name
-said as it is written, every number, date and qualification exact, with nothing added in
-front of it and nothing left out, and a result the owner asked to hear is never summarised.
-A large amount may be spoken rounded when the exact figure adds nothing and he did not ask
-for it. Her own view may follow the facts in her own voice, and the facts themselves are
-never changed. An acknowledgement at the hand-off usually needs no words, and it never
-promises work: the voice has not yet seen whether there is work to do.
-
+Delivery keeps exact entities verbatim and leaves other wording to her. Fenced COMMENTARY
+items carry a typed result, partial result, no_action or failure as data. A requested full
+result is told completely once, with no rounded amounts, altered qualifications, invented
+facts, filler or meta-status. An acknowledgement at the hand-off usually needs no words
+and never promises work. The voice collects the complete commentary sequence before speaking.
 
 ### Open-line task delivery (10.11)
 
@@ -55,7 +52,7 @@ mic pacing and barge-in retain their existing paths. Longer gaps can revise runn
 
 OpenAI results use commentary on the current provider generation with its latest delegation id,
 or null when there is none. The host waits for owner speech and output quiet, then appends ordered
-chunks of at most 450 characters. Provider timeline acknowledgement settles each chunk, not exact
+fenced JSON items of at most 450 characters, including the fence and encoded fields. Provider timeline acknowledgement settles each chunk, not exact
 transcription or proven playback. An explicit rejection retries once on the same line and then logs
 failure. Delivery never reconnects, never automatically resends an acknowledged chunk and has no
 heard deadline. Store records pending sends and only records delivered after provider acknowledgement.

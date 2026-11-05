@@ -3283,6 +3283,7 @@ export class LiveSessionOwner {
       ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }),
       ...this.#stallFacts(handle) });
     this.#cancelSpeakingHold(handle);
+    const midAnswer = handle.speaking;
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
     handle.consumer.dropAudio();
@@ -3330,7 +3331,7 @@ export class LiveSessionOwner {
     delete base.openingText;
     const request = path === 'fresh_seeded'
       ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
-          : { openingText: handle.speaking ? commentaryEnvelope({ kind: 'recovery', cause: muteRebuild ? 'provider_silent' : 'connection_dropped', mid_answer: true }) : muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
+          : { openingText: midAnswer ? commentaryEnvelope({ kind: 'recovery', cause: muteRebuild ? 'provider_silent' : 'connection_dropped', mid_answer: true }) : muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...base, history: seed.turns, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.

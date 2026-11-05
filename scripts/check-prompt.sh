@@ -3,6 +3,7 @@ set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
+export DIDI_TEST_SOURCE_ROOT="$root/server/test"
 # SERVICE owns installation; this lane never downloads or changes manifests.
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
 if [[ ! -f "$deps/typescript/bin/tsc" ]]; then
@@ -45,7 +46,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 6394);
+assert.ok(worker.length === 7206);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);

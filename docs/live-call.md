@@ -247,3 +247,7 @@ The host's closed illness-word list is a conservative backstop; the persona's fl
 ### Helper inference attempts
 
 `didi-timeline call <id> --audit` lists each observed unsuccessful inference attempt in order under its task, with its revision and elapsed milliseconds. `superseded` means the next revision cancelled the request, not a provider failure. `failed` names the reason code and closed provider error class; `deadline` means the helper exhausted its budget. Per-call outcome counts summarize these log observations. A persisted settled reason is a fallback, not another attempt. Provider diagnostics include an HTTP status and bounded request id when available, never a new free-text error field.
+
+## How deep an answer is
+
+For information asks, the helper includes every supported fact that matters to the question, in time or relevance order. Overlapping facts appear once; incidental hits stay out. Missing information is named at the end. Length follows the facts, without a target or a recap. There is no preamble or narration of the search. Banter, greetings and remarks without a lookup stay short and in character. Later words can revise an earlier fragment; the answer addresses the latest whole request.

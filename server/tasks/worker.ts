@@ -131,7 +131,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const telemetry = (result: ToolResult): void => hostLogEvent({ event: 'task_tool', taskId: options.identity.task_id,
       revision: options.identity.task_revision, operationId, tool: tool.name, durationMs: Math.max(0, Math.round(clock.now() - toolStart)),
       category: result.status === 'failed' ? result.failure_category ?? 'upstream_error' : result.status,
-      reason_code: result.status === 'failed' ? result.reason_code ?? 'unknown' : null, candidates: result.search_outcome ?? null, cache });
+      reason_code: result.status === 'failed' ? result.reason_code ?? 'unknown' : null, cache });
     const execute = async (): Promise<ToolResult> => {
       const identity = { ...options.identity, operation_id: operationId };
       options.operation?.(identity, tool.name, validation.args, null);

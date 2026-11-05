@@ -71,7 +71,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if (typeof data === 'string' && !name.startsWith('read_')) {
     const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
-    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', search_outcome: 'none', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
+    return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
@@ -96,7 +96,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const next = text(root.nextPageToken ?? root.next_cursor);
   const cursor = name === 'search_mail' ? next : '';
   const incomplete = !!next || root.sourceIncomplete === true;
-  return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', search_outcome: items.length ? 'returned' : 'none', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
+  return { status: incomplete ? 'partial' : items.length ? 'ok' : 'empty', text: items.map(item => `${item.id}: ${item.title}\n${item.text ?? ''}`).join('\n'), references: items.map(({ id, title, url }) => ({ id, title, ...(url ? { url } : {}) })), next_cursor: cursor || null,
     coverage: `${items.length} returned items.${cursor ? ' More results exist; continue the same query with the returned cursor.' : incomplete ? ' Coverage incomplete. Source paging is not exposed by this tool; narrow the query or time window instead.' : ' Connector returned no continuation.'}`, repair: null };
 }
 export function nativeTaskReadGranted(policy: BoundConnector['policy'], tool: string): boolean {

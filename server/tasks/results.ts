@@ -100,8 +100,6 @@ export interface ToolResult {
   failure_category?: FailureCategory;
   /** The closed reason a failure names, and nothing at all on a resolved read or a search. */
   reason_code?: ReasonCode;
-  /** The ranked-search log word: candidates came back, or none did. Absent when the tool is not a ranked search. */
-  search_outcome?: 'returned' | 'none';
   status: ResultStatus;
   text: string;
   references: Reference[];
@@ -136,7 +134,6 @@ export function rankedResult(query: string, items: readonly RankedItem[]): ToolR
   const references: Reference[] = items.map(item => ({ id: item.id, title: item.title, ...(item.url ? { url: item.url } : {}), match: normalize(item.title) === normalize(query) ? 'exact' : 'neighbour' }));
   const exact = items.filter((_, index) => references[index]!.match === 'exact');
   return { status: !items.length ? 'empty' : exact.length ? 'ok' : 'no_match',
-    search_outcome: items.length ? 'returned' : 'none',
     text: exact.map(item => `${item.id}: ${item.title}\n${(item.text ?? '').slice(0, 500)}`).join('\n'), references, next_cursor: null,
     coverage: `${items.length} ranked candidates; ${exact.length} exact name matches. Neighbours are not matches and have not been opened.`, repair: null };
 }

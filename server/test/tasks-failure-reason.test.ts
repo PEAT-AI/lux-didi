@@ -88,11 +88,9 @@ test('FAIL-R5: an empty read is a failure with empty_content while an empty sear
   assert.notEqual(none.status, 'failed');
   assert.equal(none.status, 'empty');
   assert.equal(none.reason_code, undefined);
-  assert.equal(none.search_outcome, 'none');
-  // Paired valid case: candidates that are not an exact title still are not a failure, and the log word says so.
+  // Paired valid case: candidates that are not an exact title are still not a failure, and the labels stay as they are.
   const neighbours = rankedResult('Priya Example', [{ id: 'synthetic-person', title: 'Priya Other' }]);
   assert.equal(neighbours.status, 'no_match');
-  assert.equal(neighbours.search_outcome, 'returned');
   assert.equal(neighbours.reason_code, undefined);
   assert.match(neighbours.coverage, /1 ranked candidates; 0 exact name matches/);
 });
@@ -154,14 +152,13 @@ test('FAIL-R7: the operation row records the reason and host repair, and revisio
   } finally { store.close(); rmSync(directory, { recursive: true }); }
 });
 
-test('FAIL-R8: task_tool accepts a closed reason and the ranked-search word, and refuses anything open', () => {
+test('FAIL-R8: task_tool accepts a closed reason and refuses anything open', () => {
   const base = { event: 'task_tool', taskId: 'synthetic-task', revision: 2, operationId: 'synthetic-operation', tool: 'read_mail', durationMs: 3, category: 'unauthorized', cache: 'miss' };
-  assert.ok(safeEvent({ ...base, reason_code: 'no_access', candidates: null }), 'a failed read logs its reason');
-  assert.ok(safeEvent({ ...base, category: 'no_match', reason_code: null, candidates: 'returned' }), 'a ranked search logs candidates');
-  assert.ok(safeEvent({ ...base, category: 'empty', reason_code: null, candidates: 'none' }), 'an empty ranked search logs none');
-  assert.equal(safeEvent({ ...base, reason_code: 'made_up_reason', candidates: null }), undefined);
-  assert.equal(safeEvent({ ...base, reason_code: null, candidates: 'some' }), undefined);
-  assert.equal(safeEvent({ ...base, candidates: null }), undefined, 'the closed shape still requires both fields');
+  assert.ok(safeEvent({ ...base, reason_code: 'no_access' }), 'a failed read logs its reason');
+  assert.ok(safeEvent({ ...base, category: 'no_match', reason_code: null }), 'a search that matched nothing logs no reason');
+  assert.equal(safeEvent({ ...base, reason_code: 'made_up_reason' }), undefined);
+  assert.equal(safeEvent({ ...base, candidates: 'returned' }), undefined, 'the log no longer carries a ranked-search word');
+  assert.equal(safeEvent({ ...base }), undefined, 'the closed shape still requires the reason field');
 });
 
 test('FAIL-R9: people_lookup asks the roster for the name it owns, so a configured person resolves', async () => {

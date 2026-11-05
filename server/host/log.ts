@@ -263,13 +263,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'task_tool') {
     const token = (v: unknown): boolean => typeof v === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(v);
-    if (!closedKeys(value, ['event', 'taskId', 'revision', 'operationId', 'tool', 'durationMs', 'category', 'reason_code', 'candidates', 'cache']) ||
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'operationId', 'tool', 'durationMs', 'category', 'reason_code', 'cache']) ||
       !token(value.taskId) || !token(value.operationId) || !token(value.tool) || !isSafeCount(value.revision) || !isSafeCount(value.durationMs) ||
       !['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES].includes(String(value.category)) ||
-      !(value.reason_code === null || REASON_CODES.includes(value.reason_code as typeof REASON_CODES[number])) ||
-      !(value.candidates === null || value.candidates === 'returned' || value.candidates === 'none') || !['miss', 'hit', 'join'].includes(String(value.cache))) return;
+      !(value.reason_code === null || REASON_CODES.includes(value.reason_code as typeof REASON_CODES[number])) || !['miss', 'hit', 'join'].includes(String(value.cache))) return;
     return { event: 'task_tool', taskId: value.taskId, revision: value.revision, operationId: value.operationId, tool: value.tool, durationMs: value.durationMs,
-      category: value.category, reason_code: value.reason_code, candidates: value.candidates, cache: value.cache };
+      category: value.category, reason_code: value.reason_code, cache: value.cache };
   }
   if (value.event === 'tool_failure' && 'category' in value) {
     if (!closedKeys(value, ['event', 'tool', 'category']) || typeof value.tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value.tool) ||

@@ -177,34 +177,51 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           return { ...shaped, repair, [TASK_CONNECTOR_FAILURE]: repair };
         }
         if (result.state !== 'completed') return failure('The connector did not complete this read. Try another source or repair its configuration; do not claim absence.', 'reason' in result && isToolFailureCode(result.reason) ? result.reason : 'reason' in result && result.reason === 'response-oversize' ? 'invalid_result' : 'connector_error');
+        let snapshot: import('./results.js').TaskDisclosure | undefined;
         if (binding.project) {
           try {
-            const snapshot = binding.project(result);
-            const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
-            if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
-            return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
+            snapshot = binding.project(result);
+            if (binding.connector !== 'mongoose') {
+              const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+              if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
+              return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
+            }
           } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }
         }
-        const native = record(payload(result.decodedResult)), next = record(native.next_tool);
+        const disclose = (shaped: ToolResult): ToolResult => snapshot ? { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot } : shaped;
+        const admitted = record(snapshot?.response.native);
+        const nativeResult = Object.hasOwn(admitted, 'decodedResult') ? admitted.decodedResult : result.decodedResult;
+        const native = record(payload(nativeResult)), next = record(native.next_tool);
         if (binding.connector === 'mongoose' && native.outcome === 'handoff' && typeof next.endpoint === 'string' && typeof next.tool === 'string') {
           const target = bindings.filter(candidate => candidate.connector === 'mongoose' && companyEndpoint(candidate) === next.endpoint && nativeTaskReadGranted(candidate.policy, next.tool as string));
           const permitted = Object.hasOwn(companySteps, next.tool) || ['search', 'read', 'get_company'].includes(next.tool);
           if (!target.length || !permitted || !handoffsRemaining) {
             const projected = companyPayload(native);
-            return { ...projected, repair: !target.length ? `Company handoff endpoint ${next.endpoint} is not bound with the requested capability.` : !permitted ? 'Company handoff tool is not an allowed helper step.' : 'Company handoff continuation budget reached; use the returned next_tool with an approved binding.' };
+            return disclose({ ...projected, repair: !target.length ? `Company handoff endpoint ${next.endpoint} is not bound with the requested capability.` : !permitted ? 'Company handoff tool is not an allowed helper step.' : 'Company handoff continuation budget reached; use the returned next_tool with an approved binding.' });
           }
           const nextName = next.tool === 'search' ? 'search_company' : next.tool === 'read' ? 'read_company' : next.tool;
-          return connectorExecutor(target, {}, handoffsRemaining - 1)(nextName, record(next.arguments), signal, outsideTextSeen, identity);
+          const routed = await connectorExecutor(target, {}, handoffsRemaining - 1)(nextName, record(next.arguments), signal, outsideTextSeen, identity);
+          const targetSnapshot = routed[TASK_DISCLOSURE];
+          if (!snapshot || !targetSnapshot) return snapshot ? disclose(routed) : routed;
+          const originSnapshot = snapshot;
+          const combined = { ...targetSnapshot,
+            dataClasses: [...new Set([...originSnapshot.dataClasses, ...targetSnapshot.dataClasses])],
+            sourceDispatchRefs: [...new Set([...(originSnapshot.sourceDispatchRefs ?? []), ...(targetSnapshot.sourceDispatchRefs ?? [])])],
+            sourcePolicyRefs: [...(originSnapshot.sourcePolicyRefs ?? []), ...(targetSnapshot.sourcePolicyRefs ?? [])],
+            recordReuse: () => { originSnapshot.recordReuse?.(); targetSnapshot.recordReuse?.(); },
+          };
+          return { ...routed, dataClasses: combined.dataClasses, [TASK_DISCLOSURE]: combined };
         }
-        if (binding.connector === 'mongoose' && 'followUp' in result) {
-          const follow = record(result.followUp);
-          if (Array.isArray(follow.pages) && follow.pages.length) {
+        const follow = snapshot ? record(admitted.followUp) : record('followUp' in result ? result.followUp : undefined);
+        if (binding.connector === 'mongoose' && Array.isArray(follow.pages)) {
+          if (follow.pages.length) {
             const pages = follow.pages.map(page => companyPayload(record(page).decodedResult));
             const last = pages.at(-1)!;
-            return { ...last, text: pages.map(page => page.text).join('\n'), references: pages.flatMap(page => page.references), ...(follow.omitted ? { status: 'partial' as const, coverage: 'Native read coverage incomplete; follow-up page budget reached.' } : {}) };
+            return disclose({ ...last, text: pages.map(page => page.text).join('\n'), references: pages.flatMap(page => page.references), ...(follow.omitted ? { status: 'partial' as const, coverage: 'Native read coverage incomplete; follow-up pages were omitted.' } : {}) });
           }
+          if (follow.omitted) return disclose({ ...companyPayload(payload(nativeResult)), status: 'partial', coverage: 'Native read coverage incomplete; follow-up pages were unavailable.' });
         }
-        return projectTaskPayload(name, result.decodedResult, args);
+        return disclose(projectTaskPayload(name, nativeResult, args));
       });
     } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error'); } finally { scope.release(); }
   };

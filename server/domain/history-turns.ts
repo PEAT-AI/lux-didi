@@ -32,6 +32,22 @@ export function persistHistoryTurns(tx: Transaction, liveSessionId: string): num
       inserted += count;
     }
   }
+  // C-TRACE: the tail of the last sentence has no provider final when her own speech cut it, and a
+  // boundary clears the group it was accumulating in. The words he said are still a turn of their own.
+  for (const [kind, fragments] of pending) {
+    if (fragments.some(fragment => fragment.text === null)) continue;
+    const text = fragments.map(fragment => String(fragment.text)).join('');
+    if (!text.trim()) continue;
+    const first = fragments[0]!;
+    const last = fragments[fragments.length - 1]!;
+    const count = tx.run(`INSERT OR IGNORE INTO history_turns(live_session_id,journal_first,journal_last,role,text,at)
+      VALUES(?,?,?,?,?,?)`, [liveSessionId, first.journal_id!, last.journal_id!, kind === 'inputTranscription' ? 'owner' : 'assistant', text, first.arrived_at!]);
+    if (count) {
+      const turn = tx.get('SELECT id FROM history_turns WHERE live_session_id=? AND journal_first=?', [liveSessionId, first.journal_id!])!;
+      tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn.id!, text]);
+      inserted += count;
+    }
+  }
   return inserted;
 }
 

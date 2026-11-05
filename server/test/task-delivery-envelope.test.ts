@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { commentaryEnvelope, commentaryItems, extractExact, resultCommentary } from '../tasks/delivery.js';
+import { TaskDelivery, commentaryEnvelope, commentaryItems, extractExact, resultCommentary } from '../tasks/delivery.js';
 
 function decode(text: string) {
   assert.match(text, /^```COMMENTARY\n[^\n]+\n```$/u);
@@ -68,4 +68,27 @@ test('an entity larger than a wire item fails closed rather than losing or split
   const items = commentaryItems({ kind: 'result', exact: ['x'.repeat(500)], content: 'x'.repeat(500), cause: '', what_failed: '', next_step: '' });
   assert.equal(items.length, 1); assert.ok(items[0]!.length <= 450);
   assert.equal(decode(items[0]!).cause, 'invalid_result');
+});
+
+test('W3-R3: empty structured failure delivers immediately without delegation, even when requested', () => {
+  const sent: string[] = [];
+  const delivery = new TaskDelivery({ isCurrent: () => true, append: (_binding, text) => { sent.push(text); return `command${sent.length}`; }, state: () => {} });
+  delivery.socket(1);
+  const failure = { stage: 'model', reason_code: 'provider_rejected', detail: 'private diagnostics' };
+  delivery.deliver({ task_id: 'failure-task', task_revision: 1, connection_generation: 1 },
+    { status: 'incomplete', text: '', findings: [], failure }, true);
+  assert.equal(sent.length, 1);
+  assert.equal(decode(sent[0]!).kind, 'failure');
+  assert.equal(decode(sent[0]!).cause, 'provider_rejected');
+  assert.equal(decode(sent[0]!).final, true);
+  assert.ok(!sent[0]!.includes('private diagnostics'));
+});
+test('W3-R3: empty text without a structured failure is no_action, not failure', () => {
+  for (const status of ['complete', 'incomplete', 'no_action'] as const) {
+    const commentary = resultCommentary({ status, text: '   ', findings: [] });
+    assert.equal(commentary.kind, 'no_action'); assert.equal(commentary.content, '');
+    assert.deepEqual(commentary.exact, []); assert.equal(commentary.cause, '');
+  }
+  assert.equal(resultCommentary({ status: 'no_action', text: '', findings: [],
+    failure: { stage: 'model', reason_code: 'provider_rejected', detail: '' } }).kind, 'failure');
 });

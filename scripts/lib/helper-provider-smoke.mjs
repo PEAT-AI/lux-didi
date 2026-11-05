@@ -2,12 +2,16 @@
 // One real helper request through the packaged model port, so a schema the provider refuses can never
 // ship. The declared tool set of this build is sent to the configured provider with the real
 // credential and the FULL real registry, configured company tools included; the request is a fixed
-// harmless ask that forces one calendar read, and no tool is executed here.
+// harmless ask that forces one calendar read, and no tool is executed here. A configuration that
+// declares company endpoints and a run that publishes none of them is a refusal before the request,
+// with one bounded reconnect through the host's own recover(), never a PASS on the static set alone.
 //
 // Usage: node scripts/lib/helper-provider-smoke.mjs --data-dir DIR [--module-dir DIR]
 //
-//   exit 0  PASS: the provider answered `completed` and asked for at least one registered tool
-//   exit 1  the harness could not run (unreadable modules or configuration)
+//   exit 0  PASS: every configured company set published and the provider answered `completed` with at
+//           least one registered tool, so the full declared set is proved
+//   exit 1  FAIL, not proved: the harness could not run, or the company endpoints this configuration
+//           declares did not publish, so their declarations would ship unproved. Never a PASS.
 //   exit 2  FAIL: the provider rejected the request, or the response named no tool
 //   exit 3  SKIP: nothing to prove here (no configured provider, or a non-OpenAI provider)
 //
@@ -135,20 +139,33 @@ async function main(argv) {
     try {
       connectors = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryRepeatMs: false });
       await connectors.start();
-      const bindings = connectors.owner.taskBindings(connectors.connectionIds());
-      const company = configuredCompanyTools(bindings);
-      const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: connectorExecutor(bindings) };
-      const staticOnly = createRegistry(ports);
-      const registry = createRegistry(ports, company);
-      const tools = [...registry.values()];
       const expected = declaredCompanyEndpoints(configDir);
-      const published = bindings.filter(binding => binding.connector === 'mongoose').length;
-      const seconds = ((Date.now() - started) / 1000).toFixed(1);
-      // Fail closed before the paid request: what the configuration declares must have published.
-      const refusal = providerShapeRefusal({ expected, published, company: company.length, tools: tools.length, static: staticOnly.size });
+      let derived;
+      const derive = () => {
+        const bindings = connectors.owner.taskBindings(connectors.connectionIds());
+        const company = configuredCompanyTools(bindings);
+        const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: connectorExecutor(bindings) };
+        const staticOnly = createRegistry(ports);
+        const registry = createRegistry(ports, company);
+        const tools = [...registry.values()];
+        const published = bindings.filter(binding => binding.connector === 'mongoose').length;
+        derived = { company, registry, staticOnly, tools, published };
+        return providerShapeRefusal({ expected, published, company: company.length, tools: tools.length, static: staticOnly.size });
+      };
+      // Fail closed before the paid request: what the configuration declares must have published. A
+      // first round that came up short earns the host's own bounded reconnect, never a silent pass.
+      let refusal = derive();
       if (refusal) {
-        process.stderr.write(`HELPER-PROVIDER FAIL reason=${refusal} configured=${expected} published=${published} company=${company.length} tools=${tools.length} static=${staticOnly.size} seconds=${seconds}\n`);
-        return 2;
+        await connectors.recover();
+        refusal = derive();
+      }
+      const { company, registry, staticOnly, tools, published } = derived;
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      if (refusal) {
+        const state = connectors.status().endpoints.map(endpoint => `${endpoint.id}:${endpoint.state}/${endpoint.tools}/${endpoint.error ?? '-'}`).join(',');
+        process.stderr.write(`HELPER-PROVIDER FAIL reason=${refusal} configured=${expected} published=${published} company=${company.length} tools=${tools.length} static=${staticOnly.size} endpoints=${state} seconds=${seconds}\n`);
+        process.stderr.write('HELPER-PROVIDER FAIL the configured company endpoints did not connect, so their declarations stay unproved\n');
+        return 1;
       }
       let rejection = null;
       let usage = { input: 0, output: 0 };

@@ -293,7 +293,14 @@ seeds beside the owner's config. The ask is a fixed harmless calendar read; no t
 check prints status, tool count, tokens and wall time and nothing else: never the key, never owner
 content.
 
-- `HELPER-PROVIDER PASS` requires a `completed` response that names at least one registered tool.
+- `HELPER-PROVIDER PASS` requires the full set to be proved: every company endpoint the configuration
+  declares must publish, the registry must hold more tools than its static declarations alone, and the
+  response must be `completed` and name at least one registered tool.
+- A configuration that declares company endpoints and a run that publishes none of them is refused
+  before the request, after one bounded `recover()` through the host's own reconnect: exit 1 names
+  `reason=company-unpublished` with the endpoint states, so a discovery or credential failure can never
+  green the gate on the static set. `endpoint:<id>:<state>/<tools>/<error>` is the closed report, never
+  owner content.
 - exit 2 prints the redacted provider error body (bounded to 2 KB): the provider rejected the schema.
 - exit 3 prints SKIP when the machine has no provider configuration, or configures a provider that
   does not take the OpenAI strict shape. A machine with nothing configured has nothing to prove.

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -362,7 +363,12 @@ test('a present stale CRM grant reports HTTP 400 while knowledge and data stay c
     login: async options => {
       assert.equal(options.endpoint, 'crm');
       assert.equal(options.reference, 'mongoose-crm');
-      writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify(record('crm')), { mode: 0o600 });
+      const previous = record('crm');
+      const replacement = { ...previous, accessToken: mintedToken('crm', OWNER_EMAIL).replace(/\.c2ln$/, '.bmV3'), refreshToken: 'replacement-crm-refresh-grant' };
+      assert.notEqual(replacement.accessToken, previous.accessToken);
+      const digest = (token: unknown): string => createHash('sha256').update(`${token}\u0000`).digest('hex');
+      assert.notEqual(digest(replacement.refreshToken), digest(previous.refreshToken), 'a real re-sign-in lands a new grant, so the recovery digest must change');
+      writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify(replacement), { mode: 0o600 });
     },
     recover: async () => { try { await mcp.recover(); finishRecovery(); } catch (error) { failRecovery(error); } },
   });

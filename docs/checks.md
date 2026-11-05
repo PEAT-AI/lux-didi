@@ -285,13 +285,15 @@ proves the whole declared tool set of this build is one the provider accepts. It
 10.12 shipped `read_knowledge.ids` with `uniqueItems` under `strict: true`, and OpenAI answered HTTP 400
 for every helper request until 10.13.
 
-The declared set is the static declarations plus the company tools of every configured endpoint, built
-from the installed discovery read-only. That source is a premise the product does not yet meet: the
-host keeps `tool_connections.policy_json` with `toolNames` and `schemaDigest` only, and
-`mongoosePublishCatalogue` has no persisted form, so an endpoint's published parameter schemas exist
-only inside a live connection. Until an offline cache exists, or a source is authorised, the check
-refuses with `reason=discovery_missing` for every configured endpoint rather than substituting a
-catalogue the installed app does not have. `--capture FILE` names such a source explicitly. The request goes through the packaged model port
+The declared set is the static declarations plus the company tools of every configured endpoint. The
+product keeps no offline cache of published company declarations: `tool_connections.policy_json` carries
+`toolNames` and `schemaDigest` only, and `mongoosePublishCatalogue` has no persisted form, so an
+endpoint's schemas exist only inside a live connection. For 10.13 the source is therefore the committed
+capture `server/test/fixtures/mongoose-tools-list-literal.json`, and **live-discovery parity is not
+claimed**: every run prints
+`HELPER-PROVIDER WARN source=committed-capture path=... captured=YYYY-MM-DD live-parity=not-claimed`.
+Persisting the discovered declarations in the store is a wave-2 wagon; when it lands, `--capture` names
+a source explicitly and a missing capture for a configured endpoint is `reason=discovery_missing`. The request goes through the packaged model port
 (`server/dist`, rebuilt when a source file is newer), the installed role from `loadTaskModels(configDir)`
 and the real credential resolver for the provider key. The check never connects a connector, never
 resolves a sign-in material, never refreshes an OAuth grant and never copies or writes the owner's

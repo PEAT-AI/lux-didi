@@ -84,6 +84,7 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
 const mcp = { mongoosePublishCatalogue, configuredCompanyTools };
 const smoke = (await import(resolve(testRoot, '../../scripts/lib/helper-provider-smoke.mjs'))) as {
   providerShapeRefusal(input: { expectedEndpoints: number; published: number; company: number; tools: number; static: number }): string;
+  captureStamp(capturePath: string): { path: string; captured: string };
   companyPlan(input: {
     endpoints: string[]; catalogues: Record<string, unknown[]>; ports: Record<string, unknown>;
     credentials: { resolve(reference: string): Promise<string | undefined> };
@@ -118,4 +119,11 @@ test('a configured endpoint without cached discovery is named, not skipped', asy
   const plan = smoke.companyPlan({ endpoints: ['knowledge', 'frontier'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials: { resolve: async () => undefined }, mcp });
   assert.deepEqual(plan.missing, ['frontier']);
   assert.deepEqual(plan.definitions, []);
+});
+
+// W1-R7: every run names the capture and its own date, so nobody mistakes it for live discovery.
+test('the provider smoke names the committed capture and its capture date', () => {
+  const stamp = smoke.captureStamp(join(testRoot, 'fixtures/mongoose-tools-list-literal.json'));
+  assert.match(stamp.captured, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(stamp.path, join(testRoot, 'fixtures/mongoose-tools-list-literal.json'));
 });

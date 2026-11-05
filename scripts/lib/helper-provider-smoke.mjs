@@ -30,13 +30,15 @@ const CAP_OUTPUT_TOKENS = 256;
 const BODY_LIMIT = 2048;
 const REQUEST_TIMEOUT_MS = 60000;
 const INSTALLED_SETTINGS = 'Library/Application Support/ai.peat.lux-didi-operator/settings.json';
-// No default catalogue source: the host keeps no offline cache of published company declarations
-// (tool_connections.policy_json carries toolNames and schemaDigest only), so substituting one here would
-// prove a catalogue the installed app does not have. --capture names an authorised source explicitly.
+// W1-R7: the product keeps no offline cache of published company declarations
+// (tool_connections.policy_json carries toolNames and schemaDigest only), so for 10.13 the committed
+// capture is the source of the company declarations. Every run names the file and its capture date and
+// claims no live-discovery parity; persisting the discovered declarations in the store is wave-2.
+const CAPTURE = fileURLToPath(new URL('../../server/test/fixtures/mongoose-tools-list-literal.json', import.meta.url));
 
 
 function parseArgs(argv) {
-  const options = { dataDir: '', moduleDir: '', capture: '' };
+  const options = { dataDir: '', moduleDir: '', capture: CAPTURE };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === '--data-dir') options.dataDir = argv[++index] ?? '';
@@ -47,6 +49,17 @@ function parseArgs(argv) {
   if (!options.dataDir) throw new Error('helper-provider-smoke: --data-dir is required');
   if (!options.moduleDir) throw new Error('helper-provider-smoke: --module-dir is required');
   return options;
+}
+
+/** The capture's own provenance date, so the run says how old the declarations are. */
+export function captureStamp(capturePath) {
+  try {
+    const provenance = JSON.parse(readFileSync(capturePath, 'utf8'))?.provenance;
+    const match = /(\d{4}-\d{2}-\d{2})/.exec(String(provenance ?? ''));
+    return { path: capturePath, captured: match ? match[1] : 'unknown' };
+  } catch {
+    return { path: capturePath, captured: 'unknown' };
+  }
 }
 
 /** The operator-selected config dir the installed app uses, else a provider-config inside the data dir. */
@@ -127,6 +140,9 @@ function redacted(text) {
 
 async function main(argv) {
   const options = parseArgs(argv);
+  const stamp = captureStamp(options.capture);
+  // Every run says where the company declarations came from and how old they are (W1-R7).
+  process.stdout.write(`HELPER-PROVIDER WARN source=committed-capture path=${stamp.path || 'absent'} captured=${stamp.captured} live-parity=not-claimed\n`);
   const dataDir = resolve(options.dataDir);
   const sourceDir = configuredDir(dataDir);
   if (!sourceDir) {

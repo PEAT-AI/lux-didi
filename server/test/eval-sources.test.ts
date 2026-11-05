@@ -52,3 +52,34 @@ test('rejects invalid token budgets and nonexistent selected ids before executio
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+async function api() { return import(new URL(`file://${runner}`).href); }
+test('scoring distinguishes no match, unavailable, incomplete and forbidden claims', async () => {
+  const { score } = await api();
+  const trace = { status: 'complete', text: 'synthetic fact', findings: [{ source: 'vault', status: 'ok', refs: [{ id: 'synthetic-ref' }] }], opened: ['synthetic-ref'], writes: 0 };
+  assert.equal(score(question, trace).correct, true);
+  assert.equal(score(question, { ...trace, text: 'synthetic forbidden' }).hard_fail, true);
+  assert.equal(score(question, { ...trace, writes: 1 }).hard_fail, true);
+  assert.equal(score(question, { ...trace, status: 'incomplete', text: 'I found everything.' }).hard_fail, true);
+  assert.equal(score({ ...question, kind: 'abstain', required_facts: [] }, { ...trace, text: 'No match', findings: [{ source: 'vault', status: 'no_match' }] }).correct, true);
+  assert.equal(score({ ...question, kind: 'capability' }, { ...trace, unavailable: true }).outcome, 'unavailable');
+  assert.equal(score(question, { ...trace, opened: [] }).correct, false);
+});
+test('real registry projection excludes every effect tool, including an injected write', async () => {
+  const { readRegistry } = await api();
+  const tools = new Map([['read_knowledge', { effect: 'none' }], ['write_knowledge', { effect: 'external' }], ['open', { effect: 'none' }]]);
+  assert.deepEqual([...readRegistry(tools).keys()], ['read_knowledge']);
+});
+test('fake ceiling stops subsequent questions and reports measured tokens', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'eval-sources-test-'));
+  try {
+    const input = join(dir, 'questions.json'), output = join(dir, 'output.json');
+    writeFileSync(input, JSON.stringify([question, { ...question, id: 'second' }]));
+    const result = spawnSync(process.execPath, [runner, '--questions', input, '--out', output, '--fake', '--max-tokens', '1'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(readFileSync(output, 'utf8'));
+    assert.equal(report.results.length, 1);
+    assert.equal(report.stopped, 'token_ceiling');
+    assert.ok(report.totals.input_tokens > 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

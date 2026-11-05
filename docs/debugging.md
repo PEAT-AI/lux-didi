@@ -48,6 +48,11 @@ node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/ho
 
 `didi-timeline call <session|latest>` assembles one call's ordered story from the store and every log, `didi-timeline marks` prints every `Mark distortion` press with or without a call, and `didi-timeline doctor` reports log health and the lines no session can be attributed to.
 
+`didi-timeline list` gives each call a lifetime from its own `live_provider_open` to its `live_terminal`: a call with no terminal
+prints `open, no terminal` and no duration, and a row the session's id stamps after the terminal never lengthens it.
+Its `tools` column counts the distinct helper `task_tool` operation ids the call ran, while `voice` carries the legacy voice path's
+own count where it recorded one and is never added to `tools`.
+
 Every one of those commands only reads. #1011: `scripts/didi-timeline` used to rebuild `server/dist` when the dist was missing or older than its source, so a read wrote a build into a shared checkout. A stale, missing or older `server/dist` is now reported and the command stops with exit 1, printing the build to run first:
 
 ```sh

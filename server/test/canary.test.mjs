@@ -62,7 +62,7 @@ const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promis
 const { tmpdir } = await import('node:os');
 const { join } = await import('node:path');
 const { spawnSync } = await import('node:child_process');
-const { liveCallInLog } = await import('../../scripts/lib/check-installed-canary.mjs');
+const { canaryReceipt, liveCallInLog } = await import('../../scripts/lib/check-installed-canary.mjs');
 
 for (const [label, recorded, effect, expected] of [
   ['pass', result, undefined, 'PASS'],
@@ -185,6 +185,85 @@ test('installed opener injects owner task finals and observes task settlement, n
   assert.deepEqual(finals, taskAsk.finals);
   assert.equal(waits, 1);
   assert.equal(canarySessions.isCanary(id), false);
+});
+
+// W18 (#1016): the summary reported pass=0 whatever the asks did. A run whose asks all settled cleanly is two
+// verified asks, and providerTurns stays the provider's own turn count.
+// W18 (#1016): the identity census counted every anonymous row in the log, so another call's crash rows were
+// charged to this canary. Only this call's own task ids are in scope; the rest are reported as unknown_scope.
+const receiptLine = (event, fields) => JSON.stringify({ event, liveSessionId: 'call', taskId: 'task', ...fields });
+test('W18: the identity census charges only the target call and names anonymous rows separately', () => {
+  const anonymous = (event, fields) => JSON.stringify({ event, taskId: 'crash-task', ...fields });
+  const receipt = canaryReceipt([
+    receiptLine('task_lifecycle', { phase: 'start' }),
+    receiptLine('task_tool', { tool: 'web_search', category: 'ok', durationMs: 3 }),
+    receiptLine('task_settled', { status: 'complete', findings: 1 }),
+    anonymous('task_lifecycle', { phase: 'stale' }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 }),
+  ].join('\n'), 'call');
+  assert.equal(receipt.ok, true);
+  assert.doesNotMatch(receipt.lines.join('\n'), /task_call_identity_missing/);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_unknown_scope count=3/);
+});
+test('W18: one of this call\u2019s own rows without a session is still the identity finding', () => {
+  const orphan = JSON.stringify({ event: 'task_tool', taskId: 'task', tool: 'web_search', category: 'ok', durationMs: 3 });
+  const receipt = canaryReceipt([
+    receiptLine('task_lifecycle', { phase: 'start' }),
+    receiptLine('task_tool', { tool: 'web_search', category: 'ok', durationMs: 3 }),
+    receiptLine('task_settled', { status: 'complete', findings: 1 }),
+    orphan,
+  ].join('\n'), 'call');
+  assert.equal(receipt.ok, true);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_identity_missing count=1/);
+  assert.doesNotMatch(receipt.lines.join('\n'), /unknown_scope/);
+});
+test('W18: the canary summary counts the asks that verified and the ones that failed', async () => {
+  const id = '33333333-3333-4333-8333-333333333333';
+  let ready = false;
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => ready,
+    text: () => { hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'complete', findings: 1 }); },
+    revoke: () => {},
+  };
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => { ready = true; });
+  host.open([taskAsk, { ...taskAsk, id: 'synthetic-read-second' }], { clientId: 'owner' });
+  const report = await host.run(id, 'owner');
+  assert.equal(report.failed, 0);
+  assert.equal(report.passed, 2);
+  assert.match(report.lines[0], /^CANARY SUMMARY pass=2 fail=0 asks=2 providerTurns=\d+ callId=/);
+});
+
+// W18 O1: the host-log sink counted every failing settle, so two inside one ask window made `fail` larger than
+// `asks`. Failures are counted per ask now.
+test('W18: two failing settles in one ask window are one failed ask', async () => {
+  const id = '44444444-4444-4444-8444-444444444444';
+  let ready = false;
+  let injected = 0;
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => ready,
+    text: () => {
+      injected += 1;
+      if (injected === 1) hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'complete', findings: 1 });
+      else {
+        hostLogEvent({ event: 'task_inference_failed', taskId: 'synthetic-task', reason_code: 'provider_auth' });
+        hostLogEvent({ event: 'task_inference_failed', taskId: 'synthetic-task', reason_code: 'provider_auth' });
+      }
+    },
+    revoke: () => {},
+  };
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => { ready = true; });
+  host.open([taskAsk, { ...taskAsk, id: 'synthetic-read-second' }], { clientId: 'owner' });
+  const report = await host.run(id, 'owner');
+  assert.equal(report.passed, 1);
+  assert.equal(report.failed, 1);
+  assert.match(report.lines[0], /^CANARY SUMMARY pass=1 fail=1 asks=2 providerTurns=\d+ callId=/);
 });
 
 test('actual HTTP canary opener rejects model-shaped/browser requests and marks only native bearer sessions', async t => {

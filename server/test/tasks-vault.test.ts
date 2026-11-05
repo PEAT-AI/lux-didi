@@ -97,7 +97,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {
     seen.push({ tool, args });
     return { state: 'completed', decodedResult: tool === 'search_knowledge' ? vaultEnvelope : read } as import('../connectors/index.js').ConnectorResult;
-  } }]);
+  } } }]);
   const registry = createRegistry({ execute, authority: new FakeAuthority() });
   let hop = 0, size = 0;
   const started = performance.now();
@@ -115,7 +115,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
       assert.match(request.outputs[1]!.result.text, /superseded by #90213/);
       return { text: 'The old plan was replaced by the current weekly schedule.', calls: [] };
     } });
-  assert.equal(result.status, 'completed');
+  assert.equal(result.status, 'complete');
   assert.deepEqual(seen, [
     { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 6, detail: 'voice', snippet_chars: 600 } },
     { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },

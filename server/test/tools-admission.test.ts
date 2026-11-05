@@ -238,8 +238,8 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
   assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
   const saved = JSON.parse(String(rows[0]!.result_json));
-  assert.equal(saved.response.status, 'no_match', 'ranked neighbours are not exact title matches');
-  assert.equal(saved.response.text, ''); assert.equal(saved.response.references[0].title, 'Synthetic result', 'unopened neighbours remain references, not read evidence');
+  assert.equal(saved.response.status, 'ok', 'semantic vault candidates are successful retrievals');
+  assert.match(saved.response.text, /Synthetic result/); assert.equal(saved.response.references[0].title, 'Synthetic result', 'search evidence remains distinct from a full read');
   const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));

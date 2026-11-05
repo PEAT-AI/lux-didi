@@ -29,17 +29,28 @@ export function extractExact(content: string): string[] {
   ];
   return [...new Set(patterns.flatMap(pattern => [...content.matchAll(pattern)].map(match => match[0].trim())))];
 }
+const failureFacts: Record<string, { what_failed: string; next_step: string }> = {
+  deadline: { what_failed: 'the helper did not answer within the time allowed', next_step: 'ask again' },
+  provider_rejected: { what_failed: "the provider refused the helper's request", next_step: 'nothing to retry until the request is fixed' },
+  provider_auth: { what_failed: "the helper's sign-in is not valid", next_step: 'sign in again in the app' },
+  credential_unavailable: { what_failed: "the helper's sign-in is not valid", next_step: 'sign in again in the app' },
+  provider_rate_limited: { what_failed: 'the provider is rate limiting', next_step: 'ask again in a moment' },
+  provider_unavailable: { what_failed: 'the provider could not be reached', next_step: 'ask again' },
+  provider_incomplete: { what_failed: 'the provider returned no usable answer', next_step: 'ask again' },
+  provider_empty: { what_failed: 'the provider returned no usable answer', next_step: 'ask again' },
+};
 export function resultCommentary(answer: CommentaryAnswer): Commentary {
   const noAction = !answer.failure && (answer.status === 'no_action' || !answer.text.trim());
   const failed = answer.findings.find(finding => finding.status === 'failed');
   const failure = answer.failure;
+  const facts = failure && Object.hasOwn(failureFacts, failure.reason_code) ? failureFacts[failure.reason_code] : undefined;
   return {
     kind: answer.failure ? 'failure' : noAction ? 'no_action' : answer.status === 'incomplete' ? 'partial' : 'result',
     exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
     content: noAction ? '' : answer.text,
     cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',
-    what_failed: noAction ? '' : failure ? "the helper's model request" : answer.failures?.[0]?.tool ?? '',
-    next_step: noAction ? '' : failed?.repair ?? '',
+    what_failed: noAction ? '' : failure ? facts?.what_failed ?? "the helper's model request" : answer.failures?.[0]?.tool ?? '',
+    next_step: noAction ? '' : failed?.repair || facts?.next_step || '',
   };
 }
 export interface DeliveryPorts {

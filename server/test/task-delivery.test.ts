@@ -1,5 +1,6 @@
 import './lux-save-natural.test.js';
 import './task-delivery-envelope.test.js';
+import { failed } from '../tasks/results.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -124,4 +125,36 @@ test('deadline failure header supplies plain cause and recovery facts', () => {
   assert.equal(header.cause, 'deadline');
   assert.equal(header.what_failed, 'the helper did not answer within the time allowed');
   assert.equal(header.next_step, 'ask again');
+});
+
+
+test('model failure facts cover every known reason and fit the transport header', () => {
+  const reasons = ['deadline', 'provider_rejected', 'provider_auth', 'credential_unavailable', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty'];
+  for (const reason_code of reasons) {
+    const commentary = resultCommentary({ ...answer(''), failure: { stage: 'inference', reason_code, detail: 'private diagnostics' } });
+    assert.ok(commentary.what_failed);
+    assert.ok(commentary.next_step);
+    assert.equal(commentary.cause, reason_code);
+    assert.doesNotMatch(commentary.what_failed + ' ' + commentary.next_step, /\b(?:I|me|my|we|our|Rob)\b/i);
+    const items = commentaryItems(commentary, '1234567890');
+    assert.ok(items.length > 0, reason_code);
+    assert.ok(items.every(item => item.length <= 450), reason_code);
+    assert.ok(items[0]!.includes(commentary.what_failed));
+    assert.ok(items[0]!.includes(commentary.next_step));
+    assert.ok(!items.join('').includes('private diagnostics'));
+  }
+});
+
+test('unknown model failure keeps generic facts', () => {
+  const commentary = resultCommentary({ ...answer(''), failure: { stage: 'inference', reason_code: 'future_code', detail: '' } });
+  assert.equal(commentary.what_failed, "the helper's model request");
+  assert.equal(commentary.next_step, '');
+  assert.equal(commentary.cause, 'future_code');
+});
+
+
+test('tool failure keeps the tool repair facts', () => {
+  const commentary = resultCommentary({ status: 'incomplete', text: 'Synthetic tool failure.', findings: [failed('reconnect the synthetic source', 'provider_unavailable')], failures: [{ tool: 'synthetic_search', reason_code: 'provider_unavailable' }] });
+  assert.equal(commentary.what_failed, 'synthetic_search');
+  assert.equal(commentary.next_step, 'reconnect the synthetic source');
 });

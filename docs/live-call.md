@@ -218,3 +218,17 @@ Exact entities are reproduced verbatim, including names, dates, times, amounts, 
 The helper returns JSON with `spoken` connected prose and an `exact` list, or `{"status":"no_action"}`. When an older result has no exact list, deterministic host extraction retains names, numeric values, dates, times, currency, units and email addresses. Entity strings are never severed across items; an entity or header too large for the transport fails closed as `invalid_result` rather than being silently truncated. Sentence boundaries are preferred; an overlong sentence can be divided at whitespace outside exact entities.
 
 Recovery inputs are typed `recovery` envelopes with `cause` (`connection_dropped` or `provider_silent`) and `mid_answer`. They ask for continuation without a greeting or an explanation of the pause. Task identities, attempts, receipts and delivery counters never enter model-visible commentary; the envelope id and part counters only assemble its data.
+
+
+## Helper failure facts
+
+The commentary cause remains a reason code. The host supplies factual clauses for her to phrase, not spoken lines. A tool failure keeps its own repair text; unknown model failure codes retain the generic model-request description.
+
+| Cause | What failed | Next step |
+| --- | --- | --- |
+| deadline | the helper did not answer within the time allowed | ask again |
+| provider_rejected | the provider refused the helper's request | nothing to retry until the request is fixed |
+| provider_auth, credential_unavailable | the helper's sign-in is not valid | sign in again in the app |
+| provider_rate_limited | the provider is rate limiting | ask again in a moment |
+| provider_unavailable | the provider could not be reached | ask again |
+| provider_incomplete, provider_empty | the provider returned no usable answer | ask again |

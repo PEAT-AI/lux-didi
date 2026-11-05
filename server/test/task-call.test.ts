@@ -130,7 +130,7 @@ for (const gap of [200, 599, 600, 1_600, 8_000]) test(`C-DELIVERY: fragment gap 
   f.call.ownerWords(); f.call.finalized('Synthetic first fragment', 1);
   clock.advance(gap); await Promise.resolve();
   assert.equal(inputs.length, gap < 600 ? 0 : 1);
-  const first = { ...f.call.runtime.controller.current!.identity };
+  const first = f.call.runtime.controller.current ? { ...f.call.runtime.controller.current.identity } : undefined;
   f.call.ownerWords(); f.call.finalized('Synthetic second fragment', 2);
   clock.advance(599); assert.equal(inputs.length, gap < 600 ? 0 : 1);
   clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -138,7 +138,7 @@ for (const gap of [200, 599, 600, 1_600, 8_000]) test(`C-DELIVERY: fragment gap 
   assert.match(inputs.at(-1)!, /Synthetic second fragment/);
   if (gap < 600) assert.match(inputs[0]!, /Synthetic first fragment/);
   else { const revised = f.call.runtime.controller.current!.identity;
-    assert.equal(revised.task_id, first.task_id); assert.equal(revised.task_revision, first.task_revision + 1); }
+    assert.equal(revised.task_id, first!.task_id); assert.equal(revised.task_revision, first!.task_revision + 1); }
 });
 test('C-DELIVERY: the residual wait after a final is at most the literal 600 ms ceiling', async t => {
   const clock = quietClock(); let runs = 0;

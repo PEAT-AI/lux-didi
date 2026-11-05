@@ -53,13 +53,15 @@ for (const text of [voice, worker]) {
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
 // C-PROMPT: one rule per behaviour. A hand-off usually needs no words, delivery keeps every fact exact and
-// may add her own view after the facts, and the base asks a closing question only when it is earned.
+// leaves all other phrasing to her without added facts; a closing question must still be earned.
 for (const rule of [
   'A hand-off usually needs no words',
   'an acknowledgement never promises work',
-  "Say a person's name as it is written",
-  'A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it',
-  'your own view may follow in your own voice',
+  'Reproduce every exact entity verbatim',
+  'no rounding, dropping or rephrasing',
+  'Everything else is in your own voice',
+  'Add nothing the result does not say',
+  'Collect every part through final:true before speaking',
   'never summarise what he asked to hear',
 ]) assert.ok(voice.includes(rule), `the delivery rule is stated: ${rule}`);
 for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
@@ -78,14 +80,16 @@ assert.equal(persona.openerClass('my tools failed again'), 'tool_failure');
 for (const rule of [
   'Everything else is yours and you answer it yourself',
   'Speak of looking something up only in the turn you hand it off',
-  'Word may also be that nothing needs looking up',
+  'A no_action means answer from this conversation and your own mind',
   'You cannot see work in progress',
   'give what is there rather than only that it is incomplete',
   'no reflex tag',
   'the floor stays his',
 ]) assert.ok(voice.includes(rule) || persona.NAYA_VOICE_SURFACE.includes(rule), `the new conduct is stated: ${rule}`);
 for (const rule of [
-  'She speaks what you write, so you decide what he hears',
+  'Supply exact facts for her to phrase in her own voice',
+  'one JSON object with spoken',
+  'exact (every name, number, date, time, amount and qualification used, verbatim)',
   'To him there is one companion, never two',
   'returns no_action, so that she answers it herself',
   'start with the smallest set that can answer it',
@@ -106,10 +110,10 @@ const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.
   persona.NAYA_VOICE_SURFACE.indexOf('# Ending the call'));
 assert.ok(backchannel.length > 0, 'the backchannel paragraph is present');
 assert.doesNotMatch(backchannel, /"/, 'the backchannel paragraph hands her no quoted line to say');
-assert.doesNotMatch(worker, /"/, 'the helper conduct hands her no quoted line to say');
+assert.doesNotMatch(worker.replace('{"status":"no_action"}', ''), /"/, 'the helper conduct hands her no quoted line to say');
 const { TASK_TOOL_NAMES } = await import(pathToFileURL(`${dist}/tasks/tools.js`).href);
 function assertNoRecitation(text) {
-  assert.doesNotMatch(text, /["“][^"”]+["”]/);
+  assert.doesNotMatch(text.replace('{"status":"no_action"}', ''), /["“][^"”]+["”]/);
   // Apostrophes inside words are contractions or possessives, not opening quotation marks.
   assert.doesNotMatch(text, /(?<![\p{L}\p{N}_])['‘](?=\S)[^\n]*?['’](?![\p{L}\p{N}_])/u);
 }

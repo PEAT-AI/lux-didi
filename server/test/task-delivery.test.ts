@@ -1,3 +1,4 @@
+import './lux-save-natural.test.js';
 import './task-delivery-envelope.test.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';

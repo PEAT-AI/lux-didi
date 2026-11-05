@@ -104,3 +104,25 @@ test('opening log admits only the closed counts envelope and rejects private pay
   assert.equal(safeEvent({ ...event, topics: ['sleep'] }), undefined);
   assert.equal(safeEvent({ event: 'opener_plan', kinds: ['calendar'], rotation: 0 }), undefined);
 });
+
+test('illness floors withhold concrete diseases, symptoms and treatment facts across all opening fields', () => {
+  const protectedFacts = [
+    '2026-11-05 Flu update', '2026-11-05 Pneumonia recovery', '2026-11-05 Influenza symptoms',
+    '2026-11-05 COVID recovery', '2026-11-05 Migraine appointment', '2026-11-05 Diabetes review',
+    '2026-11-05 Fever and a sore throat', '2026-11-05 Chest pain overnight',
+    '2026-11-05 Antibiotics prescription', '2026-11-05 Chemotherapy appointment',
+    '2026-11-05 Surgery recovery', '2026-11-05 A broken wrist',
+  ];
+  for (const fact of protectedFacts) {
+    const result = buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: ['illness'],
+      day: [fact], openThread: fact, commitments: [fact], savedForHim: [fact], excludeTopics: [fact] });
+    assert.deepEqual(result.facts.day, [], fact);
+    assert.equal(result.facts.open_thread, '', fact);
+    assert.deepEqual(result.facts.commitments, [], fact);
+    assert.deepEqual(result.facts.saved_for_him, [], fact);
+    assert.deepEqual(result.facts.exclude_topics, [], fact);
+  }
+  const ordinary = ['2026-11-05 Software bug review', '2026-11-05 Cold outreach campaign', '2026-11-05 Database recovery plan', '2027-04-01 Run the marathon'];
+  const allowed = buildOpeningFacts({ ...base, savedForHim: ordinary });
+  assert.deepEqual(allowed.facts.saved_for_him, ordinary, 'illness screening must not erase ordinary work or the dated marathon');
+});

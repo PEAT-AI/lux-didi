@@ -23,6 +23,14 @@ _sensitive rows excluded from this search; pass include_sensitive=true to includ
   Score: 0.348
 `;
 
+const twelveHitEnvelope = vaultEnvelope + Array.from({ length: 10 }, (_, index) =>
+  `
+**#${200 + index}** [PATTERN] Synthetic candidate ${index + 3}
+  valid from 2026-02-01 · current
+  Synthetic evidence for candidate ${index + 3}.
+  Score: 0.500
+`.padEnd(300, ' ')).join('');
+
 test('vault semantic hits retain evidence and are successful without exact titles', () => {
   const result = projectTaskPayload('search_knowledge', vaultEnvelope, { query: 'orchid watering' });
   assert.equal(result.status, 'ok');
@@ -100,7 +108,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const read = '#89969 Old watering plan\n⚠ superseded by #90213\nLinked rationale: #90213 Current watering plan\nSYNTHETIC PRIVATE ROW';
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {
     seen.push({ tool, args });
-    return { state: 'completed', decodedResult: tool === 'search_knowledge' ? vaultEnvelope : read } as import('../connectors/index.js').ConnectorResult;
+    return { state: 'completed', decodedResult: tool === 'search_knowledge' ? twelveHitEnvelope : read } as import('../connectors/index.js').ConnectorResult;
   } } }]);
   const registry = createRegistry({ execute, authority: new FakeAuthority() });
   let hop = 0, size = 0;
@@ -112,7 +120,10 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
       if (hop === 2) {
         assert.equal(request.outputs[0]?.result.status, 'ok');
         assert.match(request.outputs[0]!.result.text, /Score: 0.518/);
+        assert.equal(request.outputs[0]!.result.references.length, 12);
+        assert.equal(request.outputs[0]!.result.references[10]?.id, '208', 'rank 11 remains visible');
         size = Buffer.byteLength(JSON.stringify(request.outputs[0]!.result));
+        assert.ok(size < 8000, 'twelve roughly 300-byte rows stay bounded');
         return { text: '', calls: [{ id: 'read', name: 'read_knowledge', args: { ids: [115, 89969, 90213], include_links: true, cursor: null } }] };
       }
       assert.match(request.outputs[1]!.result.text, /SYNTHETIC PRIVATE ROW/);
@@ -121,10 +132,10 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
     } });
   assert.equal(result.status, 'complete');
   assert.deepEqual(seen, [
-    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 6, detail: 'snippets' } },
+    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 12, detail: 'snippets' } },
     { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },
   ]);
-  console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: vaultEnvelope.length }));
+  console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: twelveHitEnvelope.length }));
 });
 
 test('real short weak-candidate rows retain their id and rank without invented evidence', () => {

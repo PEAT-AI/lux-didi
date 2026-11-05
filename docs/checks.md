@@ -320,110 +320,43 @@ It runs in `scripts/run-installed-checks.sh`, so `scripts/install-macos-app.sh` 
 when it fails, and it is a local check of `scripts/ci-gauntlet.sh` (`check-helper-provider:local`). It is
 never part of a GitHub CI run, which has no provider key.
 
-## Installed real-provider canary (opt-in, paid)
+## Installed real-provider canary (paid, receipt required)
 
-`scripts/run-installed-canary.sh <installed-target>` runs separately AFTER relaunch,
-against the running installed app. It is not part of `scripts/run-installed-checks.sh`,
-which the install helper runs while the app is down. This is an explicit exception to the fake-only local/CI
-rule above: **only the installer/operator runs the paid path after installation**. Author
-and reviewer checks use recorded fake sessions. Do not launch or relaunch the app for this
-check. The already-running shell must be the exact bundle named by `<installed-target>`.
+`scripts/run-installed-canary.sh <installed-target>` asks the already-running installed
+shell to open one private call. Only the installer/operator runs this paid path;
+authors and reviewers use fixtures, never the live app. The target must identify the
+running bundle. The script does not launch or relaunch it.
 
-The opt-in file is **outside this public repository** at `~/.lux/didi-canary/asks.json`.
-Never commit it, its real names, or its results. Start from the synthetic
-[`scripts/fixtures/canary-asks.example.json`](../scripts/fixtures/canary-asks.example.json),
-replace the placeholders locally, and choose the actual canonical tool names exposed by
-your configured connectors. That file is a shape, not a list of current names: where it
-still shows an older voice-tool name, use the name from the helper registry in
-[tool-owner.md](tool-owner.md) instead, for example `alarm_create` for an alarm ask.
-The example is not a real account corpus. The format is:
+The private file `~/.lux/didi-canary/asks.json` still opts the owner into the paid
+check. It must be a nonempty array of objects with unique `id`, nonempty `finals`
+and legacy `expect` fields. Its contents are never logged or committed. The installed
+probe no longer executes these configurable asks or their old voice-tool names.
+It asks in natural language for the title of the official RFC 9110 specification
+using a read-only public web search. It never asks for contacts, drafts, notes,
+alarms or other writes. Do not use the old alarm examples for this install check.
 
-```json
-[
-  {
-    "id": "alarm-split",
-    "finals": ["Set an alarm", "in two minutes"],
-    "expect": {"tool": "alarm_create", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
-  }
-]
-```
+The final authority is `logs/host.log`, not provider turns, connector count or
+lifecycle completion. The checker matches each host-line `liveSessionId` to the
+canary call, joins `task_tool` and `task_settled` by `taskId` to that call's
+`task_lifecycle` start, and requires a non-failed tool plus complete settlement
+with findings for the same task. Any inference failure or incomplete settlement
+in that call is red and prints its reason code. Lifecycle-only completion and
+zero tool rows are red. Missing call identity is never matched by time proximity;
+it is reported as `task_call_identity_missing` metadata.
 
-- Use 1 to 15 unique, safe `id` values. `finals` holds 1 to 8 owner finals per ask,
-  including speech-recognition splits. Finals are injected unchanged through the existing
-  typed-owner-text path, with `finalOrigin === 'typed'`; they are not a prompt quoting an ask.
-- `expect.tool` names the actual tool, including a source tool called by the helper,
-  not just the model's prose or a guessed connector name. A canary ask whose
-  `expect.tool` names a tool this release no longer calls fails with `wrong_tool`, so
-  every name comes from the current helper registry. `codeClass` is `success`.
-  `nonEmpty` requires data in the tool's own reply. Successful typed read-data envelopes
-  report `code=data`; explicit error/refusal fields always fail. A stored `completed`
-  outcome never converts a refusal into a pass.
-- Optional `sideEffect` is `alarm`, `open`, or `note`. Alarms must exist as a pending row
-  belonging to a tool call in this canary session, then be cancelled. Opens must receive a
-  matching acknowledgement from the production native transport. The shell's host-only
-  `canary_ack` action returns before all URL, workspace, window and focus operations.
-- A local staged note is not a remote save. Release 10.10 uses `save_to_vault` for an asked Lux vault save; the misleading local `stage_lux_note` tool has been removed. Any paid canary must match the current helper's actual operation and receipt, not assume an older voice-tool name proves a remote write. A real-account cleanup requires explicit authorization and exact receipt identity.
+Output contains tool, outcome, reason code and elapsed milliseconds, never owner
+words or findings. `CANARY PASS id=receipt` is the required install receipt.
+Absent opt-in, absent call identity, missing provider, missing tool or incomplete
+findings exits nonzero. A missing connector does not cancel the whole call before
+the probe; if the public read actually needs that connector it fails normally.
+The canary explicitly revokes its own private session after observing task settlement
+or timeout. This terminal revoke is cleanup, not evidence that connector discovery
+revoked the call.
 
-Before any paid work, the script reads `logs/host.log` under `LUX_DIDI_DATA_DIR` (default:
-`~/Library/Application Support/ai.peat.lux-didi`), using the host's structured
-start/terminal receipts. A live call is refused **even if the asks file is absent**. The
-host also checks its authoritative active-session rows, closing the preflight race.
-Only an absent asks file prints `CANARY SKIP reason=private_ask_file_absent` and exits 0.
-Invalid JSON, unreadable files, a busy call, an unavailable shell/provider, a timeout,
-missing data, a refusal or failed cleanup are failures, never skips.
-
-The script writes one private request containing only a nonce, bundle target and deadline.
-The already-running shell claims it and uses its existing bearer authority to open one
-host session, then attaches its real `LiveSocketTransport`. No credentials or asks are
-copied into the request. The host-side session registry alone selects canary native mode;
-model arguments and tool result properties cannot enable it. The normal configured voice
-provider is used, not a fake provider or a fake native client. There is no capture device
-or microphone input. Providers that produce audio on text turns keep that normal output
-path; the native transport decodes and discards that audio rather than playing it.
-
-The host runs at most 15 asks in one session, waits for each provider response and tool
-work to settle, and taps raw own tool replies at the canary-only provider-session boundary rather than
-stored outcome labels. Normal sessions keep their exact original object and event iterator. Each
-ask has a 25-second turn bound. A request-wide 350-second deadline revokes the session;
-cleanup has an 8-second bound, and the script has a hard six-minute outer deadline.
-It prints only `CANARY PASS|FAIL id=<id> tool=<tool> code=<code> ms=<ms>` plus a summary
-with `providerTurns=<count>` measured from standardized `modelTurnStarted` events,
-including the opener and recovery generations. This works for both Gemini and OpenAI;
-it does not assume that Gemini emits OpenAI trace-response receipts. A native/transport
-failure before the host can return its count explicitly reports `providerTurns=unknown`
-and fails; it is not reported as zero paid usage or a pass. Any failed ask exits 1.
-
-`scripts/check-host.sh` exercises the actual CLI's absent-file and busy-call paths in
-private temporary homes, the recorded-session runner and failure classes with fakes,
-and, on macOS, a lock-compiled native proof that acknowledgement never invokes the
-workspace opener and text-only attachment rejects an ordinary session. Linux CI runs
-the same fake assertion/CLI tests without Swift or real services. The broader native
-regression gate remains `scripts/check-native-live.sh`; documentation uses
-`scripts/check-docs.sh`.
-
-### Stop alarms without a call
-
-The owner-local native bearer endpoint `POST /api/v1/alarms/stop` accepts an
-empty JSON object. It cancels all pending and ringing alarms through the host
-scheduler, including when no live call exists. Browser clients are refused.
-Use the host's existing native bearer authorization with this endpoint; never
-put the bearer in a committed script, issue, or diagnostic report. A successful
-reply includes the number of cancelled alarms. It does not quit the app.
-
-### Reminder coverage
-
-Alarm scheduler recurrence and task-tool exposure are separate contracts. The current helper schemas in `server/tasks/tools.ts` declare create, list, cancel and update; do not infer a recurring-rule parameter from an older scheduler test. See [alarm.md](alarm.md) for delivery and wake behavior.
-
-### Latency budget
-
-`scripts/check-latency-budget.sh` replays a plain turn, a one-tool turn, a two-tool batch and a silent
-continuation through the real host path, with a fake realtime transport and a fake connector carrying
-recorded synthetic timings, and judges every host-side segment against `config/latency-budgets.json`.
-Each budget is the recon's measured p50 for that segment plus a margin and says so in its `basis`. The
-eval prints each segment with its budget and fails only on a breach, a missing segment or a missing
-receipt. Its last step slows every fake by eight and requires a breach, so a gate that cannot fail is
-itself a failure. No real account or provider. Run it with
-`bash scripts/check-latency-budget.sh`; it takes no flags and builds the server host itself before the replay.
+`run-installed-checks.sh` retains the independent helper-provider smoke and also
+requires this receipt. Installation cannot be called green from lifecycle health
+alone. The running-app prerequisite must be satisfied by the installer/operator;
+these scripts never impersonate a native socket or start the app themselves.
 
 ## Private source evaluation (manual only)
 

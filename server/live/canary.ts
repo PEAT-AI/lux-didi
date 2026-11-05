@@ -1,7 +1,6 @@
 import { setTimeout as pause } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { luxWriteEndpoint } from '../adapters/lux-write/client.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService } from '../http/live-upgrade.js';
 import { CANARY_SESSION_KEY_PREFIX } from '../domain/history-lifecycle.js';
@@ -198,30 +197,6 @@ export async function runCanaryAsks(asks: CanaryAsk[], port: CanaryPort, signal:
   return { lines, passed, failed: asks.length - passed, providerTurns };
 }
 
-/** Administrative cleanup of only a confirmed insight created by THIS canary session. */
-async function forgetCanaryNote(id: string, title: string, signal: AbortSignal): Promise<boolean> {
-  if (!/^[1-9][0-9]*$/.test(id)) return false;
-  const endpoint = luxWriteEndpoint();
-  const url = new URL(endpoint.url);
-  if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password) return false;
-  const client = new Client({ name: 'lux-didi-canary-cleanup', version: '1' });
-  const transport = new StreamableHTTPClientTransport(url, {
-    fetch: (input, init) => fetch(input, { ...init, signal, redirect: 'error', headers: { ...Object.fromEntries(new Headers(init?.headers)), ...(endpoint.token ? { Authorization: `Bearer ${endpoint.token}` } : {}) } }),
-    reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 0, maxReconnectionDelay: 0, reconnectionDelayGrowFactor: 1 },
-  });
-  const text = (result: Awaited<ReturnType<typeof client.callTool>>) => result.structuredContent ? JSON.stringify(result.structuredContent) : result.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-  const containsId = (body: string) => new RegExp(`(?:#|\\bid["' ]*[:=]\\s*)${id}(?![0-9])`).test(body);
-  try {
-    await client.connect(transport);
-    const before = await client.callTool({ name: 'get_insight', arguments: { ids: [Number(id)] } }, { signal });
-    if (before.isError || !containsId(text(before)) || !text(before).includes(title)) return false;
-    const deleted = await client.callTool({ name: 'delete_insight', arguments: { ids: [Number(id)] } }, { signal });
-    if (deleted.isError) return false;
-    const after = await client.callTool({ name: 'list_insights', arguments: { status: 'archived', term: title, limit: 100 } }, { signal });
-    return !after.isError && containsId(text(after));
-  } finally { await client.close(); }
-}
-
 type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms: number };
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
@@ -258,18 +233,6 @@ export class InstalledCanary {
     this.#session = { id, clientId: context.clientId, asks, timer, abort, running: false };
     return snapshot;
   }
-  #calls(id: string): RawCall[] {
-    return this.store.transaction(tx => {
-      const calls: RawCall[] = [...(canarySessions.progress(id)?.calls ?? [])];
-      // Source calls inside research have their own canonical reply; ignore the stored state.
-      for (const row of tx.all('SELECT execution_id,intent_json,result_json FROM tool_calls WHERE run_id=? AND result_json IS NOT NULL ORDER BY rowid', [id])) {
-        const intent: unknown = JSON.parse(String(row.intent_json));
-        const reply: unknown = JSON.parse(String(row.result_json));
-        if (record(intent) && record(reply)) calls.push({ key: `tool:${String(row.execution_id)}`, tool: String(intent['toolName']), result: record(reply['response']) ? reply['response'] : reply, ms: 0 });
-      }
-      return calls;
-    });
-  }
   async run(id: string, clientId: string): Promise<CanaryReport> {
     const session = this.#session;
     if (!session || session.id !== id || session.clientId !== clientId || session.running) throw new Error('invalid_canary_session');
@@ -285,60 +248,28 @@ export class InstalledCanary {
       this.shutdown();
       return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
     }
-    let prior = new Set<string>();
-    let started = 0;
-    let ackBefore = 0;
-    let completedBefore = 0;
-    const cleaned = new Set<string>();
-    const port: CanaryPort = {
-      inject: finals => {
-        if (!this.live.providerReady?.(id)) throw new Error('provider_unavailable');
-        prior = new Set(this.#calls(id).map(row => row.key)); started = Date.now(); ackBefore = canarySessions.nativeAckCount(id);
-        completedBefore = canarySessions.progress(id)?.completed ?? 0;
-        for (const text of finals) this.live.text(text);
-      },
-      observe: async (_ask, signal) => {
-        const deadline = Math.min(started + 25_000, Date.now() + 25_000);
-        let calls: RawCall[] = [];
-        while (!signal.aborted && Date.now() < deadline) {
-          calls = this.#calls(id).filter(row => !prior.has(row.key));
-          const progress = canarySessions.progress(id);
-          if (progress && progress.completed > completedBefore && !progress.streaming && progress.pending === 0 && progress.completedStep > progress.lastResultStep) return calls.map(row => ({ ...row, ms: Date.now() - started }));
-          if (this.live.snapshot(id).terminal) break;
-          try { await this.wait(signal); } catch { break; }
-        }
-        return (calls.length ? calls : [{ tool: 'none', result: {}, ms: 0 }]).map(row => ({ ...row, ms: Date.now() - started, timedOut: true }));
-      },
-      verifyAndCleanup: async (ask, observations) => {
-        const cleanupSignal = AbortSignal.timeout(8_000);
-        let effect: CanaryObservation['sideEffect'];
-        // Include the last committed reply even if a provider timeout interrupted observation.
-        const replies = [...observations, ...this.#calls(id).filter(row => !prior.has(row.key))];
-        for (const item of replies) {
-          const reply = item.result;
-          if (['set_alarm', 'snooze_alarm'].includes(item.tool) && typeof reply['id'] === 'string' && !cleaned.has(reply['id'])) {
-            const alarmId = reply['id'];
-            const observed = this.store.transaction(tx => Boolean(tx.get("SELECT a.id FROM alarms a JOIN tool_calls c ON c.execution_id=a.id WHERE a.id=? AND a.state IN ('pending','ringing') AND c.run_id=? AND json_extract(c.intent_json,'$.toolName') IN ('set_alarm','snooze_alarm')", [alarmId, id])));
-            const removed = observed && this.cancelAlarm?.(alarmId) === true;
-            cleaned.add(alarmId);
-            if (ask.expect.sideEffect === 'alarm' || !removed) effect = { kind: 'alarm', observed, cleaned: removed };
-          }
-          if (item.tool === 'stage_lux_note' && reply['saved'] === true && (typeof reply['insightId'] === 'string' || typeof reply['insightId'] === 'number')) {
-            const insightId = String(reply['insightId']);
-            if (cleaned.has(`note:${insightId}`)) continue;
-            const note = this.store.transaction(tx => tx.get("SELECT title FROM vault_writes WHERE live_session_id=? AND insight_id=? AND state='confirmed'", [id, insightId]));
-            let removed = false;
-            try { removed = note !== undefined && await forgetCanaryNote(insightId, String(note.title), cleanupSignal); } catch { /* failure stays FAIL, never a skip */ }
-            cleaned.add(`note:${insightId}`);
-            if (ask.expect.sideEffect === 'note' || !removed) effect = { kind: 'note', observed: note !== undefined, cleaned: removed };
-          }
-        }
-        if (ask.expect.sideEffect === 'open') effect = { kind: 'open', observed: canarySessions.nativeAckCount(id) > ackBefore, cleaned: true };
-        return effect;
-      },
-      providerTurns: () => canarySessions.progress(id)?.turns ?? 0,
-      close: () => this.shutdown(),
-    };
-    return runCanaryAsks(session.asks, port, session.abort.signal);
+    // Fixed public read probe: private ask files opt in, but cannot request writes.
+    // Task events here only wake the observer. The installed checker verifies the
+    // durable host-line liveSessionId and taskId join before declaring success.
+    let settled = false;
+    const detach = attachHostLogSink({ event: raw => {
+      if (record(raw) && (raw['event'] === 'task_settled' || raw['event'] === 'task_inference_failed')) settled = true;
+    } });
+    const started = this.now();
+    try {
+      this.live.text('Search the public web for the official RFC 9110 HTTP specification and tell me its title. Use a read-only search tool. Do not create, draft, send, save, open an app, or change anything.');
+      while (!settled && !session.abort.signal.aborted && !this.live.snapshot(id).terminal && this.now() - started < 60_000) {
+        try { await this.wait(session.abort.signal); } catch { break; }
+      }
+      // This is observation, not receipt acceptance. The external checker requires
+      // tool execution and complete findings belonging to this exact call.
+      const lines = [`CANARY SUMMARY pass=0 fail=${settled ? 0 : 1} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id}`];
+      return { lines, passed: 0, failed: settled ? 0 : 1, providerTurns: canarySessions.progress(id)?.turns ?? 0 };
+    } finally {
+      detach();
+      // Explicitly end our private call after observation or timeout. A revoked
+      // terminal here is cleanup, not a missing-connector preflight rejection.
+      this.shutdown();
+    }
   }
 }

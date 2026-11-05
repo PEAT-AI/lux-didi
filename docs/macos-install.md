@@ -80,3 +80,15 @@ That command is an owner or installer action, not permission for a worker to lau
 ## Verification limits
 
 [Checks](checks.md) documents the native and installer checks. Those checks exercise synthetic configuration and packaging boundaries; they do not prove real provider keys, microphone hardware, Google consent or a healthy installed account. A source release is not an assertion that every existing installation has already been upgraded.
+
+### Required real-call receipt
+
+A green install requires the installed canary's `CANARY PASS id=receipt` in
+addition to the helper-provider smoke. See [checks.md](checks.md#installed-real-provider-canary-paid-receipt-required).
+The operator must opt into the paid check and have the exact installed app running.
+The canary makes one fixed, read-only public web request. It reports metadata only.
+Lifecycle completion without a successful task tool and complete task findings is
+red. `task_inference_failed` and incomplete settlement print the underlying reason
+code. An absent private opt-in file is not a successful installation receipt.
+The installer final PASS line names `canary=task_tool_and_task_settled` only after
+the installed-checks gate succeeds. Neither script launches the app for this check.

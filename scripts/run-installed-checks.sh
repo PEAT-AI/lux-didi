@@ -53,4 +53,9 @@ if [ "$ran" -eq 0 ]; then
   echo "INSTALLED-CHECKS FAIL ran=0: no $checks_dir/check-installed-*.sh to prove the installed release" >&2
   exit 1
 fi
-printf 'INSTALLED-CHECKS PASS ran=%d failed=0\n' "$ran"
+# Provider smoke above remains independent; lifecycle health alone is not enough.
+bash "$(dirname "$0")/run-installed-canary.sh" "$target" || {
+  echo 'INSTALLED-CHECKS FAIL reason=canary_receipt_missing' >&2
+  exit 1
+}
+printf 'INSTALLED-CHECKS PASS ran=%d failed=0 canary=task_tool_and_task_settled\n' "$ran"

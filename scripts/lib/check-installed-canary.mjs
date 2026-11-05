@@ -18,6 +18,28 @@ export function liveCallInLog(text) {
   return live.size > 0;
 }
 
+// Only exact host-line call identity and a lifecycle start establish membership.
+// Never infer membership from timestamps or from another call's task rows.
+export function canaryReceipt(text, callId) {
+  const rows = text.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+  const taskRows = rows.filter(row => ['task_lifecycle', 'task_tool', 'task_settled', 'task_inference_failed'].includes(row.event));
+  const missingIdentity = taskRows.filter(row => !row.liveSessionId).length;
+  const call = taskRows.filter(row => row.liveSessionId === callId);
+  const starts = new Set(call.filter(row => row.event === 'task_lifecycle' && row.phase === 'start' && typeof row.taskId === 'string').map(row => row.taskId));
+  const joined = call.filter(row => starts.has(row.taskId));
+  const tools = joined.filter(row => row.event === 'task_tool');
+  const settlements = joined.filter(row => row.event === 'task_settled');
+  const failure = call.find(row => row.event === 'task_inference_failed') ?? settlements.find(row => row.status !== 'complete');
+  let code = failure?.reason_code || (failure ? 'task_incomplete' : null);
+  if (!code && !starts.size) code = 'task_start_missing';
+  if (!code && !tools.length) code = 'task_tool_missing';
+  if (!code && !settlements.some(row => row.status === 'complete' && row.findings > 0 && tools.some(tool => tool.taskId === row.taskId && ['ok', 'partial', 'empty', 'no_match'].includes(tool.category)))) code = 'task_receipt_incomplete';
+  const safe = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value) ? value : 'unknown';
+  const lines = [...tools, ...settlements].map(row => `CANARY ${row.event === 'task_tool' ? 'TOOL' : 'TASK'} tool=${safe(row.tool ?? 'none')} outcome=${safe(row.category ?? row.status)} code=${safe(row.reason_code ?? 'none')} ms=${Number.isFinite(row.durationMs ?? row.elapsed_ms) ? Math.max(0, row.durationMs ?? row.elapsed_ms) : 0}`);
+  if (missingIdentity) lines.push(`CANARY FINDING code=task_call_identity_missing count=${missingIdentity}`);
+  return { ok: !code, code: safe(code ?? 'ok'), lines };
+}
+
 export async function installedCanary(argv, env = process.env, output = line => process.stdout.write(`${line}\n`)) {
   if (argv.length !== 1) throw new Error('expected_installed_target');
   const target = resolve(argv[0]);
@@ -34,7 +56,7 @@ export async function installedCanary(argv, env = process.env, output = line => 
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 10 * 1024 * 1024) throw new Error('invalid_host_log');
     if (liveCallInLog(await readFile(logPath, 'utf8'))) throw new Error('call_live');
   } catch (error) { if (!(absent && error.code === 'ENOENT')) throw error; }
-  if (absent) { output('CANARY SKIP reason=private_ask_file_absent'); return 0; }
+  if (absent) { output('CANARY FAIL id=preflight tool=none code=private_ask_file_absent ms=0'); return 1; }
   const asks = JSON.parse(await readFile(asksPath, 'utf8'));
   if (!Array.isArray(asks) || asks.length === 0 || asks.length > 15) throw new Error('invalid_asks_count');
   const ids = new Set();
@@ -59,7 +81,12 @@ export async function installedCanary(argv, env = process.env, output = line => 
         const report = JSON.parse(await readFile(resultPath, 'utf8'));
         if (!Array.isArray(report.lines) || typeof report.failed !== 'number' || report.lines.some(line => typeof line !== 'string' || !/^CANARY (PASS|FAIL|SUMMARY) /.test(line))) throw new Error('invalid_canary_report');
         for (const line of report.lines) output(line);
-        return report.failed === 0 ? 0 : 1;
+        const callId = report.lines.map(line => / callId=([a-zA-Z0-9_-]+)/.exec(line)?.[1]).find(Boolean);
+        if (!callId) { output('CANARY FAIL id=receipt tool=none code=call_identity_missing ms=0'); return 1; }
+        const receipt = canaryReceipt(await readFile(logPath, 'utf8'), callId);
+        for (const line of receipt.lines) output(line);
+        output(`CANARY ${receipt.ok ? 'PASS' : 'FAIL'} id=receipt tool=none code=${receipt.code} ms=0`);
+        return receipt.ok ? 0 : 1;
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       await pause(100);
     }

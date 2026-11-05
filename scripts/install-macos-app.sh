@@ -136,4 +136,4 @@ if is_adhoc_requirement "$installed_requirement"; then
 fi
 
 timing_total "$((SECONDS - started))" macos-install
-printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"
+printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s canary=task_tool_and_task_settled\n' "$target" "${rollback:-none}"

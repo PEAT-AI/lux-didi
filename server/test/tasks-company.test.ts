@@ -140,3 +140,62 @@ test('company coverage blockers and CRM customer lookup are typed native results
   assert.deepEqual(JSON.parse((await execute('get_company', { ref: 'synthetic-company' }, new AbortController().signal)).text), crm);
   assert.deepEqual(seen, ['check_data_capability', 'get_company']);
 });
+
+import { createHash } from 'node:crypto';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import type { McpPort } from '../adapters/mcp/port.js';
+import { TASK_DISCLOSURE } from '../tasks/results.js';
+/** Real descriptor policy and payload verification, with synthetic retained HTTP entities. */
+function projectedBinding(selectedPolicy: BoundConnector['policy'], outcomes: unknown[], followPages: unknown[] = []): BoundConnector {
+  const entities = new Map<string, Buffer>();
+  const port = { readSlice: (input: { handle: string; offset: number; length: number }) => {
+    const bytes = entities.get(input.handle);
+    return bytes ? { state: 'available', bytes: bytes.subarray(input.offset, input.offset + input.length) } : { state: 'missing' };
+  } } as unknown as McpPort;
+  const retained = (outcome: unknown) => {
+    const decodedResult = { content: [{ type: 'text', text: JSON.stringify(outcome) }] }, bytes = Buffer.from(JSON.stringify(decodedResult));
+    const handle = `synthetic-${entities.size}`; entities.set(handle, bytes);
+    return { decodedResult, payload: { state: 'available', handle, byteLength: bytes.length, encoding: 'http-response-entity', sha256: createHash('sha256').update(bytes).digest('hex'), expiresAt: Date.now() + 60_000 } };
+  };
+  return { connector: 'mongoose', policy: selectedPolicy, reader: { call: async tool => {
+    const root = retained(outcomes.shift());
+    return { state: 'completed', tool, decodedResult: root.decodedResult, response: root.payload,
+      source: { endpointId: selectedPolicy.endpoint.id, generation: 1, account: 'fixture', resource: selectedPolicy.endpoint.resource },
+      coverage: {}, projection: {}, ...(followPages.length ? { followUp: { tool: 'read', pages: followPages.map(retained) } } : {}),
+    } as unknown as ConnectorEvidence;
+  } }, project: evidence => ({ ...CONNECTOR_DESCRIPTORS.mongoose!.project(evidence, port, selectedPolicy), sourceDispatchRefs: [`dispatch-${selectedPolicy.endpoint.id}`], sourcePolicyRefs: [{ connectionId: selectedPolicy.connectionId, sha256: 'synthetic-policy-digest' }] }) };
+}
+test('F1 real projected company no_match preserves suggestions, status and authoritative disclosure', async () => {
+  const result = await connectorExecutor([projectedBinding(policy, [{ outcome: 'no_match', items: [], suggestions: ['Synthetic narrower question'] }])])('search_company', { query: 'synthetic' }, new AbortController().signal);
+  assert.equal(result.status, 'no_match'); assert.match(result.text, /Synthetic narrower question/);
+  assert.deepEqual(result.dataClasses, ['ordinary']); assert.deepEqual(result[TASK_DISCLOSURE]?.sourceDispatchRefs, ['dispatch-fixture']);
+  assert.deepEqual(result[TASK_DISCLOSURE]?.sourcePolicyRefs, [{ connectionId: 'fixture', sha256: 'synthetic-policy-digest' }]);
+});
+test('F1 real projected company page keeps refs, opaque cursor and complete continuation', async () => {
+  const execute = connectorExecutor([projectedBinding(policy, [
+    { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'Projected page one' }], next_cursor: 'opaque/projected:2', coverage: { depth: 'all', complete: false } },
+    { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'Projected page two' }], next_cursor: null, coverage: { depth: 'all', complete: true } },
+  ])]);
+  const first = await execute('read_company', { ref: 'knowledge:synthetic', depth: 'all' }, new AbortController().signal);
+  assert.equal(first.next_cursor, 'opaque/projected:2'); assert.equal(first.references[0]?.id, 'knowledge:synthetic');
+  const second = await execute('read_company', { ref: 'knowledge:synthetic', depth: 'all', cursor: first.next_cursor }, new AbortController().signal);
+  assert.equal(second.status, 'ok'); assert.match(second.text, /Projected page two/); assert.equal(second.next_cursor, null);
+});
+test('F1 real projected handoff reaches data and preserves continuation and exact answer', async () => {
+  const knowledge = projectedBinding(policy, [{ outcome: 'handoff', items: [], next_tool: { endpoint: 'data', tool: 'ask_data_agent', arguments: { question: 'Synthetic KPI' }, url: 'https://fixture.example.test/mcp/data' } }]);
+  const dataPolicy = dataBinding([], []).policy;
+  const answer = { answer_number: 31.5, answer_ranking: null, definition: 'Synthetic KPI', sql: null, tables: [], assumptions: [], clarification: null };
+  const execute = connectorExecutor([knowledge, projectedBinding(dataPolicy, [job('running'), job('answered', answer)])]);
+  const first = await execute('search_company', { query: 'Synthetic KPI' }, new AbortController().signal);
+  assert.equal(first.status, 'partial'); assert.equal(JSON.parse(first.text).job_id, jobId); assert.match(JSON.parse(first.text).next_step, /get/);
+  assert.ok(first[TASK_DISCLOSURE]?.sourceDispatchRefs?.includes('dispatch-synthetic-data'));
+  const second = await execute('data_agent_job', { job_id: jobId, op: 'get' }, new AbortController().signal);
+  assert.deepEqual(JSON.parse(second.text).answer, answer); assert.deepEqual(second.dataClasses, ['ordinary']);
+});
+test('F1 real projected follow-up retains all admitted native pages', async () => {
+  const result = await connectorExecutor([projectedBinding(policy, [{ outcome: 'evidence', items: [{ ref: 'knowledge:synthetic' }] }], [
+    { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'Admitted follow-up one' }], next_cursor: 'native:2', coverage: { complete: false } },
+    { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'Admitted follow-up two' }], next_cursor: null, coverage: { complete: true } },
+  ])])('search_company', { query: 'synthetic' }, new AbortController().signal);
+  assert.match(result.text, /Admitted follow-up one/); assert.match(result.text, /Admitted follow-up two/); assert.equal(result.next_cursor, null); assert.equal(result.references.length, 2);
+});

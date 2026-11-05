@@ -441,7 +441,7 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       assert.deepEqual(response.references.map((item: { id: string }) => item.id), ['m1', 'm2']);
       assert.equal(response.next_cursor, null);
       const disclosure = task.results[0]?.[TASK_DISCLOSURE];
-      assert.ok(disclosure?.sourceDispatchRefs?.length, 'structured evidence keeps approved dispatch provenance');
+      assert.equal(disclosure?.sourcePolicyRefs?.[0]?.connectionId, 'gmail', 'structured evidence keeps its approved source policy');
       assert.deepEqual(task.results[0]?.dataClasses, disclosure?.dataClasses);
       assert.ok(disclosure?.[HOST_EVIDENCE], 'structured evidence retains the approved private disclosure');
       assert.equal(task.runtime.registry.get('search_mail')?.outside_text, true);

@@ -685,7 +685,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const classified = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool, code });
             if (classified) hostLogEvent(classified);
           }
-          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code, connectorCode };
+          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code, ...(code === 'connector_error' ? { connectorCode } : {}) };
           if (options.log) options.log(event); else hostLogEvent(event);
         }, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);

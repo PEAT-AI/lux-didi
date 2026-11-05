@@ -302,7 +302,7 @@ test('#1016: a failing child is still a failure, never a partial digest', async 
   const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
   const result = await r.attention({});
   assert.notEqual(result.state, 'completed', 'an upstream failure stays a failure');
-  assert.equal('decodedResult' in result ? result.decodedResult : undefined, undefined, 'no partial digest stands in for a failure');
+  assert.equal('decodedResult' in result ? (result.decodedResult as { items?: unknown }).items : undefined, undefined, 'no digest stands in for a failure');
 });
 
 // #604: a fixture that does not publish the thread read leaves the composite ungranted, and the

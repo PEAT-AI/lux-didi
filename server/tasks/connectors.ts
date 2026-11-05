@@ -140,7 +140,8 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
-    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
+    const subject = name === 'search_mail' && Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : undefined;
+    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
   if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
@@ -206,7 +207,8 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           const connectorCode = connectorFailureKind(nativeCode);
           binding.reportFailure?.(tool, code, connectorCode);
           const wrongReference = name.startsWith('read_') && ['grant_missing', 'bad_reference', 'not_found'].includes(connectorCode);
-          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : readerFailure(name, failureCategory(nativeCode), reasonCodeFor(nativeCode));
+          const reason = reasonCodeFor(nativeCode);
+          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : readerFailure(name, failureCategory(nativeCode), connectorCode === 'upstream_unavailable' && reason === 'unknown' ? 'source_down' : reason);
           return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair };
         };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);

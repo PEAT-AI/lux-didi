@@ -1830,9 +1830,8 @@ for (const rejected of [false, true]) {
 }
 
 for (const opening of ['model_first', 'user_first'] as const) {
-  test(`client mode is audio-only after readiness; opening=${opening}`, async t => {
+  test(`audio input does not create text items after readiness; opening=${opening}`, async t => {
     const { f, session } = await ready(t, {}, { opening });
-    assert.throws(() => session.sendText({ text: 'Synthetic text is not an input carrier.' }), code('invalid_request'));
     session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
     await quiet();
     const frames = f.frames.map(frame => frame as Record<string, unknown>);

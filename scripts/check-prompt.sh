@@ -3,6 +3,7 @@ set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
+export DIDI_TEST_SOURCE_ROOT="$root/server/test"
 # SERVICE owns installation; this lane never downloads or changes manifests.
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
 if [[ ! -f "$deps/typescript/bin/tsc" ]]; then

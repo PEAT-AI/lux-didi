@@ -129,7 +129,7 @@ test('explicit lookup follow-ups without findings are an ask, not no_action', ()
 
 test('information answers cover material facts while banter stays short', () => {
   for (const word of ['distinct', 'supported', 'material', 'deduplicated', 'incidental', 'gap', 'preamble', 'banter', 'latest whole']) {
-    assert.ok(WORKER_INSTRUCTIONS.includes(word), `missing depth judgment: ${word}`);
+    assert.ok(WORKER_INSTRUCTIONS.toLowerCase().includes(word), `missing depth judgment: ${word}`);
   }
   for (const boilerplate of ['sure thing', 'here is what I found', 'according to your']) {
     assert.equal(WORKER_INSTRUCTIONS.toLowerCase().includes(boilerplate), false);

@@ -249,23 +249,29 @@ A revised task may join a read started by its previous revision. That read is no
 
 `call --audit` ends with a `TASK AUDIT (metadata only)` block. It is the same call from the helper's
 side: the store rows name the task, its status, how many revisions it took and how its delivery
-chunks ended, and the host log supplies the tool rows in the order the call ran them.
+chunks ended, and the host log supplies the tool rows in the order the call ran them. Only the
+selected call's tasks appear: a task joins when the log line names the call, by the identity its
+envelope carries or the identity inside its `record`, and, when the store has the column, when
+`tasks.live_session_id` is the call's live session. A row written before that column joins through
+the log alone. A line with no identity anywhere is the only line the trailing `unjoined task log
+events` count includes.
 
 ```text
-coverage: metadata only; store rows are all retained tasks, not joined to this call
-task task-synthetic-1 status=complete revisions=2/2 delivery=store:delivered=1
+coverage: metadata only; the selected call's tasks, joined by log identity and by tasks.live_session_id when the store has it
+task task-synthetic-1 status=complete revisions=2/2 delivery=store:delivered=1 settled=complete reason=none
   tool web_search outcome=ok ms=400 cache=miss state=committed
-  tool web_fetch outcome=unavailable ms=700 cache=miss state=failed
+  tool web_fetch outcome=unavailable ms=700 cache=miss state=failed reason=source_down
   tool web_search outcome=ok ms=120 cache=hit state=committed
   lifecycle start@1000 revision@2500
-task task-synthetic-2 status=no_action revisions=1/1 delivery=store:closed=1
+task task-synthetic-2 status=incomplete revisions=1/1 delivery=store:closed=1 settled=incomplete reason=no_access
   tool calendar_list outcome=empty ms=300 cache=miss state=committed
   lifecycle start@5000
 tool rows in call order: 4; unjoined task log events: 0
 ```
 
 The trailing count is the number of `task_tool` rows the call's log lines carry, so it equals the `tool` lines
-printed under every task together, not the lines of one task.
+printed under every task together, not the lines of one task. `unjoined task log events` counts only the
+task lines that name no call at all, so a busy host log no longer inflates it.
 
 `synthetic` fixture names only: the section never prints owner words, tool arguments, a result body
 or the helper's final answer.
@@ -274,6 +280,7 @@ or the helper's final answer.
 | --- | --- |
 | `status`, `revisions` | `tasks.status` and the revision count of that task, then its current revision after `/` |
 | `delivery` | the delivery chunk states: `store:` rows from `task_deliveries`, `log:` states from `task_delivery` events |
+| `settled`, `reason` | the `task_settled` line's status and closed `reason_code`, absent for a call logged before it existed |
 | `tool`, `outcome` | the tool the helper ran and the `task_tool` terminal category (`ok`, `empty`, `partial`, or a failure category) |
 | `ms`, `cache` | the call's own duration and its `miss`, `hit` or `join` cache disposition |
 | `state` | the store's own `task_operations.state` for the same operation id |

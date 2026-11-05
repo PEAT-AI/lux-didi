@@ -30,6 +30,10 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
   `CREATE TABLE task_effect_journal (identity_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')), value TEXT, updated_at INTEGER NOT NULL)`,
 ] }, { owner: 'tasks', version: 3, statements: [
   'ALTER TABLE tasks ADD COLUMN failure TEXT',
+] }, { owner: 'tasks', version: 4, statements: [
+  // #1013: the task row names the live session that created it, so a call's tasks join without the log.
+  // Nullable: every row written before this migration joins through the host log's own identity.
+  'ALTER TABLE tasks ADD COLUMN live_session_id TEXT',
 ] }, { owner: 'discovery', version: 1, statements: [
   // W9: the declarations the host published at its last live connect, one row per configured company
   // endpoint and replaced in place, so the paid helper smoke proves the set the app really sends.

@@ -1435,12 +1435,12 @@ test('HONESTY: the rendered voice instruction carries each honesty rule once and
 });
 
 // C-PROMPT: delivery states the facts exactly and the close asks only when a question is earned.
-test('C-PROMPT: delivery keeps the facts exact, adds her view after them, and the close asks only when earned', () => {
-  assert.match(NAYA_WORK_DELIVERY, /keeping every name, number, date and qualification/);
-  assert.match(NAYA_WORK_DELIVERY, /Say a person's name as it is written/);
-  assert.match(NAYA_WORK_DELIVERY, /A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it/);
-  assert.match(NAYA_WORK_DELIVERY, /your own view may follow in your own voice/);
-  assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear/);
+test('C-PROMPT: delivery preserves exact entities and leaves other phrasing to her', () => {
+  assert.match(NAYA_WORK_DELIVERY, /Reproduce every exact entity verbatim/);
+  assert.match(NAYA_WORK_DELIVERY, /no rounding, dropping or rephrasing/);
+  assert.match(NAYA_WORK_DELIVERY, /Everything else is in your own voice/);
+  assert.match(NAYA_WORK_DELIVERY, /Add nothing the result does not say/);
+  assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear in full/);
   assert.equal(NAYA_CHARACTER.includes('Close with a costly question'), false, 'the base no longer orders a costly question');
   assert.match(NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
   assert.equal(NAYA_CHARACTER.includes('Say still about one'), false, 'the garbled still sentence is gone');

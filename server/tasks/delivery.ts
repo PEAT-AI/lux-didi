@@ -2,25 +2,110 @@ import type { Delivery, RevisionIdentity, Said } from './controller.js';
 import type { WorkerResult } from './worker.js';
 /** Acceptance confirms timeline receipt, not wording or audibility. */
 export type DeliveryState = 'sent' | 'accepted' | 'retry' | 'undelivered';
-export const NO_LOOKUP_COMMENTARY = 'No lookup is needed. This is yours to answer from your own mind and the conversation.';
+/** A sequence id correlates only envelope parts, never a task or delivery identity. */
+let envelopeSequence = 0;
+export type CommentaryKind = 'result' | 'partial' | 'no_action' | 'failure';
+export interface Commentary {
+  kind: CommentaryKind; exact: string[]; content: string; cause: string; what_failed: string; next_step: string;
+}
+export type CommentaryAnswer = WorkerResult & {
+  exact?: string[];
+  failure?: { stage: string; reason_code: string; detail: string };
+};
+export function commentaryEnvelope(value: object): string {
+  return ````COMMENTARY\n${JSON.stringify(value)}\n````;
+}
+/** Recall is preferred: every match is a verbatim slice, never a normalized value. */
+export function extractExact(content: string): string[] {
+  const patterns = [
+    /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/gu,
+    /(?:[A-Z]{3}|[$€£])\s?\d[\d,.]*(?:\s?(?:million|billion|thousand))?/gu,
+    /\b\d[\d,.]*\s?(?:%|kg|km|cm|mm|m|g|mg|ml|litres?|hours?|minutes?|seconds?|USD|EUR|GBP)\b/gu,
+    /\b\d{1,2}:\d{2}(?:\s?(?:AM|PM|CET|CEST|UTC|GMT))?\b/gu,
+    /\b\d{4}-\d{2}-\d{2}\b/gu,
+    /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)?\s?\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)(?:\s+\d{4})?/gu,
+    /\b[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)+/gu,
+    /\b\d[\d,.]*\b/gu,
+  ];
+  return [...new Set(patterns.flatMap(pattern => [...content.matchAll(pattern)].map(match => match[0].trim())))];
+}
+export function resultCommentary(answer: CommentaryAnswer): Commentary {
+  const noAction = answer.status === 'no_action';
+  const failed = answer.findings.find(finding => finding.status === 'failed');
+  const failure = answer.failure;
+  return {
+    kind: noAction ? 'no_action' : answer.status === 'incomplete' ? (answer.text.trim() ? 'partial' : 'failure') : 'result',
+    exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
+    content: noAction ? '' : answer.text,
+    cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',
+    what_failed: noAction ? '' : failure ? "the helper's model request" : answer.failures?.[0]?.tool ?? '',
+    next_step: noAction ? '' : failed?.repair ?? '',
+  };
+}
 export interface DeliveryPorts {
   isCurrent(identity: RevisionIdentity): boolean;
   append(delegationId: string | null, text: string): string | undefined;
   state(identity: RevisionIdentity, state: DeliveryState, chunk: number): void;
 }
-export function splitSpokenText(text: string): string[] {
+/** Split only outside exact entities; prefer complete sentences, then words for overlong sentences. */
+export function splitSpokenText(text: string, limit = 450, exact: readonly string[] = []): string[] {
   const chunks: string[] = [];
-  for (let sentence of text.trim().split(/(?<=[.!?])\s+/u)) {
-    while (sentence.length > 450) {
-      const space = sentence.lastIndexOf(' ', 450), end = space > 0 ? space : 450;
-      chunks.push(sentence.slice(0, end)); sentence = sentence.slice(end).trimStart();
-    }
-    if (!sentence) continue;
-    const last = chunks.at(-1);
-    if (last && last.length + sentence.length + 1 <= 450) chunks[chunks.length - 1] = `${last} ${sentence}`;
-    else chunks.push(sentence);
+  let rest = text.trim();
+  while (rest) {
+    if (rest.length <= limit) { chunks.push(rest); break; }
+    const protectedRanges = exact.flatMap(entity => {
+      if (!entity) return [];
+      const ranges: [number, number][] = [];
+      let start = rest.indexOf(entity);
+      while (start >= 0) { ranges.push([start, start + entity.length]); start = rest.indexOf(entity, start + entity.length); }
+      return ranges;
+    });
+    const safe = (position: number) => !protectedRanges.some(([start, end]) => start < position && position < end);
+    let end = 0;
+    for (const match of rest.matchAll(/(?<=[.!?])\s+|\n\s*\n/gu)) if (match.index <= limit && safe(match.index)) end = match.index;
+    if (!end) for (const match of rest.matchAll(/\s+/gu)) if (match.index <= limit && safe(match.index)) end = match.index;
+    if (!end) throw new RangeError('commentary entity exceeds transport capacity');
+    chunks.push(rest.slice(0, end)); rest = rest.slice(end).trimStart();
   }
   return chunks;
+}
+/** Every wire item is independently fenced JSON and remains within the real adapter limit. */
+export function commentaryItems(commentary: Commentary, id = (++envelopeSequence).toString(36)): string[] {
+  type Part = Partial<Commentary> & { section: 'header' | 'content' };
+  const parts: Part[] = [];
+  // Reserve ten-digit part counters and the longer false marker before partitioning.
+  const wire = (part: Part, index = 9999999999, total = 9999999999) => commentaryEnvelope({ id, part: `${index}/${total}`, final: false, ...part });
+  const fits = (part: Part) => wire(part).length <= 450;
+  try {
+    const header: Part = { section: 'header', kind: commentary.kind, cause: commentary.cause, what_failed: commentary.what_failed, next_step: commentary.next_step, exact: [] };
+    if (!fits(header)) throw new RangeError('commentary header exceeds transport capacity');
+    parts.push(header);
+    for (const entity of commentary.exact) {
+      let last = parts[parts.length - 1]!;
+      const combined = { ...last, exact: [...last.exact!, entity] };
+      if (fits(combined)) { parts[parts.length - 1] = combined; continue; }
+      last = { section: 'header', exact: [entity] };
+      if (!fits(last)) throw new RangeError('commentary entity exceeds transport capacity');
+      parts.push(last);
+    }
+    // Size by the encoded JSON, not just prose characters (quotes and newlines expand).
+    let rest = commentary.content.trim();
+    while (rest) {
+      let limit = Math.min(rest.length, 450);
+      let chunk = rest;
+      while (!fits({ section: 'content', content: chunk })) {
+        limit -= 1;
+        if (limit < 1) throw new RangeError('commentary content exceeds transport capacity');
+        chunk = splitSpokenText(rest, limit, commentary.exact)[0]!;
+      }
+      parts.push({ section: 'content', content: chunk }); rest = rest.slice(chunk.length).trimStart();
+    }
+    return parts.map((part, index) => commentaryEnvelope({ id, part: `${index + 1}/${parts.length}`, final: index === parts.length - 1, ...part }));
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    // Never sever an exact entity or emit a payload the adapter silently refuses.
+    return [commentaryEnvelope({ id, part: '1/1', final: true, section: 'header', kind: 'failure', exact: [], cause: 'invalid_result', what_failed: 'commentary transport capacity', next_step: '' })];
+  }
 }
 interface Pending {
   identity: RevisionIdentity; answer: WorkerResult; chunks: string[]; chunk: number;
@@ -61,9 +146,7 @@ export class TaskDelivery implements Delivery {
     const pending = this.#current();
     if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) return;
     const noLookup = answer.status === 'no_action' || !answer.text.trim();
-    const text = noLookup ? NO_LOOKUP_COMMENTARY : answer.text;
-    if (!text.trim()) return;
-    const chunks = splitSpokenText(text);
+    const chunks = commentaryItems(resultCommentary(answer));
     this.#said = { text: answer.text, accepted: 0, total: chunks.length };
     this.#pending = { identity, answer, chunks, chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
     this.#drain();

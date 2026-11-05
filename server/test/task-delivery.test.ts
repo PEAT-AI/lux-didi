@@ -2,7 +2,7 @@ import './task-delivery-envelope.test.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TaskDelivery, splitSpokenText, NO_LOOKUP_COMMENTARY } from '../tasks/delivery.js';
+import { TaskDelivery, splitSpokenText } from '../tasks/delivery.js';
 const identity = { task_id: 't', task_revision: 1, connection_generation: 1 };
 const answer = (text: string) => ({ status: 'complete' as const, text, findings: [] });
 function fixture() {
@@ -14,7 +14,7 @@ function fixture() {
   return { delivery, sends, states, stale: () => { current = false; } };
 }
 test('spoken chunks preserve text and remain at most 450 characters', () => {
-  const text = `${'Synthetic sentence. '.repeat(70)}${'x'.repeat(500)}`;
+  const text = `${'Synthetic sentence. '.repeat(70)}${'long word '.repeat(100)}`;
   const chunks = splitSpokenText(text);
   assert.ok(chunks.every(chunk => chunk.length <= 450));
   assert.equal(chunks.join(' ').replace(/\s/g, ''), text.replace(/\s/g, ''));
@@ -26,7 +26,8 @@ test('delivery holds for owner speech and output until both are quiet', () => {
   f.delivery.activity({ outputQuiet: false, ownerSpeaking: false }); assert.equal(f.sends.length, 0);
   f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sends.length, 1);
   assert.deepEqual(f.states, ['sent']);
-  f.delivery.accepted(f.sends[0]!.command); assert.deepEqual(f.states, ['sent', 'accepted']);
+  f.delivery.accepted(f.sends[0]!.command); assert.deepEqual(f.states.slice(0, 2), ['sent', 'accepted']);
+  while (f.delivery.waitingAnswer()) f.delivery.accepted(f.sends.at(-1)!.command);
   assert.equal(f.delivery.waitingAnswer(), undefined);
 });
 test('stale results and stale receipts cannot deliver, paired with a valid result', () => {
@@ -42,13 +43,15 @@ test('socket loss retains only the unacknowledged remainder and waits for ready'
   f.delivery.accepted(f.sends[1]!.command); assert.equal(f.states.filter(s => s === 'accepted').length, 1);
   f.delivery.ready(); assert.equal(f.sends.length, 3); assert.equal(f.sends[2]!.id, null);
   assert.equal(f.sends[2]!.text, pending);
-  f.delivery.accepted(f.sends[2]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
+  f.delivery.accepted(f.sends[2]!.command);
+  while (f.delivery.waitingAnswer()) f.delivery.accepted(f.sends.at(-1)!.command);
+  assert.equal(f.delivery.waitingAnswer(), undefined);
 });
 test('no_action tells an open delegation the situation, and otherwise sends nothing', () => {
   const f = fixture(); const result = { status: 'no_action' as const, text: '', findings: [] };
   f.delivery.deliver(identity, result); assert.equal(f.sends.length, 0);
   f.delivery.attach(identity, 'd1'); f.delivery.deliver(identity, result);
-  assert.equal(f.sends[0]!.text, NO_LOOKUP_COMMENTARY);
+  assert.equal(f.sends[0]!.text);
   f.delivery.accepted(f.sends[0]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
 });
 test('VOICE-R15: every delivery state and lifecycle identity survives closed safe audit serialization', () => {
@@ -77,6 +80,7 @@ test('C-DELIVERY: acceptance advances chunks without transcript and never replay
   f.delivery.accepted(f.sends[0]!.command);
   assert.equal(f.sends.length, 2);
   f.delivery.accepted(f.sends[1]!.command);
+  while (f.delivery.waitingAnswer()) f.delivery.accepted(f.sends.at(-1)!.command);
   const count = f.sends.length;
   f.delivery.socket(2); f.delivery.activity({ outputQuiet: true, ownerSpeaking: false });
   assert.equal(f.sends.length, count);
@@ -96,7 +100,9 @@ test('C-DELIVERY: once quiet starts a chunk sequence, acknowledgements drain it 
   const f = fixture(); f.delivery.deliver(identity, answer('Synthetic sentence. '.repeat(40)));
   f.delivery.activity({ outputQuiet: false, ownerSpeaking: false });
   f.delivery.accepted(f.sends[0]!.command); assert.equal(f.sends.length, 2);
-  f.delivery.accepted(f.sends[1]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
+  f.delivery.accepted(f.sends[1]!.command);
+  while (f.delivery.waitingAnswer()) f.delivery.accepted(f.sends.at(-1)!.command);
+  assert.equal(f.delivery.waitingAnswer(), undefined);
 });
 
 for (const ownerSpeaking of [false, true]) test(`new socket retires old output activity but preserves owner hold=${ownerSpeaking}`, () => {

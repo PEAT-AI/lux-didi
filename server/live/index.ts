@@ -1,3 +1,4 @@
+import { commentaryEnvelope } from '../tasks/delivery.js';
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
@@ -732,7 +733,7 @@ const CONSUMER_CLOSED_MS = 1_000;
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
-export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
+export const NO_LOOKUP_RUNNING_NOTE = commentaryEnvelope({ kind: 'no_action', exact: [], content: '', cause: '', what_failed: '', next_step: '' });
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
 export const refusedResponse = (response: JsonObject): boolean => {
   if (typeof response['error'] === 'string' && response['error'] !== '') return true;
@@ -3329,7 +3330,7 @@ export class LiveSessionOwner {
     delete base.openingText;
     const request = path === 'fresh_seeded'
       ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
-          : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
+          : { openingText: handle.speaking ? commentaryEnvelope({ kind: 'recovery', cause: muteRebuild ? 'provider_silent' : 'connection_dropped', mid_answer: true }) : muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...base, history: seed.turns, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.

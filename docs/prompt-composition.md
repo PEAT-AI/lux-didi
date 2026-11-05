@@ -33,3 +33,14 @@ Keep user-facing guidance consistent with `server/tasks/authority.ts`: an asked 
 Before changing an instruction, search every prompt and tool-guidance owner for contradictory rules. Update the corresponding assertions in `scripts/check-prompt.sh` and add behavior-focused replay evidence when the change affects a runtime path. Use [checks.md](checks.md) for the appropriate check script; a string assertion alone proves neither model obedience nor a real-account result.
 
 Never publish private owner lore, standing memory or transcript examples as a public prompt fixture. Use synthetic content and inspect the full composed instruction only in an authorized local context. Safe diagnostics should retain versions and coverage, not export private system text.
+
+
+### Typed work commentary
+
+The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice collects all parts through `final:true` before answering. Transport acceptance and the delivery record advance per item, not per logical envelope.
+
+Exact entities are reproduced verbatim, including names, dates, times, amounts, numbers and qualifications. Everything else is phrased in her own voice, with no invented facts, filler or meta-status. Requested full results are told completely once. `partial` gives what exists and names the gap; `no_action` answers from the conversation without mentioning a lookup; `failure` gives the supplied cause and repair once without inventing a next step. Work runs in silence.
+
+The helper returns JSON with `spoken` connected prose and an `exact` list, or `{"status":"no_action"}`. When an older result has no exact list, deterministic host extraction retains names, numeric values, dates, times, currency, units and email addresses. Entity strings are never severed across items; an entity or header too large for the transport fails closed as `invalid_result` rather than being silently truncated. Sentence boundaries are preferred; an overlong sentence can be divided at whitespace outside exact entities.
+
+Recovery inputs are typed `recovery` envelopes with `cause` (`connection_dropped` or `provider_silent`) and `mid_answer`. They ask for continuation without a greeting or an explanation of the pause. Task identities, attempts, receipts and delivery counters never enter model-visible commentary; the envelope id and part counters only assemble its data.

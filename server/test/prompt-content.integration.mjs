@@ -17,7 +17,7 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length <= 6214);
+assert.ok(WORKER_INSTRUCTIONS.length <= 6446);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
@@ -119,3 +119,14 @@ console.log(JSON.stringify({ case: 'compiled_public_prompt_contract', exactAppro
 console.log(JSON.stringify({ case: 'excluded_character_release_subset', excludedCandidateAbsent: true, ownerText: true,
   fullPublicOpenAiLive: true, noToolsVoice: true, naturalResultQualificationsRetained: true, defaultTextExistingRule: true,
   mandatoryDurationConflictOpen: true, behaviorAccepted: false }));
+
+// Typed commentary is data: exact entities survive, phrasing belongs to the voice.
+for (const rule of ['Reproduce every exact entity verbatim', 'Everything else is in your own voice',
+  'Collect every part through final:true before speaking', 'no rounding, dropping or rephrasing',
+  'A no_action means answer from this conversation and your own mind', 'A failure means say the cause and next step',
+  'Continue exactly where the conversation was']) assert.ok(prompt.NAYA_WORK_DELIVERY.includes(rule), rule);
+for (const gone of ['A finished result is already written', 'Say it completely and in order',
+  'A large amount may be said rounded', 'She speaks what you write', 'Write what she would say']) {
+  assert.ok(!(prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(gone), gone);
+}
+assert.ok(WORKER_INSTRUCTIONS.includes('one JSON object with spoken'));

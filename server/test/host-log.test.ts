@@ -728,7 +728,7 @@ test('inference diagnostics accept only bounded provider metadata', () => {
   assert.equal(safeEvent({ ...superseded, message: 'synthetic' }), undefined);
   const failure = { event: 'task_inference_failed', taskId: 'synthetic', revision: 2, stage: 'inference',
     reason_code: 'provider_rate_limited', model: 'synthetic', tool_count: 0, instruction_chars: 0, elapsed_ms: 3,
-    detail: '', provider_error_class: 'http_429', http_status: 429, request_id: 'req_synthetic' };
+    detail: '', status: 429, provider_error_class: 'http_429', http_status: 429, request_id: 'req_synthetic' };
   assert.ok(safeEvent(failure));
   assert.equal(safeEvent({ ...failure, provider_error_class: 'message' }), undefined);
   assert.equal(safeEvent({ ...failure, request_id: 'unsafe token' }), undefined);

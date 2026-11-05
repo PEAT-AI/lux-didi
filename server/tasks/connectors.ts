@@ -1,7 +1,8 @@
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
-import { mongooseEndpointName } from '../connectors/mongoose.js';
+import type { PublishedCatalogue } from '../runtime/store.js';
+import { MONGOOSE_ENDPOINT_TOOLS, mongooseEndpointName } from '../connectors/mongoose.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
@@ -159,15 +160,35 @@ const companySteps: Readonly<Record<string, string>> = {
   check_data_capability: 'Check company data coverage before a request that may lie outside coverage. Follow decision, blocker_codes and suggested_tools. Quantitative coverage belongs here, not knowledge search.',
   get_company: 'Look up customer facts, deals and leads on the CRM endpoint by slug or company name first.',
 };
-function companyEndpoint(binding: BoundConnector): string | undefined {
+function companyEndpoint(binding: BoundConnector): ReturnType<typeof mongooseEndpointName> {
   return mongooseEndpointName(binding.policy.endpoint.resource) ?? ('url' in binding.policy.endpoint ? mongooseEndpointName(binding.policy.endpoint.url) : undefined);
 }
+function companySignInRepair(binding: BoundConnector): string {
+  const endpoint = companyEndpoint(binding);
+  return `The Mongoose ${endpoint === 'crm' ? 'CRM' : endpoint ?? 'company'} endpoint is unavailable. Sign-in is needed for that endpoint in Settings.`;
+}
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
-export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
+export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
-  const typed = Object.entries(companySteps).flatMap(([name, description]) => {
+  const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
-    if (!declaration) return [];
+    if (!declaration) {
+      const unavailable = bindings.find(binding => {
+        const endpoint = companyEndpoint(binding);
+        return binding.connector === 'mongoose' && endpoint !== undefined && MONGOOSE_ENDPOINT_TOOLS[endpoint].includes(name) && nativeTaskReadGranted(binding.policy, name);
+      });
+      // A configured endpoint can fail before publishing its schema. Keep a repair-only task route,
+      // not an invented remote schema or a capability for an endpoint the owner never configured.
+      if (!unavailable) return [];
+      const catalogue = catalogues.find(row => row.endpointId === unavailable.policy.endpoint.id && row.resource === unavailable.policy.endpoint.resource);
+      let parameters: Record<string, unknown> = { type: 'object', properties: {}, required: [], additionalProperties: true };
+      if (catalogue) {
+        const stored = JSON.parse(catalogue.declarations) as { name: string; parameters: Record<string, unknown> }[];
+        const declaration = stored.find(tool => tool.name === name);
+        if (declaration) parameters = declaration.parameters;
+      }
+      return [{ outside: false, name, description: `${companySignInRepair(unavailable)} This route only returns the repair; no company data is read.`, fields: {}, parameters }];
+    }
     const fields = strictSchema(declaration.parameters).properties as Record<string, Record<string, unknown>>;
     if (name === 'data_agent_job' && fields.op) fields.op = { type: 'string', enum: ['get'] };
     return [{ outside: true, name, description: `${description} ${declaration.description}`, fields, validate: (args: Record<string, unknown>) => (name !== 'data_agent_job' || args.op === 'get') && declaration.validate(Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))) }];
@@ -189,13 +210,15 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
-    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
-    const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
+    const candidates = bindings.filter(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool));
+    const binding = candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
-    const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
+    const declaration = CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).find(declaration => declaration.name === mapping.tool);
+    if (!declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
+    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
     const scope = createResultScope();

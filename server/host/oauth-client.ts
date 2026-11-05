@@ -54,8 +54,10 @@ export type OAuthCredentialCode = 'credential-missing' | 'credential-refresh-fai
   // The minted token's own claims name another account, or cannot be decoded at all. A new sign-in is
   // the only repair, so the endpoint parks on it (identity_mismatch / identity_unverified).
   | 'credential-identity-mismatch' | 'credential-identity-unverified';
+export const OAUTH_CAUSE_CLASSES = ['refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock', 'unknown'] as const;
+export type OAuthCauseClass = typeof OAUTH_CAUSE_CLASSES[number];
 export class OAuthCredentialError extends Error {
-  constructor(readonly code: OAuthCredentialCode) { super(code); }
+  constructor(readonly code: OAuthCredentialCode, readonly causeClass: OAuthCauseClass = 'unknown', readonly status?: number) { super(code); }
 }
 
 export type OAuthLoginCode = 'metadata-unavailable' | 'registration-refused' | 'port-in-use' | 'state-mismatch' | 'authorization-refused' | 'token-refused' | 'browser-unavailable' | 'timeout' | 'endpoint-not-allowed'
@@ -173,14 +175,14 @@ export function writeOAuthRecord(configDir: string, reference: string, record: O
     fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     fchmodSync(fd, 0o600);
     writeSync(fd, data, 0, data.length, 0);
-    if (lstatSync(temp).isSymbolicLink()) throw new OAuthCredentialError('credential-refresh-failed');
-    if (fstatSync(fd).size !== data.length) throw new OAuthCredentialError('credential-refresh-failed');
+    if (lstatSync(temp).isSymbolicLink()) throw new OAuthCredentialError('credential-refresh-failed', 'storage');
+    if (fstatSync(fd).size !== data.length) throw new OAuthCredentialError('credential-refresh-failed', 'storage');
     closeSync(fd); fd = undefined;
     renameSync(temp, target);
   } catch (error) {
     if (fd !== undefined) { try { closeSync(fd); } catch { /* already closed */ } }
     try { unlinkSync(temp); } catch { /* nothing to remove */ }
-    throw error instanceof OAuthCredentialError ? error : new OAuthCredentialError('credential-refresh-failed');
+    throw error instanceof OAuthCredentialError ? error : new OAuthCredentialError('credential-refresh-failed', 'storage');
   }
 }
 
@@ -569,12 +571,12 @@ function acquireLock(configDir: string, reference: string, now: () => number): (
   };
   try { create(); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new OAuthCredentialError('credential-refresh-failed');
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new OAuthCredentialError('credential-refresh-failed', 'lock');
     let stale = false;
     try { stale = now() - statSync(path).mtimeMs > OAUTH_LOCK_STALE_MS; } catch { stale = false; }
-    if (!stale) throw new OAuthCredentialError('credential-refresh-busy');
+    if (!stale) throw new OAuthCredentialError('credential-refresh-busy', 'lock');
     try { unlinkSync(path); create(); }
-    catch { throw new OAuthCredentialError('credential-refresh-busy'); }
+    catch { throw new OAuthCredentialError('credential-refresh-busy', 'lock'); }
   }
   return () => { try { unlinkSync(path); } catch { /* another writer already removed it */ } };
 }
@@ -588,14 +590,15 @@ async function refreshOAuthRecord(record: OAuthRecord, options: OAuthTokenOption
   let response: Response;
   try {
     response = await post(record.tokenEndpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body, redirect: 'error' });
-  } catch { throw new OAuthCredentialError('credential-refresh-unavailable'); }
-  if (!response.ok) throw new OAuthCredentialError('credential-refresh-failed');
+  } catch { throw new OAuthCredentialError('credential-refresh-unavailable', 'refresh_network'); }
+  if (!response.ok) throw new OAuthCredentialError('credential-refresh-failed', response.status >= 400 && response.status < 500 ? 'refresh_rejected_4xx' : response.status >= 500 && response.status < 600 ? 'refresh_rejected_5xx' : 'unknown', response.status);
   let payload: TokenResponse;
-  try { payload = await response.json() as TokenResponse; } catch { throw new OAuthCredentialError('credential-refresh-failed'); }
+  try { payload = await response.json() as TokenResponse; } catch { throw new OAuthCredentialError('credential-refresh-failed', 'refresh_malformed', response.status); }
+  if (payload === null || typeof payload !== 'object') throw new OAuthCredentialError('credential-refresh-failed', 'refresh_malformed', response.status);
   const accessToken = payload.access_token;
   const refreshToken = payload.refresh_token;
   const expiresIn = payload.expires_in;
-  if (!secret(accessToken) || !secret(refreshToken)) throw new OAuthCredentialError('credential-refresh-failed');
-  if (!Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1) throw new OAuthCredentialError('credential-refresh-failed');
+  if (!secret(accessToken) || !secret(refreshToken)) throw new OAuthCredentialError('credential-refresh-failed', 'refresh_malformed', response.status);
+  if (!Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1) throw new OAuthCredentialError('credential-refresh-failed', 'refresh_malformed', response.status);
   return { ...record, accessToken, refreshToken, expiresAt: now() + (expiresIn as number) * 1000 };
 }

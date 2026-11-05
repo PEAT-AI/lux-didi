@@ -174,6 +174,7 @@ export interface ConnectorFailureDetail {
   reason?: string;
   exceptionCode?: string;
   exceptionClass?: string;
+  httpStatus?: number;
   endpointId?: string;
   /** Which connect pass this is: the first one, or the one bounded re-discovery. */
   attempt?: 'first-connect' | 'refresh';
@@ -392,9 +393,9 @@ export async function composeMcpRuntime(options: {
   // this line is written for each of them, not only for the first connect.
   const failureReasons = new Map<string, string>();
   const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
-    reason: string, exceptionCode?: string, exceptionClass?: string): void => {
+    reason: string, exceptionCode?: string, exceptionClass?: string, httpStatus?: number): void => {
     failureReasons.set(entry.id, reason);
-    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}), ...(exceptionClass ? { exceptionClass: ['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(exceptionClass) ? exceptionClass : 'unknown' } : {}) });
+    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}), ...(exceptionClass ? { exceptionClass: ['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown', 'refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(exceptionClass) ? exceptionClass : 'unknown' } : {}), ...(httpStatus !== undefined ? { httpStatus } : {}) });
   };
   const reportToolStatus = (connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
@@ -715,7 +716,7 @@ export async function composeMcpRuntime(options: {
       if (stale()) return { retryable: false };
       if (discovery.state !== 'discovered') {
         const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
-        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code, discovery.exception?.class);
+        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code, discovery.exception?.class, discovery.exception && 'httpStatus' in discovery.exception && typeof discovery.exception.httpStatus === 'number' ? discovery.exception.httpStatus : undefined);
         // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
         // a missing record does, so the login reconnects it without a restart (R9).
         if (stage === 'credential' && entry.connector === 'mongoose' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));

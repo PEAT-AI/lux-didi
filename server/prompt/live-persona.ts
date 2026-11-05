@@ -566,6 +566,10 @@ export interface OpeningFactsInput {
   readonly familyNames: readonly string[]; readonly floorSubjects: readonly string[];
 }
 const OPENING_FLOOR = /\b(?:family|mother|father|parents?|wife|husband|sons?|daughters?|children|illness|ill|sick|cancer|hospital|disease|diagnosis|health|Freya|boat|balances?)\b/iu;
+// Illness is a protected subject, not just the literal word in the authored floor.
+// Match concrete conditions, symptoms and treatment language without treating a software bug,
+// cold outreach or a database recovery as medical facts.
+const OPENING_ILLNESS = /\b(?:flu|influenza|pneumonia|covid(?:-?19)?|coronavirus|norovirus|gastroenteritis|bronchitis|tonsillitis|asthma|diabetes|migraines?|arthritis|dementia|alzheimer['’]?s?|parkinson['’]?s?|shingles|measles|malaria|sepsis|hepatitis|hiv|aids|infections?|fevers?|headaches?|nausea|vomiting|diarrh[oe]+a|dizziness|fainting|breathlessness|chemotherapy|radiotherapy|dialysis|surgery|surgical|antibiotics?|antivirals?|medication|prescriptions?|biops(?:y|ies))\b|\b(?:common cold|sore throat|high temperature|chest pain|abdominal pain|chronic pain|blood tests?|medical tests?|medical scans?)\b|\b(?:broken|fractured|sprained)\s+(?:arms?|legs?|wrists?|ankles?|ribs?|bones?|hips?)\b/iu;
 const OPENING_AMOUNT = /(?:[£$€₹]\s*\d|\b\d[\d,.]*\s*(?:GBP|USD|EUR|pounds?|dollars?|euros?|rupees?|grand|million|billion)\b|\b(?:GBP|USD|EUR)\s*\d)/iu;
 function openingWords(text: string): string[] { return text.toLowerCase().match(/[\p{L}][\p{L}'’-]*/gu) ?? []; }
 function mentionsOpeningSubject(text: string, subject: string): boolean {
@@ -582,7 +586,7 @@ export function openingContextFloors(people: readonly { readonly name: string; r
 }
 export function buildOpeningFacts(input: OpeningFactsInput): { facts: OpeningFacts; section: string } {
   const forbidden = [...input.familyNames, ...input.floorSubjects].filter(value => value.trim().length > 0);
-  const safe = (text: string): boolean => !OPENING_FLOOR.test(text) && !OPENING_AMOUNT.test(text)
+  const safe = (text: string): boolean => !OPENING_FLOOR.test(text) && !OPENING_ILLNESS.test(text) && !OPENING_AMOUNT.test(text)
     && !forbidden.some(subject => mentionsOpeningSubject(text, subject));
   const fact = (text: string): string | undefined => {
     const clean = text.replace(/\s+/gu, ' ').trim();

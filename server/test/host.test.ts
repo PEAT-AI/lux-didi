@@ -1092,7 +1092,7 @@ test('the warm calendar digest reads the primary calendar once and renders the e
   assert.equal(read.calls[0]!.calendarId, 'primary', 'the primary calendar only');
   assert.equal(read.calls[0]!.timeMin, '2026-10-18T00:00:00+00:00');
   assert.equal(read.calls[0]!.timeMax, '2026-10-19T00:00:00+00:00');
-  assert.equal(read.calls[0]!.maxResults, 10);
+  assert.equal(read.calls[0]!.maxResults, 50, 'the merged calendar digest reads the bounded whole day');
 });
 
 test('the warm calendar digest keeps one bounded line and trims a day that does not fit', async () => {
@@ -1786,7 +1786,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
         assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
         if (recoveredAt === Infinity) {
-          const unavailable = await task.runtime.runTool('read_knowledge', { id: '1', cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          const unavailable = await task.runtime.runTool('read_knowledge', { ids: [1], include_links: true, cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
           assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
         }
         if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string', minLength: 1 });

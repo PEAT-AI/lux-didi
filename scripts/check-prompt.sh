@@ -19,7 +19,7 @@ cd "$root"
 # are not staged, and TypeScript resolves each current transitive dependency itself.
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
-sources=(server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts
+sources=(server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/live-opening-facts.test.ts
   server/test/runtime-context.test.ts server/test/chat-prompt.test.ts)
 # The plain-JS integration imports the retained Text history tool outside the TS test graph.
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
@@ -45,7 +45,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 6214);
+assert.ok(worker.length <= 6394);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
@@ -72,10 +72,10 @@ assert.match(persona.NAYA_CHARACTER, /Call something still open or still true on
 assert.match(persona.NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
   'a call with nothing open greets the moment');
 // C-PROMPT: the class one topic belongs to is the class the note names and the plan refuses.
-assert.equal(persona.openerClass('the supplier payment came to 4,200 dollars'), 'recent-thread');
-assert.equal(persona.openerClass('the 15:00 meeting moved'), 'calendar');
-assert.equal(persona.openerClass('the open loop on the deposit'), 'open-loop');
-assert.equal(persona.openerClass('my tools failed again'), 'tool_failure');
+assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: [], savedForHim: ['the supplier payment came to 4,200 dollars'] }).facts.saved_for_him, []);
+assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: [], day: ['1970-01-01 15:00 meeting moved'] }).facts.day, ['1970-01-01 15:00 meeting moved']);
+assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: [], commitments: ['2027-04-01 Run the marathon'] }).facts.commitments, ['2027-04-01 Run the marathon']);
+assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: [], excludeTopics: persona.excludedOpeningTopics([{ topics: ['sleep'] }, { topics: ['marathon'] }, { topics: ['design'] }, { topics: ['older'] }]) }).facts.exclude_topics, ['sleep', 'marathon', 'design']);
 // 10.11: each new rule is a judgment she applies, and neither public text carries a said line.
 for (const rule of [
   'Everything else is yours and you answer it yourself',

@@ -204,3 +204,21 @@ test('provider failure persists closed metadata and logs incomplete, never compl
     runtime.close();
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+// #1013: the task row carries the live session that created it, so a call's tasks join without the log.
+test('the task row keeps the live session that created it', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-store-session-'));
+  const store = new Store(directory);
+  try {
+    const identity = { task_id: 'fixture-session', task_revision: 1, connection_generation: 1 };
+    store.saveTaskRevision(identity, ['synthetic owner words'], [], 1800000000000, 'synthetic-session');
+    const session = () => store.transaction(tx => tx.get('SELECT live_session_id FROM tasks WHERE task_id=?', ['fixture-session']))?.live_session_id;
+    assert.equal(session(), 'synthetic-session');
+    // A later revision that carries no session never erases the one already recorded.
+    store.saveTaskRevision({ ...identity, task_revision: 2 }, ['synthetic correction'], [], 1800000000001);
+    assert.equal(session(), 'synthetic-session');
+    // A caller with no native session writes a row that joins through the log instead.
+    store.saveTaskRevision({ task_id: 'fixture-anonymous', task_revision: 1, connection_generation: 1 }, ['synthetic words'], [], 1800000000002);
+    assert.equal(store.transaction(tx => tx.get('SELECT live_session_id FROM tasks WHERE task_id=?', ['fixture-anonymous']))?.live_session_id, null);
+  } finally { store.close(); rmSync(directory, { recursive: true }); }
+});

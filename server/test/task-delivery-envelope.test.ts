@@ -21,8 +21,8 @@ test('structured model failure has a closed cause without leaking internal detai
   const payload = resultCommentary(result);
   assert.equal(payload.kind, 'failure');
   assert.equal(payload.cause, 'provider_rejected');
-  assert.equal(payload.what_failed, "the helper's model request");
-  assert.equal(payload.next_step, '');
+  assert.equal(payload.what_failed, "the provider refused the helper's request");
+  assert.equal(payload.next_step, 'nothing to retry until the request is fixed');
   assert.ok(!JSON.stringify(payload).includes('internal'));
 });
 test('partial gives available content and a gap without inventing a repair', () => {

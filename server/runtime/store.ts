@@ -1,5 +1,5 @@
 import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
-import { taskMigrations, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
+import { taskMigrations, pruneOpeningTopics, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
@@ -137,7 +137,7 @@ export class Store {
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
         const memoryTx = new Tx(sql => this.#db!.prepare(sql));
-        try { backfillHistoryTurns(memoryTx); pruneTaskContent(memoryTx, Date.now()); } finally { memoryTx.expire(); }
+        try { backfillHistoryTurns(memoryTx); pruneTaskContent(memoryTx, Date.now()); pruneOpeningTopics(memoryTx, Date.now()); } finally { memoryTx.expire(); }
         pruneTraceContent(traceExec, Date.now());
         this.#db.prepare("UPDATE task_operations SET state='unknown' WHERE state='pending'").run();
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
@@ -195,11 +195,13 @@ export class Store {
     finally { this.#inTransaction = false; }
   }
   /** Content capture is explicitly supplied by the host gate, never inferred from model text. */
-  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, now = Date.now()): void {
+  // #1013: `liveSessionId` is the runtime's own native session, so the row can be found by the call it
+  // belongs to. It is optional: a caller with no native session writes a row that joins through the log.
+  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, now = Date.now(), liveSessionId?: string): void {
     this.transaction(tx => {
-      tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status) VALUES (?,?,?,?,?)
-        ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status`,
-        [identity.task_id, now, now, identity.task_revision, 'running']);
+      tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status,live_session_id) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status,live_session_id=COALESCE(excluded.live_session_id,tasks.live_session_id)`,
+        [identity.task_id, now, now, identity.task_revision, 'running', liveSessionId ?? null]);
       const retained = tx.get('SELECT content_pruned_at FROM tasks WHERE task_id=?', [identity.task_id])?.content_pruned_at == null;
       tx.run('INSERT INTO task_revisions(task_id,task_revision,connection_generation,created_at,owner_words,evidence) VALUES (?,?,?,?,?,?)',
         [identity.task_id, identity.task_revision, identity.connection_generation, now, retained ? JSON.stringify(ownerWords) : null, taskResultMetadata(evidence)]);
@@ -251,6 +253,19 @@ export class Store {
     this.#db?.close(); this.#db = undefined;
     this.#lock?.close(); this.#lock = undefined;
   }
+  /** W9: the last published company declarations of one endpoint, replaced in place and never appended. */
+  savePublishedCatalogue(row: PublishedCatalogue): void {
+    this.transaction(tx => {
+      tx.run(`INSERT INTO published_catalogues(endpoint_id,resource,discovered_at,schema_digest,declarations) VALUES (?,?,?,?,?)
+        ON CONFLICT(endpoint_id) DO UPDATE SET resource=excluded.resource,discovered_at=excluded.discovered_at,
+        schema_digest=excluded.schema_digest,declarations=excluded.declarations`,
+        [row.endpointId, row.resource, row.discoveredAt, row.schemaDigest, row.declarations]);
+    });
+  }
+  /** A declaration set the host cannot vouch for is not a record: the smoke falls back with its WARN line. */
+  clearPublishedCatalogue(endpointId: string): void {
+    this.transaction(tx => { tx.run('DELETE FROM published_catalogues WHERE endpoint_id=?', [endpointId]); });
+  }
 }
 
 /** Keep replay fingerprints, but replace owner responses containing deleted content. */
@@ -277,3 +292,28 @@ export function commitAlarmEffect(store: import('../contracts/storage.js').Store
       return value;
     });
   }
+
+/** W9: the declarations the host published at the last live connect of one company endpoint. */
+export interface PublishedCatalogue {
+  endpointId: string; resource: string; discoveredAt: number; schemaDigest: string; declarations: string;
+}
+
+/**
+ * W9: the persisted discovery record, read without the host's writer lock so the paid helper smoke can
+ * read a running or a stopped host and never connects a connector. A missing file, a missing table or a
+ * closed store reads as no record, and the caller then falls back to its own source and says so.
+ */
+export function readPublishedCatalogues(databasePath: string): PublishedCatalogue[] {
+  if (!existsSync(databasePath)) return [];
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(databasePath, { readOnly: true });
+    const rows = db.prepare('SELECT endpoint_id,resource,discovered_at,schema_digest,declarations FROM published_catalogues ORDER BY endpoint_id').all() as unknown as {
+      endpoint_id: unknown; resource: unknown; discovered_at: unknown; schema_digest: unknown; declarations: unknown;
+    }[];
+    return rows.map(row => ({
+      endpointId: String(row.endpoint_id), resource: String(row.resource), discoveredAt: Number(row.discovered_at),
+      schemaDigest: String(row.schema_digest), declarations: String(row.declarations),
+    }));
+  } catch { return []; } finally { db?.close(); }
+}

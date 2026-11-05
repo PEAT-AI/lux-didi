@@ -10,7 +10,7 @@ import {
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
-  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, OPENER_NOVELTY_WINDOW_MS, type EarlierConversationCandidate, type RecentOpening,
+  buildOpeningFacts,
   EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
@@ -56,7 +56,8 @@ test('the release character holds the installed baseline while issue 455 remains
 
 test('the composed Live instruction carries NAYA_CHARACTER and NAYA_VOICE_SURFACE verbatim', () => {
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-  assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`, 'the Live base is the character plus the voice surface');
+  assert.ok(NAYA_LIVE_BASE.startsWith(`${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}\n\n`), 'the Live base retains the character and voice surface before the opening-facts rule');
+  assert.match(NAYA_LIVE_BASE, /Never open on a subject in exclude_topics/);
   assert.ok(composed.text.includes(NAYA_CHARACTER), 'the composed instruction carries the character verbatim');
   assert.ok(composed.text.includes(NAYA_VOICE_SURFACE), 'the composed instruction carries the voice surface verbatim');
   for (const retired of ['short, expressive', 'point first', 'Small talk short']) assert.equal(composed.text.includes(retired), false, `retired brevity string: ${retired}`);
@@ -893,360 +894,8 @@ test('S4b: the accent preset head and tail are byte-identical to the shipped voi
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
 });
 
-// --- release 3u: the opening options one start offers, from stored facts only -------------------
-
 const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
-const pastSummary = (index: number, summary: string) => ({ id: `s${index}`, endedAt: NOW_3U - index * 86_400_000, summary });
-const storedLoop = (text: string, hoursAgo = 1) => ({ text, lastSeenAt: NOW_3U - hoursAgo * 3_600_000 });
-const optionOf = (plan: ReturnType<typeof buildOpeningOptions>, kind: string) => plan.options.find(option => option.kind === kind);
 
-test('3u: with a calendar item the first option is the calendar and the item is kept verbatim', () => {
-  const calendar = '09:00 standup, 15:00 review';
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
-    now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
-  assert.equal(plan.options[0]?.kind, 'calendar', 'the calendar leads when today has an item');
-  assert.equal(plan.options[0]?.topic, '15:00 review', 'the next item at or after now, not a past one');
-  assert.ok(plan.section.startsWith(OPENING_OPTIONS_TITLE), 'one Opening options section');
-  assert.ok(plan.section.includes('- calendar: 15:00 review'));
-});
-
-test('3u: an empty calendar still composes a plan and offers no calendar kind', () => {
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.ok(plan.section.startsWith(OPENING_OPTIONS_TITLE));
-  assert.equal(optionOf(plan, 'calendar'), undefined, 'no digest means no calendar option');
-  assert.ok(plan.options.length >= 1, 'the stored open loop still composes');
-  assert.ok(plan.section.includes('Pick one of these, or open on the moment if he speaks first'), 'the voice surface says pick one, or open on the moment');
-  assert.ok(plan.section.includes('Never invent beyond these options'), 'the plan bounds invention');
-});
-
-test('3u: five successive starts rotate across at least three stored open loops', () => {
-  const shared = 'The owner said the tax form is still to be filed.';
-  const candidates = [pastSummary(0, shared), pastSummary(1, shared), pastSummary(2, shared),
-    pastSummary(3, 'The owner said he still has to call the accountant.'), pastSummary(4, 'The owner said the passport is still to be renewed.')];
-  // Contract 1023 N8: the loop comes from the stored open_loop column, not from a cue word in a summary.
-  // W4: only a loop seen inside the last 24 hours may open a call, so the stored loops are hours old.
-  const openLoops = candidates.map((candidate, index) => ({ text: candidate.summary, lastSeenAt: NOW_3U - (index + 1) * 3_600_000 }));
-  const offered = new Set<string>();
-  for (let rotation = 0; rotation < 5; rotation += 1) {
-    const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation });
-    const loop = optionOf(plan, 'open-loop');
-    assert.ok(loop !== undefined, 'every start offers an open loop when one exists');
-    offered.add(loop.topic);
-    assert.equal(plan.rotation, rotation, 'the start counter is carried into the receipt');
-  }
-  assert.ok(offered.size >= 3, `five starts offered ${offered.size} different loops, one shared and two others stored`);
-});
-
-test('3u: no candidate text appears that is not in the inputs', () => {
-  const calendar = '09:00 standup, 15:00 review';
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.'),
-    pastSummary(1, 'Naya found the release branch merged cleanly. The owner said he still has to call the accountant.')];
-  const openLoops = [storedLoop('The owner said he still has to call the accountant.')];
-  const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
-  assert.ok(plan.options.some(option => option.kind === 'calendar') && plan.options.some(option => option.kind === 'open-loop'));
-  for (const option of plan.options) {
-    const source = option.kind === 'calendar' ? calendar
-      : option.kind === 'open-loop' ? openLoops.map(loop => loop.text).join(' ') : candidates.map(candidate => candidate.summary).join(' ');
-    assert.ok(source.includes(option.topic), `${option.kind} "${option.topic}" is drawn from its own input, never invented`);
-    assert.ok(plan.section.includes(option.topic), 'the section carries the option text as it was read');
-  }
-});
-
-test('3u: health, family, fitness, sleep and personal habits are never an opener kind and never supply a candidate', () => {
-  const plan = buildOpeningOptions({ candidates: [
-    pastSummary(0, 'The owner said his mother is still in hospital and he still has to visit her.'),
-    pastSummary(1, 'He said the gym membership is still to be renewed.'),
-    pastSummary(2, 'The owner said he still has to fix his sleep and the late-night habit.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(plan.options.length, 0, 'a family, health, fitness, sleep or habit loop is never offered');
-  const digest = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', calendar: '09:00 doctor, 11:00 sleep clinic, 14:00 review', rotation: 0 });
-  assert.equal(digest.options[0]?.topic, '14:00 review', 'a closed digest item is skipped, never offered');
-  assert.equal(plan.section, '', 'a plan with no stored opener adds no section');
-  const mixed = buildOpeningOptions({ candidates: [
-    pastSummary(0, 'The owner said his mother is still in hospital.')],
-  openLoops: [storedLoop('The owner said the tax form is still to be filed.'), storedLoop('The owner said his mother is still in hospital and he still has to visit her.')],
-  now: NOW_3U, timeZone: 'UTC', rotation: 1 });
-  assert.equal(optionOf(mixed, 'open-loop')?.topic, 'the tax form is still to be filed', 'the work loop is offered, its attribution dropped so the line reads as a phrase');
-  assert.ok(!mixed.section.includes('hospital'), 'the health sentence never reaches the plan');
-  assert.ok(mixed.options.every(option => (OPENING_OPTION_KINDS as readonly string[]).includes(option.kind)), 'the kinds stay a closed set');
-});
-
-// --- C-OPENER 10.9: the plan knows what the last openings used, not only what they were offered ---
-
-const recent = (kind: "calendar" | "open-loop" | "recent-thread", topic: string, at: number): RecentOpening => ({ kind, topic, at });
-
-test('C-OPENER: a kind the last opening used inside the window is not offered again', () => {
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
-  const first = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0 });
-  assert.equal(optionOf(first, 'calendar')?.topic, '15:00 review', 'the first call of the burst offers the calendar');
-  const used: readonly RecentOpening[] = [{ ...recent('calendar', '15:00 review', NOW_3U), at: NOW_3U }];
-  const second = buildOpeningOptions({ candidates, now: NOW_3U + 120_000, timeZone: 'UTC',
-    calendar: '15:00 review', rotation: 1, recentOpenings: used });
-  assert.equal(optionOf(second, 'calendar'), undefined, 'the calendar kind the last opening used is closed inside the window');
-  assert.ok(second.options.length <= 1, 'the second call plans something else, or nothing');
-});
-
-test('C-OPENER: three calls inside the window plan three different openings, then a plain greeting', () => {
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
-  const clock = NOW_3U;
-  const first = buildOpeningOptions({ candidates, now: clock, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)] });
-  const kinds = first.options.map(option => option.kind);
-  assert.ok(kinds.includes('calendar') && kinds.length >= 2, 'the first of the burst plans more than one kind');
-  // Every kind the first call used, recorded as a key, closes for the calls that follow inside the window.
-  const used = first.options.map(option => recent(option.kind, option.topic, clock));
-  const second = buildOpeningOptions({ candidates, now: clock + 90_000, timeZone: 'UTC', calendar: '15:00 review', rotation: 1,
-    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)], recentOpenings: used });
-  assert.equal(second.options.length, 0, 'nothing new exists, so the second call offers no option at all');
-  assert.equal(second.section, '', 'and no plan section, so she opens with a plain greeting');
-});
-
-// C-PROMPT: the anti-repeat note names classes closed for this call, and the plan must offer none of them.
-test('C-PROMPT: a class closed for this call is not offered, and an open class still is', () => {
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
-  const open = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0 });
-  assert.ok(optionOf(open, 'calendar'), 'the paired valid case offers a class that is open');
-  const closed = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    closedKinds: ['calendar'] });
-  assert.equal(optionOf(closed, 'calendar'), undefined, 'a class the note closed is never offered');
-  assert.ok(optionOf(closed, 'recent-thread'), 'and a class the note left open is still offered');
-  const everyClass = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
-    closedKinds: ['calendar', 'recent-thread', 'open-loop'] });
-  assert.equal(everyClass.section, '', 'with every class closed there is no options block at all');
-  assert.deepEqual(everyClass.options, [], 'and she opens from the moment with no list');
-});
-
-// C-PROMPT: an opener is a subject, never an amount read out of a summary.
-test('C-PROMPT: a money figure in a summary never reaches an opening option', () => {
-  const figure = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice came to 4,200 dollars.')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(figure.section, '', 'a summary carrying an amount supplies no opener');
-  assert.deepEqual(figure.options, []);
-  const same = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice went out this morning.')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(same, 'recent-thread')?.topic, 'the invoice went out this morning',
-    'the paired valid case keeps the same sentence when it carries no figure');
-});
-
-// C-PROMPT: a start with nothing open carries no options block and no instruction to pick one.
-test('C-PROMPT: a start with nothing open composes no options block and greets from the moment', () => {
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [], trustedChars: BUDGET });
-  assert.equal(composed.text.includes(OPENING_OPTIONS_TITLE), false, 'no options block is composed');
-  assert.equal(composed.text.includes('Pick one of these'), false, 'and nothing tells her to pick from a list');
-  assert.match(NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
-    'the voice surface lets a call with nothing open start from the moment');
-});
-
-test('C-OPENER: an opening older than the window closes nothing, and a quick re-call closes the bit it used', () => {
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
-  const stale = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - OPENER_NOVELTY_WINDOW_MS - 1_000 }] });
-  assert.equal(optionOf(stale, 'calendar')?.topic, '15:00 review', 'an hour old opening leaves the calendar open');
-  const quick = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    recentOpenings: [{ kind: 'calendar', topic: '15:00 review', at: NOW_3U - 5_000 }] });
-  assert.equal(optionOf(quick, 'calendar'), undefined, 'a re-call five seconds after a stop does not re-run the same bit');
-});
-
-test('C-OPENER: an opening that used the same subject in different words still closes that subject', () => {
-  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    recentOpenings: [{ kind: 'recent-thread', topic: 'The invoice is still to be sent.', at: NOW_3U - 60_000 }] });
-  assert.equal(optionOf(plan, 'recent-thread'), undefined, 'the topic key, not the wording, closes the subject');
-});
-
-// --- contract 1023 N8: the plan draws on the last sessions, never on narration or a fragment -----
-
-test('1023-N8: the newest call leads the plan, and a calendar item inside six hours takes the lead', () => {
-  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.'),
-    pastSummary(1, 'The owner said the roof quote is still to be chased.')];
-  const openLoops = [storedLoop('The owner said the invoice is still to be sent.')];
-  const plain = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.deepEqual(plain.options.map(option => option.kind), ['recent-thread', 'open-loop'],
-    'the call he just had is the subject the plan leads with');
-  const near = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    calendar: '09:00 standup, 15:00 review' });
-  assert.deepEqual(near.options.map(option => option.kind), ['calendar', 'recent-thread', 'open-loop'],
-    'an event five and a half hours out still leads');
-});
-
-test('1023-N8: a calendar item more than six hours out is no opener option', () => {
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice is still to be sent.')],
-    now: NOW_3U, timeZone: 'UTC', calendar: '09:00 standup, 22:00 drinks', rotation: 0 });
-  assert.equal(optionOf(plan, 'calendar'), undefined, 'a night item never becomes the reason she speaks first');
-  assert.equal(plan.options[0]?.kind, 'recent-thread');
-});
-
-test('1023-N8: the calendar never leads two calls in a row', () => {
-  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
-    previousKinds: ['calendar', 'recent-thread'] });
-  assert.deepEqual(plan.options.map(option => option.kind), ['recent-thread', 'calendar'],
-    'the same subject twice in a row is what the owner reported');
-});
-
-test('1023-N8: the open loop is the stored column, never a cue word in a summary', () => {
-  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const stored = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(stored, 'open-loop')?.topic, 'the deposit is still to be paid', 'the stored loop is offered as written');
-  const none = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(none, 'open-loop'), undefined, 'a summary sentence is never promoted to a loop');
-});
-
-test('W4: a loop older than a day, or one a later summary finished, is never the opener', () => {
-  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const stale = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the economist sign-in is still to be done.', 48)],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(stale, 'open-loop'), undefined, 'a two-day-old loop opens no call');
-  const fresh = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(fresh, 'open-loop')?.topic, 'the deposit is still to be paid', 'a fresh loop is still offered');
-  const finished: EarlierConversationCandidate[] = [{ id: 's-later', endedAt: NOW_3U - 3_600_000,
-    summary: 'Mira found the deposit was paid on Friday.' }];
-  const resolved = buildOpeningOptions({ candidates: finished, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(resolved, 'open-loop'), undefined, 'a loop a later summary finished is dropped');
-});
-
-test('W4: the opening rule forbids crediting a past failure to the owner', () => {
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the deposit is still to be paid.')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.ok(plan.section.includes('Never say he failed, forgot or left something waiting'), 'the plan names the blame rule');
-});
-
-test('1023-N8: a narration sentence about the call itself is never an option', () => {
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0,
-    'During a call, Naya summarized the release plan. The owner said the tax form is still to be filed.')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(plan, 'recent-thread')?.topic, 'the tax form is still to be filed');
-  assert.ok(!plan.section.includes('Naya summarized'), 'the call describing itself is never the opener');
-});
-
-test('1023-N8: a candidate that does not end in a sentence stop is dropped, never clipped', () => {
-  const unterminated = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed')],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(unterminated, 'recent-thread'), undefined, 'a fragment cut mid-clause is what the owner heard');
-  const tooLong = buildOpeningOptions({ candidates: [pastSummary(0,
-    `The owner said ${'the weekly supplier reconciliation sheet '.repeat(5)}is still to be filed.`)],
-    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(optionOf(tooLong, 'recent-thread'), undefined, 'clipping at the limit would cut the sentence mid-clause');
-});
-
-test('1023-N8: a summary still pending falls back to the last owner words of the call that just ended', () => {
-  const plan = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    freshThread: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.' });
-  assert.equal(optionOf(plan, 'recent-thread')?.topic, 'The Mongoose mint delivery window moves to Friday',
-    'the topic he named last is the one she can open on before the summary lands');
-  assert.equal(plan.options.length, 1, 'no other option is invented from thin air');
-});
-
-test('C-SUMMARY8: a call still waiting for its summary is the recent thread, never the older stored one', () => {
-  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
-  const pending = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    freshThread: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.' });
-  assert.equal(optionOf(pending, 'recent-thread')?.topic, 'The Mongoose mint delivery window moves to Friday',
-    'the call that just ended names the recent thread while its summary is pending');
-  const silent = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0, freshThread: 'Okay.' });
-  assert.equal(optionOf(silent, 'recent-thread'), undefined,
-    'a pending call with no topic of its own names no older thread as recent');
-});
-
-test('3u: the plan is bounded and the composed session instruction stays under the existing limits', () => {
-  const now = NOW_3U;
-  const candidates = Array.from({ length: 5 }, (_, index) => pastSummary(index,
-    `${'Dense context about the week. '.repeat(20)}The owner said the tax form is still to be filed.`));
-  const plan = buildOpeningOptions({ candidates, now, timeZone: 'UTC', calendar: '09:00 standup, 15:00 review', rotation: 2 });
-  assert.ok(plan.section.length <= OPENING_OPTIONS_CHARS, `the plan is bounded at ${OPENING_OPTIONS_CHARS} chars (${plan.section.length})`);
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-  const earlier = buildEarlierConversationsSection(Array.from({ length: 6 }, (_, index) =>
-    ({ id: `s${index}`, endedAt: now - index * 3_600_000, summary: 'x'.repeat(400) })), { now, timeZone: 'UTC' }).section;
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [],
-    trustedChars: LIVE_INSTRUCTION_HARD_LIMIT, earlierConversations: earlier, openingOptions: plan.section });
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `session instruction ${composed.text.length} must fit the hard limit`);
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, 'and the target');
-  assert.equal(composed.sections.find(section => section.id === 'opening-options')?.chars, plan.section.length, 'the plan is measured as its own section');
-  assert.ok(composed.text.indexOf(OPENING_OPTIONS_TITLE) > composed.text.indexOf(EARLIER_CONVERSATIONS_TITLE), 'the plan is read after the stored conversation');
-});
-
-test('3u: the options a call composed can be read back from its own instruction', () => {
-  const calendar = '09:00 standup, 15:00 review';
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
-    now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
-  const read = openingOptionsTopics(plan.section);
-  assert.deepEqual(read, plan.options.map(option => ({ kind: option.kind, topic: option.topic })), 'the recorded plan yields the topics the next start names');
-  const loops = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 2)] });
-  assert.deepEqual(openingOptionsTopics(loops.section).map(option => option.topic), ['the tax form is still to be filed'],
-    'the age clause is framing, never part of the topic');
-  const stale = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 72)] });
-  assert.deepEqual(openingOptionsTopics(stale.section), [], 'a loop older than a day is no opener at all');
-  assert.deepEqual(openingOptionsTopics('no plan here'), []);
-});
-
-// 593: an opener option drawn from a stored loop carries its age and last-seen date in plain words. W4: a
-// loop older than a day is no opener at all, so it is never asked about as a current fact in the plan.
-test('593: a fresh opener loop carries its age and date, and a loop older than a day is no opener', () => {
-  const stale = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 72)] });
-  assert.equal(optionOf(stale, 'open-loop'), undefined, 'a loop older than a day is never offered');
-  assert.equal(stale.section, '', 'a stale loop adds no plan section');
-  const fresh = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop('The owner said the invoice is still to be sent.', 2)] });
-  const freshLine = fresh.section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
-  assert.ok(freshLine.includes('from 2 hours ago'), `the fresh age is carried: ${freshLine}`);
-  assert.ok(freshLine.includes('last seen open 20 Oct 2026'), `the last-seen date is carried: ${freshLine}`);
-  assert.ok(freshLine.includes('the invoice is still to be sent'), 'a loop seen two hours ago may be stated');
-  assert.ok(!freshLine.includes('is it done:'), 'a fresh loop is stated, never asked about');
-});
-
-// Release 7 W5: the record is the plan a past start wrote, so the loop it offered is dropped from the next
-// plan by its own topic. The loop stays in the earlier-conversations context; only the owner raises it.
-test('W5: an open loop a past plan already offered is not offered as an opener again', () => {
-  const filed = 'The owner said the tax form is still to be filed.';
-  const accountant = 'The owner said he still has to call the accountant.';
-  const offered = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop(filed, 2), storedLoop(accountant, 5)], alreadyOffered: ['The tax form is still to be filed'] });
-  assert.deepEqual(offered.options.map(option => option.kind), ['open-loop'], 'the other stored loop is still an opener');
-  assert.equal(offered.options[0]!.topic, 'he still has to call the accountant', `the offered loop is the one left: ${offered.options[0]!.topic}`);
-  const none = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop(filed, 2)], alreadyOffered: ['The tax form is still to be filed'] });
-  assert.deepEqual(none.options, [], 'the only stored loop was offered once, so this start offers none');
-  const fresh = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
-    openLoops: [storedLoop(accountant, 2)], alreadyOffered: ['The tax form is still to be filed'] });
-  assert.deepEqual(fresh.options.map(option => option.topic), ['he still has to call the accountant'], 'a loop never offered is still offered');
-});
-
-// 593 acceptance 3: the age is read in the owner's zone of the call, never the host zone.
-test('593: the loop date is read in the owner zone and the age from the injected clock', () => {
-  const loop = { text: 'The owner said the tax form is still to be filed.', lastSeenAt: Date.UTC(2026, 9, 19, 20, 0) };
-  const seen = (timeZone: string): string => buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone, rotation: 0, openLoops: [loop] })
-    .section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
-  assert.ok(seen('Pacific/Auckland').includes('last seen open 20 Oct 2026'), `Auckland reads the owner day: ${seen('Pacific/Auckland')}`);
-  assert.ok(seen('UTC').includes('last seen open 19 Oct 2026'), `UTC reads its own day: ${seen('UTC')}`);
-  assert.ok(seen('UTC').includes('from 13 hours ago'), `the age is the injected clock: ${seen('UTC')}`);
-});
-
-// 593 acceptance 2: no opener option and no standing line built from a loop older than 24 hours
-// states it as still unfinished.
-const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
-test('593: no opener or standing line states an old loop as still unfinished', () => {
-  for (const text of ['The owner said the tax form is still to be filed.', 'The owner said he still did not send the invoice.',
-    'The owner said he still has not called the accountant.']) {
-    const plan = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0, openLoops: [storedLoop(text, 120)] });
-    const rendered = plan.section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
-    assert.ok(!STILL_NEGATION.test(rendered), `no stale assertion in the opener: ${rendered}`);
-  }
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    now: NOW_3U, timeZone: 'UTC',
-    records: [standingRecord('standing-old', 'The owner said the tax form is still not filed.', 'open')] });
-  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
-  assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
-  assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
-});
-
-// 593: a standing note that states an open loop carries its age and the date it was last seen.
 test('593: an old standing loop carries its age and last-seen date', () => {
   const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     now: NOW_3U, timeZone: 'UTC',
@@ -1461,12 +1110,6 @@ test('W6-R1: conversation rules are paid for within each original persona sectio
   assert.ok(NAYA_VOICE_SURFACE.length <= 2300, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
 });
 
-test('C-CONVO9: tool_failure cannot become an opener topic', () => {
-  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said tool_failure remains unresolved.')],
-    openLoops: [storedLoop('The owner said tool_failure needs attention.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.doesNotMatch(JSON.stringify(plan.options), /tool_failure/);
-});
-
 test('client-mode composition retains work and spoken delivery without declared tools', () => {
   const profile = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('SYNTHETIC STYLE', 'SYNTHETIC LORE') });
   console.log(JSON.stringify({ case: 'synthetic_profile_sizes', chars: profile.text.length, toolsChars: profile.sections.find(section => section.id === 'tools')?.chars ?? 0 }));
@@ -1508,4 +1151,24 @@ test('worker instructions append composed presentation style and private owner l
   assert.equal(workerInstructions(profile), `${WORKER_INSTRUCTIONS}\n\n${context}`);
   assert.match(workerInstructions(profile), /SYNTHETIC LORE/);
   assert.equal(workerInstructions(), WORKER_INSTRUCTIONS);
+});
+
+ test('opening facts retain stable section ids and stay inside the instruction budget', () => {
+  const opening = buildOpeningFacts({ now: Date.UTC(2026, 10, 5), timeZone: 'UTC', familyNames: [], floorSubjects: [], day: ['2026-11-05 10:00 Design review'] });
+  const result = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, records: [], tools: [], trustedChars: 60000, openingFacts: opening.section, openersNote: 'Do not reopen sleep.' });
+  assert.ok(result.sections.some(section => section.id === 'opening-options'));
+  assert.ok(result.sections.some(section => section.id === 'previous-openers'));
+  assert.ok(result.text.includes('OPENING_FACTS'));
+  assert.ok(result.text.length < 60000);
+});
+
+const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
+
+test('593: standing lines never state an old loop as still unfinished', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    now: NOW_3U, timeZone: 'UTC',
+    records: [standingRecord('standing-old', 'The owner said the tax form is still not filed.', 'open')] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
+  assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
+  assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
 });

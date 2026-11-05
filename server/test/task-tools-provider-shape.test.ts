@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mongoosePublishCatalogue } from '../connectors/mongoose.js';
@@ -81,7 +81,7 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
 
 // The paid smoke must be fail-closed: a configuration that declares company endpoints and a run that
 // publishes none of them is a refusal, never a PASS on the static set alone (review finding P1).
-const smoke = (await import(new URL('../../scripts/lib/helper-provider-smoke.mjs', import.meta.url).href)) as {
+const smoke = (await import(resolve(testRoot, '../../scripts/lib/helper-provider-smoke.mjs'))) as {
   providerShapeRefusal(input: { expected: number; published: number; company: number; tools: number; static: number }): string;
 };
 

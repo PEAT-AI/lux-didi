@@ -18,7 +18,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, chmodSync, copyFileSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CAP_OUTPUT_TOKENS = 256;
 const BODY_LIMIT = 2048;
@@ -58,6 +58,32 @@ function stageConfig(sourceDir) {
     chmodSync(join(staged, entry.name), statSync(from).mode & 0o777);
   }
   return staged;
+}
+
+/**
+ * The precondition the paid request must meet: what the configuration declares has to be what the
+ * registry published, or the company declarations would ship unproved. Exported so the unit suite can
+ * hold this decision without a paid call.
+ */
+export function providerShapeRefusal(input) {
+  if (input.expected === 0) return '';
+  if (input.published < input.expected) return 'company-unpublished';
+  if (input.company === 0) return 'company-unpublished';
+  if (input.tools <= input.static) return 'company-unpublished';
+  return '';
+}
+
+/**
+ * The company endpoints this configuration declares. The proof is fail-closed: a configuration that
+ * declares them and a run that publishes none of them is a rejection, never a PASS on the static set
+ * alone, because the company declarations would then ship unproved.
+ */
+function declaredCompanyEndpoints(configDir) {
+  const file = join(configDir, 'mcp.json');
+  if (!existsSync(file)) return 0;
+  const doc = JSON.parse(readFileSync(file, 'utf8'));
+  const endpoints = Array.isArray(doc?.endpoints) ? doc.endpoints : [];
+  return endpoints.filter(entry => entry && entry.connector === 'mongoose' && entry.enabled !== false).length;
 }
 
 /** Nothing from a provider body is printed without this: no key, no owner content. */
@@ -111,11 +137,19 @@ async function main(argv) {
       await connectors.start();
       const bindings = connectors.owner.taskBindings(connectors.connectionIds());
       const company = configuredCompanyTools(bindings);
-      const registry = createRegistry(
-        { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: connectorExecutor(bindings) },
-        company,
-      );
+      const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: connectorExecutor(bindings) };
+      const staticOnly = createRegistry(ports);
+      const registry = createRegistry(ports, company);
       const tools = [...registry.values()];
+      const expected = declaredCompanyEndpoints(configDir);
+      const published = bindings.filter(binding => binding.connector === 'mongoose').length;
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      // Fail closed before the paid request: what the configuration declares must have published.
+      const refusal = providerShapeRefusal({ expected, published, company: company.length, tools: tools.length, static: staticOnly.size });
+      if (refusal) {
+        process.stderr.write(`HELPER-PROVIDER FAIL reason=${refusal} configured=${expected} published=${published} company=${company.length} tools=${tools.length} static=${staticOnly.size} seconds=${seconds}\n`);
+        return 2;
+      }
       let rejection = null;
       let usage = { input: 0, output: 0 };
       const transport = async (url, init) => {
@@ -145,7 +179,6 @@ async function main(argv) {
       } catch (error) {
         if (!rejection) throw error;
       }
-      const seconds = ((Date.now() - started) / 1000).toFixed(1);
       if (rejection) {
         process.stderr.write(`HELPER-PROVIDER FAIL status=${rejection.status} tools=${tools.length} seconds=${seconds}\n`);
         process.stderr.write(`HELPER-PROVIDER FAIL body=${JSON.stringify(rejection.body)}\n`);
@@ -156,7 +189,7 @@ async function main(argv) {
         process.stderr.write(`HELPER-PROVIDER FAIL status=completed tools=${tools.length} seconds=${seconds} calls=0 no registered tool call in the answer\n`);
         return 2;
       }
-      process.stdout.write(`HELPER-PROVIDER PASS status=completed tools=${tools.length} company=${company.length} model=${role.model} effort=${role.effort} calls=${calls.map(call => call.name).join(',')} input_tokens=${usage.input} output_tokens=${usage.output} seconds=${seconds}\n`);
+      process.stdout.write(`HELPER-PROVIDER PASS status=completed tools=${tools.length} static=${staticOnly.size} company=${company.length} configured=${expected} model=${role.model} effort=${role.effort} calls=${calls.map(call => call.name).join(',')} input_tokens=${usage.input} output_tokens=${usage.output} seconds=${seconds}\n`);
       return 0;
     } finally {
       await connectors?.close();
@@ -169,8 +202,10 @@ async function main(argv) {
 }
 
 // The connector runtime keeps sockets open after close, so the process ends on its own exit code
-// instead of waiting for the event loop to drain.
-main(process.argv.slice(2)).then(code => process.exit(code)).catch(error => {
-  process.stderr.write(`HELPER-PROVIDER ERROR ${redacted(error?.message ?? error)}\n`);
-  process.exit(1);
-});
+// instead of waiting for the event loop to drain. Importing this file (the unit suite does) runs nothing.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main(process.argv.slice(2)).then(code => process.exit(code)).catch(error => {
+    process.stderr.write(`HELPER-PROVIDER ERROR ${redacted(error?.message ?? error)}\n`);
+    process.exit(1);
+  });
+}

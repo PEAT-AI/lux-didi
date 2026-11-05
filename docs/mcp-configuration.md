@@ -58,6 +58,18 @@ The catalog's `grantMode` defaults to `explicit`. `owner-trusted-reads` is an ex
 
 A stored connection binds its endpoint, discovered schema and policy generation. New published reads can require renewed owner approval. Do not silently widen an existing grant when upgrading a child. Disabling or removing an enabled catalog entry retires its authority for new runs; restoring an entry is not permission to approve a different endpoint under its old identity.
 
+### What the last discovery published
+
+Every connect of a Mongoose endpoint publishes its tool declarations, and the host keeps them: one row
+per endpoint in `published_catalogues` in `<dataDir>/state.sqlite`, carrying each tool's name,
+description and parameters, the discovery time and a schema digest. The row is replaced at every connect,
+never appended, and a set past 512 KiB (or one where every schema was refused) is dropped instead of
+recorded, so the table holds one bounded row per configured endpoint. It is a read-only record of what
+the app published, not a grant: `tool_connections.policy_json` remains the authority a call is checked
+against, and nothing here reconnects a connector or resolves a sign-in material. The paid helper smoke
+reads it so its one request proves the declarations this build really sends, and falls back to the
+committed capture only when the host kept no record.
+
 ### What reconnects itself, and what needs the owner again
 
 Under `owner-trusted-reads` the reviewed envelope in this repository is the approval, so a release that widens a connector inside that envelope reconnects it with no CLI call: the stored row takes a new generation and `host.log` carries one `connector_envelope_widened` line with the endpoint id and the added read names. A rebuilt child that keeps its endpoint id, descriptor, account and resource may also move its own `command`, `args` and defining environment between releases; that reconnects the same way and logs `connector_endpoint_changed` with which fields moved and never a value. Shell-session variables such as `PATH` are not part of the stored endpoint identity, so relaunching the host with a different `PATH` is not an endpoint change at all.

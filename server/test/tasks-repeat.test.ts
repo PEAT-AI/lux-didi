@@ -52,12 +52,15 @@ function verified(captured: Captured[], index: number): Record<string, unknown> 
 
 test('the helper is told what she already said, and how far its chunks got', async t => {
   const captured: Captured[] = [];
-  const f = fixture(t, capture(() => ({ text: 'The first synthetic answer. A second synthetic sentence.', calls: [] }), captured));
+  // Eight short sentences exceed the 450 character chunk, so the spoken answer needs exactly two of them.
+  const answer = `${'The synthetic sampling plan is ready and two replicates per plot is enough. '.repeat(8)}`.trim();
+  const f = fixture(t, capture(() => ({ text: answer, calls: [] }), captured));
   await f.call.input('First synthetic ask', 1);
-  assert.equal(f.sent.length, 2, 'the first answer is spoken as two chunks');
+  assert.equal(f.sent.length, 1, 'only the first chunk is offered before it is accepted');
   f.call.delivery.accepted('c1');
+  assert.equal(f.sent.length, 2, 'the second chunk is offered once the first is accepted');
   await f.call.input('Second synthetic ask', 1);
-  assert.deepEqual(said(captured, 1), { text: 'The first synthetic answer. A second synthetic sentence.', accepted: 1, total: 2, truncated: false },
+  assert.deepEqual(said(captured, 1), { text: answer, accepted: 1, total: 2, truncated: false },
     'a cut answer is distinguishable from a finished one by accepted chunks of total');
 });
 
@@ -118,7 +121,7 @@ test('verified status names the last task failures with their closed codes', asy
   const captured: Captured[] = [];
   let calls = 0;
   const f = fixture(t, capture(request => {
-    if (request.input.includes('First synthetic ask') && calls++ === 0) return { text: '', calls: [{ id: 'read', name: 'chat_attention', args: {} }] };
+    if (request.input.includes('First synthetic ask') && calls++ === 0) return { text: '', calls: [{ id: 'read', name: 'chat_attention', args: { days: 7 } }] };
     return { text: 'The synthetic answer after a failed read.', calls: [] };
   }, captured), async () => failed('Synthetic connector unavailable.', 'unavailable'));
   await f.call.input('First synthetic ask', 1);

@@ -1631,7 +1631,12 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
-    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, taskMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
+    // W9 on 10.15: one owner can now span two tables in one array (tasks and discovery), so the
+    // expected table is every owner each array names, at that owner's highest version.
+    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, taskMigrations, traceMigrations]
+      .flatMap(migrations => [...new Set(migrations.map(migration => migration.owner))].map(owner =>
+        [owner, Math.max(...migrations.filter(migration => migration.owner === owner).map(migration => migration.version))]))
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 });
 
 test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {

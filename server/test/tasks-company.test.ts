@@ -234,10 +234,10 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   assert.equal(runtime.registry.has('get_company'), true, 'configured CRM must expose its repair through the actual registry');
   const revision = runtime.begin('Look up Synthetic Company in CRM', 1, 1);
   const signal = new AbortController().signal;
-  const knowledge = await runtime.runTool('search_company', { query: 'Synthetic Company', mode: 'answer' }, { ...revision.identity, operation_id: 'synthetic-knowledge-read' }, signal);
-  assert.equal(knowledge.status, 'no_match', 'the connected knowledge endpoint still completes a native read');
+  const knowledge = await runtime.runTool('search_company', { query: 'Synthetic Company', mode: 'answer', cursor: null }, { ...revision.identity, operation_id: 'synthetic-knowledge-read' }, signal);
+  assert.equal(knowledge.status, 'no_match', JSON.stringify(knowledge));
   const data = await runtime.runTool('ask_data_agent', { question: 'Synthetic business question' }, { ...revision.identity, operation_id: 'synthetic-data-read' }, signal);
-  assert.equal(data.status, 'ok', 'the connected data endpoint still completes a native read');
+  assert.equal(data.status, 'ok', JSON.stringify(data));
   const result = await runtime.runTool('get_company', {}, { ...revision.identity, operation_id: 'synthetic-crm-repair' }, new AbortController().signal);
   assert.match(JSON.stringify(result), /not_configured/);
   assert.match(JSON.stringify(result), /CRM endpoint/);

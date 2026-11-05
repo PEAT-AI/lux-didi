@@ -126,3 +126,11 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   ]);
   console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: vaultEnvelope.length }));
 });
+
+test('real short weak-candidate rows retain their id and rank without invented evidence', () => {
+  const wire = '**#115** [PATTERN] Current plan\n  Score: 0.518\n- **#89969** [TECHNICAL_DECISION] Old watering plan · superseded by #90213';
+  const result = projectTaskPayload('search_knowledge', wire, { query: 'orchid watering' });
+  assert.deepEqual(result.references.map(ref => [ref.id, ref.rank]), [['115', 1], ['89969', 2]]);
+  assert.equal(result.text, wire);
+  assert.doesNotMatch(result.text, /Score: 0\.348/, 'a short remote row has no per-hit score to reconstruct');
+});

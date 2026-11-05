@@ -13,6 +13,8 @@ export interface MongooseProjection {
   partial: boolean;
   originalCharacters: number;
   omittedCharacters: number;
+  /** Native values admitted by the same stored-payload verification as the display text. */
+  native?: { decodedResult: unknown; followUp?: { pages: readonly { decodedResult: unknown }[]; omitted?: string } };
 }
 
 export interface ConnectorStatus { state: 'configured' | 'error'; reason: string }
@@ -286,7 +288,11 @@ export function projectMongooseResult(port: McpPort, result: ConnectorResult): {
     }),
     ...(result.followUp.omitted === undefined ? {} : { omitted: result.followUp.omitted }),
   };
-  return { ok: true, projection: renderMongooseTool(data, followUp) };
+  const omitted = followUp && result.followUp && followUp.pages.length < result.followUp.pages.length ? 'unavailable_page' : followUp?.omitted;
+  return { ok: true, projection: { ...renderMongooseTool(data, followUp), native: {
+    decodedResult: data,
+    ...(followUp ? { followUp: { pages: followUp.pages.map(page => ({ decodedResult: page.data })), ...(omitted ? { omitted } : {}) } } : {}),
+  } } };
 }
 
 export type { MongooseResult };

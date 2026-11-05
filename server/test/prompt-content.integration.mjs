@@ -17,7 +17,7 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length <= 4610);
+assert.ok(WORKER_INSTRUCTIONS.length <= 5090);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }

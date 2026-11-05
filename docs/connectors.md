@@ -84,3 +84,15 @@ failures also log a closed exception class when known: refused, DNS, TLS, timeou
 HTTP status family or transport; otherwise unknown. Recovery spacing is unchanged.
 
 A late connector recovery does not itself grant access. A later task still uses the host's configured bindings and approved capabilities. Connector recovery must not make voice stall recovery more aggressive.
+
+## Company helper routes
+
+The helper searches company knowledge first with `search_company` in answer or browse mode. Native refs are opaque: `read_company` carries the ref, depth and cursor unchanged, and the helper follows pages until native coverage is complete. Reader follow-up pages are retained at the task boundary. No match, restricted records and handoffs remain native outcomes, not transport failures; suggestions and restrictions stay visible.
+
+Business metrics and KPIs go through the typed `ask_data_agent` tool and then `data_agent_job` with `op: get`. The helper presents the returned answer without recomputing or checking it with lower-level data tools. A running job stays partial with its `job_id` and `next_step`; there is no internal polling loop. A later helper call can resume the job within the existing call deadlines. No data is not zero. Mutation job operations are not exposed by the helper.
+
+`check_data_capability` is the typed coverage step before questions that may exceed available coverage; its decision and blocker codes govern the next action. `get_company` looks up CRM customers, deals and leads by native ref, a slug or canonical name. Published schemas and descriptions are retained, and grants still decide which tools exist. Generic company navigation is restricted to knowledge, explores and saved content, not metric calculation.
+
+Knowledge handoffs route only to the matching configured endpoint and granted helper capability, with at most two cross-endpoint transitions. A missing endpoint is named as a missing binding rather than a search failure. The content-free `company_bindings` host initialization line records closed knowledge/data/CRM binding flags; it contains no query, record or account content. These flags show configuration, not remote reachability. Scale figures are verified only when a tool returned them; raw reach counts remain internal.
+
+Synthetic executor-boundary coverage lives in `server/test/tasks-company.test.ts` and runs in `scripts/check-tasks.sh`. Envelope fixtures follow the Mongoose backend models, data-agent protocol and CRM integration response shapes. Fakes do not prove live endpoint availability, account authorization, provider latency or model tool choice; real-account evaluation is separate.

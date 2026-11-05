@@ -64,3 +64,15 @@ Release 10.10 retains task revisions, reads, operation receipts and delivery sta
 Task owner words, tool arguments and the helper's own final answer text are captured unconditionally in the same owner-only local database as transcripts. There is no task capture flag. Existing task pruning nulls this content in place after 30 days and records `content_pruned_at`; metadata retention remains 90 days. Revision evidence, tool results and effect-journal responses retain only byte size and a closed terminal category, never source bodies or result references. A final answer stores only its spoken text, not the helper's findings or receipts. Pruning is also applied at host startup alongside transcript retention.
 
 The final answer record holds the helper's own text. A `no_action` has no helper text; the no-lookup commentary is host text, not a helper answer.
+
+## Task audit rows and turn summaries (10.12)
+
+`didi-timeline call --audit` reads the task tables through the same private snapshot: `tasks`,
+`task_revisions`, `task_operations` and `task_deliveries`, with `task_operations.reason_code` read
+only when that column exists. The block is metadata only, and `scripts/didi-timeline` documents its
+columns in [debugging.md](debugging.md#the-task-audit-inside-call---audit-1012).
+
+`trace_turn.first_audible_at` is written by the turn's own `turn.summary` event at close, so a turn
+records the first audible moment of the whole turn even when a later provider response produced the
+answer. `trace_utterance` holds one `final=1` row per owner sentence, including a sentence the
+model's speech cut off, which is finalized from its own deltas.

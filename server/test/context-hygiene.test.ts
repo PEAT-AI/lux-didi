@@ -56,9 +56,10 @@ test('newer owner words supersede pending work while retaining their ordered con
   });
   f.bind('original'); f.finalize('Use the original synthetic selection.'); await fixtureUntil(() => inputs.length === 1, 'first owner revision');
   f.bind('corrected'); f.finalize('Correction: use the second synthetic selection.');
+  release.resolve();
   await fixtureUntil(() => inputs.length === 2, 'corrected owner revision');
   assert.ok(inputs[1]!.indexOf('original synthetic selection') < inputs[1]!.indexOf('second synthetic selection'));
-  release.resolve(); assert.equal((await f.answer()).text, 'The corrected synthetic result.'); await f.flush();
+  assert.equal((await f.answer()).text, 'The corrected synthetic result.'); await f.flush();
   const envelopes = commentaryResults(f.voice.taskAnswers);
   assert.equal(envelopes.length, 1); assert.equal(envelopes[0]?.delegationId, 'corrected');
 });

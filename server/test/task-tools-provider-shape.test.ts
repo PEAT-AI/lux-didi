@@ -81,11 +81,13 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
 
 // The paid smoke must be fail-closed: a configuration that declares company endpoints and a run that
 // publishes none of them is a refusal, never a PASS on the static set alone (review finding P1).
+const mcp = { mongoosePublishCatalogue, configuredCompanyTools };
 const smoke = (await import(resolve(testRoot, '../../scripts/lib/helper-provider-smoke.mjs'))) as {
   providerShapeRefusal(input: { expectedEndpoints: number; published: number; company: number; tools: number; static: number }): string;
   companyPlan(input: {
     endpoints: string[]; catalogues: Record<string, unknown[]>; ports: Record<string, unknown>;
     credentials: { resolve(reference: string): Promise<string | undefined> };
+    mcp: { mongoosePublishCatalogue: typeof mongoosePublishCatalogue; configuredCompanyTools: typeof configuredCompanyTools };
   }): { missing: string[]; definitions: { name: string }[] };
 };
 
@@ -104,7 +106,7 @@ test('building the company set consults no credential, so no refresh can happen'
   const capture = JSON.parse(readFileSync(join(testRoot, 'fixtures/mongoose-tools-list-literal.json'), 'utf8')) as Record<string, unknown[]>;
   let touched = 0;
   const credentials = { resolve: async () => { touched += 1; throw new Error('a sign-in material must never be resolved here'); } };
-  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'data', 'crm'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials });
+  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'data', 'crm'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials, mcp });
   assert.deepEqual(plan.missing, []);
   assert.ok(plan.definitions.some(item => item.name === 'get_company'), 'the cached crm discovery is missing from the company set');
   assert.equal(touched, 0);
@@ -113,7 +115,7 @@ test('building the company set consults no credential, so no refresh can happen'
 // Ruling W1-R5: a configured endpoint with no cached discovery fails closed, and it is never skipped.
 test('a configured endpoint without cached discovery is named, not skipped', async () => {
   const capture = JSON.parse(readFileSync(join(testRoot, 'fixtures/mongoose-tools-list-literal.json'), 'utf8')) as Record<string, unknown[]>;
-  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'frontier'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials: { resolve: async () => undefined } });
+  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'frontier'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials: { resolve: async () => undefined }, mcp });
   assert.deepEqual(plan.missing, ['frontier']);
   assert.deepEqual(plan.definitions, []);
 });

@@ -29,9 +29,15 @@ function claimsComplete(trace) {
     !/\b(not|cannot|can't|couldn't|incomplete|partial|unavailable)\b/i.test(sentence) &&
     /\b(everything|exhaustive|nothing else|(?:all|every) (?:the |of the )?(?:decisions?|results?|records?|items?|documents?|answers?)|complete (?:answer|list|results?|coverage)|full (?:answer|list))\b/i.test(sentence));
 }
-// Conservative closed forms: a no-match tool result is not evidence for other assertions.
-function abstentionOnly(text) {
-  return /^(?:no (?:match(?:es)?|results?|records?|documents?)(?: (?:was |were )?found)?|i (?:could not|couldn't|cannot|can't) find (?:a match|any results?)|(?:access|this source|the source) is restricted|i (?:do not|don't) have access(?: to (?:this|that|the) source)?)[.!?]*$/i.test(text.trim());
+// Score every sentence, not just a no-match keyword. Private required-fact
+// alternatives can explicitly accept a full abstention that the defaults do not know.
+function abstentionOnly(text, requiredFacts) {
+  const normalized = value => value.trim().replace(/[.!?]+$/, '').toLocaleLowerCase();
+  const accepted = requiredFacts.flat().map(normalized);
+  if (accepted.includes(normalized(text))) return true;
+  const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
+  return sentences.length > 0 && sentences.every(sentence => accepted.includes(normalized(sentence)) ||
+    /^(?:no (?:match(?:es)?|results?|records?|documents?)(?: (?:was |were )?found)?|i found no (?:matching )?(?:records?|results?|documents?|matches)|i (?:could not|couldn't|cannot|can't) find (?:a match|any results?)|i (?:cannot|can't|could not|couldn't) answer (?:that|this)(?: from (?:this|that|the) source)?|(?:access|this source|the source) is restricted|i (?:do not|don't) have access(?: to (?:this|that|the) source)?)$/i.test(sentence));
 }
 export function score(q, trace) {
   const findings = trace.findings ?? [];
@@ -43,7 +49,7 @@ export function score(q, trace) {
   const source = q.expected_sources.every(source => findings.some(f => f.source === source));
   const opened = q.expected_refs.length === 0 || q.expected_refs.some(ref => (trace.opened ?? []).includes(ref));
   const facts = q.required_facts.every(alts => alts.some(f => includes(trace.text, f)));
-  const abstain = ['abstain', 'restricted'].includes(q.kind) && normal && source && abstentionOnly(trace.text) && trace.status === 'complete';
+  const abstain = ['abstain', 'restricted'].includes(q.kind) && normal && source && abstentionOnly(trace.text, q.required_facts) && facts && trace.status === 'complete';
   const correct = !hard && (['abstain', 'restricted'].includes(q.kind) ? abstain : (!unavailable && source && opened && facts && trace.status === 'complete'));
   return { right_source: source, right_hit: opened || abstain, required_facts: facts, hard_fail: hard, correct, outcome: hard ? 'hard_fail' : q.kind === 'capability' && unavailable ? 'unavailable' : correct ? 'correct' : 'miss' };
 }

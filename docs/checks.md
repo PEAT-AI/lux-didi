@@ -448,7 +448,12 @@ expectation lists are allowed. Fact checks are case-insensitive substring
 checks, not a semantic judge. Review private traces for paraphrases. A retrieved
 search hit alone does not count as opened. Empty/no-match or restricted connector
 outcomes can justify abstention only when the answer itself is an explicit,
-conservative no-match/restricted response, not an unsupported factual answer; unavailable capability is reported separately
+no-match/restricted response, not an unsupported factual answer. Every sentence
+must be an abstention, so appending fabricated facts cannot pass. Ordinary
+paraphrases are supported; for other legitimate wording, private
+`required_facts` alternatives may specify an accepted full abstention response
+(or each accepted sentence). These are exact case-insensitive full-answer or
+full-sentence matches, not substring permission for additional assertions; unavailable capability is reported separately
 from a miss. Structured job status determines incomplete coverage wherever supplied,
 including a running/failed job inside a successful tool response; source prose
 is not parsed for job state. Incomplete coverage plus an exhaustive claim, forbidden facts and

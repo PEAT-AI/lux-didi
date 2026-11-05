@@ -13,7 +13,8 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { CONNECTOR_DEADLINE_MS } from '../tasks/worker.js';
+import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_BUDGET_MS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 
@@ -51,9 +52,9 @@ async function approve(registry: McpRegistry, adapter: ReturnType<typeof createM
   return approveWithout(registry, adapter, MATTERMOST_TOOLS);
 }
 
-function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string, names: readonly string[] = [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL]) {
+function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string, names: readonly string[] = [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL], budgetMs?: number) {
   // #604: the registry grant holds the published child names; the approved policy names the composite.
-  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names } });
+  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names }, ...(budgetMs === undefined ? {} : { attentionBudgetMs: budgetMs }) });
 }
 
 function digest(result: { state: string; decodedResult?: unknown }): MattermostAttention {
@@ -257,6 +258,82 @@ test('#610: a search asks for at most the child maximum and reads newest first',
   const [first] = f.calls().filter(call => call.name === 'mattermost_search');
   assert.equal(first?.arguments['limit'], 50, 'a limit over the child maximum is clamped, never sent');
   assert.equal(first?.arguments['sort'], 'newest');
+});
+
+// #1016: a slow wave used to end the whole attention read with a task timeout, throwing away every wave
+// that had answered. The scan now ends at its own budget and returns what it found, with the gap named.
+test('#1016: a stalled child yields the waves that answered, with the missing wave named', async t => {
+  const f = setup('stall-thread');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The stalled thread read answers after six seconds, so only the scan's own budget can end it here.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from threads/u, 'the coverage line names the wave that did not finish');
+  // The other threads in the same wave answered: their items are kept, never dropped with the stalled one.
+  assert.deepEqual(summaries(view.items), ['thread dana I can take it tomorrow morning', 'dm dana sent you the deck for review', 'mention dana @owner-chat can you confirm the 3k release?'], 'the waves that answered are kept');
+  const rendered = renderAttention(view);
+  assert.match(rendered.text, /^note: .*no answer from threads/u, 'the model reads the coverage line before the items');
+});
+
+// A budget end inside a wave must keep the siblings that answered there, not just the earlier waves.
+test('#1016: a stalled conversation keeps the history that answered in the same wave', async t => {
+  const f = setup('stall-dm');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled history (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the coverage line names the stalled wave');
+  assert.deepEqual(summaries(view.items), ['dm ravi sent the retest notes', 'mention dana @owner-chat can you confirm the 3k release?'], 'the history that answered is kept');
+});
+
+// The identity read is a child call too: the budget is armed before it, so a slow whoami ends the scan
+// there, named and partial, instead of running the waves past the task's read stop.
+test('#1016: an identity read that spends the budget ends the scan, named', async t => {
+  const f = setup('slow-identity');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 1_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The identity read answers after two seconds, against a 1,000 ms budget and the child's own 5 s stop.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not after the waves (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a spent budget is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from the identity read/u, 'the coverage line names the identity read');
+  assert.deepEqual(view.items, [], 'no wave ran once the budget was spent');
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_search'), [], 'no wave child call follows a spent budget');
+});
+
+// The budget must end the scan before the task layer stops the read, or the evidence is thrown away again.
+test('#1016: the attention budget ends the scan below the task read stop', () => {
+  assert.ok(MATTERMOST_ATTENTION_BUDGET_MS < CONNECTOR_DEADLINE_MS, 'the scan ends before the task layer stops the read');
+});
+
+// Owner rule: direct and group conversations only, never the whole channel list.
+test('#1016: attention reads one direct and group page, never the whole channel list', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  await r.attention({});
+  const lists = f.calls().filter(call => call.name === 'mattermost_list_channels');
+  assert.equal(lists.length, 1, 'one filtered page, never an unfiltered list');
+  assert.deepEqual(lists[0]?.arguments, { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels });
+});
+
+// A budget end is partial; a child that fails is a failure, and the two are never confused.
+test('#1016: a failing child is still a failure, never a partial digest', async t => {
+  const f = setup('error-mentions');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  const result = await r.attention({});
+  assert.notEqual(result.state, 'completed', 'an upstream failure stays a failure');
+  assert.equal('decodedResult' in result ? (result.decodedResult as { items?: unknown }).items : undefined, undefined, 'no digest stands in for a failure');
 });
 
 // #604: a fixture that does not publish the thread read leaves the composite ungranted, and the

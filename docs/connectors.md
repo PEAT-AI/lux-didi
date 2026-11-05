@@ -29,6 +29,8 @@ For Google, Gmail, Calendar and Drive retain distinct endpoint identities. The h
 
 A connected Mattermost archive may not expose every newer person or conversation read. The implementation must report that limitation instead of inventing a match. `server/connectors/mattermost.ts` owns capability handling, and `server/tools/mattermost.ts` owns the resulting projection. Do not use a draft PR number as a runtime capability test.
 
+The attention read fans out to many child calls in three dependent waves, so it runs under its own budget (`MATTERMOST_ATTENTION_BUDGET_MS`, below the task layer's 12 s connector read stop). A wave that has not answered when the budget ends is named in a coverage line and the digest returns the evidence it has, marked incomplete; a budget end is never a timeout and never a child failure.
+
 Mongoose knowledge, data and CRM are separate OAuth resources with separate sign-ins. The admin endpoint is not a supported source. A successful sign-in to one resource is not proof that another is ready.
 
 Drive setup is optional and requires its own consent. When it is unavailable, a lookup must report that limitation, not turn it into a successful empty search. [mcp-configuration.md](mcp-configuration.md) owns setup details; [debugging.md](debugging.md) owns failure diagnosis.

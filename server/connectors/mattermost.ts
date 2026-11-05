@@ -51,6 +51,12 @@ export const MATTERMOST_CHAT = { days: 30, limit: 8, maxOffset: 1000, maxPeople:
 
 /** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
 export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 10, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
+/**
+ * #1016: the attention scan's own budget, under the task layer's 12 s connector read stop
+ * (server/tasks/worker.ts CONNECTOR_DEADLINE_MS). Its three waves fan out to 21 child calls, so a slow
+ * wave used to end the whole read with a timeout and throw away the waves that had answered.
+ */
+export const MATTERMOST_ATTENTION_BUDGET_MS = 10_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The channel index ceiling: a child that never reports exhaustion must not be paged forever. */
@@ -116,7 +122,7 @@ export interface AttentionItem {
   snippet: string;
 }
 /** The digest the attention view renders: newest first, one line per item. */
-export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once. */ missing?: string }
+export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once, and #1016: the waves the budget ended under. */ missing?: string; /** #1016: a wave of the scan did not answer inside the budget, so the digest is partial. */ sourceIncomplete?: boolean }
 
 /** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group, one thread. */
 export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group' | 'thread' | 'topics';
@@ -174,7 +180,7 @@ export interface MattermostReader {
 /** W1030: a draft names a channel or a person, never both, and carries no send. */
 export interface MattermostDraftInput { channelId?: string; dmUsername?: string; rootId?: string; message: string }
 
-export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig; now?: (() => number) | undefined }
+export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig; now?: (() => number) | undefined; /** #1016: the attention scan's budget; the shipped default is MATTERMOST_ATTENTION_BUDGET_MS. */ attentionBudgetMs?: number | undefined }
 
 // W1030: the endpoint's published catalog may be its reads, its draft family or both, so the known set
 // is the read envelope plus the draft envelope; which names a grant may cover stays the policy's.

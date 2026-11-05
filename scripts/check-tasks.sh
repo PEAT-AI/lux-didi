@@ -20,3 +20,6 @@ DIDI_TEST_SOURCE_ROOT="$root/server/test" node_test_files --test-reporter=tap --
 
 cd "$root"
 bash scripts/check-combined-tree.sh --selftest
+
+# The worker guidance is pinned by the prompt unit and rendered-content contracts.
+bash scripts/check-prompt.sh

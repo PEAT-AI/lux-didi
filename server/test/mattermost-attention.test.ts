@@ -414,8 +414,9 @@ test('C-W17: a first-wave budget end keeps the answered searches and names only 
   assert.match(view.missing ?? '', /no answer from channel_list/u, 'the coverage line names the leg that did not answer');
   // F2: the later waves never ran, so the coverage line must name them too, or docs/connectors.md:32
   // ("the wave has not answered") would be true for one wave and false for the other two.
-  assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the second wave never ran, so it is named');
-  assert.match(view.missing ?? '', /no answer from threads/u, 'the third wave never ran, so it is named');
+  // One "no answer from" prefixes the whole list, so the later waves are asserted by name.
+  assert.match(view.missing ?? '', /, moved_conversations\b/u, 'the second wave never ran, so it is named');
+  assert.match(view.missing ?? '', /, threads\b/u, 'the third wave never ran, so it is named');
   assert.doesNotMatch(view.missing ?? '', /mentions|own_written/u, 'the searches answered, so they are never named');
   // Both searches answered and their evidence is consumed: before the fix the digest dropped every item
   // and named 'mentions, threads', so a kept mention item is the observable difference.

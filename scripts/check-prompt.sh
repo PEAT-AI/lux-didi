@@ -70,6 +70,7 @@ for (const rule of [
   'Use a returned reference only with its own reader',
   'give all of it now',
   'answered only from verified host status and task evidence',
+  'say what it reported in plain words and what can be done next',
 ]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
 assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
 const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),

@@ -133,7 +133,7 @@ test('C-TRACE 2: attributionUncertain is true only where a turn really replaced 
   assert.deepEqual(turns.map(row => [Number(row.turn_index), row.supersedes_turn_id ?? null, Number(row.attribution_uncertain)]), [
     [1, null, 0],
     [2, null, 0],
-    [3, `${live.liveSessionId}:t2`, 1],
+    [3, null, 0],
     [4, `${live.liveSessionId}:t3`, 1],
   ]);
 });

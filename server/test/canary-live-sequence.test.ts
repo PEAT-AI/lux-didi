@@ -62,7 +62,7 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   assert.ok(report.failed > 0);
   const steps = events.filter(event => event['event'] === 'canary_step');
   assert.deepEqual(steps.map(event => event['step']), ['ready_wait', 'ready_waited', 'ask_injected', 'settled', 'terminal']);
-  const persisted = readFileSync(hostLog.path, 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>).filter(event => event['event'] === 'canary_step');
+  const persisted = readFileSync(join(dir, 'logs/host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>).filter(event => event['event'] === 'canary_step');
   assert.equal(persisted.length, steps.length, 'no actual step emitter is dropped before host.log');
   for (const [index, event] of steps.entries()) {
     assert.deepEqual(Object.keys(event).sort(), ['callId', 'code', 'event', 'ms', 'step']);

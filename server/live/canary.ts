@@ -1,6 +1,6 @@
 import { setTimeout as pause } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
-import { attachHostLogSink } from '../tools/host-events.js';
+import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService } from '../http/live-upgrade.js';
 import { CANARY_SESSION_KEY_PREFIX } from '../domain/history-lifecycle.js';
@@ -214,6 +214,11 @@ export async function runCanaryAsks(asks: LegacyCanaryAsk[], port: CanaryPort, s
   return { lines, passed, failed: asks.length - passed, providerTurns };
 }
 
+/** Diagnostic codes only: never copy an exception's free-form payload into host.log. */
+export function canaryFailureCode(error: unknown): string {
+  const value = record(error) && typeof error['code'] === 'string' ? error['code'] : error instanceof Error ? error.message : undefined;
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? value : 'untyped_error';
+}
 type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms: number };
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
@@ -257,11 +262,16 @@ export class InstalledCanary {
     session.running = true;
     const readyStarted = this.now();
     const readyDeadline = readyStarted + 10_000;
+    hostLogEvent({ event: 'canary_step', step: 'ready_wait', callId: id, ms: 0 });
     while (!session.abort.signal.aborted && !this.live.providerReady?.(id) && !this.live.snapshot(id).terminal && this.now() < readyDeadline) {
       try { await this.wait(session.abort.signal); } catch { break; }
     }
+    hostLogEvent({ event: 'canary_step', step: 'ready_waited', callId: id, ms: Math.max(0, this.now() - readyStarted) });
     if (!this.live.providerReady?.(id)) {
-      const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=none code=provider_not_ready ms=${Math.max(0, this.now() - readyStarted)}`);
+      const terminal = this.live.snapshot(id).terminal;
+      const code = terminal && 'code' in terminal ? terminal.code : session.expired ? 'canary_shutdown_timer' : 'provider_not_ready';
+      hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code, ms: Math.max(0, this.now() - readyStarted) });
+      const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=none code=${code} ms=${Math.max(0, this.now() - readyStarted)}`);
       lines.push(`CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0 callId=${id} terminalReason=${session.expired ? 'canary_shutdown_timer' : 'clean_close'}`);
       this.shutdown();
       return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
@@ -273,6 +283,7 @@ export class InstalledCanary {
     const detach = attachHostLogSink({ event: raw => {
       if (record(raw) && (raw['event'] === 'task_settled' || raw['event'] === 'task_inference_failed')) {
         settled = true;
+        hostLogEvent({ event: 'canary_step', step: 'settled', callId: id, code: typeof raw['code'] === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(raw['code']) ? raw['code'] : raw['status'] === 'complete' ? 'complete' : 'task_incomplete', ms: Math.max(0, this.now() - readyStarted) });
         if (raw['event'] === 'task_inference_failed' || raw['status'] !== 'complete') failed++;
       }
     } });
@@ -280,7 +291,10 @@ export class InstalledCanary {
       for (const ask of session.asks) {
         settled = false;
         const started = this.now();
-        for (const final of ask.finals) this.live.text(final);
+        for (const final of ask.finals) {
+          this.live.text(final);
+          hostLogEvent({ event: 'canary_step', step: 'ask_injected', callId: id, ms: Math.max(0, this.now() - started) });
+        }
         while (!settled && !session.abort.signal.aborted && !this.live.snapshot(id).terminal && this.now() - started < 60_000) {
           try { await this.wait(session.abort.signal); } catch { break; }
         }
@@ -288,8 +302,13 @@ export class InstalledCanary {
       }
       const terminal = this.live.snapshot(id).terminal;
       const terminalReason = session.expired ? 'canary_shutdown_timer' : terminal ? ('code' in terminal ? terminal.code : terminal.state) : 'clean_close';
+      hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code: terminalReason, ms: Math.max(0, this.now() - readyStarted) });
       const lines = [`CANARY SUMMARY pass=0 fail=${failed} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id} terminalReason=${terminalReason}`];
       return { lines, passed: 0, failed, providerTurns: canarySessions.progress(id)?.turns ?? 0 };
+    } catch (error) {
+      const code = canaryFailureCode(error);
+      hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code, ms: Math.max(0, this.now() - readyStarted) });
+      return { lines: [...session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=none code=${code} ms=${Math.max(0, this.now() - readyStarted)}`), `CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0 callId=${id} terminalReason=${code}`], passed: 0, failed: session.asks.length, providerTurns: 0 };
     } finally {
       detach();
       // Explicitly end our private call after observation or timeout. A revoked

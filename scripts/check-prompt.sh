@@ -45,7 +45,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 4103);
+assert.ok(worker.length <= 4610);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
@@ -70,6 +70,13 @@ for (const rule of [
   'Use a returned reference only with its own reader',
   'give all of it now',
   'answered only from verified host status and task evidence',
+  // C-REPEAT: a follow-up is judged, an already spoken answer is not written again, and state comes from facts.
+  'A follow-up that asks something new is read together with the task before it',
+  'Words that add no new ask, agreement and an unfinished sentence among them, return no_action',
+  'What is listed as already said is his: never write it again',
+  'A cut answer may continue from where it stopped',
+  'widen the sources, open what was only a pointer, and say what changed',
+  'when the status says nothing is running, say that nothing is running and give the real outcome',
 ]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
 assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
 const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),

@@ -138,3 +138,17 @@ test('the helper carries the people section and never the owner lore', async t =
   assert.match(instructions, /Ada Moss/);
   assert.doesNotMatch(instructions, /SYNTHETIC OWNER LORE/, 'no lore reaches the helper');
 });
+
+test('the follow-up rules are judgments the helper applies, never lines to say', async () => {
+  const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
+  for (const rule of [
+    'A follow-up that asks something new is read together with the task before it',
+    'Words that add no new ask, agreement and an unfinished sentence among them, return no_action',
+    'What is listed as already said is his: never write it again',
+    'A cut answer may continue from where it stopped',
+    'widen the sources, open what was only a pointer, and say what changed',
+    'when the status says nothing is running, say that nothing is running and give the real outcome',
+  ]) assert.ok(WORKER_INSTRUCTIONS.includes(rule), rule);
+  assert.doesNotMatch(WORKER_INSTRUCTIONS, /A short follow-up refers to the task before it/);
+  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/, 'no quoted line for her to say');
+});

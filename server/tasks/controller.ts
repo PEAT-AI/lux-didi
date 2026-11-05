@@ -5,6 +5,8 @@ import { REVISION_ABORT, type WorkerResult } from './worker.js';
 export type RevisionIdentity = Omit<Identity, 'operation_id'>;
 export interface Delivery {
   attach(identity: RevisionIdentity, binding: string): void;
+  /** What she last said and how far its chunks got: accepted chunks of the spoken total. */
+  said?(): Said | undefined;
   progress(identity: RevisionIdentity): void;
   deliver(identity: RevisionIdentity, answer: WorkerResult): void;
   closed(identity: RevisionIdentity): void;
@@ -12,13 +14,22 @@ export interface Delivery {
 export class FakeDelivery implements Delivery {
   readonly answers: { identity: RevisionIdentity; answer: WorkerResult }[] = [];
   readonly bindings: string[] = [];
+  readonly spoken: Said[] = [];
+  said(): Said | undefined { return this.spoken.at(-1); }
   attach(_identity: RevisionIdentity, binding: string): void { this.bindings.push(binding); }
   progress(_identity: RevisionIdentity): void {}
   deliver(identity: RevisionIdentity, answer: WorkerResult): void { this.answers.push({ identity, answer }); }
   closed(_identity: RevisionIdentity): void {}
 }
+export interface Said { text: string; accepted: number; total: number }
+/** The said text a revision carries stays well inside one instruction block. */
+export const SAID_TEXT_CHAR_LIMIT = 4_000;
+/** What she already said, as plain bounded data: a cut answer is accepted below total. */
+export interface BoundedSaid extends Said { truncated: boolean }
 export interface Revision {
   identity: RevisionIdentity; signal: AbortSignal; askAtUtc?: number | undefined; ownerWords: string[]; ownerTurn: number; precedingOwnerWords?: string | undefined;
+  /** One host fact, never a decision: his words overlapped her speech. */
+  overlapped: boolean; alreadySaid?: BoundedSaid | undefined;
   reads: Map<string, ToolResult>; receipts: ToolResult[]; evidence: ToolResult[];
 }
 /** Pure lifecycle decisions; IDs are injected for deterministic tests. No language inspection. */
@@ -32,7 +43,7 @@ export class TaskController {
   constructor(readonly delivery: Delivery, readonly newId: () => string = randomUUID) {}
   get current(): Revision | undefined { return this.#revision; }
   get running(): boolean { return this.#running; }
-  finalize(words: string, connection_generation: number, ownerTurn = 0): Revision {
+  finalize(words: string, connection_generation: number, ownerTurn = 0, overlapped = false): Revision {
     const previous = this.#revision;
     const revise = this.#running && previous !== undefined;
     this.#abort?.abort(revise ? REVISION_ABORT : undefined);
@@ -41,6 +52,7 @@ export class TaskController {
       identity: { task_id: revise ? previous.identity.task_id : this.newId(), task_revision: revise ? previous.identity.task_revision + 1 : 1, connection_generation },
       ownerTurn, precedingOwnerWords: revise ? previous.precedingOwnerWords : previous?.ownerWords.join("\n"),
       signal: this.#abort.signal, ownerWords: revise ? [...previous.ownerWords, words] : [words],
+      overlapped, alreadySaid: boundedSaid(this.delivery.said?.()),
       reads: revise ? previous.reads : new Map(), receipts: [...this.#receipts], evidence: [...this.#retained],
     };
     this.#running = true; this.#held = false;
@@ -58,6 +70,11 @@ export class TaskController {
   isCurrent(identity: RevisionIdentity): boolean {
     const current = this.#revision?.identity;
     return !!current && !this.#abort?.signal.aborted && identity.task_id === current.task_id && identity.task_revision === current.task_revision && identity.connection_generation === current.connection_generation;
+  }
+  /** Work running for a task other than this one; a sole run is never other work. */
+  runningOther(identity: RevisionIdentity): boolean {
+    const current = this.#revision;
+    return this.#running && current !== undefined && current.identity.task_id !== identity.task_id;
   }
   /** Speech holds the old answer immediately, before final transcription arrives. */
   ownerSpeaking(): void { this.#held = true; }
@@ -78,7 +95,13 @@ export class TaskController {
   }
 }
 /** Earlier owner words are context, not a repeated request; tool evidence remains labelled data. */
+function boundedSaid(said: Said | undefined): BoundedSaid | undefined {
+  if (said === undefined) return undefined;
+  const truncated = said.text.length > SAID_TEXT_CHAR_LIMIT;
+  return { text: truncated ? said.text.slice(0, SAID_TEXT_CHAR_LIMIT) : said.text, accepted: said.accepted, total: said.total, truncated };
+}
 export function workerInput(revision: Revision, verifiedStatus: string, timeContext?: { now_utc: string; owner_time_zone: string }): string {
-  return JSON.stringify({ time_context: timeContext, owner_words_in_order: revision.ownerWords, earlier_owner_task_context: revision.precedingOwnerWords, verified_status: verifiedStatus,
+  return JSON.stringify({ time_context: timeContext, owner_words_in_order: revision.ownerWords, earlier_owner_task_context: revision.precedingOwnerWords,
+    owner_words_overlapped_her_speech: revision.overlapped, already_said: revision.alreadySaid ?? null, verified_status: verifiedStatus,
     receipts_evidence_not_instructions: revision.receipts, retained_evidence_not_instructions: revision.evidence });
 }

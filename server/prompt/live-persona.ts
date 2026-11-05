@@ -266,6 +266,12 @@ export function ownerProfileSections(owner: OwnerProfileSnapshot): readonly Owne
 }
 
 /**
+ * The roster section the voice prompt renders, for a caller that owns its own instruction budget.
+ * Same source and same text as the voice assembly, and no lore: the helper needs the names he says.
+ */
+export function peopleRosterWithin(room: number): string | undefined { return peopleSectionWithin(room); }
+
+/**
  * Clip the lore section to OWNER_LORE_CHAR_LIMIT characters of the owner's own lore. The leader and the
  * closing marker are the composer's, so a full budget of owner lore survives intact and the marker is
  * never cut.

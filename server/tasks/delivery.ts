@@ -1,4 +1,4 @@
-import type { Delivery, RevisionIdentity } from './controller.js';
+import type { Delivery, RevisionIdentity, Said } from './controller.js';
 import type { WorkerResult } from './worker.js';
 /** Acceptance confirms timeline receipt, not wording or audibility. */
 export type DeliveryState = 'sent' | 'accepted' | 'retry' | 'undelivered';
@@ -33,7 +33,10 @@ export class TaskDelivery implements Delivery {
   #ready = true;
   #quiet = true;
   #owner = false;
+  /** What she said last and how far its chunks got; kept for the next ask and across a rebuild. */
+  #said: Said | undefined;
   constructor(readonly ports: DeliveryPorts) {}
+  said(): Said | undefined { return this.#said; }
   waitingAnswer(): { identity: RevisionIdentity; text: string } | undefined {
     const pending = this.#current();
     return pending && !pending.requiresDelegation ? { identity: pending.identity, text: pending.chunks.slice(pending.chunk).join(' ') } : undefined;
@@ -60,7 +63,9 @@ export class TaskDelivery implements Delivery {
     const noLookup = answer.status === 'no_action' || !answer.text.trim();
     const text = noLookup ? NO_LOOKUP_COMMENTARY : answer.text;
     if (!text.trim()) return;
-    this.#pending = { identity, answer, chunks: splitSpokenText(text), chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
+    const chunks = splitSpokenText(text);
+    this.#said = { text: answer.text, accepted: 0, total: chunks.length };
+    this.#pending = { identity, answer, chunks, chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {
@@ -69,6 +74,7 @@ export class TaskDelivery implements Delivery {
   accepted(command: string): void {
     const pending = this.#current(); if (!pending || pending.command !== command) return;
     this.ports.state(pending.identity, 'accepted', pending.chunk);
+    if (this.#said !== undefined) this.#said.accepted = pending.chunk + 1;
     if (++pending.chunk === pending.chunks.length) { this.#pending = undefined; return; }
     pending.command = undefined; pending.attempt = 0; this.#drain();
   }

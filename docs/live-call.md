@@ -168,7 +168,7 @@ The runtime context carries one compact line of live connector state per family,
 
 The Live voice receives speech-ready results from the host-owned helper rather than calling source tools itself. The helper performs the typed tool work; the voice reads its result completely, retaining names, numbers, dates and qualifications. A partial result, a gap or a failure must remain explicit rather than becoming a claim that the work succeeded.
 
-The 4,610-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
+The 6,214-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
 
 ### What she already said (C-REPEAT)
 
@@ -192,10 +192,8 @@ is actually waiting, and it is never silent.
 The helper receives the same people roster text the voice prompt renders, from the same source and without the
 owner lore, so a first name he says resolves to the right person on the first search. `workerInstructions`
 appends the roster only when a roster is installed, bounded by the same `PEOPLE_CHAR_LIMIT` of 6,000 characters
-the voice prompt uses; a synthetic roster of one person adds 69 characters to a block that measures 4,610
+the voice prompt uses; a synthetic roster of one person adds 69 characters to a block that measures 6,214
 characters without one.
-The 5,090-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
-The 4,600-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
 
 Fresh session recovery uses the call transcript seed built by `LiveSessionOwner.#rebuildSeed` and `#seedHistory`. The current seed contains transcript turns only; it adds no separate helper-result ledger. Session recovery and a helper's follow-up tool reads are distinct operations, and recovery does not grant authority to replay an uncertain remote write.
 

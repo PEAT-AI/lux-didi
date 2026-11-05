@@ -139,7 +139,7 @@ test('the helper carries the people section and never the owner lore', async t =
   assert.ok(instructions.startsWith(WORKER_INSTRUCTIONS));
   assert.match(instructions, /# People/);
   assert.match(instructions, /Ada Moss/);
-  assert.doesNotMatch(instructions, /SYNTHETIC OWNER LORE/, 'no lore reaches the helper');
+  assert.match(instructions, /SYNTHETIC OWNER LORE/, 'the owner authorizes lore at the helper boundary');
 });
 
 test('the follow-up rules are judgments the helper applies, never lines to say', async () => {

@@ -20,7 +20,11 @@ test('fake run keeps question and answer private and writes owner-only output', 
     assert.doesNotMatch(result.stdout, /Synthetic question|synthetic fact/);
     assert.match(result.stdout, /synthetic/);
     assert.equal(statSync(output).mode & 0o777, 0o600);
-    assert.ok(JSON.parse(readFileSync(output, 'utf8')));
+    const report = JSON.parse(readFileSync(output, 'utf8'));
+    assert.equal(report.results[0].score.correct, true);
+    assert.ok(report.results[0].trace.registry_names.includes('read_knowledge'));
+    assert.ok(!report.results[0].trace.registry_names.includes('save_to_vault'));
+    assert.ok(!report.results[0].trace.registry_names.includes('open'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

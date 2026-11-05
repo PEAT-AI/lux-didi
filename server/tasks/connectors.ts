@@ -34,7 +34,7 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum) }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'voice', snippet_chars: 600 }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },

@@ -69,7 +69,7 @@ test('fresh vault source defaults sensitive without widening another connector o
   const { loadMcpEndpoints } = await import('../config/mcp.js');
   const dir = mkdtempSync(join(tmpdir(), 'vault-default-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const base = { url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null, enabled: true, allowEgress: true };
+  const base = { transport: 'http', url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null, enabled: true, allowEgress: true };
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, endpoints: [
     { ...base, id: 'vault', connector: 'lux-knowledge' },
     { ...base, id: 'other', connector: 'synthetic' },

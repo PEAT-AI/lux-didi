@@ -1127,7 +1127,8 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
   assert.equal(rendered.includes('other-call'), false);
 });
 
-test('call audit lists inference attempts and counts only the selected call', () => {
+test('call audit lists inference attempts and counts only the selected call', async () => {
+  const { createRequire } = await import('node:module');
   const { buildTaskAudit, renderTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
   const base = { taskId: 'synthetic', stage: 'inference', callId: 'synthetic-call' };
   const rows = [

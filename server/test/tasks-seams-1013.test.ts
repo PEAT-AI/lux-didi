@@ -41,24 +41,31 @@ test('superseded inference is cancelled without a provider failure', async () =>
   const { attachHostLogSink } = await import('../tools/host-events.js');
   const rows: any[] = [];
   const detach = attachHostLogSink({ event: row => rows.push(row) });
-  const abort = new AbortController();
+  const { TaskController, FakeDelivery } = await import('../tasks/controller.js');
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-superseded');
+  const first = controller.finalize('synthetic first', 1);
   let entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   try {
     const pending = runWorker({ registry: new Map(),
-      identity: { task_id: 'synthetic-superseded', task_revision: 1, connection_generation: 1 },
-      input: 'synthetic request', signal: abort.signal,
+      identity: first.identity,
+      input: 'synthetic request', signal: first.signal,
       infer: async () => { entered(); return new Promise(() => {}); },
       profile: { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic',
         style: { text: '', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'ordinary' } } });
     await started;
-    abort.abort();
+    const second = controller.finalize('synthetic second', 1);
     const result = await pending;
     assert.equal(result.status, 'cancelled');
     assert.equal(result.failure, undefined);
     assert.deepEqual(result.failures, []);
     assert.equal(rows.filter(row => row.event === 'task_inference_failed').length, 0);
-    assert.equal(rows.filter(row => row.event === 'task_inference_superseded').length, 1);
+    assert.equal(rows.filter(row => row.event === 'task_inference_superseded' && row.revision === 1).length, 1);
+    const next = await runWorker({ registry: new Map(), identity: second.identity, input: 'synthetic next', signal: second.signal,
+      infer: async () => ({ text: 'synthetic complete', calls: [] }) });
+    assert.equal(second.identity.task_revision, 2);
+    assert.equal(next.status, 'complete');
+    assert.equal(next.failure, undefined);
   } finally { detach(); }
 });
 
@@ -95,5 +102,31 @@ test('provider diagnostics classify nested transport failures and bounded HTTP i
     await runWorker({ registry: new Map(), identity: { task_id: 'synthetic-unknown', task_revision: 1, connection_generation: 1 },
       input: '', signal: new AbortController().signal, infer: async () => { throw new Error('synthetic'); }, profile });
     assert.equal(rows.find(row => row.event === 'task_inference_failed').provider_error_class, 'unknown');
+  } finally { detach(); }
+});
+
+
+test('inference deadline logs deadline, never superseded', async () => {
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const { INFERENCE_DEADLINE_MS } = await import('../tasks/worker.js');
+  const rows: any[] = [];
+  const detach = attachHostLogSink({ event: row => rows.push(row) });
+  const timers = new Map<number, () => void>();
+  let now = 0;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  try {
+    const pending = runWorker({ registry: new Map(), identity: { task_id: 'synthetic-deadline', task_revision: 1, connection_generation: 1 },
+      input: '', signal: new AbortController().signal,
+      clock: { now: () => now, timer: (callback, ms) => { timers.set(ms, callback); return () => { timers.delete(ms); }; } },
+      infer: async () => { entered(); return new Promise(() => {}); } });
+    await started;
+    now = INFERENCE_DEADLINE_MS;
+    assert.ok(timers.has(INFERENCE_DEADLINE_MS));
+    timers.get(INFERENCE_DEADLINE_MS)!();
+    const result = await pending;
+    assert.equal(result.failure?.reason_code, 'deadline');
+    assert.equal(rows.filter(row => row.event === 'task_inference_superseded').length, 0);
+    assert.equal(rows.filter(row => row.event === 'task_inference_failed' && row.reason_code === 'deadline').length, 1);
   } finally { detach(); }
 });

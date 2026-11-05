@@ -72,3 +72,16 @@ test('task rebuild boundary: closing the consumer cancels late delivery and leav
   release.resolve(); await f.flush();
   assert.equal(f.voice.taskAnswers.length, 0); assert.equal(inferences, 1); assert.equal(f.voice.closes, 1);
 });
+
+test('recovery commentary preserves mid-answer state before the host clears playback', async t => {
+  const f = await liveTaskFixture(t, async () => ({ text: 'A synthetic interrupted answer.', calls: [] }));
+  f.finalize('Give the synthetic answer.'); f.bind(); const answer = await f.answer();
+  f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId });
+  f.voice.emit({ type: 'modelTurnStarted' });
+  f.voice.emit({ type: 'audio', pcm: new Uint8Array(480), rate: 24000, audible: true }); await f.flush();
+  f.voice.emit({ type: 'goAway', timeLeftMs: 10000 });
+  await fixtureUntil(() => f.voice.sessionsOpened === 2, 'interrupted-answer recovery');
+  const opening = f.voice.requests[1]!.openingText!;
+  assert.match(opening, /^```COMMENTARY\n/);
+  assert.equal(JSON.parse(opening.slice(14, -4)).mid_answer, true);
+});

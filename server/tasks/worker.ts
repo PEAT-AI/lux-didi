@@ -47,6 +47,10 @@ export interface WorkerOptions {
   reportProgress?: (answer: WorkerResult) => void;
   reads?: Map<string, ToolResult>;
   isCurrent?: () => boolean;
+  /** His words are waiting for this hop's boundary: they arrived while it ran. */
+  pending?: () => boolean;
+  /** At the boundary every waiting revision is applied at once; the returned input continues the task. */
+  reconcile?: () => { input: string; elapsed: number } | undefined;
   outsideTextSeen?: boolean;
   event?: (phase: 'inference' | 'calls' | 'dedupe' | 'deadline' | 'cancel', count: number, ms: number) => void;
   operation?: (identity: Identity, name: string, args: Record<string, unknown>, result: ToolResult | null) => void;
@@ -64,6 +68,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const clock = options.clock ?? realClock, start = clock.now();
   // One clock line per prompt, computed at this task's start rather than copied from the session snapshot.
   const instructions = taskInstructions(options);
+  // The revision deadline re-anchors on the latest owner final, not on the run that followed it.
+  let anchor = start;
+  let input = options.input;
   const abort = new AbortController();
   let expired = false, revisionExpired = false;
   let outsideTextSeen = options.outsideTextSeen ?? false;
@@ -71,7 +78,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   options.signal.addEventListener('abort', stop, { once: true });
   if (options.signal.aborted) stop();
   const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
-  const clearRevision = clock.timer(() => { revisionExpired = true; expire(); }, REVISION_DEADLINE_MS);
+  const expireRevision = (): void => { revisionExpired = true; expire(); };
+  let clearRevision = clock.timer(expireRevision, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
   let pending = pendingReads.get(reads);
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
@@ -82,11 +90,20 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const code = result.reason_code ?? 'unknown';
     if (!failures.some(failure => failure.tool === tool)) failures.push({ tool, reason_code: code });
   };
-  const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
+  const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - anchor < REVISION_DEADLINE_MS;
+  const waiting = (): boolean => options.pending?.() ?? false;
+  /** One boundary: his accumulated words become this task's input and the revision clock restarts. */
+  const applyPending = (): boolean => {
+    const next = options.reconcile?.();
+    if (!next) return false;
+    input = next.input; anchor = clock.now() - Math.max(0, next.elapsed);
+    clearRevision(); clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
+    return true;
+  };
   let failure: WorkerFailure | undefined;
   const inferenceFailed = (error: unknown, stage: WorkerFailure['stage']): void => {
     const provider = error instanceof ProviderError ? error : undefined;
-    failure = { stage, reason_code: expired || clock.now() - start >= REVISION_DEADLINE_MS ? 'deadline' : provider?.reason_code ?? 'provider_unavailable', detail: provider?.detail ?? '' };
+    failure = { stage, reason_code: expired || clock.now() - anchor >= REVISION_DEADLINE_MS ? 'deadline' : provider?.reason_code ?? 'provider_unavailable', detail: provider?.detail ?? '' };
     hostLogEvent({ event: 'task_inference_failed', taskId: options.identity.task_id, revision: options.identity.task_revision,
       stage, reason_code: failure.reason_code, status: provider?.status, http_status: provider?.status, request_id: provider?.request_id, provider_error_class: provider?.error_class ?? 'unknown', model: options.model ?? DEFAULT_WORKER_MODEL,
       tool_count: options.registry.size, instruction_chars: instructions.length, elapsed_ms: Math.max(0, clock.now() - start), detail: failure.detail });
@@ -108,7 +125,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const clear = clock.timer(cancel, Math.min(FINAL_INFERENCE_DEADLINE_MS, remaining));
     try {
       const answer = await Promise.race([options.infer({ instructions,
-        input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
+        input: input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts, ...(answer.exact ? { exact: answer.exact } : {}) };
@@ -129,7 +146,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const stopRead = (): void => { if (options.signal.reason !== REVISION_ABORT) { local.abort(); rejectTimeout(new ReadStopped('cancelled')); } };
     options.signal.addEventListener('abort', stopRead, { once: true });
     if (options.signal.aborted) stopRead();
-    const clear = clock.timer(() => { local.abort(); rejectTimeout(new ReadStopped('timeout')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - start)));
+    const clear = clock.timer(() => { local.abort(); rejectTimeout(new ReadStopped('timeout')); if (current()) expire(); }, Math.min(CONNECTOR_DEADLINE_MS, REVISION_DEADLINE_MS - (clock.now() - anchor)));
     try { return await Promise.race([body(local.signal), timeout]); }
     finally { clear(); options.signal.removeEventListener('abort', stopRead); }
   }
@@ -140,7 +157,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const onStop = (): void => { local.abort(); rejectStop(new Error('Revision stopped')); };
     const stopped = new Promise<never>((_, reject) => { rejectStop = reject; });
     abort.signal.addEventListener('abort', onStop, { once: true });
-    const clear = clock.timer(expire, Math.min(ms, REVISION_DEADLINE_MS - (clock.now() - start)));
+    const clear = clock.timer(expire, Math.min(ms, REVISION_DEADLINE_MS - (clock.now() - anchor)));
     try { return await Promise.race([body(local.signal), stopped]); }
     finally { clear(); abort.signal.removeEventListener('abort', onStop); }
   }
@@ -161,6 +178,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       options.reportProgress?.({ progress: true, status: 'incomplete', text, findings: [] });
       return acknowledgment({ delivered: true });
     }
+    // A revision is waiting for this hop's boundary: only a declared read still earns its cache.
+    // Any other effect is fenced, because his words may already have replaced the request for it.
+    if (waiting() && tool.effect !== 'none') return { id: call.id, name: call.name, result: failed('He kept talking while this action waited, so it was not run. Decide again from his latest words.', 'cancelled') };
     const key = canonical([tool.name, validation.args]);
     const operationId = randomUUID(), toolStart = clock.now();
     let cache: 'miss' | 'hit' | 'join' = 'miss';
@@ -206,23 +226,36 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     return { id: call.id, name: call.name, result };
   }
   try {
+    // A hop that concluded while his words were waiting answers words he has already revised.
+    // Its answer is not delivered: the boundary below re-hops from the latest whole.
+    let composing = false;
     while (current()) {
+      if (waiting()) applyPending();
+      if (composing) {
+        const answer = await compose();
+        if (waiting() && current()) continue;
+        return answer;
+      }
       let inference: Inference;
       try {
         options.event?.('inference', 1, clock.now() - start);
-        inference = await bounded(signal => options.infer({ instructions, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
+        inference = await bounded(signal => options.infer({ instructions, input, outputs: [...outputs], turns: [...turns], tools: [...registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
       } catch (error) {
         if (options.signal.aborted && !expired) {
           hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
             revision: options.identity.task_revision, stage: 'inference', elapsed_ms: Math.max(0, clock.now() - start) });
           return finish();
         }
-        inferenceFailed(error, 'inference'); return options.signal.aborted ? finish() : compose();
+        inferenceFailed(error, 'inference'); if (options.signal.aborted) return finish();
+        composing = true; continue;
       }
       if (!current()) return finish();
       turns.push(inference);
-      if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();
-      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, failures, receipts, ...(inference.exact ? { exact: inference.exact } : {}) };
+      if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) { composing = true; continue; }
+      if (!inference.calls.length) {
+        if (waiting() && current()) continue;
+        return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, failures, receipts, ...(inference.exact ? { exact: inference.exact } : {}) };
+      }
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const outstanding = new Map(inference.calls.map(item => [item.id, item]));
       let stopCalls!: () => void;

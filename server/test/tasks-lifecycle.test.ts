@@ -2,11 +2,11 @@ import { ProviderError } from '../tasks/model.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorker, INFERENCE_DEADLINE_MS } from '../tasks/worker.js';
-import { createRegistry } from '../tasks/tools.js';
+import { runWorker, INFERENCE_DEADLINE_MS, type Infer, type Inference, type InferRequest, type WorkerResult } from '../tasks/worker.js';
+import { createRegistry, type TaskTool } from '../tasks/tools.js';
 import { FakeAuthority } from '../tasks/authority.js';
 import { documentResult } from '../tasks/results.js';
-import { TaskController, FakeDelivery } from '../tasks/controller.js';
+import { TaskController, FakeDelivery, type Revision } from '../tasks/controller.js';
 
 test('worker concurrently dedupes identical reads and repairs unknown calls', async () => {
   let executed = 0; let inferred = 0;
@@ -175,4 +175,148 @@ test('provider rejection is a typed empty result and emits its closed diagnostic
     assert.equal(event?.status, 400); assert.equal(event?.reason_code, 'provider_rejected');
     assert.equal(event?.elapsed_ms, 0); assert.equal(clock.timers.length, 0);
   } finally { detach(); }
+});
+
+/** The runtime's half of the revision policy: the hop is in flight and his words wait for its boundary. */
+function hopWork(options: { controller: TaskController; revision: Revision; registry: Map<string, TaskTool>; infer: Infer; clock: FakeClock }): Promise<WorkerResult> {
+  const { controller, revision, registry, infer, clock } = options;
+  const latest = (): string => {
+    const context = controller.taskContext(revision.identity.task_id);
+    return JSON.stringify({ owner_words_in_order: context?.ownerWords ?? '', latest: context?.latestOwnerWords ?? '' });
+  };
+  controller.hop(true);
+  return runWorker({ registry, identity: revision.identity, input: latest(), signal: revision.signal, clock, infer, reads: revision.reads,
+    pending: () => controller.pending,
+    reconcile: () => controller.reconcile() ? { input: latest(), elapsed: 0 } : undefined,
+  }).finally(() => controller.hop(false));
+}
+const memoryRegistry = (executed: string[]) => createRegistry({ authority: new FakeAuthority(),
+  execute: async name => { executed.push(name); return documentResult('synthetic memory entry', 'memory:1'); } });
+
+test('a final that arrives mid-hop finishes the hop, caches its read and answers the latest whole', async () => {
+  const delivery = new FakeDelivery(), controller = new TaskController(delivery, () => 'synthetic-task');
+  const executed: string[] = [], seen: InferRequest[] = [], firstHop = deferred<Inference>();
+  const registry = memoryRegistry(executed);
+  const infer: Infer = request => { seen.push(request); return seen.length === 1 ? firstHop.promise : Promise.resolve({ text: 'synthetic answer', calls: [] }); };
+  const first = controller.finalize('synthetic first words', 1);
+  const work = hopWork({ controller, revision: first, registry, infer, clock: new FakeClock() });
+  controller.finalize('synthetic correction words', 1);
+  assert.equal(first.signal.aborted, false);
+  firstHop.resolve({ text: '', calls: [
+    { id: 'read', name: 'search_memory', args: { query: 'synthetic' } },
+    { id: 'write', name: 'remember_note', args: { text: 'synthetic note' } },
+  ] });
+  const answer = await work;
+  assert.equal(answer.status, 'complete');
+  assert.deepEqual(executed, ['search_memory']);
+  assert.equal(seen.length, 2);
+  assert.match(seen[0]!.input, /synthetic first words/);
+  assert.match(seen[1]!.input, /synthetic first words/); assert.match(seen[1]!.input, /synthetic correction words/);
+  assert.equal(first.reads.size, 1);
+  assert.equal(controller.isCurrent(first.identity), true);
+  controller.complete(first.identity, answer);
+  assert.equal(delivery.answers.length, 1);
+  assert.equal(delivery.answers[0]!.identity.task_revision, 2);
+});
+
+test('his correction mid-hop is never answered with the stale result', async () => {
+  const delivery = new FakeDelivery(), controller = new TaskController(delivery, () => 'synthetic-task');
+  const seen: InferRequest[] = [], firstHop = deferred<Inference>();
+  const infer: Infer = request => { seen.push(request); return seen.length === 1 ? firstHop.promise : Promise.resolve({ text: 'synthetic answer for the latest whole', calls: [] }); };
+  const first = controller.finalize('which synthetic record', 1);
+  const work = hopWork({ controller, revision: first, registry: new Map(), infer, clock: new FakeClock() });
+  controller.finalize('the other synthetic record', 1);
+  firstHop.resolve({ text: 'synthetic answer about the first record', calls: [] });
+  const answer = await work;
+  controller.complete(first.identity, answer);
+  assert.equal(delivery.answers.length, 1);
+  assert.match(delivery.answers[0]!.answer.text, /latest whole/);
+  assert.doesNotMatch(delivery.answers[0]!.answer.text, /first record/);
+});
+
+test('five finals in eleven seconds keep one hop in flight and deliver once', async () => {
+  const delivery = new FakeDelivery(), controller = new TaskController(delivery, () => 'synthetic-task'), clock = new FakeClock();
+  const executed: string[] = [], seen: InferRequest[] = [], firstHop = deferred<Inference>();
+  let inFlight = 0, peak = 0;
+  const infer: Infer = request => {
+    seen.push(request); inFlight++; peak = Math.max(peak, inFlight);
+    const answer = seen.length === 1 ? firstHop.promise : Promise.resolve<Inference>({ text: 'synthetic answer', calls: [] });
+    return answer.then(value => { inFlight--; return value; });
+  };
+  const first = controller.finalize('synthetic piece one', 1);
+  const work = hopWork({ controller, revision: first, registry: memoryRegistry(executed), infer, clock });
+  for (const piece of ['synthetic piece two', 'synthetic piece three', 'synthetic piece four', 'synthetic piece five']) {
+    clock.advance(2200); controller.finalize(piece, 1);
+    await Promise.resolve();
+  }
+  firstHop.resolve({ text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] });
+  const answer = await work;
+  assert.equal(peak, 1);
+  assert.equal(seen.length, 2);
+  for (const piece of ['one', 'two', 'three', 'four', 'five']) assert.match(seen[1]!.input, new RegExp(`synthetic piece ${piece}`));
+  controller.complete(first.identity, answer);
+  assert.equal(delivery.answers.length, 1);
+  assert.equal(delivery.answers[0]!.identity.task_revision, 5);
+});
+
+test('the inference deadline still ends a stuck hop while his words wait', async () => {
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-task'), clock = new FakeClock();
+  const first = controller.finalize('synthetic ask', 1);
+  const work = hopWork({ controller, revision: first, registry: new Map(), infer: async () => new Promise(() => {}), clock });
+  controller.finalize('synthetic correction', 1);
+  clock.advance(INFERENCE_DEADLINE_MS);
+  const answer = await work;
+  assert.equal(answer.status, 'incomplete');
+  assert.equal(answer.failure?.reason_code, 'deadline');
+});
+
+test('the revision deadline re-anchors on his latest final', async () => {
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-task'), clock = new FakeClock();
+  const executed: string[] = [], firstHop = deferred<Inference>(), secondHop = deferred<Inference>();
+  let hop = 0;
+  const infer: Infer = () => (++hop === 1 ? firstHop.promise : secondHop.promise);
+  const first = controller.finalize('synthetic ask', 1);
+  const work = hopWork({ controller, revision: first, registry: memoryRegistry(executed), infer, clock });
+  clock.advance(20000);
+  controller.finalize('synthetic correction', 1);
+  firstHop.resolve({ text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] });
+  for (let tick = 0; tick < 6; tick++) await Promise.resolve();
+  clock.advance(20000);
+  secondHop.resolve({ text: 'synthetic answer', calls: [] });
+  const answer = await work;
+  assert.deepEqual(executed, ['search_memory']);
+  assert.equal(answer.status, 'complete');
+});
+
+test('the read cache holds the obsolete hop reads and the next hop reuses them', async () => {
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-task');
+  const executed: string[] = [], seen: InferRequest[] = [], firstHop = deferred<Inference>();
+  const read = { id: 'read', name: 'search_memory', args: { query: 'synthetic' } };
+  const infer: Infer = request => { seen.push(request); return seen.length === 1 ? firstHop.promise : Promise.resolve(seen.length === 2 ? { text: '', calls: [read] } : { text: 'synthetic answer', calls: [] }); };
+  const first = controller.finalize('synthetic first words', 1);
+  const work = hopWork({ controller, revision: first, registry: memoryRegistry(executed), infer, clock: new FakeClock() });
+  controller.finalize('synthetic correction words', 1);
+  firstHop.resolve({ text: '', calls: [read] });
+  const answer = await work;
+  assert.equal(answer.status, 'complete');
+  assert.deepEqual(executed, ['search_memory']);
+  assert.equal(first.reads.size, 1);
+});
+
+test('a write from an obsolete hop is fenced and the next hop runs it once', async () => {
+  const controller = new TaskController(new FakeDelivery(), () => 'synthetic-task');
+  const executed: string[] = [], seen: InferRequest[] = [], firstHop = deferred<Inference>();
+  const write = { id: 'write', name: 'remember_note', args: { text: 'synthetic note' } };
+  const infer: Infer = request => { seen.push(request); return seen.length === 1 ? firstHop.promise : Promise.resolve(seen.length === 2 ? { text: '', calls: [{ ...write, id: 'write-again' }] } : { text: 'synthetic answer', calls: [] }); };
+  const first = controller.finalize('remember a synthetic note', 1);
+  const work = hopWork({ controller, revision: first, registry: memoryRegistry(executed), infer, clock: new FakeClock() });
+  controller.finalize('remember a synthetic note about the other record', 1);
+  firstHop.resolve({ text: '', calls: [write] });
+  const answer = await work;
+  assert.deepEqual(executed, ['remember_note']);
+  const fenced = seen[1]!.outputs.find(output => output.name === 'remember_note');
+  assert.equal(fenced?.result.status, 'failed');
+  assert.equal(fenced?.result.receipt, undefined);
+  assert.equal(answer.receipts?.length, 1);
+  assert.equal(answer.receipts?.[0]?.receipt?.state, 'committed');
 });

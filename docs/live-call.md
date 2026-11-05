@@ -55,6 +55,16 @@ credits less. A later fragment still revises the running task rather than splitt
 There is no lexical hesitation classifier. Stop commands,
 mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
 
+### When he keeps talking (10.17)
+
+He speaks in pieces, so a request often finishes before he does. New words never throw away a
+lookup that is already running: the helper finishes the model request it started, its reads still
+run and stay cached, and anything else it asked for waits. At that boundary every word he has
+said since becomes the task's input at once, and the task answers that latest whole. Only the
+latest revision may speak: an answer to words he has already moved past is dropped silently
+rather than spoken with a correction or a filler. The 24 s inference deadline still bounds one
+model request and the 36 s revision deadline counts from his latest final.
+
 OpenAI results use commentary on the current provider generation with its latest delegation id,
 or null when there is none. The host waits for owner speech and output quiet, then appends ordered
 fenced JSON items of at most 450 characters, including the fence and encoded fields. Provider timeline acknowledgement settles each chunk, not exact

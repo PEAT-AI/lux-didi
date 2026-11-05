@@ -25,6 +25,8 @@ export class TaskRuntime {
   readonly #toolsUsed = new Set<string>();
   /** Closed failure codes per task, so the helper can name what failed and why. */
   readonly #started = new Map<string, number>();
+  /** The hop this runtime already runs, so his next words ride on it instead of starting another. */
+  #hop: Promise<WorkerResult> | undefined;
   readonly #taskFailures = new Map<string, { tool: string; code: string }[]>();
   #lastTask: { failure?: WorkerResult['failure']; status: string; failed_tools: { tool: string; code: string }[] } | undefined;
   usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
@@ -141,9 +143,17 @@ export class TaskRuntime {
   }
   finalize(words: string, generation: number, ownerTurn = 0, overlapped = false): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn, overlapped), { identity } = revision;
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
+    if (this.#hop) return { revision, result: this.#hop };
+    const timeContext = () => ({ now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' });
+    this.controller.hop(true);
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), timeContext()), signal: revision.signal,
       ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }), ...(this.options.now ? { now: this.options.now } : {}),
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
+      pending: () => this.controller.pending,
+      reconcile: () => {
+        if (!this.controller.reconcile()) return undefined;
+        return { input: workerInput(revision, this.verifiedStatus(identity), timeContext()), elapsed: Math.max(0, (this.options.now ?? Date.now)() - (revision.askAtUtc ?? 0)) };
+      },
       reportProgress: answer => {
         if (!this.controller.isCurrent(identity)) return;
         const attemptId = `progress:${randomUUID()}`;
@@ -155,7 +165,8 @@ export class TaskRuntime {
     }).then(answer => this.settle(identity, answer), () => {
       hostLogEvent({ event: 'task_runtime_rejected', taskId: identity.task_id, revision: identity.task_revision, reason_code: 'runtime_rejected' });
       return this.settle(identity, { status: 'incomplete', text: '', findings: [], failure: { stage: 'inference', reason_code: 'runtime_rejected', detail: '' } });
-    });
+    }).finally(() => { this.controller.hop(false); this.#hop = undefined; });
+    this.#hop = result;
     return { revision, result };
   }
   attach(identity: RevisionIdentity, binding: string): boolean { return this.controller.attach(identity, binding); }

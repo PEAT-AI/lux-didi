@@ -204,7 +204,12 @@ for (const failedRead of [false, true]) test(`review F1: prior voice speech cann
   const result = await running; assert.equal(reads, 1);
   assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
   assert.equal(result.findings.length, failedRead ? 0 : 1);
-  if (failedRead) { assert.equal(result.text, ''); assert.equal(f.results().length, 0); }
+  if (failedRead) {
+    // Composed contract: the failed read is told once, as a failure fact with no spoken content.
+    assert.equal(result.text, ''); assert.equal(f.results().length, 1);
+    assert.equal(f.results()[0]!.kind, 'failure'); assert.equal(f.results()[0]!.text, '');
+    assert.equal(commentaryPart(f.sent[0]!.text).cause, result.failure!.reason_code);
+  }
   else { assert.ok(result.text.trim()); assert.equal(f.results().length, 1); assert.equal(f.results()[0]!.text, result.text); }
 });
 

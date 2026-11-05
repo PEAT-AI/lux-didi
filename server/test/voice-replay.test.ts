@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { deferred, fixtureUntil } from './live-voice-fixture.js';
+import { commentaryPart } from './commentary-test.js';
 import { documentResult, failed } from '../tasks/results.js';
 import { sanitize } from './voice-replay/sanitize.js';
 
@@ -90,7 +91,7 @@ for (const noAction of [false, true]) {
     const f = await liveTaskFixture(t, async () => { calls++; if (!noAction) throw new Error('SYNTHETIC_RAW_PROVIDER_ERROR'); return { text: '', calls: [], no_action: true }; });
     f.finalize('Handle the synthetic request.'); f.bind();
     if (noAction) { await f.flush(); await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, noAction ? 1 : 2); assert.match(f.voice.taskAnswers[0]!.text, /"kind":"no_action"/); }
-    else { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'incomplete', 'failed worker terminal disposition'); const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
+    else { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'incomplete', 'failed worker terminal disposition'); const answer = await f.answer(); assert.equal(answer.kind, 'failure'); assert.equal(answer.text, ''); assert.equal(commentaryPart(f.voice.taskAnswers[0]!.text).cause, 'provider_unavailable'); assert.equal(f.voice.taskAnswers.map(item => item.text).join('\n').includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
     assert.equal(calls, 1);
     assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'incomplete');
   });

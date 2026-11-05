@@ -37,7 +37,7 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   });
   const headers = { authorization: `Bearer ${store.adminCredential}`, 'x-didi-authority-epoch': store.authorityEpoch, 'content-type': 'application/json' };
   const post = (step: string, body: unknown) => fetch(`${service.origin}/api/v1/live-canary/${step}`, { method: 'POST', headers, body: JSON.stringify(body) });
-  const asks = JSON.parse(readFileSync(join(process.cwd(), 'scripts/fixtures/canary-asks.example.json'), 'utf8'));
+  const asks = JSON.parse(readFileSync(join(process.env['DIDI_TEST_SOURCE_ROOT'] ?? join(process.cwd(), 'server/test'), '../../scripts/fixtures/canary-asks.example.json'), 'utf8'));
   const opened = await post('open', { asks, deadline: Date.now() + 30_000 });
   assert.equal(opened.status, 200, JSON.stringify(await opened.clone().json()));
   const snapshot = (await opened.json()).data;

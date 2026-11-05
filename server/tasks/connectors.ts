@@ -125,7 +125,7 @@ const companySteps: Readonly<Record<string, string>> = {
   get_company: 'Look up customer facts, deals and leads on the CRM endpoint by slug or company name first.',
 };
 function companyEndpoint(binding: BoundConnector): string | undefined {
-  return mongooseEndpointName(binding.policy.endpoint.resource) ?? mongooseEndpointName(binding.policy.endpoint.url);
+  return mongooseEndpointName(binding.policy.endpoint.resource) ?? ('url' in binding.policy.endpoint ? mongooseEndpointName(binding.policy.endpoint.url) : undefined);
 }
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {

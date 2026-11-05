@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MONGOOSE_CONSENT_CAP_MS, MONGOOSE_LOCK_STALE_MS, MONGOOSE_OAUTH_KEYS, MONGOOSE_REFRESH_MARGIN_MS, MongooseCredentialError,
-  mongooseAccessToken, mongooseBinding, mongooseCredentialPresent, mongooseCredentialRefusal, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord,
+  mongooseAccessToken, mongooseBinding, mongooseCredentialNeedsSignIn, mongooseCredentialPresent, mongooseCredentialRefusal, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord,
 } from '../host/mongoose-auth.js';
 
 const NOW = 1_760_000_000_000;
@@ -200,4 +200,15 @@ test('a 401 with resource_metadata is one closed credential reason and names its
   assert.equal(mongooseCredentialRefusal(403, undefined), undefined);
   assert.equal(mongooseCredentialRefusal(401, undefined), undefined);
   assert.equal(mongooseCredentialRefusal(200, 'https://example.invalid/x'), undefined);
+});
+
+// A readable refresh token is not proof that its endpoint grant is still usable.
+test('unnamed sign-in selects a present credential whose refresh fails', async () => {
+  const { dir, cleanup } = configDir();
+  try {
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW - 1 }));
+    const post = (async () => new Response('private issuer detail', { status: 400 })) as typeof fetch;
+    assert.equal(mongooseCredentialPresent(dir, 'mongoose-knowledge'), true);
+    assert.equal(await mongooseCredentialNeedsSignIn(dir, 'mongoose-knowledge', BINDING, { now: () => NOW, fetch: post }), true);
+  } finally { cleanup(); }
 });

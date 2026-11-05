@@ -121,6 +121,11 @@ export function mongooseCredentialPresent(configDir: string, reference: string):
   return record !== undefined && record.refreshToken.length > 0;
 }
 
+/** Whether this endpoint needs the unnamed sign-in flow. */
+export async function mongooseCredentialNeedsSignIn(configDir: string, reference: string, binding: MongooseBinding | undefined, options: MongooseAuthOptions = {}): Promise<boolean> {
+  return !mongooseCredentialPresent(configDir, reference);
+}
+
 export interface MongooseAuthOptions extends OAuthTokenOptions {
   /** The catalogue's one owner email; every minted token must name it, or the token is never used. */
   ownerIdentity?: string | null;

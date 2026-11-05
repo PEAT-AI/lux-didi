@@ -17,7 +17,7 @@ function binding(connector: string, toolNames: string[], decodedResult: unknown)
   const policy: ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: connector, generation: 1, enabled: true,
     connector, toolNames, schemaDigest: 'fixture',
-    endpoint: { id: 'fixture', url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
+    endpoint: { id: 'fixture', url: 'https://fixture.invalid/mcp', account: 'fixture', resource: connector === 'mongoose' ? 'mongoose:knowledge' : 'fixture', credentialRef: null },
     sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: 'fixture', allowedClasses: ['ordinary'] },
     bounds: { maxSearchLimit: 25, maxGetIds: 10, maxQueryChars: 4000, maxEntityBytes: 100000, maxResultBytes: 100000 },
@@ -67,7 +67,7 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
       assert.deepEqual(knowledge!.references.map(ref => ref.id), ['101', '102']);
       assert.match(knowledge!.text, /Water the synthetic orchids weekly/);
       assert.match(knowledge!.text, /superseded/);
-      assert.notEqual(company?.status, 'failed');
+      assert.notEqual(company?.status, 'failed', JSON.stringify(company));
       assert.match(company!.text, /no_match/);
       return { text: 'The synthetic results are verified.', calls: [] };
       } catch (error) { assertionError = error; throw error; }
